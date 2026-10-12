@@ -402,4 +402,101 @@ let controls =
             (Text.escape_controls "\\x1b"));
     ]
 
-let () = exit (run "text" [ newlines; lengths_and_cuts; search; controls ])
+(* JSON *)
+
+let json_rows =
+  [
+    ("a plain string", "plain", {|"plain"|});
+    ("the empty string", "", {|""|});
+    ("a quote and a backslash", {|say "a\b"|}, {|"say \"a\\b\""|});
+    ("LF, CR and TAB", "a\nb\rc\td", {|"a\nb\rc\td"|});
+    ( "every other byte below 0x20, but not DEL",
+      "\x00\x1b\x1f\x7f",
+      "\"\\u0000\\u001b\\u001f\x7f\"" );
+    ( "well-formed UTF-8 passes",
+      "\u{e9}\u{20ac}\u{1d11e}",
+      "\"\u{e9}\u{20ac}\u{1d11e}\"" );
+    ("a lone byte", "a\xffb", "\"a\\ufffdb\"");
+    ("a cut sequence is one replacement", "a\xe2\x82b", "\"a\\ufffdb\"");
+    ("a sequence cut at the end", "a\xe2\x82", "\"a\\ufffd\"");
+    ( "an encoded surrogate is one replacement per byte",
+      "\xed\xa0\x80",
+      "\"\\ufffd\\ufffd\\ufffd\"" );
+  ]
+
+(* Any bytes: up to 16 of them, drawn from the ASCII range, the escaped
+   bytes and the bytes that start or continue a UTF-8 sequence. *)
+let bytes =
+  Gen.with_pp
+    (fun ppf s -> Format.fprintf ppf "%S" s)
+    (Gen.map (String.concat "")
+       (Gen.list ~size:(Gen.int_range 0 16)
+          (Gen.of_list
+             [
+               "a";
+               "\"";
+               "\\";
+               "\n";
+               "\r";
+               "\t";
+               "\x01";
+               "\x7f";
+               "\xc3";
+               "\xa9";
+               "\xe2";
+               "\xff";
+             ])))
+
+(* The JSON escapes that [json_string] writes, read back. *)
+let unquote j =
+  let b = Buffer.create (String.length j) in
+  let rec loop i =
+    if i < String.length j - 1 then
+      match j.[i] with
+      | '\\' -> (
+          match j.[i + 1] with
+          | 'n' ->
+              Buffer.add_char b '\n';
+              loop (i + 2)
+          | 'r' ->
+              Buffer.add_char b '\r';
+              loop (i + 2)
+          | 't' ->
+              Buffer.add_char b '\t';
+              loop (i + 2)
+          | 'u' ->
+              let u = int_of_string ("0x" ^ String.sub j (i + 2) 4) in
+              Buffer.add_utf_8_uchar b (Uchar.of_int u);
+              loop (i + 6)
+          | c ->
+              Buffer.add_char b c;
+              loop (i + 2))
+      | c ->
+          Buffer.add_char b c;
+          loop (i + 1)
+  in
+  loop 1;
+  Buffer.contents b
+
+let json_law s =
+  let j = Text.json_string s in
+  is_true ~msg:"quoted"
+    (String.length j >= 2 && j.[0] = '"' && j.[String.length j - 1] = '"');
+  is_true ~msg:"valid UTF-8" (String.is_valid_utf_8 j);
+  is_false ~msg:"a raw control byte" (String.exists (fun c -> c < ' ') j);
+  if String.is_valid_utf_8 s then equal string s (unquote j)
+
+let json =
+  group "JSON"
+    [
+      cases "json_string escapes what JSON needs and replaces malformed UTF-8"
+        ~name:name3 json_rows (fun (_, s, quoted) ->
+          equal string quoted (Text.json_string s));
+      prop
+        "json_string is quoted, valid UTF-8 and with no raw control byte, and \
+         reads back as a string that is UTF-8"
+        bytes json_law;
+    ]
+
+let () =
+  exit (run "text" [ newlines; lengths_and_cuts; search; controls; json ])

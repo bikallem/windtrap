@@ -110,6 +110,8 @@
   point for its return, as a direct call has none:
   `if n < 1 then failwith @@ msg;` read uncovered even when a test ran
   it.
+- `windtrap coverage --json` writes bytes of a path that are not UTF-8
+  as `\ufffd`, so the document is always valid JSON.
 
 ## v0.2.0 2026-09-26
 

@@ -9,6 +9,7 @@ module Sections = Windtrap.Private.Report_sections
 module Os = Windtrap.Private.Os
 module Cli = Windtrap.Private.Cli
 module Pp = Windtrap.Private.Pp
+module Text = Windtrap.Private.Text
 
 let strf = Printf.sprintf
 let ( let* ) = Result.bind
@@ -193,23 +194,6 @@ let min_gate o ({ visited; total } : Coverage.summary) =
 let percentage ({ visited; total } : Coverage.summary) =
   Sections.percent ~visited ~total
 
-let json_string s =
-  let b = Buffer.create (String.length s + 2) in
-  Buffer.add_char b '"';
-  String.iter
-    (function
-      | ('"' | '\\') as c ->
-          Buffer.add_char b '\\';
-          Buffer.add_char b c
-      | '\n' -> Buffer.add_string b "\\n"
-      | '\r' -> Buffer.add_string b "\\r"
-      | '\t' -> Buffer.add_string b "\\t"
-      | c when c < ' ' -> Buffer.add_string b (strf "\\u%04x" (Char.code c))
-      | c -> Buffer.add_char b c)
-    s;
-  Buffer.add_char b '"';
-  Buffer.contents b
-
 let json (summary : Coverage.summary) reports =
   let file (r : Coverage.file_report) =
     strf
@@ -217,7 +201,7 @@ let json (summary : Coverage.summary) reports =
       \    { \"path\": %s, \"visited\": %d, \"total\": %d,\n\
       \      \"percentage\": %.2f,\n\
       \      \"uncovered_lines\": [%s] }"
-      (json_string r.file) r.summary.visited r.summary.total
+      (Text.json_string r.file) r.summary.visited r.summary.total
       (percentage r.summary)
       (String.concat "," (List.map string_of_int r.uncovered_lines))
   in
