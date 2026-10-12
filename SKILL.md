@@ -434,6 +434,10 @@ WINDTRAP_MUTATE=1 dune runtest --force --instrument-with ppx_windtrap.mutate
 dune exec windtrap -- mutants
 ```
 
+`--min-score PCT` gates on the score instead, the percentage of killed
+mutants. Set PCT a little under the measured score, as for `--min`.
+`--json` gives each verdict to other tools.
+
 Mutation testing forks a child per mutant and is refused on Windows.
 `windtrap coverage --help`, `windtrap mutants --help` and a suite's
 `--help` (`--mutate`, `--arm`) state the flags.

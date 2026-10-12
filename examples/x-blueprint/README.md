@@ -123,7 +123,7 @@ any executable killed it:
 
 ```
 $ dune exec windtrap -- mutants
-mutants: 18 reached, 18 killed, 4 executables
+mutants: 18 reached, 18 killed, 4 executables, score 100.0%
 ```
 
 It exits 1 when a mutant survived every executable that reached it.
@@ -195,7 +195,7 @@ stats: 1 passed in 91ms (seed s1:f57d4071ad6eed49).
 
 reproduce: dune exec --instrument-with ppx_windtrap.mutate test/unit/test_stats.exe -- --arm lib/stats.ml:14:18:add -f 'one line per row'
 windtrap: verdicts not saved: this run's selection narrows the suite, and a partial run's verdicts would stand in the project merge as the whole.
-mutants: 2 survived of 2 reached by the 1 selected test
+mutants: 2 survived of 2 reached by the 1 selected test, score 0.0%
 ```
 
 The three tests beside it pin the rendered text and kill both, and the
@@ -204,7 +204,7 @@ suite's whole run reports no survivor:
 ```
 $ dune exec --instrument-with ppx_windtrap.mutate test/unit/test_stats.exe -- --mutate
 stats: 4 passed in 110ms (seed s1:7eec2ad33b9c5707).
-mutants: 2 reached by this suite, 2 killed
+mutants: 2 reached by this suite, 2 killed, score 100.0%
 ```
 
 To judge a new test the same way, pass its name to `-f` with

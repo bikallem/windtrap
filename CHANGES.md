@@ -113,6 +113,22 @@
 - `windtrap coverage --json` writes bytes of a path that are not UTF-8
   as `\ufffd`, so the document is always valid JSON.
 
+### Mutation testing
+
+- The outcome line of a mutation run and of `windtrap mutants` ends
+  with the mutation score, as `score 60.0%`: the percentage of killed
+  mutants among those killed, survived and not evaluated (see
+  [Gating on the score](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#gating-on-the-score)).
+- `windtrap mutants --min-score PCT` exits 1 only when the score is
+  below `PCT`, and not for a survivor alone.
+- `windtrap mutants --json` prints the merge as one document: the
+  counts, the score, the executables, and each mutant with its verdict
+  and, for a survivor, the tests that ran it (see
+  [Exporting the verdicts](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#exporting-the-verdicts)).
+- `windtrap mutants` exits 1 with the reason on standard error when
+  standard output refuses its report or document, for example on a full
+  disk, and runs no gate.
+
 ## v0.2.0 2026-09-26
 
 Windtrap 0.2.0 is a complete rewrite of Windtrap. It keeps the shape of

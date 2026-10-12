@@ -46,3 +46,10 @@
  (applies_to unreadable)
  (enabled_if
   (<> %{os_type} Win32)))
+
+; full.t writes to /dev/full, which only Linux has.
+
+(cram
+ (applies_to full)
+ (enabled_if
+  (= %{system} linux)))
