@@ -380,9 +380,13 @@ type mutant = {
       (** The identifier of the mutant, spelled by the producer with the
           runtime's own function. The report prints it and hands it to [--arm]
           through {!shell_word}, without spelling it again. *)
-  line : int;  (** The one-based line of the mutated expression. *)
-  before : string;  (** The source text of the original expression. *)
-  after : string;  (** The source text of the expression that replaces it. *)
+  line : int;
+      (** The one-based line of the mutated expression, or of the pattern of a
+          dropped case. *)
+  before : string;
+      (** The text of the original site: an expression, or the pattern and the
+          guard of a dropped case. *)
+  after : string;  (** The text of the mutant, in the same form. *)
   source : string option;
       (** The text of the mutated file, when the producer could read it. *)
 }

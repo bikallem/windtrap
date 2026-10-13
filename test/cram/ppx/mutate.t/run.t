@@ -94,6 +94,211 @@ after, and the reason of a dismissed site.
      then __windtrap_mut_5_l - __windtrap_mut_5_r
      else __windtrap_mut_5_l + __windtrap_mut_5_r) * 2
 
+  $ mut --impl ./fixture_arm.ml | ../elide.exe
+  mutation sites of "./fixture_arm.ml" in Windtrap_mut_________fixture_arm___ml, with type 'a operands:
+    0: 8:4 "drop" "| `Add -> ..." -> "| `Add when false -> ..."
+    1: 8:12 "sub" "a + b" -> "a - b"
+    2: 9:4 "drop" "| `Sub when a > b -> ..." -> "| `Sub when false -> ..."
+    3: 9:23 "add" "a - b" -> "a + b"
+    4: 9:14 "ge" "a > b" -> "a >= b"
+    5: 10:4 "drop" "| `Sub | `Mul -> ..." -> "| `Sub | `Mul when false -> ..."
+    6: 12:26 "drop" "| [] -> ..." -> "| [] when false -> ..."
+    7: 12:36 "drop" "| _::rest -> ..." -> "| _::rest when false -> ..."
+    8: 12:49 "sub" "1 + (length rest)" -> "1 - (length rest)"
+    9: 13:29 "drop" "| Not_found -> ..." -> "| Not_found when false -> ..."
+    10: 13:46 "drop" "| Exit -> ..." -> "| Exit when false -> ..."
+    11: 17:42 "drop" "| exception Not_found -> ..." -> "| exception Not_found when false -> ..."
+    12: 22:30 "drop" "| Some y -> ..." -> "| Some y when false -> ..."
+    13: 33:26 "drop" "| 0 -> ..." -> "| 0 when false -> ...", dismissed "zero is unused"
+    14: 33:64 "sub" "1 + x" -> "1 - x"
+    15: 33:72 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    16: 43:31 "drop" "| Some y -> ..." -> "| Some y when false -> ..."
+    17: 44:45 "drop" "| (exception Not_found : int) -> ..." -> "| (exception Not_found : int) when false -> ..."
+    18: 49:15 "drop" "| `A | `B -> ..." -> "| `A | `B when false -> ...", dismissed "the two give one result"
+    19: 49:72 "drop" "| `C -> ..." -> "| `C when false -> ..."
+    20: 52:15 "sub" "1 + 2" -> "1 - 2"
+    21: 52:33 "drop" "| 0 -> ..." -> "| 0 when false -> ..."
+    22: 52:42 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    23: 55:28 "sub" "a + b" -> "a - b"
+    24: 55:39 "drop" "| 0 -> ..." -> "| 0 when false -> ..."
+    25: 55:48 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    26: 56:24 "add" "a - b" -> "a + b"
+    27: 56:37 "drop" "| Not_found -> ..." -> "| Not_found when false -> ..."
+    28: 56:54 "drop" "| Exit -> ..." -> "| Exit when false -> ..."
+    29: 61:16 "drop" "| Not_found -> ..." -> "| Not_found when false -> ...", dismissed "never raised"
+    30: 61:64 "drop" "| Exit -> ..." -> "| Exit when false -> ..."
+  let apply op a b =
+    ((match op with
+      | `Add when
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 0
+          then false
+          else true ->
+          let (__windtrap_mut_1_l, __windtrap_mut_1_r) = (a, b) in
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 1
+          then __windtrap_mut_1_l - __windtrap_mut_1_r
+          else __windtrap_mut_1_l + __windtrap_mut_1_r
+      | `Sub when
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 2
+          then false
+          else
+            (let (__windtrap_mut_4_l, __windtrap_mut_4_r) =
+               ((a, b) : _ Windtrap_mut_________fixture_arm___ml.operands) in
+             if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 4
+             then Stdlib.not (__windtrap_mut_4_r > __windtrap_mut_4_l)
+             else __windtrap_mut_4_l > __windtrap_mut_4_r)
+          ->
+          let (__windtrap_mut_3_l, __windtrap_mut_3_r) = (a, b) in
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 3
+          then __windtrap_mut_3_l + __windtrap_mut_3_r
+          else __windtrap_mut_3_l - __windtrap_mut_3_r
+      | `Sub | `Mul when
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 5
+          then false
+          else true -> 0)
+    [@ocaml.warning "-8-57"])
+  let rec length =
+    ((function
+      | [] when
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 6
+          then false
+          else true -> 0
+      | _::rest when
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 7
+          then false
+          else true ->
+          let (__windtrap_mut_8_l, __windtrap_mut_8_r) = (1, (length rest)) in
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 8
+          then __windtrap_mut_8_l - __windtrap_mut_8_r
+          else __windtrap_mut_8_l + __windtrap_mut_8_r)
+    [@ocaml.warning "-8-57"])
+  let handle f =
+    ((try f ()
+      with
+      | Not_found when
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 9
+          then false
+          else true -> 0
+      | Exit when
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 10
+          then false
+          else true -> 1)
+    [@ocaml.warning "-57"])
+  let fallback f =
+    ((match f () with
+      | v -> v
+      | exception Not_found when
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 11
+          then false
+          else true -> 0)
+    [@ocaml.warning "-8-57"])
+  let only x = match x with | Some y -> y
+  let mixed f =
+    ((match f () with
+      | Some y when
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 12
+          then false
+          else true -> y
+      | None | exception Not_found -> 0)
+    [@ocaml.warning "-8-57"])
+  type (_, _) eq =
+    | Refl: ('a, 'a) eq 
+  let refuted (x : (int, int) eq option) =
+    match x with | None -> 0 | Some (Refl) -> 1 | _ -> .
+  let kept x =
+    ((match x with
+      | ((0)[@mutate off "zero is unused"]) when true ->
+          let (__windtrap_mut_14_l, __windtrap_mut_14_r) = (1, x) in
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 14
+          then __windtrap_mut_14_l - __windtrap_mut_14_r
+          else __windtrap_mut_14_l + __windtrap_mut_14_r
+      | _ when
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 15
+          then false
+          else true -> x)
+    [@ocaml.warning "-8-57"])
+  let hidden x = ((match x with | 0 -> 1 | _ -> x + 1)[@mutate off])
+  module M = struct exception E  end
+  let opened f =
+    ((match f () with
+      | Some y when
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 16
+          then false
+          else true -> y
+      | None | M.(exception E)  -> 0)
+    [@ocaml.warning "-8-57"])
+  let constrained f =
+    ((match f () with
+      | y -> y
+      | (exception Not_found : int) when
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 17
+          then false
+          else true -> 0)
+    [@ocaml.warning "-8-57"])
+  let either x =
+    ((match x with
+      | ((`A | `B)[@mutate off "the two give one result"]) when true -> 1
+      | `C when
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 19
+          then false
+          else true -> 0)
+    [@ocaml.warning "-8-57"])
+  let pick =
+    ((fun ?(d=
+        let (__windtrap_mut_20_l, __windtrap_mut_20_r) = (1, 2) in
+        if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 20
+        then __windtrap_mut_20_l - __windtrap_mut_20_r
+        else __windtrap_mut_20_l + __windtrap_mut_20_r) ->
+        function
+        | 0 when
+            if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 21
+            then false
+            else true -> d
+        | _ when
+            if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 22
+            then false
+            else true -> 1)
+    [@ocaml.warning "-8-57"])
+  let scrutinized a b =
+    ((match let (__windtrap_mut_23_l, __windtrap_mut_23_r) = (a, b) in
+            if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 23
+            then __windtrap_mut_23_l - __windtrap_mut_23_r
+            else __windtrap_mut_23_l + __windtrap_mut_23_r
+      with
+      | 0 when
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 24
+          then false
+          else true -> 1
+      | _ when
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 25
+          then false
+          else true -> 2)
+    [@ocaml.warning "-8-57"])
+  let tried f a b =
+    ((try
+        f
+          (let (__windtrap_mut_26_l, __windtrap_mut_26_r) = (a, b) in
+           if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 26
+           then __windtrap_mut_26_l + __windtrap_mut_26_r
+           else __windtrap_mut_26_l - __windtrap_mut_26_r)
+      with
+      | Not_found when
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 27
+          then false
+          else true -> 0
+      | Exit when
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 28
+          then false
+          else true -> 1)
+    [@ocaml.warning "-57"])
+  let excused f =
+    ((try f ()
+      with | ((Not_found)[@mutate off "never raised"]) -> 0
+      | Exit when
+          if Windtrap_mut_________fixture_arm___ml.___windtrap_armed___ 30
+          then false
+          else true -> 1)
+    [@ocaml.warning "-57"])
+
   $ mut --impl ./fixture_assert.ml | ../elide.exe
   mutation sites of "./fixture_assert.ml" in Windtrap_mut_________fixture_assert___ml, with type 'a operands:
     0: 7:2 "sub" "a + b" -> "a - b"
@@ -129,6 +334,78 @@ after, and the reason of a dismissed site.
        else __windtrap_mut_3_p)
     then 1
     else 0
+
+  $ mut --impl ./fixture_call.ml | ../elide.exe
+  mutation sites of "./fixture_call.ml" in Windtrap_mut_________fixture_call___ml, with type 'a operands:
+    0: 6:2 "skip" "incr r" -> "()"
+    1: 7:2 "skip" "r := ((!r) + 1)" -> "()"
+    2: 7:7 "sub" "(!r) + 1" -> "(!r) - 1"
+    3: 11:11 "skip" "incr r" -> "()"
+    4: 18:5 "ge" "(!r) > 0" -> "(!r) >= 0"
+    5: 22:2 "sub" "x + 1" -> "x - 1"
+    6: 28:2 "skip" "a < b" -> "()"
+    7: 37:2 "skip" "incr r" -> "()", dismissed "the count is not read"
+    8: 43:8 "or" "b && c" -> "b || c"
+  let tick r =
+    if
+      Stdlib.not
+        (Windtrap_mut_________fixture_call___ml.___windtrap_armed___ 0)
+    then (incr r; ());
+    if
+      Stdlib.not
+        (Windtrap_mut_________fixture_call___ml.___windtrap_armed___ 1)
+    then
+      (r :=
+         ((let (__windtrap_mut_2_l, __windtrap_mut_2_r) = ((!r), 1) in
+           if Windtrap_mut_________fixture_call___ml.___windtrap_armed___ 2
+           then __windtrap_mut_2_l - __windtrap_mut_2_r
+           else __windtrap_mut_2_l + __windtrap_mut_2_r));
+       ());
+    !r
+  let bound r =
+    let () =
+      if
+        Stdlib.not
+          (Windtrap_mut_________fixture_call___ml.___windtrap_armed___ 3)
+      then incr r in
+    !r
+  let assign p r =
+    p.contents <- 1;
+    if
+      (let (__windtrap_mut_4_l, __windtrap_mut_4_r) =
+         (((!r), 0) : _ Windtrap_mut_________fixture_call___ml.operands) in
+       if Windtrap_mut_________fixture_call___ml.___windtrap_armed___ 4
+       then Stdlib.not (__windtrap_mut_4_r > __windtrap_mut_4_l)
+       else __windtrap_mut_4_l > __windtrap_mut_4_r)
+    then incr r;
+    r := 2
+  let discard x =
+    (let (__windtrap_mut_5_l, __windtrap_mut_5_r) = (x, 1) in
+     if Windtrap_mut_________fixture_call___ml.___windtrap_armed___ 5
+     then __windtrap_mut_5_l - __windtrap_mut_5_r
+     else __windtrap_mut_5_l + __windtrap_mut_5_r);
+    ()
+  let compare_only a b =
+    if
+      Stdlib.not
+        (Windtrap_mut_________fixture_call___ml.___windtrap_armed___ 6)
+    then (a < b; ());
+    ()
+  let () = print_newline ()
+  let quiet r = ((incr r)[@mutate off "the count is not read"]); !r
+  let chain a b c =
+    ((a &&
+        ((let __windtrap_mut_8_p = b in
+          if
+            Stdlib.(<>) (__windtrap_mut_8_p : Stdlib.Bool.t)
+              (Windtrap_mut_________fixture_call___ml.___windtrap_armed___ 8)
+          then c
+          else __windtrap_mut_8_p)))
+    [@warning "-10"]);
+    ()
+  type single =
+    | Single 
+  let single f x = let Single = f x in x
 
   $ mut --impl ./fixture_chain.ml | ../elide.exe
   mutation sites of "./fixture_chain.ml" in Windtrap_mut_________fixture_chain___ml, with type 'a operands:
@@ -235,12 +512,14 @@ after, and the reason of a dismissed site.
     0: 7:19 "le" "a < b" -> "a <= b"
     1: 8:21 "lt" "a <= b" -> "a < b"
     2: 11:8 "ge" "a > b" -> "a >= b"
-    3: 15:39 "gt" "a >= b" -> "a > b"
-    4: 16:18 "neq" "a = b" -> "a <> b"
-    5: 17:21 "eq" "a <> b" -> "a = b"
-    6: 20:21 "or" "(x >= lo) && (x <= hi)" -> "(x >= lo) || (x <= hi)"
-    7: 20:21 "gt" "x >= lo" -> "x > lo"
-    8: 20:32 "lt" "x <= hi" -> "x < hi"
+    3: 15:32 "drop" "| _ when a >= b -> ..." -> "| _ when false -> ..."
+    4: 15:39 "gt" "a >= b" -> "a > b"
+    5: 15:53 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    6: 16:18 "neq" "a = b" -> "a <> b"
+    7: 17:21 "eq" "a <> b" -> "a = b"
+    8: 20:21 "or" "(x >= lo) && (x <= hi)" -> "(x >= lo) || (x <= hi)"
+    9: 20:21 "gt" "x >= lo" -> "x > lo"
+    10: 20:32 "lt" "x <= hi" -> "x < hi"
   let below a b =
     if
       let (__windtrap_mut_0_l, __windtrap_mut_0_r) =
@@ -267,47 +546,55 @@ after, and the reason of a dismissed site.
       then Stdlib.not (__windtrap_mut_2_r > __windtrap_mut_2_l)
       else __windtrap_mut_2_l > __windtrap_mut_2_r do () done
   let at_least a b =
-    match a with
-    | _ when
-        let (__windtrap_mut_3_l, __windtrap_mut_3_r) =
-          ((a, b) : _ Windtrap_mut_________fixture_cmp___ml.operands) in
-        if Windtrap_mut_________fixture_cmp___ml.___windtrap_armed___ 3
-        then Stdlib.not (__windtrap_mut_3_r >= __windtrap_mut_3_l)
-        else __windtrap_mut_3_l >= __windtrap_mut_3_r -> 1
-    | _ -> 0
+    ((match a with
+      | _ when
+          if Windtrap_mut_________fixture_cmp___ml.___windtrap_armed___ 3
+          then false
+          else
+            (let (__windtrap_mut_4_l, __windtrap_mut_4_r) =
+               ((a, b) : _ Windtrap_mut_________fixture_cmp___ml.operands) in
+             if Windtrap_mut_________fixture_cmp___ml.___windtrap_armed___ 4
+             then Stdlib.not (__windtrap_mut_4_r >= __windtrap_mut_4_l)
+             else __windtrap_mut_4_l >= __windtrap_mut_4_r)
+          -> 1
+      | _ when
+          if Windtrap_mut_________fixture_cmp___ml.___windtrap_armed___ 5
+          then false
+          else true -> 0)
+    [@ocaml.warning "-8-57"])
   let same a b =
     if
-      let __windtrap_mut_4_p = a = b in
-      (if Windtrap_mut_________fixture_cmp___ml.___windtrap_armed___ 4
-       then Stdlib.not __windtrap_mut_4_p
-       else __windtrap_mut_4_p)
+      let __windtrap_mut_6_p = a = b in
+      (if Windtrap_mut_________fixture_cmp___ml.___windtrap_armed___ 6
+       then Stdlib.not __windtrap_mut_6_p
+       else __windtrap_mut_6_p)
     then 1
     else 0
   let differs a b =
     if
-      let __windtrap_mut_5_p = a <> b in
-      (if Windtrap_mut_________fixture_cmp___ml.___windtrap_armed___ 5
-       then Stdlib.not __windtrap_mut_5_p
-       else __windtrap_mut_5_p)
+      let __windtrap_mut_7_p = a <> b in
+      (if Windtrap_mut_________fixture_cmp___ml.___windtrap_armed___ 7
+       then Stdlib.not __windtrap_mut_7_p
+       else __windtrap_mut_7_p)
     then 1
     else 0
   let window lo hi x =
-    let __windtrap_mut_6_p =
-      let (__windtrap_mut_7_l, __windtrap_mut_7_r) =
+    let __windtrap_mut_8_p =
+      let (__windtrap_mut_9_l, __windtrap_mut_9_r) =
         ((x, lo) : _ Windtrap_mut_________fixture_cmp___ml.operands) in
-      if Windtrap_mut_________fixture_cmp___ml.___windtrap_armed___ 7
-      then Stdlib.not (__windtrap_mut_7_r >= __windtrap_mut_7_l)
-      else __windtrap_mut_7_l >= __windtrap_mut_7_r in
+      if Windtrap_mut_________fixture_cmp___ml.___windtrap_armed___ 9
+      then Stdlib.not (__windtrap_mut_9_r >= __windtrap_mut_9_l)
+      else __windtrap_mut_9_l >= __windtrap_mut_9_r in
     if
-      Stdlib.(<>) (__windtrap_mut_6_p : Stdlib.Bool.t)
-        (Windtrap_mut_________fixture_cmp___ml.___windtrap_armed___ 6)
+      Stdlib.(<>) (__windtrap_mut_8_p : Stdlib.Bool.t)
+        (Windtrap_mut_________fixture_cmp___ml.___windtrap_armed___ 8)
     then
-      let (__windtrap_mut_8_l, __windtrap_mut_8_r) =
+      let (__windtrap_mut_10_l, __windtrap_mut_10_r) =
         ((x, hi) : _ Windtrap_mut_________fixture_cmp___ml.operands) in
-      (if Windtrap_mut_________fixture_cmp___ml.___windtrap_armed___ 8
-       then Stdlib.not (__windtrap_mut_8_r <= __windtrap_mut_8_l)
-       else __windtrap_mut_8_l <= __windtrap_mut_8_r)
-    else __windtrap_mut_6_p
+      (if Windtrap_mut_________fixture_cmp___ml.___windtrap_armed___ 10
+       then Stdlib.not (__windtrap_mut_10_r <= __windtrap_mut_10_l)
+       else __windtrap_mut_10_l <= __windtrap_mut_10_r)
+    else __windtrap_mut_8_p
   let ok a b = a < b
   let count a b = List.length (List.filter (fun x -> x < a) b)
 
@@ -316,7 +603,9 @@ after, and the reason of a dismissed site.
     0: 8:15 "or" "a && b" -> "a || b"
     1: 9:17 "and" "a || b" -> "a && b"
     2: 10:22 "or" "ready && x" -> "ready || x"
-    3: 11:55 "and" "(p x) || (search p rest)" -> "(p x) && (search p rest)"
+    3: 11:28 "drop" "| [] -> ..." -> "| [] when false -> ..."
+    4: 11:42 "drop" "| x::rest -> ..." -> "| x::rest when false -> ..."
+    5: 11:55 "and" "(p x) || (search p rest)" -> "(p x) && (search p rest)"
   let both a b =
     let __windtrap_mut_0_p = a in
     if
@@ -341,16 +630,24 @@ after, and the reason of a dismissed site.
        else __windtrap_mut_2_p)
     then 1
     else 0
-  let rec search p =
-    function
-    | [] -> false
-    | x::rest ->
-        let __windtrap_mut_3_p = p x in
-        if
-          Stdlib.(=) (__windtrap_mut_3_p : Stdlib.Bool.t)
-            (Windtrap_mut_________fixture_con___ml.___windtrap_armed___ 3)
-        then search p rest
-        else __windtrap_mut_3_p
+  let rec search =
+    ((fun p ->
+        function
+        | [] when
+            if Windtrap_mut_________fixture_con___ml.___windtrap_armed___ 3
+            then false
+            else true -> false
+        | x::rest when
+            if Windtrap_mut_________fixture_con___ml.___windtrap_armed___ 4
+            then false
+            else true ->
+            let __windtrap_mut_5_p = p x in
+            if
+              Stdlib.(=) (__windtrap_mut_5_p : Stdlib.Bool.t)
+                (Windtrap_mut_________fixture_con___ml.___windtrap_armed___ 5)
+            then search p rest
+            else __windtrap_mut_5_p)
+    [@ocaml.warning "-8-57"])
 
   $ mut --impl ./fixture_contexts.ml | ../elide.exe
   mutation sites of "./fixture_contexts.ml" in Windtrap_mut_________fixture_contexts___ml, with type 'a operands:
@@ -455,6 +752,46 @@ after, and the reason of a dismissed site.
   [@@@mutate exclude_file]
   let sum a b = a + b
   let ordered a b = if a < b then 1 else 0
+
+Each backend flag switches one family off:
+
+  $ mut -no-arm --impl ./fixture_flags.ml | ../elide.exe
+  mutation sites of "./fixture_flags.ml" in Windtrap_mut_________fixture_flags___ml:
+    0: 7:2 "skip" "incr r" -> "()"
+    1: 8:2 "sub" "(!r) + 1" -> "(!r) - 1"
+  let size n = match n with | 0 -> "none" | _ -> "some"
+  let tick r =
+    if
+      Stdlib.not
+        (Windtrap_mut_________fixture_flags___ml.___windtrap_armed___ 0)
+    then (incr r; ());
+    (let (__windtrap_mut_1_l, __windtrap_mut_1_r) = ((!r), 1) in
+     if Windtrap_mut_________fixture_flags___ml.___windtrap_armed___ 1
+     then __windtrap_mut_1_l - __windtrap_mut_1_r
+     else __windtrap_mut_1_l + __windtrap_mut_1_r)
+
+  $ mut -no-call --impl ./fixture_flags.ml | ../elide.exe
+  mutation sites of "./fixture_flags.ml" in Windtrap_mut_________fixture_flags___ml:
+    0: 4:26 "drop" "| 0 -> ..." -> "| 0 when false -> ..."
+    1: 4:40 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    2: 8:2 "sub" "(!r) + 1" -> "(!r) - 1"
+  let size n =
+    ((match n with
+      | 0 when
+          if Windtrap_mut_________fixture_flags___ml.___windtrap_armed___ 0
+          then false
+          else true -> "none"
+      | _ when
+          if Windtrap_mut_________fixture_flags___ml.___windtrap_armed___ 1
+          then false
+          else true -> "some")
+    [@ocaml.warning "-8-57"])
+  let tick r =
+    incr r;
+    (let (__windtrap_mut_2_l, __windtrap_mut_2_r) = ((!r), 1) in
+     if Windtrap_mut_________fixture_flags___ml.___windtrap_armed___ 2
+     then __windtrap_mut_2_l - __windtrap_mut_2_r
+     else __windtrap_mut_2_l + __windtrap_mut_2_r)
 
   $ mut --impl ./fixture_inline_tests.ml | ../elide.exe
   mutation sites of "./fixture_inline_tests.ml" in Windtrap_mut_________fixture_inline_tests___ml, with type 'a operands:
@@ -590,12 +927,63 @@ after, and the reason of a dismissed site.
     then 1
     else 0
 
+  $ mut --impl ./fixture_lost_arm.ml | ../elide.exe
+  mutation sites of "./fixture_lost_arm.ml" in Windtrap_mut_________fixture_lost_arm___ml:
+    0: 8:14 "sub" "a + b" -> "a - b"
+  type answer =
+    | false 
+    | true 
+  let size n = match n with | 0 -> "none" | _ -> "some"
+  let sum a b =
+    let (__windtrap_mut_0_l, __windtrap_mut_0_r) = (a, b) in
+    if Windtrap_mut_________fixture_lost_arm___ml.___windtrap_armed___ 0
+    then __windtrap_mut_0_l - __windtrap_mut_0_r
+    else __windtrap_mut_0_l + __windtrap_mut_0_r
+
+  $ mut --impl ./fixture_lost_arm_true.ml | ../elide.exe
+  mutation sites of "./fixture_lost_arm_true.ml" in Windtrap_mut_________fixture_lost_arm_true___ml:
+    0: 6:14 "sub" "a + b" -> "a - b"
+  type answer =
+    | true 
+  let size n = match n with | 0 -> "none" | _ -> "some"
+  let sum a b =
+    let (__windtrap_mut_0_l, __windtrap_mut_0_r) = (a, b) in
+    if Windtrap_mut_________fixture_lost_arm_true___ml.___windtrap_armed___ 0
+    then __windtrap_mut_0_l - __windtrap_mut_0_r
+    else __windtrap_mut_0_l + __windtrap_mut_0_r
+
+  $ mut --impl ./fixture_lost_arm_false.ml | ../elide.exe
+  mutation sites of "./fixture_lost_arm_false.ml" in Windtrap_mut_________fixture_lost_arm_false___ml:
+    0: 6:14 "sub" "a + b" -> "a - b"
+  type answer =
+    | false 
+  let size n = match n with | 0 -> "none" | _ -> "some"
+  let sum a b =
+    let (__windtrap_mut_0_l, __windtrap_mut_0_r) = (a, b) in
+    if Windtrap_mut_________fixture_lost_arm_false___ml.___windtrap_armed___ 0
+    then __windtrap_mut_0_l - __windtrap_mut_0_r
+    else __windtrap_mut_0_l + __windtrap_mut_0_r
+
+  $ mut --impl ./fixture_lost_call.ml | ../elide.exe
+  type t =
+    | () 
+  let run f x = let () = f x in f x; x
+
+  $ mut --impl ./fixture_lost_extension.ml | ../elide.exe
+  type e = ..
+  type e +=  
+    | () 
+    | false 
+    | true 
+  let run f x = f x; (match x with | 0 -> "none" | _ -> "some")
+
   $ mut --impl ./fixture_lost_cmp.ml | ../elide.exe
   mutation sites of "./fixture_lost_cmp.ml" in Windtrap_mut_________fixture_lost_cmp___ml:
-    0: 10:43 "add" "a - b" -> "a + b"
-    1: 10:32 "sub" "a + b" -> "a - b"
-    2: 10:21 "not" "a < b" -> "not (a < b)"
-    3: 11:18 "or" "a && b" -> "a || b"
+    0: 11:43 "add" "a - b" -> "a + b"
+    1: 11:32 "sub" "a + b" -> "a - b"
+    2: 11:21 "not" "a < b" -> "not (a < b)"
+    3: 12:18 "or" "a && b" -> "a || b"
+    4: 14:2 "skip" "a < b" -> "()"
   let (<=) a b = (compare a b) <= 0
   let not b = b
   let ordered a b =
@@ -624,6 +1012,12 @@ after, and the reason of a dismissed site.
        else __windtrap_mut_3_p)
     then 1
     else 0
+  let compare_only a b =
+    if
+      Stdlib.not
+        (Windtrap_mut_________fixture_lost_cmp___ml.___windtrap_armed___ 4)
+    then (a < b; ());
+    ()
 
   $ mut --impl ./fixture_lost_con.ml | ../elide.exe
   mutation sites of "./fixture_lost_con.ml" in Windtrap_mut_________fixture_lost_con___ml, with type 'a operands:
@@ -681,9 +1075,11 @@ after, and the reason of a dismissed site.
     0: 8:23 "not" "flag" -> "not flag"
     1: 9:23 "not" "flag" -> "not flag"
     2: 12:8 "not" "ready ()" -> "not (ready ())"
-    3: 16:39 "not" "p y" -> "not (p y)"
-    4: 20:20 "not" "if a then b else false" -> "not (if a then b else false)"
-    5: 20:23 "not" "a" -> "not a"
+    3: 16:32 "drop" "| y when p y -> ..." -> "| y when false -> ..."
+    4: 16:39 "not" "p y" -> "not (p y)"
+    5: 16:54 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    6: 20:20 "not" "if a then b else false" -> "not (if a then b else false)"
+    7: 20:23 "not" "a" -> "not a"
   let pick flag x y =
     if
       let __windtrap_mut_0_p = flag in
@@ -706,26 +1102,34 @@ after, and the reason of a dismissed site.
       then Stdlib.not __windtrap_mut_2_p
       else __windtrap_mut_2_p do step () done
   let classify p x =
-    match x with
-    | y when
-        let __windtrap_mut_3_p = p y in
-        if Windtrap_mut_________fixture_neg___ml.___windtrap_armed___ 3
-        then Stdlib.not __windtrap_mut_3_p
-        else __windtrap_mut_3_p -> "yes"
-    | _ -> "no"
+    ((match x with
+      | y when
+          if Windtrap_mut_________fixture_neg___ml.___windtrap_armed___ 3
+          then false
+          else
+            (let __windtrap_mut_4_p = p y in
+             if Windtrap_mut_________fixture_neg___ml.___windtrap_armed___ 4
+             then Stdlib.not __windtrap_mut_4_p
+             else __windtrap_mut_4_p)
+          -> "yes"
+      | _ when
+          if Windtrap_mut_________fixture_neg___ml.___windtrap_armed___ 5
+          then false
+          else true -> "no")
+    [@ocaml.warning "-8-57"])
   let nested a b =
     if
-      let __windtrap_mut_4_p =
+      let __windtrap_mut_6_p =
         if
-          let __windtrap_mut_5_p = a in
-          (if Windtrap_mut_________fixture_neg___ml.___windtrap_armed___ 5
-           then Stdlib.not __windtrap_mut_5_p
-           else __windtrap_mut_5_p)
+          let __windtrap_mut_7_p = a in
+          (if Windtrap_mut_________fixture_neg___ml.___windtrap_armed___ 7
+           then Stdlib.not __windtrap_mut_7_p
+           else __windtrap_mut_7_p)
         then b
         else false in
-      (if Windtrap_mut_________fixture_neg___ml.___windtrap_armed___ 4
-       then Stdlib.not __windtrap_mut_4_p
-       else __windtrap_mut_4_p)
+      (if Windtrap_mut_________fixture_neg___ml.___windtrap_armed___ 6
+       then Stdlib.not __windtrap_mut_6_p
+       else __windtrap_mut_6_p)
     then 1
     else 0
 
@@ -967,6 +1371,9 @@ Over code a deriver generated, for which generated.ml stands in:
   mutation sites of "./fixture_generated.ml" in Windtrap_mut_________fixture_generated___ml:
     0: 6:18 "add" "a - b" -> "a + b"
     1: 11:21 "sub" "a + b" -> "a - b"
+    2: 16:49 "drop" "| None -> ..." -> "| None when false -> ..."
+    3: 20:28 "drop" "| Some x -> ..." -> "| Some x when false -> ..."
+    4: 20:42 "drop" "| None -> ..." -> "| None when false -> ..."
   let generated a b = ((a + b)[@generated ])
   let written a b =
     let (__windtrap_mut_0_l, __windtrap_mut_0_r) = (a, b) in
@@ -980,6 +1387,26 @@ Over code a deriver generated, for which generated.ml stands in:
        then __windtrap_mut_1_l - __windtrap_mut_1_r
        else __windtrap_mut_1_l + __windtrap_mut_1_r)[@@duplicate ]
   let copied a b = a * (a + b)[@@duplicate ]
+  let arms =
+    ((function
+      | ((Some x)[@generated ]) when true -> x
+      | None when
+          if Windtrap_mut_________fixture_generated___ml.___windtrap_armed___ 2
+          then false
+          else true -> 0)
+    [@ocaml.warning "-8-57"])
+  let picked o =
+    ((match o with
+      | Some x when
+          if Windtrap_mut_________fixture_generated___ml.___windtrap_armed___ 3
+          then false
+          else true -> x
+      | None when
+          if Windtrap_mut_________fixture_generated___ml.___windtrap_armed___ 4
+          then false
+          else true -> 0)
+    [@ocaml.warning "-8-57"])[@@duplicate ]
+  let picked o = match o with | Some x -> x | None -> 0[@@duplicate ]
 
   $ ../pp.exe -apply windtrap_test_generated,windtrap_mutate --impl ./fixture_generated_chain.ml | ../elide.exe
   mutation sites of "./fixture_generated_chain.ml" in Windtrap_mut_________fixture_generated_chain___ml:
@@ -1004,6 +1431,12 @@ driver, coverage_first.exe:
     0: 7:22 "not" "b" -> "not b"
     1: 7:17 "not" "a" -> "not a"
     2: 10:18 "le" "(___windtrap_post_visit___ 2 (f x)) < (___windtrap_post_visit___ 3 (g x))" -> "(___windtrap_post_visit___ 2 (f x)) <= (___windtrap_post_visit___ 3 (g x))"
+    3: 16:2 "skip" "___windtrap_post_visit___ 10 (f x)" -> "()"
+    4: 17:2 "skip" "___windtrap_post_visit___ 9 (f x)" -> "()", dismissed "the result of f is discarded"
+    5: 18:11 "skip" "___windtrap_post_visit___ 7 (f x)" -> "()"
+    6: 19:2 "skip" "___windtrap_post_visit___ 8 (incr r)" -> "()"
+    7: 24:21 "not" "___windtrap_post_visit___ 12 (f x)" -> "not (___windtrap_post_visit___ 12 (f x))"
+    8: 25:21 "not" "___windtrap_post_visit___ 15 (f x)" -> "not (___windtrap_post_visit___ 15 (f x))", dismissed "a timeout ends the loop"
   coverage points of "./fixture_visits.ml" in Windtrap_cov_________fixture_visits___ml, with ___windtrap_post_visit___:
     0: 262-263
     1: 267-268
@@ -1012,6 +1445,17 @@ driver, coverage_first.exe:
     4: 384-385
     5: 377-378
     6: 359-385
+    7: 680-683
+    8: 689-695
+    9: 617-622
+    10: 610-613
+    11: 610-701
+    12: 874-890
+    13: 894-896
+    14: 868-901
+    15: 923-968
+    16: 972-974
+    17: 917-979
   let either a b =
     ___windtrap_visit___ 0;
     if
@@ -1040,6 +1484,38 @@ driver, coverage_first.exe:
        else __windtrap_mut_2_l < __windtrap_mut_2_r)
     then (___windtrap_visit___ 5; 1)
     else (___windtrap_visit___ 4; 0)
+  let tick r f x =
+    ___windtrap_visit___ 11;
+    if
+      Stdlib.not
+        (Windtrap_mut_________fixture_visits___ml.___windtrap_armed___ 3)
+    then (___windtrap_post_visit___ 10 (f x); ());
+    ___windtrap_post_visit___ 9 ((f x)
+      [@mutate off "the result of f is discarded"]);
+    (let () =
+       if
+         Stdlib.not
+           (Windtrap_mut_________fixture_visits___ml.___windtrap_armed___ 5)
+       then ___windtrap_post_visit___ 7 (f x) in
+     if
+       Stdlib.not
+         (Windtrap_mut_________fixture_visits___ml.___windtrap_armed___ 6)
+     then (___windtrap_post_visit___ 8 (incr r); ());
+     !r)
+  let wait f x =
+    ___windtrap_visit___ 14;
+    while
+      (let __windtrap_mut_7_p = ___windtrap_post_visit___ 12 ((f x)[@inlined ]) in
+       if Windtrap_mut_________fixture_visits___ml.___windtrap_armed___ 7
+       then Stdlib.not __windtrap_mut_7_p
+       else __windtrap_mut_7_p)
+      do (___windtrap_visit___ 13; ()) done
+  let poll f x =
+    ___windtrap_visit___ 17;
+    while
+      ___windtrap_post_visit___ 15 ((f x)
+        [@mutate off "a timeout ends the loop"])
+      do (___windtrap_visit___ 16; ()) done
 
 A file under an input name that is not a source file's is returned as
 parsed:
@@ -1057,6 +1533,13 @@ A refusal is an error located at the attribute, and the driver exits 1:
   $ mut --impl ./reject_bad_payload.ml
   File "./reject_bad_payload.ml", line 1, characters 18-33:
   1 | let f n = (n + 1) [@mutate bogus]
+                        ^^^^^^^^^^^^^^^
+  Error: Bad payload in mutate attribute.
+  [1]
+
+  $ mut --impl ./reject_bad_payload_cases.ml
+  File "./reject_bad_payload_cases.ml", line 1, characters 18-33:
+  1 | let h x = function[@mutate bogus] 0 -> x | _ -> 2
                         ^^^^^^^^^^^^^^^
   Error: Bad payload in mutate attribute.
   [1]
@@ -1089,6 +1572,13 @@ A refusal is an error located at the attribute, and the driver exits 1:
   Error: mutate exclude_file is not allowed here.
   [1]
 
+  $ mut --impl ./reject_exclude_file_sub_pattern.ml
+  File "./reject_exclude_file_sub_pattern.ml", line 1, characters 31-53:
+  1 | let f x = match x with Some (0 [@mutate exclude_file]) -> 1 | _ -> 0
+                                     ^^^^^^^^^^^^^^^^^^^^^^
+  Error: mutate exclude_file is not allowed here.
+  [1]
+
   $ mut --impl ./reject_misplaced_exclude_file.ml
   File "./reject_misplaced_exclude_file.ml", line 2, characters 2-26:
   2 |   [@@@mutate exclude_file]
@@ -1110,11 +1600,25 @@ A refusal is an error located at the attribute, and the driver exits 1:
   Error: Bad payload in mutate attribute.
   [1]
 
+  $ mut --impl ./reject_off_or_pattern.ml
+  File "./reject_off_or_pattern.ml", line 1, characters 37-60:
+  1 | let either x = match x with `A | (`B [@mutate off "the two"]) -> 1 | `C -> 0
+                                           ^^^^^^^^^^^^^^^^^^^^^^^
+  Error: mutate off is not allowed inside a pattern. Put it on the whole pattern of the case.
+  [1]
+
   $ mut --impl ./reject_off_rewrite.ml
   File "./reject_off_rewrite.ml", line 3, characters 18-51:
   3 | let f n = (n + 1) [@mutate off sub "equal at zero"]
                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   Error: Bad payload in mutate attribute.
+  [1]
+
+  $ mut --impl ./reject_off_tuple.ml
+  File "./reject_off_tuple.ml", line 1, characters 33-55:
+  1 | let first x = match x with 0, (b [@mutate off "unused"]) -> b | a, _ -> a
+                                       ^^^^^^^^^^^^^^^^^^^^^^
+  Error: mutate off is not allowed inside a pattern. Put it on the whole pattern of the case.
   [1]
 
   $ mut --impl ./reject_off_two_reasons.ml
@@ -1144,3 +1648,90 @@ A refusal is an error located at the attribute, and the driver exits 1:
       ^^^^^^^^^^^^^^
   Error: Mutation is already on.
   [1]
+
+  $ mut --impl ./reject_on_pattern.ml
+  File "./reject_on_pattern.ml", line 1, characters 26-38:
+  1 | let f x = match x with (0 [@mutate on]) -> 1 | _ -> 0
+                                ^^^^^^^^^^^^
+  Error: mutate on is not allowed here.
+  [1]
+
+  $ mut --impl ./reject_on_sub_pattern.ml
+  File "./reject_on_sub_pattern.ml", line 1, characters 31-43:
+  1 | let f x = match x with Some (0 [@mutate on]) -> 1 | _ -> 0
+                                     ^^^^^^^^^^^^
+  Error: mutate on is not allowed here.
+  [1]
+
+The rewriter reads the attributes inside the pattern of a case only when
+the case has a drop mutant. Under -no-arm no case has one, so the files
+that it refuses above give no error:
+
+  $ mut -no-arm --impl ./reject_exclude_file_sub_pattern.ml
+  let f x = match x with | Some ((0)[@mutate exclude_file]) -> 1 | _ -> 0
+  $ mut -no-arm --impl ./reject_off_or_pattern.ml
+  let either x =
+    match x with | `A | ((`B)[@mutate off "the two"]) -> 1 | `C -> 0
+  $ mut -no-arm --impl ./reject_off_tuple.ml
+  let first x =
+    match x with | (0, ((b)[@mutate off "unused"])) -> b | (a, _) -> a
+  $ mut -no-arm --impl ./reject_on_sub_pattern.ml
+  let f x = match x with | Some ((0)[@mutate on]) -> 1 | _ -> 0
+
+The one case that a value can reach and a case of a match with a
+refutation case have no drop mutant either:
+
+  $ mut --impl ./fixture_inner_unread.ml | ../elide.exe
+  mutation sites of "./fixture_inner_unread.ml" in Windtrap_mut_________fixture_inner_unread___ml:
+    0: 5:58 "sub" "a + b" -> "a - b"
+  let sum p =
+    match p with
+    | (a, ((b)[@mutate off "unused"])) ->
+        let (__windtrap_mut_0_l, __windtrap_mut_0_r) = (a, b) in
+        if
+          Windtrap_mut_________fixture_inner_unread___ml.___windtrap_armed___ 0
+        then __windtrap_mut_0_l - __windtrap_mut_0_r
+        else __windtrap_mut_0_l + __windtrap_mut_0_r
+  type empty = |
+  let get (r : (int, empty) result) =
+    match r with | Ok ((0)[@mutate off "zero"]) -> 0 | Ok n -> n | Error _ -> .
+
+Inside the pattern of a drop site, the rewriter does not read the
+payload of an attribute or of an extension node:
+
+  $ mut --impl ./fixture_inner_payloads.ml | ../elide.exe
+  mutation sites of "./fixture_inner_payloads.ml" in Windtrap_mut_________fixture_inner_payloads___ml:
+    0: 5:15 "drop" "| Some ((x)[@note ? ((_)[@mutate off \"unread\"])]) -> ..." -> "| Some ((x)[@note ? ((_)[@mutate off \"unread\"])]) when false -> ..."
+    1: 5:67 "drop" "| None -> ..." -> "| None when false -> ..."
+    2: 8:15 "drop" "| [%note ? ((_)[@mutate off \"unread\"])] -> ..." -> "| [%note ? ((_)[@mutate off \"unread\"])] when false -> ..."
+    3: 8:58 "drop" "| _ -> ..." -> "| _ when false -> ..."
+  let attribute p =
+    ((match p with
+      | Some ((x)[@note ? ((_)[@mutate off "unread"])]) when
+          if
+            Windtrap_mut_________fixture_inner_payloads___ml.___windtrap_armed___
+              0
+          then false
+          else true -> x
+      | None when
+          if
+            Windtrap_mut_________fixture_inner_payloads___ml.___windtrap_armed___
+              1
+          then false
+          else true -> 0)
+    [@ocaml.warning "-8-57"])
+  let extension p =
+    ((match p with
+      | [%note ? ((_)[@mutate off "unread"])] when
+          if
+            Windtrap_mut_________fixture_inner_payloads___ml.___windtrap_armed___
+              2
+          then false
+          else true -> 1
+      | _ when
+          if
+            Windtrap_mut_________fixture_inner_payloads___ml.___windtrap_armed___
+              3
+          then false
+          else true -> 0)
+    [@ocaml.warning "-8-57"])

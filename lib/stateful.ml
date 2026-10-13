@@ -1350,7 +1350,11 @@ let judge ~fresh ~branches ~suffix =
               cursors.(i) <- cursors.(i) + 1;
               let found = explore (step :: path) in
               cursors.(i) <- cursors.(i) - 1;
-              state := None;
+              begin[@mutate
+                     off
+                       "explore gives None after differs, which drops the state"]
+                state := None
+              end;
               found
         in
         match found with Some _ -> found | None -> from (i + 1)
@@ -1631,7 +1635,9 @@ let stateful ?__POS__ ?tags ?timeout ?count ?(steps = 20) ?(domains = 1) name
     let never i _ = firsts.(i) = i && held.(i) && not called.(i) in
     match List.filteri never (Array.to_list commands) with
     | [] -> ()
-    | _ when !cases = 0 -> ()
+    | (_ [@mutate off "a held command implies a passing case"]) when !cases = 0
+      ->
+        ()
     | never ->
         let name (Command c) = c.name in
         let elements =

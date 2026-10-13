@@ -48,6 +48,37 @@
   (>= %{ocaml_version} 5.2))
  (deps pp.exe elide.exe))
 
+; mutate_functions.t pins the attributes of a function with cases after
+; parameters, which the parser puts on its cases from OCaml 5.2.
+
+(cram
+ (package ppx_windtrap)
+ (applies_to mutate_functions)
+ (enabled_if
+  (>= %{ocaml_version} 5.2))
+ (deps pp.exe elide.exe))
+
+; mutate_effects.t parses the effect cases of OCaml 5.3.
+
+(cram
+ (package ppx_windtrap)
+ (applies_to mutate_effects)
+ (enabled_if
+  (>= %{ocaml_version} 5.3))
+ (deps pp.exe elide.exe))
+
+; mutate_labeled_tuples.t parses the labeled tuples of OCaml 5.4. ppxlib
+; 0.37 stops on a labeled tuple, so the session also needs ppxlib 0.38.
+
+(cram
+ (package ppx_windtrap)
+ (applies_to mutate_labeled_tuples)
+ (enabled_if
+  (and
+   (>= %{ocaml_version} 5.4)
+   (>= %{version:ppxlib} 0.38)))
+ (deps pp.exe elide.exe))
+
 (cram
  (package ppx_windtrap)
  (applies_to expect)

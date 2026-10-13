@@ -1165,6 +1165,52 @@ let failed_rows =
           failed [r a] no location, uncaught Failure("boom"), with a backtrace
         |}
     );
+    ( "a respelling that an order-dependent equality takes on one side only",
+      (fun () ->
+        Law.equivalence ~respell:succ
+          (Testable.make ~pp:pp_int ~equal:(fun x y -> x <= y))
+          (1, 1)),
+      __POS_OF__
+        {|
+        equivalence (clause respelled): r a = a
+          term [a] 1
+          term [r a] 2
+          term [r a = a] false
+        |}
+    );
+    ( "a respelling that raises on its own image",
+      (fun () ->
+        Law.equivalence
+          ~respell:(fun x -> if x = 1 then 2 else boom x)
+          near (1, 5)),
+      __POS_OF__
+        {|
+        equivalence (clause transitive): a = r (r a)
+          term [a] 1
+          term [r a] 2
+          failed [r (r a)] no location, uncaught Failure("boom"), with a backtrace
+        |}
+    );
+    ( "a neutral operation that raises",
+      (fun () -> Law.neutral int (fun _ _ -> boom ()) 0 5),
+      __POS_OF__
+        {|
+        neutral: op e x = x
+          term [e] 0
+          term [x] 5
+          failed [op e x] no location, uncaught Failure("boom"), with a backtrace
+        |}
+    );
+    ( "an absorbing operation that raises",
+      (fun () -> Law.absorbing int (fun _ _ -> boom ()) 0 1),
+      __POS_OF__
+        {|
+        absorbing: op z x = z
+          term [z] 0
+          term [x] 1
+          failed [op z x] no location, uncaught Failure("boom"), with a backtrace
+        |}
+    );
     ( "a premise that raises",
       (fun () -> Law.preserves int succ boom 1),
       __POS_OF__

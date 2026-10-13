@@ -810,40 +810,49 @@ let exceptions =
         backtrace_as_failure_gives_it;
       test "raises holds no backtrace when none was recorded"
         no_backtrace_unrecorded;
+      (* Each predicate runs inside its test, where a mutant of it is armed. *)
       cases
         "an Exn predicate accepts its constructor, with the substring when \
          given"
         ~name:(fun (name, _, _) -> name)
         [
-          ("invalid_arg", Check.Exn.invalid_arg (Invalid_argument "x"), true);
+          ( "invalid_arg",
+            (fun () -> Check.Exn.invalid_arg (Invalid_argument "x")),
+            true );
           ( "invalid_arg, a Failure",
-            Check.Exn.invalid_arg (Stdlib.Failure "x"),
+            (fun () -> Check.Exn.invalid_arg (Stdlib.Failure "x")),
             false );
-          ("invalid_arg, Not_found", Check.Exn.invalid_arg Not_found, false);
+          ( "invalid_arg, Not_found",
+            (fun () -> Check.Exn.invalid_arg Not_found),
+            false );
           ( "invalid_arg, the substring",
-            Check.Exn.invalid_arg ~substring:"unhandled op"
-              (Invalid_argument "step: unhandled op HALT"),
+            (fun () ->
+              Check.Exn.invalid_arg ~substring:"unhandled op"
+                (Invalid_argument "step: unhandled op HALT")),
             true );
           ( "invalid_arg, a missing substring",
-            Check.Exn.invalid_arg ~substring:"overflow" (Invalid_argument "x"),
+            (fun () ->
+              Check.Exn.invalid_arg ~substring:"overflow" (Invalid_argument "x")),
             false );
           ( "invalid_arg, the empty substring",
-            Check.Exn.invalid_arg ~substring:"" (Invalid_argument ""),
+            (fun () ->
+              Check.Exn.invalid_arg ~substring:"" (Invalid_argument "")),
             true );
-          ("failure", Check.Exn.failure (Stdlib.Failure "x"), true);
+          ("failure", (fun () -> Check.Exn.failure (Stdlib.Failure "x")), true);
           ( "failure, an Invalid_argument",
-            Check.Exn.failure (Invalid_argument "x"),
+            (fun () -> Check.Exn.failure (Invalid_argument "x")),
             false );
-          ("sys_error", Check.Exn.sys_error (Sys_error "x"), true);
+          ("sys_error", (fun () -> Check.Exn.sys_error (Sys_error "x")), true);
           ( "sys_error, a Failure",
-            Check.Exn.sys_error (Stdlib.Failure "x"),
+            (fun () -> Check.Exn.sys_error (Stdlib.Failure "x")),
             false );
           ( "sys_error, the substring",
-            Check.Exn.sys_error ~substring:"No such file"
-              (Sys_error "nope.txt: No such file or directory"),
+            (fun () ->
+              Check.Exn.sys_error ~substring:"No such file"
+                (Sys_error "nope.txt: No such file or directory")),
             true );
         ]
-        (fun (_, accepted, expected) -> equal bool expected accepted);
+        (fun (_, accepted, expected) -> equal bool expected (accepted ()));
     ]
 
 (* Escape hatches *)

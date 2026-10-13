@@ -128,6 +128,28 @@
 - `windtrap mutants` exits 1 with the reason on standard error when
   standard output refuses its report or document, for example on a full
   disk, and runs no gate.
+- A mutant drops one case of a `match`, a `function` or a `try`, under
+  the name `drop`, so that the value goes on to the next case that
+  matches it (see
+  [What is mutated](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#what-is-mutated)).
+- A mutant skips a call whose value the code discards, under the name
+  `skip`: the left operand of `e1; e2`, and `e` in `let () = e in body`.
+- (breaking) The `drop` and `skip` mutants are on by default, so a
+  project that had no survivor can have new ones, and `-no-arm` and
+  `-no-call` after `ppx_windtrap.mutate` in an `instrumentation` field
+  switch them off.
+- `[@mutate off "reason"]` on the pattern of a case dismisses the `drop`
+  mutant of that case; on one alternative of an or-pattern or one
+  component of a tuple, as in `| A | B [@mutate off "reason"]`, it is an
+  error when the case has a `drop` mutant, and
+  `| (A | B) [@mutate off "reason"]` dismisses the case (see
+  [Dismissing an equivalent mutant](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#dismissing-an-equivalent-mutant)).
+- `[@mutate off "reason"]` on a `function` after parameters, as in
+  `let f x = function[@mutate off "reason"] ...`, dismisses every mutant
+  of its cases, and a bad payload there is an error.
+- The texts of a mutant spell a labeled tuple of OCaml 5.4 as the source
+  does, as `(~x:0, ~y)`, and not as the extension node that ppxlib
+  encodes it as.
 
 ## v0.2.0 2026-09-26
 

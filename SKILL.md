@@ -423,7 +423,16 @@ ran and did not notice. Resolve each one:
   mutant also gives): strengthen it until the mutant dies. The
   `reproduce:` line runs the suite with that mutant armed.
 - The mutant is equivalent, no test can tell it from the original:
-  dismiss it in the source with `[@mutate off "the reason"]`.
+  dismiss it in the source with `[@mutate off "the reason"]`. A `drop`
+  mutant removes a case of a match, and its attribute goes on the
+  case's whole pattern, as `| (None [@mutate off "the reason"]) -> ...`
+  or `| (A | B) [@mutate off "the reason"] -> ...`. On one alternative
+  or one component of a pattern, the attribute is an error. After
+  parameters, `let f x = function[@mutate off "the reason"] ...`
+  dismisses every mutant of the cases. A `skip`
+  mutant of an operator statement takes the form
+  `begin[@mutate off "the reason"] r := 0 end;`, which ocamlformat
+  can format.
 
 A filtered run exits 0 whatever it finds and saves no verdict. The
 project's answer merges every suite's verdicts, and exits 1 when a

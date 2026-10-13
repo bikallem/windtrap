@@ -32,3 +32,16 @@ let left f g x = ignore (f x && g x)
 (* A [||] that is a site is not rewritten, and its right operand is marked
    as a branch of the guard. *)
 let either a b = a || b
+
+(* An application that is the [call] site of a sequence has no out-edge,
+   and what follows its guard gets an entry point. The expression of the
+   [call] site of [let () = e] is the branch of an [if] and gets an entry
+   point. The out-edge of [incr r] is a second point with the same extent.
+   The callee [f] is one byte long, so the out-edge of [f x] shares the
+   entry point. *)
+let tick r f x =
+  f x;
+  let () = incr r in
+  let () = f x in
+  incr r;
+  !r

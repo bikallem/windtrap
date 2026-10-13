@@ -176,6 +176,15 @@
     + ab  
       line two
 
+=== a ~ counts an accented letter before it as one column
+    --- expected
+    +++ actual
+    @@ -1,2 +1,2 @@
+    - café 
+          ~
+    + café
+      line two
+
 === a trailing tab: the ~ line repeats the line's tabs, context keeps its blanks
     --- expected
     +++ actual
