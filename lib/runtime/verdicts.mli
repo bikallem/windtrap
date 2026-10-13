@@ -13,8 +13,8 @@
 
 (** {1:verdicts Verdicts}
 
-    A verdict is one of five cases, and never a boolean or an exit code. A
-    failure to supervise the child that arms a mutant is none of the five, and a
+    A verdict is one of six cases, and never a boolean or an exit code. A
+    failure to supervise the child that arms a mutant is none of the six, and a
     caller must record no verdict for it. *)
 
 type reaching_test = string list
@@ -40,6 +40,10 @@ type verdict =
       (** No test reached the site, and the dry run evaluated it outside every
           test, at module initialization or in a fixture release. The loop forks
           no child for the mutant. *)
+  | Filtered of string
+      (** The rewriter filtered the mutant, for this reason (see
+          {!Mutate.dismissal.Filtered}). The loop forks no child for the mutant,
+          and a score does not count it. *)
   | Unreached
       (** No test reached the site, and the dry run did not evaluate it outside
           every test either. The loop forks no child for the mutant. *)
@@ -81,8 +85,8 @@ val add : t -> record -> t
     combine into the verdict of a mutant that one executable saw one way and
     another the other way. It is {!Killed} if either is. Otherwise it is
     {!Not_evaluated} if either is, then {!Survived} with the reaching tests of
-    both if either is, then {!Outside_tests} if either is, and {!Unreached} if
-    both are.
+    both if either is, then {!Outside_tests} if either is, then {!Filtered} with
+    the smaller reason if either is, and {!Unreached} if both are.
 
     [add] checks nothing of [r.id]. It accepts an empty [file], a [line] below
     [1], a negative [col] and a [rewrite] outside {!Mutate.rewrites}, and
@@ -102,7 +106,7 @@ val merge : t -> t -> t
 
     An executable has one verdict file, at {!output_file}.
 
-    The first line of a file is the magic line [windtrap-mutants-v3], which
+    The first line of a file is the magic line [windtrap-mutants-v4], which
     carries the version of the format. A file with another first line is
     refused, never converted, and nothing is promised from one version to the
     next. *)

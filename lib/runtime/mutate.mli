@@ -33,9 +33,10 @@ val rewrites : string list
 (** [rewrites] is the closed vocabulary of rewrite names, in this order:
     ["not"], the comparisons ["lt"], ["le"], ["gt"], ["ge"], ["eq"] and ["neq"],
     the arithmetic ["add"], ["sub"], ["fadd"] and ["fsub"], the connectives
-    ["and"] and ["or"], ["drop"] for a case of a match and ["skip"] for a call.
-    A name is that of the replacement, never that of the operator in the source.
-*)
+    ["and"] and ["or"], ["drop"] for a case of a match, ["skip"] for a call, the
+    literals ["inc"], ["one"], ["zero"] and ["flip"], and ["none"] and ["tail"]
+    for a value of [Some] and of [(::)]. A name is that of the replacement,
+    never that of the operator in the source. *)
 
 val id_to_string : id -> string
 (** [id_to_string id] is [<file>:<line>:<col>:<rewrite>], as
@@ -52,6 +53,16 @@ val compare_id : id -> id -> int
     labels of {!register} and the six fields of {!type-site}, in their order, so
     a record that drifts is a compile error in every instrumented file. *)
 
+(** The type for the reasons why a site is not tested. *)
+type dismissal =
+  | Off of string
+      (** The expression, or the pattern of a dropped case, carries
+          [[@mutate off]], with this reason, or [""] when it gives none. *)
+  | Filtered of string
+      (** The rewriter found from the syntax that the mutant is equivalent to
+          the original, or that it changes a logging call or a failure message
+          alone. The text gives the reason, and the rewriter states each one. *)
+
 type site = {
   line : int;
       (** The 1-based line of the first byte of the mutated expression, or of
@@ -63,10 +74,10 @@ type site = {
           expression, or the pattern and the guard of a dropped case, with [...]
           for its body. *)
   after : string;  (** The text of the mutant, in the same form. *)
-  dismissed : string option;
-      (** [Some reason] when the expression, or the pattern of a dropped case,
-          carries [[@mutate off]]. The site is then catalogued and carries no
-          guard, so a caller must leave it out of what it tests and counts. *)
+  dismissed : dismissal option;
+      (** [Some d] when the site is not tested, for the reason [d]. The site is
+          then catalogued and carries no guard, so a caller must leave it out of
+          what it tests. *)
 }
 (** The type for mutation sites: one entry of the site table of a file. *)
 
@@ -111,7 +122,8 @@ type mutant = {
           expression, or the pattern and the guard of a dropped case, with [...]
           for its body. *)
   after : string;  (** The text of the mutant, in the same form. *)
-  dismissed : string option;  (** The reason of [[@mutate off]], if any. *)
+  dismissed : dismissal option;
+      (** Why the mutant is not tested, if it is not. *)
 }
 (** The type for catalogued mutants: a {!type-site} with its file. *)
 

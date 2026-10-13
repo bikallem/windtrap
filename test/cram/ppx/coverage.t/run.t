@@ -884,6 +884,10 @@ dune builds for a stanza naming both backends:
     23: 1607-1609
     24: 1558-1609
     25: 1551-1609
+    26: 1840-1845
+    27: 1835-1845
+    28: 1866-1869
+    29: 1873-1877
   mutation sites of "./fixture_guards.ml" in Windtrap_mut_________fixture_guards___ml, with type 'a operands:
     0: 9:16 "le" "a < b" -> "a <= b"
     1: 10:14 "sub" "a + b" -> "a - b"
@@ -903,6 +907,8 @@ dune builds for a stanza naming both backends:
     15: 44:11 "skip" "incr r" -> "()"
     16: 45:11 "skip" "f x" -> "()"
     17: 46:2 "skip" "incr r" -> "()"
+    18: 52:15 "none" "Some (f x)" -> "None"
+    19: 53:20 "tail" "(f x) :: (g xs)" -> "g xs"
   let lt a b =
     ___windtrap_visit___ 3;
     if
@@ -1021,6 +1027,36 @@ dune builds for a stanza naming both backends:
      then (incr r; ());
      ___windtrap_visit___ 23;
      !r)
+  let wrap f x =
+    if Windtrap_mut_________fixture_guards___ml.___windtrap_armed___ 18
+    then None
+    else (___windtrap_visit___ 27; Some (___windtrap_post_visit___ 26 (f x)))
+  let push f g x xs =
+    if
+      Stdlib.not
+        (Windtrap_mut_________fixture_guards___ml.___windtrap_armed___ 19)
+    then
+      (___windtrap_visit___ 28;
+       (___windtrap_post_visit___ 28 (f x))
+       ::
+       (___windtrap_post_visit___ 29 (g xs)))
+    else g xs
+
+  $ ../pp.exe -apply windtrap_mutate,windtrap_coverage -lit --impl ./fixture_lit_guards.ml | ../elide.exe
+  coverage points of "./fixture_lit_guards.ml" in Windtrap_cov_________fixture_lit_guards___ml:
+    0: 136-137
+    1: 149-153
+  mutation sites of "./fixture_lit_guards.ml" in Windtrap_mut_________fixture_lit_guards___ml:
+    0: 3:12 "inc" "1" -> "2"
+    1: 4:11 "flip" "true" -> "false"
+  let start =
+    if Windtrap_mut_________fixture_lit_guards___ml.___windtrap_armed___ 0
+    then 2
+    else (___windtrap_visit___ 0; 1)
+  let flag =
+    if Windtrap_mut_________fixture_lit_guards___ml.___windtrap_armed___ 1
+    then false
+    else (___windtrap_visit___ 1; true)
 
 A file is instrumented under its own name, and returned as parsed under
 an input name that is not a source file's:

@@ -199,6 +199,36 @@ mutants: 4 reached by this suite, «g|3 killed», «y|1 not evaluated», «y|2 n
 
 mutants: 3 reached by this suite, 3 killed, 2 never reached, 3 evaluated outside tests, score 100.0%
 
+=== filtered follows evaluated outside tests, one row per reason
+─────────────────── never reached (2) ────────────────────
+  2  lib/calc.ml   lines 40-41
+──────────────────────────────────────────────────────────
+
+────────────── evaluated outside tests (1) ───────────────
+  These sites ran outside every test, at module initialization or in a fixture release.
+  1  lib/table.ml   line 7
+──────────────────────────────────────────────────────────
+
+───────────────────── filtered (12) ──────────────────────
+  The rewriter found these mutants equivalent or of no interest, and no child tested them.
+  9  logging call
+  2  same branches
+  1  zero operand
+──────────────────────────────────────────────────────────
+
+mutants: 3 reached by this suite, 3 killed, 2 never reached, 1 evaluated outside tests, 12 filtered, score 100.0%
+
+=== filtered: the most mutants first, a tie by reason, the counts right-aligned
+───────────────────── filtered (15) ──────────────────────
+  The rewriter found these mutants equivalent or of no interest, and no child tested them.
+  10  zero operand
+   2  logging call
+   2  same branches
+   1  failure message
+──────────────────────────────────────────────────────────
+
+mutants: 3 reached by this suite, 3 killed, 15 filtered, score 100.0%
+
 === a loop's closing: the rule, the sections, the command, the outcome
 «d|──────────────────────────────────────────────────────────»
 
@@ -231,6 +261,15 @@ mutants: 4 reached by this suite, 3 killed, 1 not evaluated, 2 never reached, sc
 ──────────────────────────────────────────────────────────
 
 mutants: 3 reached by this suite, 3 killed, 1 evaluated outside tests, score 100.0%
+
+=== filtered alone, in a loop: a blank line opens it
+
+────────────────────── filtered (1) ──────────────────────
+  The rewriter found these mutants equivalent or of no interest, and no child tested them.
+  1  same body as the next case
+──────────────────────────────────────────────────────────
+
+mutants: 3 reached by this suite, 3 killed, 1 filtered, score 100.0%
 
 === an interrupted loop counts what it did not test
 ──────────────────────────────────────────────────────────

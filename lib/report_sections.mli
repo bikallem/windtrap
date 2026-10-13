@@ -432,6 +432,9 @@ type mutation = {
       (** The file and the one-based line of each mutant that no test evaluated
           and that the dry run evaluated outside every test, one pair per
           mutant. *)
+  filtered : string list;
+      (** The reason of each mutant that the rewriter filtered, one per mutant,
+          in no order. Such a mutant is not reached and not scored. *)
   killed : int;  (** The number of mutants killed. *)
   not_tested : int;
       (** The number of reached mutants that have no verdict, which are those
@@ -486,6 +489,11 @@ val mutation_closing : config:Run.config -> mutation -> section list
     - when [m.outside_tests] is not empty, the section of the mutants evaluated
       outside tests, which is the never-reached section of those mutants under
       its own title and a line that says where such a site runs.
+    - when [m.filtered] is not empty, the filtered section, between an opening
+      rule that carries the number of mutants and a closing rule. It says in one
+      line that no child tested them, then gives one row for each reason, with
+      its number of mutants. The rows are sorted by that number, the largest
+      first, and then by reason.
     - when [m.survivors] is not empty, the [reproduce:] command, which arms the
       first survivor of [m] under the selection of [config]. Under [`Exe cmd],
       the invocation of [config], it is [cmd], [--arm] and the run's selection
@@ -502,6 +510,7 @@ val mutation_report :
     their number and a closing rule. The executables of all blocks form one
     column, which is absent when no reaching test names an executable. The
     not-evaluated section, the never-reached section, the section of the mutants
-    evaluated outside tests, the [reproduce:] command and the outcome line
-    follow, as {!mutation_closing} builds them for a run that selects every
-    test, but the outcome line is {!mutation_line} under the gate [min]. *)
+    evaluated outside tests, the filtered section, the [reproduce:] command and
+    the outcome line follow, as {!mutation_closing} builds them for a run that
+    selects every test, but the outcome line is {!mutation_line} under the gate
+    [min]. *)

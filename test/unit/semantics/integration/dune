@@ -1,10 +1,18 @@
 (library
  (name windtrap_mutate_forced)
- (modules forced no_guard oracle own_bool shadowed)
+ (modules
+  filtered
+  forced
+  no_guard
+  oracle
+  own_bool
+  own_constructors
+  recursive
+  shadowed)
  (flags
   (:standard -w +a-70 -warn-error +a))
  (preprocess
-  (pps ppx_windtrap.mutate)))
+  (pps ppx_windtrap.mutate -- -lit -log-function Log.debug)))
 
 ; Type-directed disambiguation is warning 40's subject, so this one keeps
 ; dune's default warning set.
@@ -13,7 +21,7 @@
  (name windtrap_mutate_disambiguate)
  (modules disambiguate expected_type own_extension own_unit)
  (preprocess
-  (pps ppx_windtrap.mutate)))
+  (pps ppx_windtrap.mutate -lit)))
 
 ; test_registration lists it, calling nothing in it, so that runtest builds
 ; it at all.
@@ -24,7 +32,7 @@
  (instrumentation
   (backend ppx_windtrap.coverage))
  (instrumentation
-  (backend ppx_windtrap.mutate)))
+  (backend ppx_windtrap.mutate -lit)))
 
 (test
  (package ppx_windtrap)

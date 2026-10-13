@@ -45,3 +45,9 @@ let tick r f x =
   let () = f x in
   incr r;
   !r
+
+(* The disarmed arm of a [ret] guard keeps its site's location, and is
+   marked as the branch of an [if]. The armed arm of a [tail] guard is a
+   copy of the tail with ghost locations, which has no point. *)
+let wrap f x = Some (f x)
+let push f g x xs = f x :: g xs

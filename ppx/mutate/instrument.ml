@@ -126,7 +126,22 @@ let is_test_item si =
 
 (* Operators *)
 
-type family = Ari | Cmp | Con | Arm | Call
+(* [Flip] is the part of [lit] that names [true] and [false], which a file
+   loses without the rest of [lit]. [Filter] is the filter of the mutants that
+   the syntax shows equivalent or of no interest, and [Message] the part of it
+   that reads [failwith] and [invalid_arg], which a file loses when it binds
+   them. *)
+type family =
+  | Ari
+  | Cmp
+  | Con
+  | Arm
+  | Call
+  | Lit
+  | Flip
+  | Ret
+  | Filter
+  | Message
 
 (* Each rewritten operator with its family, the name of its rewrite and the
    operator that replaces it. *)
@@ -152,18 +167,24 @@ let operators =
    its name; what an [open] brings in is not seen. A file that declares a
    constructor of a guard, in a type or as an extension constructor, loses
    the family of the guard: [()] that of [call], whose [let () = e] then
-   names it, and [true] or [false] that of [arm], whose constructors
-   warning 42 then reports. *)
+   names it, [true] or [false] that of [arm], whose constructors warning 42
+   then reports, and the [flip] rewrite of [lit]. A constructor [Some],
+   [None] or [(::)] of the file can be the one that a [ret] site applies,
+   and the guard then gives the wrong type, so the file loses [ret]. A file
+   that binds [failwith] or [invalid_arg] loses the filter of their
+   arguments. *)
 let kept_families structure =
   let lose name lost =
-    match List.assoc_opt name operators with
-    | Some (family, _, _) -> family :: lost
-    | None -> lost
+    match (name, List.assoc_opt name operators) with
+    | _, Some (family, _, _) -> family :: lost
+    | ("failwith" | "invalid_arg"), None -> Message :: lost
+    | _, None -> lost
   in
   let lose_constructor name lost =
     match name with
     | "()" -> Call :: lost
-    | "true" | "false" -> Arm :: lost
+    | "true" | "false" -> Arm :: Flip :: lost
+    | "Some" | "None" | "::" -> Ret :: lost
     | _ -> lost
   in
   let scan =
@@ -305,6 +326,9 @@ let render_arm c ~guard =
 type guard =
   | Neg
   | Skip (* [call] *)
+  | Constant of expression (* [lit], by this constant *)
+  | Nothing (* [ret] on [Some e] *)
+  | Tail of expression (* [ret] on [h :: t], with [t] *)
   | Operator of application * operator_guard
 
 and operator_guard =
@@ -335,9 +359,92 @@ let attributes e =
   | Some call when call != e -> e.pexp_attributes @ call.pexp_attributes
   | Some _ | None -> e.pexp_attributes
 
+(* [successor s suffix] is [Some (zero, next)] when [s] with [suffix] is an
+   integer literal of the compiler: [zero] tells if its value is 0, and
+   [next] is its value plus one, in decimal. The compiler reads a literal
+   without a sign as the negation of the negative one, so that the least
+   integer has a literal, and so does this. The sum wraps as the addition
+   of the type does. The compiler does a check of the range of a literal
+   with the [int] and the [nativeint] of its process, as this does, and the
+   word size of that process is the word size of the rewriter. Another
+   suffix is the code of another rewriter. *)
+let successor s suffix =
+  let next of_string to_string succ neg zero =
+    let n =
+      if String.starts_with ~prefix:"-" s then of_string s
+      else neg (of_string ("-" ^ s))
+    in
+    (n = zero, to_string (succ n))
+  in
+  match suffix with
+  | None -> Some (next int_of_string Int.to_string Int.succ Int.neg 0)
+  | Some 'l' ->
+      Some (next Int32.of_string Int32.to_string Int32.succ Int32.neg 0l)
+  | Some 'L' ->
+      Some (next Int64.of_string Int64.to_string Int64.succ Int64.neg 0L)
+  | Some 'n' ->
+      Some
+        (next Nativeint.of_string Nativeint.to_string Nativeint.succ
+           Nativeint.neg 0n)
+  | Some _ -> None
+
+(* [literal ~keeps context e] is the [lit] mutant of [e], when [e] is a
+   literal. An integer becomes its successor, under [one] for [0] and [inc]
+   for the others. A float other than zero becomes [0.] under [zero], and a
+   zero becomes [1.] under [one]. [true] and [false] swap under [flip],
+   except in a condition, where [neg] gives the same mutant. A string and a
+   character are no sites. An integer literal that its type cannot hold is no
+   site, so that the compiler reports the error. Every float literal of the
+   lexer is read, so a float that is not read comes from another rewriter. *)
+let literal ~keeps context e =
+  let loc = { e.pexp_loc with loc_ghost = true } in
+  let mutant rewrite armed =
+    Some { guard = Constant armed; rewrite; after = render armed }
+  in
+  let constant rewrite c = mutant rewrite (pexp_constant ~loc c) in
+  match e.pexp_desc with
+  | Pexp_constant (Pconst_integer (s, suffix)) when keeps Lit -> (
+      match successor s suffix with
+      | Some (zero, next) ->
+          constant
+            (if zero then "one" else "inc")
+            (Pconst_integer (next, suffix))
+      | None | (exception Failure _) -> None)
+  | Pexp_constant (Pconst_float (s, None)) when keeps Lit -> (
+      match Float.equal (float_of_string s) 0. with
+      | true -> constant "one" (Pconst_float ("1.", None))
+      | false -> constant "zero" (Pconst_float ("0.", None))
+      | exception Failure _ -> None)
+  | Pexp_construct ({ txt = Lident (("true" | "false") as name); _ }, None)
+    when keeps Flip && context <> Condition ->
+      let other = if String.equal name "true" then "false" else "true" in
+      mutant "flip" (pexp_construct ~loc { txt = Lident other; loc } None)
+  | _ -> None
+
+(* [cons e] is [Some (h, t)] when [e] is [h :: t]. *)
+let cons e =
+  match e.pexp_desc with
+  | Pexp_construct
+      ({ txt = Lident "::"; _ }, Some { pexp_desc = Pexp_tuple [ h; t ]; _ }) ->
+      Some (h, t)
+  | _ -> None
+
+(* [returned ~keeps e] is the [ret] mutant of [e], when [e] applies [Some]
+   or [(::)]. [Some e] becomes [None] under [none], and [h :: t] becomes [t]
+   under [tail]. *)
+let returned ~keeps e =
+  if not (keeps Ret) then None
+  else
+    match (e.pexp_desc, cons e) with
+    | Pexp_construct ({ txt = Lident "Some"; _ }, Some _), _ ->
+        Some { guard = Nothing; rewrite = "none"; after = "None" }
+    | _, Some (_, tail) ->
+        Some { guard = Tail tail; rewrite = "tail"; after = render tail }
+    | _, None -> None
+
 (* A connective with a connective operand carries no mutant, since its guard
    would hold another site. [neg] and [call] come last, each in its own
-   contexts. *)
+   contexts. No other mutant shares an expression with [lit] or [ret]. *)
 let mutant ~keeps context e =
   let loc = e.pexp_loc in
   let last () =
@@ -350,7 +457,13 @@ let mutant ~keeps context e =
     | Statement | Unit_binding | Boolean | Ordinary -> None
   in
   match application e with
-  | None -> last ()
+  | None -> (
+      match literal ~keeps context e with
+      | Some _ as mutant -> mutant
+      | None -> (
+          match returned ~keeps e with
+          | Some _ as mutant -> mutant
+          | None -> last ()))
   | Some app -> (
       match List.assoc_opt app.name operators with
       | Some (family, rewrite, replacement) when keeps family -> (
@@ -368,8 +481,195 @@ let mutant ~keeps context e =
               mutant
                 (if app.name = "=" || app.name = "<>" then Negate else Swap)
           | Ari -> mutant (Replace replacement)
-          | Arm | Call (* no operator *) -> last ())
+          | Arm | Call | Lit | Flip | Ret | Filter | Message (* no operator *)
+            ->
+              last ())
       | Some _ | None -> last ())
+
+(* Filters *)
+
+(* A site that the syntax shows equivalent to the original, or that changes
+   a logging call or a failure message alone, is recorded as filtered, with
+   one of these reasons, and carries no guard. A report prints the reason,
+   so it is short and stable. *)
+let zero_operand = "zero operand"
+let same_operands = "same operands"
+let same_branches = "same branches"
+let same_body = "same body as the next case"
+let logging_call = "logging call"
+let failure_message = "failure message"
+
+(* [x + 0] and [x - 0] are equal on every [int]. On floats [-0. +. 0.] is
+   [0.] and [-0. -. 0.] is [-0.], so a float zero filters nothing. *)
+let is_zero e =
+  match e.pexp_desc with
+  | Pexp_constant (Pconst_integer (s, None)) -> int_of_string_opt s = Some 0
+  | _ -> false
+
+(* An operand of [&&] or [||] that gives one value each time and does
+   nothing else, so that [a && a] and [a || a] are [a] with one evaluation
+   or two. Such a boolean is a name, a constructor without an argument, as
+   [true], or a field. *)
+let rec is_pure e =
+  match e.pexp_desc with
+  | Pexp_ident _ | Pexp_construct (_, None) -> true
+  | Pexp_field (e, _) | Pexp_constraint (e, _) -> is_pure e
+  | _ -> false
+
+let rec is_irrefutable p =
+  match p.ppat_desc with
+  | Ppat_any | Ppat_var _ | Ppat_construct ({ txt = Lident "()"; _ }, None) ->
+      true
+  | Ppat_alias (p, _) | Ppat_constraint (p, _) -> is_irrefutable p
+  | Ppat_tuple ps -> List.for_all is_irrefutable ps
+  | _ -> false
+
+(* The primitives that give the location of their use. *)
+let locations =
+  [
+    "__LOC__"; "__LINE__"; "__POS__"; "__LOC_OF__"; "__LINE_OF__"; "__POS_OF__";
+  ]
+
+(* What can give two copies of one text two values: [assert] and
+   [__LOC__] and its kin under any path, as [Stdlib.__LOC__], which give the
+   location of the copy, a pattern that can fail and a [match] or a
+   [function] with cases, which can fail on a guard, whose [Match_failure]
+   gives it too, and an extension node, which a later rewriter expands. *)
+let locates =
+  object
+    inherit [bool] Ast_traverse.fold as super
+
+    method! expression e found =
+      found
+      ||
+      match e.pexp_desc with
+      | Pexp_assert _ | Pexp_match _ | Pexp_function (_, _, Pfunction_cases _)
+        ->
+          true
+      | Pexp_ident { txt = Lident name | Ldot (_, name); _ }
+        when List.mem name locations ->
+          true
+      | _ -> super#expression e found
+
+    method! pattern p found = found || not (is_irrefutable p)
+    method! extension _ _ = true
+  end
+
+let erase_locations =
+  object
+    inherit Ast_traverse.map
+    method! location _ = Location.none
+  end
+
+exception Larger
+
+(* [size ~limit e] is the number of locations in [e], or [None] when [e] has
+   more than [limit]. *)
+let size ~limit e =
+  let count = ref 0 in
+  let counter =
+    object
+      inherit Ast_traverse.iter
+
+      method! location _ =
+        incr count;
+        if !count > limit then raise_notrace Larger
+    end
+  in
+  match counter#expression e with () -> Some !count | exception Larger -> None
+
+(* [same_size a b] tells that [a] and [b] have the same number of locations.
+   The two counts stop at a limit that doubles, so that the check costs the
+   size of the smaller tree. In [if c then 0 else if ...], the [else] branch
+   holds the rest of the chain, and a full count of it at each [if] makes the
+   time increase with the square of the chain length. *)
+let same_size a b =
+  let rec within limit =
+    match (size ~limit a, size ~limit b) with
+    | Some m, Some n -> m = n
+    | Some _, None | None, Some _ -> false
+    | None, None -> within (2 * limit)
+  in
+  within 64
+
+(* [same a b] tells that [a] and [b] are one expression at two places, which
+   gives one value at each. The two trees are compared without their
+   locations, and not as texts, which lose the blanks of a string. The sizes
+   are compared first, so that [same] costs the size of the smaller tree at
+   most. *)
+let same a b =
+  same_size a b
+  && erase_locations#expression a = erase_locations#expression b
+  && not (locates#expression a false)
+
+(* [calls p e] tells that [e] applies a function that [p] accepts, as
+   [f x], [f @@ x] or [x |> f], or gives one to [Printf.ksprintf] or
+   [Format.kasprintf]. *)
+let calls p e =
+  let is_operator name f =
+    match f.pexp_desc with
+    | Pexp_ident { txt = Lident op; _ } -> String.equal op name
+    | _ -> false
+  in
+  let is_formatter f =
+    match f.pexp_desc with
+    | Pexp_ident
+        {
+          txt =
+            ( Ldot (Lident "Printf", "ksprintf")
+            | Ldot (Lident "Format", "kasprintf") );
+          _;
+        } ->
+        true
+    | _ -> false
+  in
+  match e.pexp_desc with
+  | Pexp_apply (op, [ (Nolabel, f); _ ]) when is_operator "@@" op -> p f
+  | Pexp_apply (op, [ _; (Nolabel, f) ]) when is_operator "|>" op -> p f
+  | Pexp_apply (k, (Nolabel, f) :: _) when is_formatter k -> p f
+  | Pexp_apply (f, _) -> p f
+  | _ -> false
+
+let names names f =
+  match f.pexp_desc with
+  | Pexp_ident { txt; _ } -> List.mem (Longident.name txt) names
+  | _ -> false
+
+(* The functions of the [Logs] library that log a message. The backend flag
+   [-log-function] adds more. *)
+let loggers =
+  [ "Logs.app"; "Logs.err"; "Logs.warn"; "Logs.info"; "Logs.debug"; "Logs.msg" ]
+
+let is_failure =
+  names [ "failwith"; "invalid_arg"; "Stdlib.failwith"; "Stdlib.invalid_arg" ]
+
+let is_literal_rewrite rewrite =
+  List.mem rewrite [ "inc"; "one"; "zero"; "flip" ]
+
+(* [catch_all ~exception_case p] tells that [p] matches every value, or
+   every exception for an exception case of a [match], and binds no
+   variable. *)
+let rec catch_all ~exception_case p =
+  match p.ppat_desc with
+  | Ppat_any -> not exception_case
+  | Ppat_exception inner ->
+      exception_case && catch_all ~exception_case:false inner
+  | Ppat_constraint (inner, _) -> catch_all ~exception_case inner
+  | _ -> false
+
+(* [acts p] tells that [p] binds a variable, or forces a lazy value as it
+   matches, which can raise or have an effect. *)
+let acts =
+  object
+    inherit [bool] Ast_traverse.fold as super
+
+    method! pattern p found =
+      found
+      ||
+      match p.ppat_desc with
+      | Ppat_var _ | Ppat_alias _ | Ppat_unpack _ | Ppat_lazy _ -> true
+      | _ -> super#pattern p found
+  end
 
 (* Guards *)
 
@@ -503,6 +803,37 @@ let skip ~loc ~module_name ~index context value =
           [%e value];
           ())]
 
+(* [lit] replaces its literal when armed, and [ret] gives [None] in place
+   of [Some e], whose [e] is then not evaluated. The constructors stand where
+   the type of the literal and the type of [Some e] are expected. *)
+let constant ~loc ~module_name ~index ~armed:armed_arm value =
+  [%expr
+    if [%e armed ~loc ~module_name index] then [%e armed_arm] else [%e value]]
+
+let nothing ~loc ~module_name ~index value =
+  [%expr if [%e armed ~loc ~module_name index] then None else [%e value]]
+
+(* [ret] on [h :: t] gives [t] alone when armed, without [h]. The armed arm
+   is a copy of [t] as the source wrote it, so the one [t] of the original
+   is evaluated in its place, and no binding changes when the type-checker
+   reads [t]. The original comes first: the type-checker reads the branches
+   of an [if] in order, so [h] still gives its type to [t] as in the
+   original, and the copy gets the type of the original. The sites inside
+   the copy are not guarded, because when the copy runs, its own site is
+   the armed one. The copy has ghost locations, as generated code has, so
+   that the coverage rewriter gives it no point when it runs next, and two
+   nodes never share one location. *)
+let ghost =
+  object
+    inherit Ast_traverse.map
+    method! location loc = { loc with loc_ghost = true }
+  end
+
+let tail ~loc ~module_name ~index value original_tail =
+  [%expr
+    if Stdlib.not [%e armed ~loc ~module_name index] then [%e value]
+    else [%e ghost#expression original_tail]]
+
 (* [arm] gives a case a guard that is [false] when armed, so that the value
    goes to the next case that matches it. A guard that the case has runs
    after the armed flag, as before. The guard is an [if] and not an
@@ -596,16 +927,20 @@ let is_opaque e =
   | Pexp_lazy body -> is_trivial_syntactic_value body
   | _ -> false
 
+(* The reason why a site is not tested: [[@mutate off]], with its reason,
+   or a filter. *)
+type dismissal = Off of string | Filtered of string
+
 type site = {
   line : int;
   col : int;
   rewrite : string;
   before : string;
   after : string;
-  dismissed : string option;
+  dismissed : dismissal option;
 }
 
-class instrumenter ~keeps ~module_name =
+class instrumenter ~keeps ~loggers ~module_name =
   object (self)
     inherit Ast_traverse.map as super
 
@@ -615,12 +950,62 @@ class instrumenter ~keeps ~module_name =
     val mutable sites = [] (* newest first *)
     val mutable pins = false (* a guard names [operands] *)
     val mutable suppressed = false (* inside a [[@@@mutate off]] region *)
+
+    (* Inside the arguments of a logging call, and of [failwith] or
+       [invalid_arg]. A statement there is outside the two, because it acts
+       on the state of the program. *)
+    val mutable logging = false
+    val mutable message = false
+
+    (* The right-hand side of a [let rec] cannot be an [if] that reads a
+       variable that the [let rec] binds, so a [ret] guard has no place
+       there. [recursive] tells that the expression is in such a right-hand
+       side, outside the functions and the [lazy] bodies in it, whose
+       evaluation comes later. *)
+    val mutable recursive = false
     method sites = List.rev sites
     method pins = pins
 
-    (* [record loc ...] records a site at [loc] and is its index. It is
-       [None], with nothing recorded, for generated code and for a site whose
-       identifier another one has, as a deriver's copy does. *)
+    method private within_recursive : 'a. bool -> (unit -> 'a) -> 'a =
+      fun flag f ->
+        let outer = recursive in
+        recursive <- flag;
+        let result = f () in
+        recursive <- outer;
+        result
+
+    method private keeps family = keeps family && not (recursive && family = Ret)
+
+    method private within_logging : 'a. bool -> (unit -> 'a) -> 'a =
+      fun flag f ->
+        let outer = logging in
+        logging <- flag;
+        let result = f () in
+        logging <- outer;
+        result
+
+    method private within_message : 'a. (unit -> 'a) -> 'a =
+      fun f ->
+        let outer = message in
+        message <- true;
+        let result = f () in
+        message <- outer;
+        result
+
+    method private within_statement : 'a. (unit -> 'a) -> 'a =
+      fun f ->
+        let outer = message in
+        message <- false;
+        let result = self#within_logging false f in
+        message <- outer;
+        result
+
+    (* [record loc ...] records a site at [loc] and is the index of its
+       guard. A site in the arguments of a logging call, and a literal in
+       those of [failwith] or [invalid_arg], is filtered when it is not
+       dismissed. It is [None] for a dismissed or a filtered site, which has
+       no guard, and, with nothing recorded, for generated code and for a site
+       whose identifier another one has, as a deriver's copy does. *)
     method private record (loc : location) ~rewrite ~before ~after ~dismissed =
       let start = loc.loc_start in
       let line = start.pos_lnum and col = start.pos_cnum - start.pos_bol in
@@ -629,36 +1014,78 @@ class instrumenter ~keeps ~module_name =
       else begin
         let index = Hashtbl.length seen in
         Hashtbl.add seen key ();
+        let dismissed =
+          match dismissed with
+          | Some _ -> dismissed
+          | None when logging -> Some (Filtered logging_call)
+          | None when message && is_literal_rewrite rewrite ->
+              Some (Filtered failure_message)
+          | None -> None
+        in
         sites <- { line; col; rewrite; before; after; dismissed } :: sites;
-        Some index
+        match dismissed with None -> Some index | Some _ -> None
       end
 
     method private site e (mutant : mutant) ~dismissed =
       self#record e.pexp_loc ~rewrite:mutant.rewrite ~before:(render e)
         ~after:mutant.after ~dismissed
 
+    (* [equivalent ?branches mutant] is the filter of [mutant] when the syntax
+       shows it equivalent to the original. [branches] tells that the mutant
+       is that of a condition whose two branches are the same, so that a
+       change of its value alone changes nothing. A [con] mutant also changes
+       which operand is evaluated, and has no such filter. *)
+    method private equivalent ?(branches = false) (mutant : mutant) =
+      if not (self#keeps Filter) then None
+      else
+        match mutant.guard with
+        | Operator (app, Replace _) when is_zero app.right -> Some zero_operand
+        | Operator (app, Branch)
+          when is_pure app.left && same app.left app.right ->
+            Some same_operands
+        | (Neg | Operator (_, (Negate | Swap))) when branches ->
+            Some same_branches
+        | Neg | Skip | Constant _ | Nothing | Tail _ | Operator _ -> None
+
     (* [chained] marks the left operand of a site that applies the same
        operator: a chain of one operator carries one mutant, and reading it
        from the tree keeps a bracket from changing the count. A dismissal
        leaves [e] as written. *)
-    method private mutate ?(chained = false) context e =
+    method private mutate ?(chained = false) ?branches context e =
       let off = off_reason (attributes e) in
       if is_opaque e then e
       else
-        match (off, mutant ~keeps context e) with
-        | Some _, None -> e
-        | Some reason, Some mutant ->
+        match (e.pexp_desc, off, mutant ~keeps:self#keeps context e) with
+        | (Pexp_function _ | Pexp_lazy _), _, _ when recursive ->
+            self#within_recursive false (fun () ->
+                self#mutate ~chained ?branches context e)
+        | _, Some _, None -> e
+        | _, Some reason, Some mutant ->
             if not chained then
-              ignore (self#site e mutant ~dismissed:(Some reason));
+              ignore (self#site e mutant ~dismissed:(Some (Off reason)));
             e
-        | None, None -> self#descend e
-        | None, Some mutant ->
-            let index =
-              if chained then None else self#site e mutant ~dismissed:None
+        | _, None, None -> self#descend e
+        | _, None, Some mutant ->
+            (* A filtered site ends the chain of its operator, so that its
+               left operand carries its own mutant. In [a + b + 0], [a + b]
+               starts at the byte of the site and has its identifier, so the
+               site gives it way and is not recorded: the chain keeps a
+               mutant that changes it. *)
+            let equivalent = self#equivalent ?branches mutant in
+            let gives_way =
+              match (equivalent, mutant.guard) with
+              | Some _, Operator (app, _) -> applies app.name app.left
+              | _ -> false
             in
-            self#guard context e mutant index
+            let index =
+              if chained || gives_way then None
+              else
+                self#site e mutant
+                  ~dismissed:(Option.map (fun r -> Filtered r) equivalent)
+            in
+            self#guard ~chain:(Option.is_none equivalent) context e mutant index
 
-    method private guard context e mutant index =
+    method private guard ~chain context e mutant index =
       let loc = { e.pexp_loc with loc_ghost = true } in
       match mutant.guard with
       | Neg -> (
@@ -671,13 +1098,27 @@ class instrumenter ~keeps ~module_name =
           match index with
           | None -> value
           | Some index -> skip ~loc ~module_name ~index context value)
+      | Constant armed -> (
+          match index with
+          | None -> e
+          | Some index -> constant ~loc ~module_name ~index ~armed e)
+      | Nothing -> (
+          let value = self#descend e in
+          match index with
+          | None -> value
+          | Some index -> nothing ~loc ~module_name ~index value)
+      | Tail original_tail -> (
+          let value = self#chain e in
+          match index with
+          | None -> value
+          | Some index -> tail ~loc ~module_name ~index value original_tail)
       | Operator (app, guard) -> (
           let context =
             match guard with
             | Branch -> Boolean
             | Negate | Swap | Replace _ -> Ordinary
           in
-          let chained = applies app.name app.left in
+          let chained = chain && applies app.name app.left in
           let left = self#mutate ~chained context app.left in
           let right = self#mutate context app.right in
           let rebuilt =
@@ -706,17 +1147,45 @@ class instrumenter ~keeps ~module_name =
                   binary ~loc ~module_name ~index ~pin:false e app left right
                     ~armed_arm:(fun l r -> apply ~loc replacement [ l; r ])))
 
+    (* [chain e] rewrites the head and the tail of [h :: t]. A tail that
+       applies [(::)] too, as in [a :: b :: t], continues the chain of [e] and
+       carries no [tail] site, as the [(::)] of a list literal carry none.
+       Each [tail] guard holds a copy of its tail, and its text holds the
+       text of its tail. A site at each [(::)] of a chain would thus make the
+       code and the time of the rewriter grow as the square of the length of
+       the chain. A dismissal of a tail leaves it as written. *)
+    method private chain e =
+      match e.pexp_desc with
+      | Pexp_construct
+          (constructor, Some ({ pexp_desc = Pexp_tuple [ h; t ]; _ } as pair))
+        ->
+          let h = self#expression h in
+          let t =
+            match cons t with
+            | None -> self#expression t
+            | Some _ when is_off t.pexp_attributes -> t
+            | Some _ -> self#chain t
+          in
+          let pair = { pair with pexp_desc = Pexp_tuple [ h; t ] } in
+          { e with pexp_desc = Pexp_construct (constructor, Some pair) }
+      | _ -> self#descend e
+
     (* [descend e] rewrites the children of [e], each in the context that [e]
        gives it. A connective that carries no mutant still has boolean
        operands. *)
     method private descend e =
       match e.pexp_desc with
       | Pexp_ifthenelse (condition, then_, else_) ->
+          let branches =
+            match else_ with
+            | Some else_ -> self#keeps Filter && same then_ else_
+            | None -> false
+          in
           {
             e with
             pexp_desc =
               Pexp_ifthenelse
-                ( self#mutate Condition condition,
+                ( self#mutate ~branches Condition condition,
                   self#expression then_,
                   Option.map self#expression else_ );
           }
@@ -727,7 +1196,7 @@ class instrumenter ~keeps ~module_name =
               Pexp_while (self#mutate Condition condition, self#expression body);
           }
       | Pexp_apply (operator, [ (Nolabel, left); (Nolabel, right) ])
-        when is_connective ~keeps e ->
+        when is_connective ~keeps:self#keeps e ->
           {
             e with
             pexp_desc =
@@ -739,16 +1208,27 @@ class instrumenter ~keeps ~module_name =
                   ] );
           }
       | Pexp_sequence (first, rest) ->
-          let first = self#mutate Statement first in
+          let first =
+            self#within_statement (fun () -> self#mutate Statement first)
+          in
           let rest = self#expression rest in
           { e with pexp_desc = Pexp_sequence (first, rest) }
       | Pexp_let (rec_flag, bindings, body) ->
           let binding vb =
             if is_unit_binding vb then
-              { vb with pvb_expr = self#mutate Unit_binding vb.pvb_expr }
+              {
+                vb with
+                pvb_expr =
+                  self#within_statement (fun () ->
+                      self#mutate Unit_binding vb.pvb_expr);
+              }
             else self#value_binding vb
           in
-          let bindings = List.map binding bindings in
+          let bindings =
+            self#within_recursive
+              (recursive || rec_flag = Recursive)
+              (fun () -> List.map binding bindings)
+          in
           let body = self#expression body in
           { e with pexp_desc = Pexp_let (rec_flag, bindings, body) }
       | Pexp_match (scrutinee, cases) ->
@@ -791,6 +1271,10 @@ class instrumenter ~keeps ~module_name =
           if armed then
             silence ~loc:{ e.pexp_loc with loc_ghost = true } "-57" e
           else e
+      | Pexp_apply _ when self#keeps Filter && calls (names loggers) e ->
+          self#within_logging true (fun () -> super#expression e)
+      | Pexp_apply _ when self#keeps Message && calls is_failure e ->
+          self#within_message (fun () -> super#expression e)
       | _ -> super#expression e
 
     (* [arms ~handlers cases] rewrites [cases] and tells if a case got a
@@ -803,7 +1287,7 @@ class instrumenter ~keeps ~module_name =
     method private arms ~handlers cases =
       let reachable = List.filter (fun c -> matches_values c.pc_lhs) cases in
       let is_site c =
-        keeps Arm
+        self#keeps Arm
         && (not (List.exists is_refutation cases))
         && (not (is_effect c.pc_lhs))
         && (not (is_mixed c.pc_lhs))
@@ -812,23 +1296,43 @@ class instrumenter ~keeps ~module_name =
            || List.compare_length_with reachable 1 > 0)
       in
       let armed = ref false and armed_value = ref false in
-      let arm c =
+      (* A case without a guard whose body is that of the next case, when the
+         next case catches all that it catches, gives the same value
+         dropped. The case binds no variable, so that the two bodies read
+         the same names, and forces no lazy value, which the next case does
+         not force. *)
+      let equivalent c next =
+        match next with
+        | Some next
+          when self#keeps Filter && Option.is_none c.pc_guard
+               && Option.is_none next.pc_guard
+               && (not (acts#pattern c.pc_lhs false))
+               && catch_all
+                    ~exception_case:
+                      ((not handlers) && not (matches_values c.pc_lhs))
+                    next.pc_lhs
+               && same c.pc_rhs next.pc_rhs ->
+            Some (Filtered same_body)
+        | Some _ | None -> None
+      in
+      let arm c next =
         if not (is_site c) then self#case c
         else
           let off =
             reject_inner_attributes c.pc_lhs;
-            off_reason c.pc_lhs.ppat_attributes
+            Option.map (fun r -> Off r) (off_reason c.pc_lhs.ppat_attributes)
           in
           let before = render_arm c ~guard:(Option.map render c.pc_guard) in
           let after = render_arm c ~guard:(Some "false") in
           let index =
             self#record c.pc_lhs.ppat_loc ~rewrite:"drop" ~before ~after
-              ~dismissed:off
+              ~dismissed:
+                (match off with Some _ -> off | None -> equivalent c next)
           in
           let c = self#case c in
-          match (off, index) with
-          | Some _, _ | None, None -> c
-          | None, Some index ->
+          match index with
+          | None -> c
+          | Some index ->
               armed := true;
               if (not handlers) && matches_values c.pc_lhs then
                 armed_value := true;
@@ -838,7 +1342,15 @@ class instrumenter ~keeps ~module_name =
                 pc_guard = Some (arm_guard ~loc ~module_name ~index c.pc_guard);
               }
       in
-      let cases = List.map arm cases in
+      let rec arm_all = function
+        | [] -> []
+        | c :: rest ->
+            let c =
+              arm c (match rest with next :: _ -> Some next | [] -> None)
+            in
+            c :: arm_all rest
+      in
+      let cases = arm_all cases in
       (* When the cases without a guard cover every value, the type-checker
          finds the match total. After an [arm] guard fails, the compiled
          match can read a mutable field again, and then finds the match
@@ -872,6 +1384,20 @@ class instrumenter ~keeps ~module_name =
     method! module_binding mb =
       if is_off mb.pmb_attributes then mb else super#module_binding mb
 
+    (* A [let rec] of a class has the same restriction as one of an
+       expression. *)
+    method! class_expr ce =
+      match ce.pcl_desc with
+      | Pcl_let (rec_flag, bindings, body) ->
+          let bindings =
+            self#within_recursive
+              (recursive || rec_flag = Recursive)
+              (fun () -> List.map self#value_binding bindings)
+          in
+          let body = self#class_expr body in
+          { ce with pcl_desc = Pcl_let (rec_flag, bindings, body) }
+      | _ -> super#class_expr ce
+
     method! structure_item si =
       match si.pstr_desc with
       | Pstr_attribute attribute ->
@@ -894,10 +1420,12 @@ class instrumenter ~keeps ~module_name =
             if is_off b.pvb_attributes then b
             else { b with pvb_expr = self#expression b.pvb_expr }
           in
-          {
-            si with
-            pstr_desc = Pstr_value (rec_flag, List.map binding bindings);
-          }
+          let bindings =
+            self#within_recursive
+              (recursive || rec_flag = Recursive)
+              (fun () -> List.map binding bindings)
+          in
+          { si with pstr_desc = Pstr_value (rec_flag, bindings) }
       | _ -> super#structure_item si
 
     method! structure items =
@@ -933,7 +1461,11 @@ let runtime_initialization ~file ~module_name ~sites ~pins =
     let dismissed =
       match dismissed with
       | None -> [%expr None]
-      | Some reason -> [%expr Some [%e estring ~loc reason]]
+      | Some (Off reason) ->
+          [%expr Some (Windtrap_runtime.Mutate.Off [%e estring ~loc reason])]
+      | Some (Filtered reason) ->
+          [%expr
+            Some (Windtrap_runtime.Mutate.Filtered [%e estring ~loc reason])]
     in
     [%expr
       {
@@ -953,7 +1485,7 @@ let runtime_initialization ~file ~module_name ~sites ~pins =
         rewrite : string;
         before : string;
         after : string;
-        dismissed : string option;
+        dismissed : Windtrap_runtime.Mutate.dismissal option;
       }]
   in
   let operands = [%stri type 'a operands = 'a * 'a] in
@@ -981,7 +1513,8 @@ let runtime_initialization ~file ~module_name ~sites ~pins =
 let always_ignore_paths = [ "//toplevel//"; "(stdin)" ]
 let always_ignore_basenames = [ ".ocamlinit"; "topfind" ]
 
-let transform_impl_file ?(arm = true) ?(call = true) ctxt ast =
+let transform_impl_file ?(arm = true) ?(call = true) ?(lit = false)
+    ?(ret = true) ?(filter = true) ?(log_functions = []) ctxt ast =
   let file = Expansion_context.Base.input_name ctxt in
   if
     List.mem file always_ignore_paths
@@ -994,9 +1527,16 @@ let transform_impl_file ?(arm = true) ?(call = true) ctxt ast =
     let keeps = function
       | Arm -> arm && kept Arm
       | Call -> call && kept Call
+      | Lit -> lit
+      | Flip -> lit && kept Flip
+      | Ret -> ret && kept Ret
+      | Filter -> filter
+      | Message -> filter && kept Message
       | (Ari | Cmp | Con) as family -> kept family
     in
-    let instrumenter = new instrumenter ~keeps ~module_name in
+    let instrumenter =
+      new instrumenter ~keeps ~loggers:(loggers @ log_functions) ~module_name
+    in
     let instrumented = instrumenter#structure ast in
     match instrumenter#sites with
     | [] -> ast

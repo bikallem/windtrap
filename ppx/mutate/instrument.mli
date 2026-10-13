@@ -12,7 +12,8 @@
     the site table of the file with [Windtrap_runtime.Mutate] and binds the
     guard closure that the registration returns. The
     {{!section-dismissal}dismissal attributes} switch the rewriting off for an
-    expression, a binding, a region or a file.
+    expression, a binding, a region or a file, and the
+    {{!section-filters}filters} switch it off for some sites.
 
     Every mutant of a project is compiled into one binary, in which the runtime
     arms at most one. A mutant changes meaning only in the process that armed
@@ -49,7 +50,19 @@
     constructor [true] or [false] of the file makes warning 42 report the
     constructors of [arm], and the pattern of [let () = e] then names the
     constructor [()] of the file. A constructor that an [open] brings into scope
-    is not seen. *)
+    is not seen.
+
+    [lit] and [ret] name no value, and [tail] names [Stdlib.not] alone. The
+    constructors of [flip] stand where the type of the original [true] or
+    [false] is expected, and the [None] of [none] where the type of the original
+    [Some e] is expected. The armed arm of [tail] is a copy of [t] in [h :: t],
+    and gets the type of the original. A file that declares a constructor [true]
+    or [false] loses the [flip] rewrite of [lit], and a file that declares a
+    constructor [Some], [None] or [(::)] loses [ret]. A constructor that an
+    [open] or type-directed disambiguation takes from another module is not
+    seen. A [Some e] of a type that has no constructor [None], or an [h :: t]
+    whose [t] has another type, then fails to compile under instrumentation, and
+    [[@mutate off]] on the expression is the way out. *)
 
 (** {1:sites Sites}
 
@@ -140,8 +153,52 @@
     under [-strict-sequence] or not. The guard of [let () = e] is
     [if Stdlib.not armed then e], where [e] gets the expected type [unit].
 
-    The backend flags [-no-arm] and [-no-call] switch each family off, as in
-    [(instrumentation (backend ppx_windtrap.mutate -no-arm))]. *)
+    The backend flags [-no-arm] and [-no-call] switch these two families off, as
+    in [(instrumentation (backend ppx_windtrap.mutate -no-arm))].
+    {!section-values} gives the flags of [lit] and [ret]. *)
+
+(** {2:values Literals and values}
+
+    Two families change a value, and each has more than one rewrite.
+    - [lit] changes a literal. An integer literal becomes its successor, with
+      its suffix, under the name [one] for [0] and [inc] for the others. The
+      successor of the greatest integer is the least one, as the addition of the
+      type gives. A float literal other than zero becomes [0.] under [zero], and
+      a zero becomes [1.] under [one]. [true] and [false] swap under [flip],
+      except in a condition, where [neg] gives the same mutant. A string, a
+      character and a literal with a suffix that the compiler does not know are
+      no sites. An integer literal that its type cannot hold is no site, so that
+      the compiler reports the error.
+    - [ret] removes a part of a value. [Some e] becomes [None] under [none], and
+      [h :: t] becomes [t] under [tail]. A list literal [[a; b]] is one site, at
+      its bracket, and becomes [[b]], because the parser gives the other [(::)]
+      of the literal ghost locations. In a chain of [(::)], as [a :: b :: t],
+      the outermost [(::)] alone is a site, and becomes [b :: t]. A qualified
+      constructor, as [Option.Some], is no site.
+
+    The guard of [lit] is [if armed then c' else c], and that of [none] is
+    [if armed then None else Some e], so [e] is not evaluated when the mutant is
+    armed. The guard of [tail] is [if Stdlib.not armed then h :: t else t'],
+    where [t'] is a copy of [t] as the source wrote it. [t] is thus evaluated
+    once, and [h] is not evaluated when the mutant is armed. The type-checker
+    reads the branches of an [if] in order, so [h] gives its type to [t] as in
+    the original, and [t'] gets the type of the original. The sites inside [t']
+    have no guard, because when [t'] runs, its own site is the armed one. The
+    type-checker does not read the condition of an [if] when it decides if an
+    expression is a syntactic value, so a binding of a literal, of [Some v] or
+    of [h :: t] still generalizes.
+
+    The guard of [tail] holds a copy of [t], and its text holds the text of [t].
+    A site at each [(::)] of a chain would thus make the code grow as the square
+    of the length of the chain.
+
+    The right-hand side of a [let rec] cannot be an [if] that reads a variable
+    of the [let rec]. Thus an expression in such a right-hand side has no [ret]
+    site, except in a function or a [lazy] body inside it. This is true for a
+    [let rec] of a structure, of an expression and of a class.
+
+    [lit] is off by default, because a program has many literals. The backend
+    flag [-lit] switches it on, and [-no-ret] switches [ret] off. *)
 
 (** {2:placement Placement}
 
@@ -162,7 +219,10 @@
       application alone is a site. The rule reads the tree and not the layout,
       so [(a + b) + c] and [f (a + b + c)] carry one mutant too. [a + b - c]
       carries two, because [sub] and [add] are two rewrites, and so does
-      [a + b + (c + d)].
+      [a + b + (c + d)]. A {{!section-filters}filter} ends a chain.
+    - A literal, [Some e] and [h :: t] carry no other mutant.
+    - A filtered site, as a dismissed one, carries no guard. The sites inside it
+      keep their guards, except in the arguments of a logging call.
     - A guard binds its operands under the names [__windtrap_mut_<i>_<role>],
       where [<i>] is the index of the site and [<role>] is [p], [l] or [r]. *)
 
@@ -189,6 +249,63 @@
     so a top-level [let origin = 1 + 2] carries a site. The [--mutate] loop
     lists a site that ran outside tests alone as evaluated outside tests. *)
 
+(** {2:filters Filtered sites}
+
+    The rewriter records some sites as filtered, with the reason of the filter.
+    A filtered site has no guard, as a dismissed site. The syntax alone shows
+    that its mutant is equivalent to the original, or that the mutant changes a
+    logging call or a failure message alone. The reasons are these:
+    - [zero operand]: the [ari] mutant of [x + 0] or [x - 0], where [0] is an
+      integer literal without a suffix, as [0] or [0x0]. On floats, [-0. +. 0.]
+      is [0.] and [-0. -. 0.] is [-0.], so [x +. 0.] has no filter.
+    - [same operands]: the [con] mutant of [a && a] or [a || a], when [a] is an
+      identifier, a constructor without an argument, as [true], or a field of
+      such an expression, with or without a type constraint. Such an operand
+      gives one value each time and does nothing else.
+    - [same branches]: the [neg] or [cmp] mutant of the condition of
+      [if c then e else e], when the two branches are one expression. The sites
+      inside the condition and the branches keep their mutants. A [con] mutant
+      also changes which operand is evaluated, and has no filter.
+    - [same body as the next case]: the [arm] mutant of a case without a guard
+      whose pattern binds no variable and has no [lazy] pattern, when the next
+      case is [_] without a guard, or [exception _] for an exception case of a
+      [match], and the two bodies are one expression. A [lazy] pattern forces
+      the value, and the next case does not.
+    - [logging call]: each site in the arguments of a logging function, as in
+      [Logs.debug (fun m -> m "%d" (x + 1))]. The logging functions are
+      [Logs.app], [Logs.err], [Logs.warn], [Logs.info], [Logs.debug], [Logs.msg]
+      and the names that [log_functions] adds, as the source spells them. The
+      call itself keeps its [call] mutant. A statement in the arguments, which
+      is the left operand of a sequence or the expression of [let () = e in],
+      keeps its mutants, with the sites inside it, because it acts on the state
+      of the program. The filter does not see the other effects, as of a
+      function with an effect that the message calls. A printing function, as
+      [Printf.printf], is no logging function, because a test can read what it
+      prints.
+    - [failure message]: a [lit] site in the arguments of [failwith] or
+      [invalid_arg], with or without [Stdlib.]. A file that binds one of these
+      names loses this filter. A statement in the arguments keeps its mutants,
+      as in a logging call. A literal in the argument of [raise] has no filter,
+      because a test can compare the exception.
+
+    The arguments of [f] are those of [f x], of [f @@ x], of [x |> f], and of
+    [Printf.ksprintf f] and [Format.kasprintf f] applied to a format.
+
+    Two expressions are one expression when their parsetrees are equal without
+    their locations. An expression whose value can depend on its location is one
+    expression with no other: an expression that holds [assert], [__LOC__],
+    [__LINE__], [__POS__], [__LOC_OF__], [__LINE_OF__] or [__POS_OF__] under any
+    path, as [Stdlib.__LOC__], a [match], a [function] with cases, a pattern
+    that can fail to match, or an extension node. The rewriter does not see the
+    location that a backtrace gives for a call.
+
+    A filter ends the chain of its operator. In [a + b + 0], the operand [a + b]
+    starts at the first byte of the site and has its identifier. Thus the
+    filtered site is not recorded, and [a + b] carries the mutant of the chain.
+
+    A [[@mutate off]] has priority over a filter, and the backend flag
+    [-no-filter] switches all the filters off. *)
+
 (** {1:dismissal Dismissal attributes}
 
     The attribute is named [mutate] and follows the grammar of the [coverage]
@@ -200,9 +317,9 @@
     - [[@mutate off]] on an expression leaves the expression as written, with
       everything inside it. When the expression is itself a site, the site is
       recorded in the table as dismissed, with the reason, or with [""] when
-      none is given. It takes an index and no guard. When the expression is no
-      site, as a [match], nothing is recorded. The sites inside the expression
-      are never recorded.
+      none is given. It takes an index and no guard, and a filter of the site
+      does not apply. When the expression is no site, as a [match], nothing is
+      recorded. The sites inside the expression are never recorded.
     - [[@@mutate off]] leaves as written a value binding at the top level of a
       structure, and a module binding, recursive or not. On a [let … in] binding
       and on any other structure item it is ignored and its payload is not
@@ -266,7 +383,9 @@
     The texts of an [arm] site give the pattern and the guard of its case, and
     [...] stands for the body: [| Some x when x > 0 -> ...] before and
     [| Some x when false -> ...] after. The [after] text of a [call] site is
-    [()].
+    [()], that of a [none] site is [None], and that of a [tail] site is [t]. The
+    printer gives a list as a list literal where it can, so [x :: [y]] is
+    recorded as [[x; y]], and a negative literal in brackets, as [(-1)].
 
     ppxlib encodes a construct that its parsetree does not have, as a labeled
     tuple of OCaml 5.4, as an extension node [[%ppxlib.migration.<name> ...]]. A
@@ -286,7 +405,10 @@
     The module holds, in this order:
     - [type site = Windtrap_runtime.Mutate.site = { … }], the record of the
       runtime with its six fields spelled out. A runtime whose record differs
-      thus fails to compile against the generated code.
+      thus fails to compile against the generated code. The field [dismissed] of
+      a site is [None], [Some (Windtrap_runtime.Mutate.Off reason)] for a
+      [[@mutate off]], or [Some (Windtrap_runtime.Mutate.Filtered reason)] for a
+      {{!section-filters}filter}.
     - [type 'a operands = 'a * 'a], only in a file that holds the guard of an
       ordering rewrite, which annotates its pair of operands with it.
     - [___windtrap_armed___], bound to
@@ -302,7 +424,9 @@
     as in [fun x -> function[@a] ...], the parser puts the attributes of
     [function] on its cases, and the generated attribute also comes before them.
     The compiler applies the attributes of a node from the last to the first, so
-    a warning attribute of the user cannot turn warnings 8 and 57 on again.
+    a warning attribute of the user cannot turn warnings 8 and 57 on again. The
+    copy [t'] of a [tail] guard is generated code too: each of its locations is
+    ghost, so that no two nodes share a location.
 
     In the driver that dune builds for a stanza naming both backends this
     rewriter runs first, so its sites are those stated here and the coverage
@@ -328,13 +452,21 @@
 val transform_impl_file :
   ?arm:bool ->
   ?call:bool ->
+  ?lit:bool ->
+  ?ret:bool ->
+  ?filter:bool ->
+  ?log_functions:string list ->
   Ppxlib.Expansion_context.Base.t ->
   Ppxlib.Parsetree.structure ->
   Ppxlib.Parsetree.structure
-(** [transform_impl_file ~arm ~call ctxt ast] is [ast] with a guard at each site
-    and the {{!section-generated}generated module} prepended. [arm] and [call]
-    keep the family of that name and default to [true]. [ctxt] is read for the
-    input name of the file alone.
+(** [transform_impl_file ~arm ~call ~lit ~ret ~filter ~log_functions ctxt ast]
+    is [ast] with a guard at each site and the
+    {{!section-generated}generated module} prepended. [arm], [call], [lit] and
+    [ret] keep the family of that name. [filter] keeps the
+    {{!section-filters}filters}, and [log_functions] adds names to the logging
+    functions, spelled as the source spells them, as ["Log.debug"]. [lit]
+    defaults to [false], the other flags to [true], and [log_functions] to [[]].
+    [ctxt] is read for the input name of the file alone.
 
     The result is [ast] itself in three cases:
     - [ast] has a top-level [[@@@mutate exclude_file]].
