@@ -1320,19 +1320,21 @@ mutant:
 
 Code that gives its location keeps the mutants of its two copies:
 
-  $ mut --impl ./fixture_equivalent_located.ml | ../elide.exe | head -12
+  $ mut --impl ./fixture_equivalent_located.ml | ../elide.exe | head -14
   mutation sites of "./fixture_equivalent_located.ml" in Windtrap_mut_________fixture_equivalent_located___ml, with type 'a operands:
-    0: 7:20 "ge" "x > 0" -> "x >= 0"
-    1: 8:15 "not" "c" -> "not c"
-    2: 9:21 "not" "c" -> "not c"
-    3: 10:15 "not" "c" -> "not c"
-    4: 11:16 "not" "c" -> "not c"
-    5: 12:20 "drop" "| 0 -> ..." -> "| 0 when false -> ..."
-    6: 12:42 "drop" "| _ -> ..." -> "| _ when false -> ..."
-    7: 13:21 "not" "c" -> "not c"
-    8: 16:21 "not" "c" -> "not c"
-    9: 17:23 "not" "c" -> "not c"
-    10: 18:18 "not" "c" -> "not c"
+    0: 9:20 "ge" "x > 0" -> "x >= 0"
+    1: 10:15 "not" "c" -> "not c"
+    2: 11:21 "not" "c" -> "not c"
+    3: 12:15 "not" "c" -> "not c"
+    4: 13:16 "not" "c" -> "not c"
+    5: 14:20 "drop" "| 0 -> ..." -> "| 0 when false -> ..."
+    6: 14:42 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    7: 15:21 "not" "c" -> "not c"
+    8: 18:21 "not" "c" -> "not c"
+    9: 19:23 "not" "c" -> "not c"
+    10: 20:18 "not" "c" -> "not c"
+    11: 21:19 "not" "c" -> "not c"
+    12: 22:26 "not" "c" -> "not c"
 
   $ mut --impl ./fixture_equivalent_log.ml | ../elide.exe
   mutation sites of "./fixture_equivalent_log.ml" in Windtrap_mut_________fixture_equivalent_log___ml:

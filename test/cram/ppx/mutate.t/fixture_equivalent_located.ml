@@ -2,7 +2,9 @@
    their mutants. [assert] raises [Assert_failure] with its location.
    [__LOC__] and its kin give the location of the copy, under any path. An
    extension node can expand to a location. A pattern that can fail, also in
-   a tuple, raises [Match_failure] with its location, in a [let] and a [fun]. *)
+   a tuple, raises [Match_failure] with its location, in a [let] and a [fun].
+   The rewriter does not see the types, so it treats each [match] and each
+   [function] as one that can fail, also when its cases cover all values. *)
 
 let asserted x = if x > 0 then assert (x < 5) else assert (x < 5)
 let loc c = if c then __LOC__ else __LOC__
@@ -16,3 +18,5 @@ let extension c = if c then [%here] else [%here]
 let refuted c o = if c then (let (Some x) = o in x) else (let (Some x) = o in x)
 let refuted_fun c = if c then fun (Some x) -> x else fun (Some x) -> x
 let pair c o = if c then (let Some x, _ = o in x) else (let Some x, _ = o in x)
+let total c x = if c then (match x with () -> 1) else (match x with () -> 1)
+let total_function c = if c then function () -> 1 else function () -> 1

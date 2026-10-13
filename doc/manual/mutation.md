@@ -291,12 +291,14 @@ outcome line gives their total, as `3 filtered`. The reasons are these:
   `failwith` or `invalid_arg`.
 
 Two branches or two bodies are the same when they are the same code at
-two positions. Code whose value can depend on its position, as
-`__LINE__`, `assert` or a match that can fail, is never the same as
-other code. A test can read what `print_string`, `Printf.printf` and
-`Format.printf` print, so the arguments of these functions keep their
-mutants. A literal in the argument of `raise` keeps its mutant too,
-because a test can compare the exception.
+two positions. Code whose value can depend on its position is never the
+same as other code: code that holds `__LINE__`, `assert`, a pattern that
+can fail, a `match` or a `function`. The rewriter does not see the
+types, so it does not know which `match` can fail, and it treats each
+one as a `match` that can fail. A test can read what `print_string`,
+`Printf.printf` and `Format.printf` print, so the arguments of these
+functions keep their mutants. A literal in the argument of `raise`
+keeps its mutant too, because a test can compare the exception.
 
 A project that logs through its own functions, or through
 `Printf.eprintf` or `prerr_endline`, gives their names with
