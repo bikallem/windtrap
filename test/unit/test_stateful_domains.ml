@@ -332,6 +332,7 @@ let rec after_prefix = function
 
 let shape (domains, per_branch) () =
   let gen = Stateful.program ~steps:6 ~domains (counter_commands ()) in
+  let fullest = ref 0 in
   Seq.iter
     (fun index ->
       let rows = table (recorded gen (value (drawn gen index))) in
@@ -342,7 +343,8 @@ let shape (domains, per_branch) () =
       in
       for d = 1 to domains do
         is_true ~msg:"a branch holds at most its share"
-          (per (string_of_int d) <= per_branch)
+          (per (string_of_int d) <= per_branch);
+        fullest := max !fullest (per (string_of_int d))
       done;
       is_true ~msg:"the prefix and the suffix hold at most steps calls"
         (List.length rows - List.length branches <= 6);
@@ -351,7 +353,8 @@ let shape (domains, per_branch) () =
           is_false ~msg:"no call after the prefix makes a value"
             (String.starts_with ~prefix:"let " (cell "call" row)))
         (after_prefix rows))
-    (Seq.init 200 Fun.id)
+    (Seq.init 200 Fun.id);
+  equal int ~msg:"the fullest branch holds its share" per_branch !fullest
 
 (* A counter that must not go below zero: [decr]'s ~pre asks the reference
    for a positive count. *)
@@ -422,8 +425,8 @@ let drawing =
   group "Drawing"
     [
       cases
-        "each branch holds at most its share of calls, and nothing after the \
-         prefix makes a value"
+        "each branch holds at most its share of calls, some branch holds all \
+         of it, and nothing after the prefix makes a value"
         ~name:(fun (d, n) -> strf "%d domains, %d each" d n)
         shape_rows
         (fun row -> shape row ());
@@ -600,6 +603,14 @@ let replayed () =
     ]
     (states ())
 
+(* A call of a branch that differs drops its state: the next order starts
+   from a fresh one. *)
+let fresh_after_difference () =
+  let branches = [ [ observe 1 [ 9 ] ]; [ push 2 2 ] ] in
+  let suffix = [ observe 3 [ 2 ] ] in
+  ignore (judged ~branches ~suffix : string);
+  equal (list string) [ "observe"; "push 2, observe" ] (states ())
+
 let judge_group =
   group "The judge"
     [
@@ -612,6 +623,8 @@ let judge_group =
         "each branch point after the first starts from a fresh state replayed \
          along its path"
         replayed;
+      test "a branch's call that differs leaves no state to the next order"
+        fresh_after_difference;
     ]
 
 (* The report *)
@@ -1119,6 +1132,45 @@ let crashed_alone () =
     {|oracle [reference of call 2 of 2: pop q1] raise actual Failure("hd")|}
     (ended (execute (value tree)))
 
+(* With the pop moved to the suffix, the push is the one parallel call, and
+   the closest order names it alone. *)
+let rejected_one_parallel () =
+  let judge = ref strict in
+  let gen, tree = pop_beside_push ~popped:7 judge in
+  let moved record =
+    calls record
+    = [ ("", "let q1 = create ()"); ("2", "push q1 0"); ("", "pop q1") ]
+  in
+  let tree = smallest gen tree moved in
+  equal string
+    "failure [no order of the calls gives these results\n\
+     the closest order, 2, differs at call 3: pop q1] equality 0, 7"
+    (ended (execute (value tree)))
+
+(* The program [create], then [push 0] in branch 1 beside [pop] in branch 2.
+   The pop gave 7: the first order rejects it, and the second, which pops
+   first, breaks the reference. *)
+let crashed_second_order () =
+  let judge = ref careless in
+  let gen =
+    Stateful.program ~steps:2 ~domains:2 (lying_queue ~popped:7 judge)
+  in
+  let accept record =
+    let calls = calls record in
+    List.mem ("2", "pop q1") calls
+    && List.exists
+         (fun (d, c) -> d = "1" && String.starts_with ~prefix:"push q1" c)
+         calls
+  in
+  let tree = smallest gen (find gen accept) accept in
+  equal
+    (list (pair string string))
+    [ ("", "let q1 = create ()"); ("1", "push q1 0"); ("2", "pop q1") ]
+    (calls (recorded gen (value tree)));
+  equal string
+    {|oracle [reference of call 3 of 3, in the order 3 then 2: pop q1] raise actual Failure("hd")|}
+    (ended (execute (value tree)))
+
 let judging_calls =
   group "Judging calls"
     [
@@ -1131,6 +1183,10 @@ let judging_calls =
          names that order"
         crashed_order;
       test "a crash names no order when no call is parallel" crashed_alone;
+      test "the closest order of one parallel call names that call"
+        rejected_one_parallel;
+      test "a crash names the order that the judge replayed"
+        crashed_second_order;
     ]
 
 (* Workers *)
@@ -1490,6 +1546,67 @@ let stops_at_a_control () =
   equal string "raised windtrap skip: why" (armed_run (value tree));
   equal int 0 !ticked
 
+(* One after the other, a call that fails its assertion fails the test, in a
+   branch and in the suffix. In the branch, no [odd] of the prefix fails
+   first. *)
+let sequential_branch_failure () =
+  let gen =
+    Stateful.program ~steps:1 ~domains:2
+      [ tick_command; odd (fun () -> fail "odd") ]
+  in
+  Atomic.set armed false;
+  let rec prefix = function
+    | ("", call) :: rest -> call :: prefix rest
+    | _ -> []
+  in
+  let tree =
+    find gen (fun record ->
+        let c = calls record in
+        List.mem ("1", "odd ()") c && not (List.mem "odd ()" (prefix c)))
+  in
+  equal string {|failure [call 2 of 7: odd ()] message "odd"|}
+    (armed_run (value tree))
+
+(* The suffix runs last, so its [odd] is the last one that runs. *)
+let sequential_suffix_failure () =
+  let left = ref 0 in
+  let last_fails () =
+    decr left;
+    if !left = 0 then fail "odd"
+  in
+  let gen =
+    Stateful.program ~steps:2 ~domains:2 [ tick_command; odd last_fails ]
+  in
+  Atomic.set armed false;
+  let tree =
+    find gen (fun record ->
+        match List.rev (calls record) with
+        | ("", "odd ()") :: earlier ->
+            List.exists (fun (d, _) -> d <> "") earlier
+        | _ -> false)
+  in
+  let odds = List.filter (fun (_, c) -> c = "odd ()") in
+  left := List.length (odds (calls (recorded gen (value tree))));
+  equal string {|failure [call 11 of 11: odd ()] message "odd"|}
+    (armed_run (value tree))
+
+(* The calls of a branch that ran before a control are rows of the record. *)
+let rows_before_a_control () =
+  let gen =
+    Stateful.program ~steps:1 ~domains:2
+      [ tick_command; odd (fun () -> skip ~reason:"why" ()) ]
+  in
+  Atomic.set armed false;
+  let tree =
+    find gen (fun record ->
+        match calls record with
+        | ("1", "tick ()") :: ("1", "odd ()") :: _ -> true
+        | _ -> false)
+  in
+  equal string "raised windtrap skip: why" (armed_run (value tree));
+  is_true ~msg:"the tick of branch 1 is a row"
+    (List.mem ("1", "tick ()") (calls (printed gen (value tree))))
+
 let mutation =
   group "Under mutation testing"
     [
@@ -1499,6 +1616,12 @@ let mutation =
           equal (list int) [ self () ] seen_under_mutation);
       test "a control from a branch ends the run before the next branch"
         stops_at_a_control;
+      test "a control from a branch keeps the rows of the calls that ran"
+        rows_before_a_control;
+      test "one after the other, a branch's call that fails fails the test"
+        sequential_branch_failure;
+      test "one after the other, a suffix's call that fails fails the test"
+        sequential_suffix_failure;
     ]
 
 (* A call that never returns *)

@@ -12,6 +12,7 @@ type verdict =
   | Survived of { first : reaching_test; others : reaching_test list }
   | Not_evaluated
   | Outside_tests
+  | Filtered of string
   | Unreached
 
 (* A collection builds each survivor it holds here, so its reaching tests
@@ -25,16 +26,19 @@ let survived ts =
 
 (* The order in which verdicts outrank one another in a merge. *)
 let rank = function
-  | Killed _ -> 4
-  | Not_evaluated -> 3
-  | Survived _ -> 2
-  | Outside_tests -> 1
+  | Killed _ -> 5
+  | Not_evaluated -> 4
+  | Survived _ -> 3
+  | Outside_tests -> 2
+  | Filtered _ -> 1
   | Unreached -> 0
 
 (* The verdict of a mutant that one executable saw as [a] and another as
    [b]. Both are held by a collection, so a survivor is already sorted. Of
    two killing tests, the smaller one stays, so the merge does not depend on
-   the order. *)
+   the order. Two builds of one source with other flags of the rewriter can
+   filter a mutant for two reasons, and the smaller reason wins, which keeps
+   the merge commutative. *)
 let merge_verdict a b =
   match (a, b) with
   | Survived x, Survived y ->
@@ -45,8 +49,11 @@ let merge_verdict a b =
   | Killed { by = None }, (Killed _ as k)
   | (Killed _ as k), Killed { by = None } ->
       k
-  | ( (Killed _ | Not_evaluated | Survived _ | Outside_tests | Unreached),
-      (Killed _ | Not_evaluated | Survived _ | Outside_tests | Unreached) ) ->
+  | Filtered x, Filtered y -> Filtered (min x y)
+  | ( ( Killed _ | Not_evaluated | Survived _ | Outside_tests | Filtered _
+      | Unreached ),
+      ( Killed _ | Not_evaluated | Survived _ | Outside_tests | Filtered _
+      | Unreached ) ) ->
       if rank a >= rank b then a else b
 
 (* Collections *)
@@ -86,7 +93,7 @@ let add t r =
   let r =
     match r.verdict with
     | Survived s -> { r with verdict = survived (s.first :: s.others) }
-    | Killed _ | Not_evaluated | Outside_tests | Unreached -> r
+    | Killed _ | Not_evaluated | Outside_tests | Filtered _ | Unreached -> r
   in
   Id_map.update r.id
     (function None -> Some r | Some prior -> Some (combine prior r))
@@ -100,7 +107,7 @@ let merge a b = Id_map.union (fun _ a b -> Some (combine a b)) a b
 
 let format =
   {
-    Instr.magic = "windtrap-mutants-v4";
+    Instr.magic = "windtrap-mutants-v5";
     kind = "verdict";
     dir = "mutants";
     ext = "mutants";
@@ -140,11 +147,11 @@ let is_digest s =
    with one such line for each record, in [Mutate.compare_id] order.
    [<source>] is a name: the digest of the source file, or empty when the
    writer could not read the file. [<verdict>] is [unreached],
-   [outside_tests], [not_evaluated], [killed <n>] and then [n] killing
-   tests, [n] being [0] or [1], or [survived <n>] and then [n] reaching
-   tests. A test is [<k>] and then its [k] names. [load] reads this grammar
-   and nothing else, and refuses a rewrite outside [Mutate.rewrites], which
-   no report could render. *)
+   [outside_tests], [not_evaluated], [filtered <reason>] with the reason a
+   name, [killed <n>] and then [n] killing tests, [n] being [0] or [1], or
+   [survived <n>] and then [n] reaching tests. A test is [<k>] and then its
+   [k] names. [load] reads this grammar and nothing else, and refuses a
+   rewrite outside [Mutate.rewrites], which no report could render. *)
 let load path =
   let read_test c =
     List.init (Instr.read_count c "test path length") (fun _ ->
@@ -160,6 +167,7 @@ let load path =
         | n -> Instr.parse_fail "a mutant has %d killing tests" n)
     | "not_evaluated" -> Not_evaluated
     | "outside_tests" -> Outside_tests
+    | "filtered" -> Filtered (Instr.read_name c "filter reason")
     | "survived" ->
         let n = Instr.read_count c "reaching test count" in
         if n = 0 then
@@ -221,6 +229,7 @@ let save ?identity path t =
     | Killed { by = Some test } -> Printf.bprintf b "killed 1 %a" add_test test
     | Not_evaluated -> Buffer.add_string b "not_evaluated"
     | Outside_tests -> Buffer.add_string b "outside_tests"
+    | Filtered reason -> Printf.bprintf b "filtered %a" add_name reason
     | Survived s ->
         let tests = s.first :: s.others in
         Printf.bprintf b "survived %d" (List.length tests);

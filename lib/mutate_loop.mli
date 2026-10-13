@@ -44,16 +44,17 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     The loop proceeds in this order.
     + It fixes the population, which is the catalogue of the executable
       ({!val:Windtrap_runtime.Mutate.catalogue}) narrowed to the scope, without
-      the mutants that [[@mutate off]] dismisses. The scope is the list of
-      source-path prefixes that [--mutate] gave, and the revision of
-      [--mutate-since], if any. A mutant is in scope when the list is empty, or
-      when one prefix is a prefix of its recorded file ([String.starts_with]).
-      Under [--mutate-since], its line must also be one of the changed lines
-      ({!Changed_lines.of_git}), which git gives once, under {!Os.project_root},
-      before the dry run. The line of a mutant is that of the first byte of its
-      expression, so a change to a later line of an expression on more than one
-      line does not put the mutant in scope. Git does not run for a catalogue
-      with no mutant. A mutant out of scope is neither forked nor recorded.
+      the mutants that [[@mutate off]] dismisses and those that the rewriter
+      filtered. The scope is the list of source-path prefixes that [--mutate]
+      gave, and the revision of [--mutate-since], if any. A mutant is in scope
+      when the list is empty, or when one prefix is a prefix of its recorded
+      file ([String.starts_with]). Under [--mutate-since], its line must also be
+      one of the changed lines ({!Changed_lines.of_git}), which git gives once,
+      under {!Os.project_root}, before the dry run. The line of a mutant is that
+      of the first byte of its expression, or of the pattern of a dropped case,
+      so a change to a later line of an expression on more than one line does
+      not put the mutant in scope. Git does not run for a catalogue with no
+      mutant. A mutant out of scope is neither forked nor recorded.
     + It runs the dry run, which is {!Report.run} over [config] with [junit]
       cleared. Every other field is that of [config], [baseline] included, so
       the dry run of a [--mutate -u] run accepts what a [-u] run accepts. A site
@@ -156,9 +157,12 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
 
     {b The verdict file.} The file holds one record per reached mutant, one
     [Outside_tests] record per mutant of the population evaluated outside tests,
-    and one [Unreached] record per unreached one. Each record has the digest of
-    the source file of its mutant, when the loop can read the file. It is
-    written to {!Windtrap_runtime.Verdicts.output_file} of the executable, by
+    one [Unreached] record per unreached one, and one [Filtered] record per
+    mutant of the scope that the rewriter filtered, with the reason of the
+    filter. No child starts for a filtered mutant. The report counts the
+    filtered mutants by reason. Each record has the digest of the source file of
+    its mutant, when the loop can read the file. It is written to
+    {!Windtrap_runtime.Verdicts.output_file} of the executable, by
     {!Windtrap_runtime.Verdicts.save}. Under a scope, the records of the mutants
     outside it, under another prefix or on a line that did not change, stay when
     the file there was written by this build
@@ -181,9 +185,9 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     which an empty population says why on standard error. Every other refusal
     stands. Under [--mutate-since], when the catalogue has mutants and the
     population is empty, the verdict file is also written before the ordinary
-    run. The file holds no record in the scope, and keeps the other records as a
-    loop does. Thus [windtrap mutants --since] finds a file of the executable
-    when no mutant is on a changed line.
+    run. In the scope, the file holds only the [Filtered] records, and it keeps
+    the other records as a loop does. Thus [windtrap mutants --since] finds a
+    file of the executable when no mutant to test is on a changed line.
 
     {b Refusals.} Each of these is [Reported 1] with one sentence on standard
     error ({!Os.say}). The first seven are tried in this order, and the last has
@@ -218,6 +222,11 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
       catalogues is [Reported 1], with the sentence of
       {!Windtrap_runtime.Mutate.pp_arm_error} on standard error, before anything
       runs.
+    - A mutant that {!Windtrap_runtime.Mutate.arm} arms but that is dismissed
+      ([dismissed] is [Some _]) is [Reported 1] before anything runs. Its site
+      has no guard, so an armed run of it is the unarmed run. The sentence on
+      standard error gives the reason. For a {!Windtrap_runtime.Mutate.Filtered}
+      mutant, it tells the user to give [-no-filter] to the rewriter.
     - {!Windtrap_runtime.Mutate.Uncatalogued} is no refusal. The same sentence
       goes to standard error before the transcript, and the result is [Ran] of
       the ordinary run under {!Run.No_mutation}.

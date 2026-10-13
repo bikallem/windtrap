@@ -35,4 +35,5 @@
   plain_main.exe
   inline/runner_main.exe
   inline/inline_armed.ml
-  runaway/runaway_main.exe))
+  runaway/runaway_main.exe
+  scoped/scoped_main.exe))

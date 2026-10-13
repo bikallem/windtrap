@@ -28,7 +28,8 @@ let mutant_row (m : Mutate.mutant) =
   let off =
     match m.dismissed with
     | None -> ""
-    | Some reason -> " (off: " ^ reason ^ ")"
+    | Some (Mutate.Off reason) -> " (off: " ^ reason ^ ")"
+    | Some (Mutate.Filtered reason) -> " (filtered: " ^ reason ^ ")"
   in
   strf "%s %s -> %s%s" (Mutate.id_to_string m.id) m.before m.after off
 
@@ -161,7 +162,7 @@ let refused =
     "lib/calc.ml:9:12:frobnicate";
     "lib/calc.ml:9:12:plus";
     "lib/calc.ml:9:12:LT";
-    "lib/calc.ml:9:12:drop";
+    "lib/calc.ml:9:12:swap";
     ":add";
     "x:add";
     "lib/calc.ml:9:add";
@@ -191,12 +192,12 @@ let reasons () =
     "": no ':' separator
     "add": no ':' separator
     "lib/calc.ml": no ':' separator
-    "lib/calc.ml:9": unknown rewrite "9" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or)
-    "a.ml:1:": unknown rewrite "" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or)
-    "lib/calc.ml:9:12:frobnicate": unknown rewrite "frobnicate" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or)
-    "lib/calc.ml:9:12:plus": unknown rewrite "plus" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or)
-    "lib/calc.ml:9:12:LT": unknown rewrite "LT" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or)
-    "lib/calc.ml:9:12:drop": unknown rewrite "drop" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or)
+    "lib/calc.ml:9": unknown rewrite "9" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip, inc, one, zero, flip, none, tail)
+    "a.ml:1:": unknown rewrite "" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip, inc, one, zero, flip, none, tail)
+    "lib/calc.ml:9:12:frobnicate": unknown rewrite "frobnicate" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip, inc, one, zero, flip, none, tail)
+    "lib/calc.ml:9:12:plus": unknown rewrite "plus" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip, inc, one, zero, flip, none, tail)
+    "lib/calc.ml:9:12:LT": unknown rewrite "LT" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip, inc, one, zero, flip, none, tail)
+    "lib/calc.ml:9:12:swap": unknown rewrite "swap" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip, inc, one, zero, flip, none, tail)
     ":add": no position before the rewrite
     "x:add": no position before the rewrite
     "lib/calc.ml:9:add": no line number
@@ -234,6 +235,14 @@ let identifiers =
               "fsub";
               "and";
               "or";
+              "drop";
+              "skip";
+              "inc";
+              "one";
+              "zero";
+              "flip";
+              "none";
+              "tail";
             ]
             Mutate.rewrites);
       cases "id_to_string is <file>:<line>:<col>:<rewrite>" ~name:snd spellings
@@ -261,7 +270,7 @@ let bad_tables =
     ("line 0", site 0 0 "lt");
     ("a negative column", site 1 (-2) "lt");
     ("an unknown rewrite", site 1 0 "plus");
-    ("drop, which no instrumenter emits", site 1 0 "drop");
+    ("swap, which no instrumenter emits", site 1 0 "swap");
     ("an operator's name", site 1 0 "LT");
   ]
 
@@ -283,7 +292,7 @@ let refusal_messages () =
     Windtrap_runtime.Mutate: t/bad.ml: site 1: line 0 is not 1-based
     Windtrap_runtime.Mutate: t/bad.ml: site 1: negative column -2
     Windtrap_runtime.Mutate: t/bad.ml: site 1: unknown rewrite "plus"
-    Windtrap_runtime.Mutate: t/bad.ml: site 1: unknown rewrite "drop"
+    Windtrap_runtime.Mutate: t/bad.ml: site 1: unknown rewrite "swap"
     Windtrap_runtime.Mutate: t/bad.ml: site 1: unknown rewrite "LT"
     |}
 
@@ -299,13 +308,19 @@ let empty_file_name () =
 
 let catalogue_order () =
   register_only ~file:"t/cat_b.ml"
-    ~sites:[| site 9 2 "or"; site 1 2 "and" ~dismissed:"equivalent" |];
+    ~sites:
+      [|
+        site 9 2 "or";
+        site 1 2 "and" ~dismissed:(Mutate.Off "equivalent");
+        site 5 2 "sub" ~dismissed:(Mutate.Filtered "zero operand");
+      |];
   register_only ~file:"t/cat_a.ml"
     ~sites:[| site 4 0 "sub" ~before:"a - b" ~after:"a + b" |];
   equal (list string)
     [
       "t/cat_a.ml:4:0:sub a - b -> a + b";
       "t/cat_b.ml:1:2:and b -> a (off: equivalent)";
+      "t/cat_b.ml:5:2:sub b -> a (filtered: zero operand)";
       "t/cat_b.ml:9:2:or b -> a";
     ]
     (List.map mutant_row (catalogued "t/cat_a.ml" @ catalogued "t/cat_b.ml"))
@@ -342,6 +357,18 @@ let conflict_dropped () =
     [ "t/conflict.ml:1:0:lt b -> a" ]
     (List.map mutant_row (catalogued "t/conflict.ml"))
 
+(* A filter and a dismissal with one reason are two tables. *)
+let conflict_dismissal () =
+  register_only ~file:"t/conflict_off.ml"
+    ~sites:[| site 1 0 "lt" ~dismissed:(Mutate.Off "r") |];
+  ignore (output ());
+  register_only ~file:"t/conflict_off.ml"
+    ~sites:[| site 1 0 "lt" ~dismissed:(Mutate.Filtered "r") |];
+  is_true (String.length (output ()) > 0);
+  equal (list string)
+    [ "t/conflict_off.ml:1:0:lt b -> a (off: r)" ]
+    (List.map mutant_row (catalogued "t/conflict_off.ml"))
+
 let sites_and_catalogue =
   group "Sites and the catalogue"
     [
@@ -369,6 +396,8 @@ let sites_and_catalogue =
         "the guard of a differing table answers false and counts nothing, and \
          the first table stays catalogued"
         conflict_dropped;
+      test "a table whose dismissal differs in its kind alone differs"
+        conflict_dismissal;
       cases "a guard raises Invalid_argument for an index outside its table"
         ~name:string_of_int [ 1; -1 ] (fun i ->
           let g =
@@ -527,7 +556,7 @@ let arm_error_messages () =
        ])
   @@ __POS_OF__
        {|
-    "lib/calc.ml:9" is not a mutant identifier: unknown rewrite "9" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or); expected <file>:<line>:<col>:<rewrite>
+    "lib/calc.ml:9" is not a mutant identifier: unknown rewrite "9" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip, inc, one, zero, flip, none, tail); expected <file>:<line>:<col>:<rewrite>
     t/absent.ml:1:0:lt: not this executable's mutant; it catalogues no site in t/absent.ml (if you expected one, is the library under test instrumented with ppx_windtrap.mutate?)
     t/seven.ml:99:0:or: no such mutation site; t/seven.ml has these:
         t/seven.ml:1:0:or
@@ -587,7 +616,7 @@ let arming =
       test "a dismissed mutant arms"
         (disarming (fun () ->
              register_only ~file:"t/off.ml"
-               ~sites:[| site 2 1 "add" ~dismissed:"equivalent" |];
+               ~sites:[| site 2 1 "add" ~dismissed:(Mutate.Off "equivalent") |];
              equal string "armed t/off.ml:2:1:add b -> a (off: equivalent)"
                (armed (Mutate.arm (id "t/off.ml" 2 1 "add")))));
       test "arm arms the site in every registration of an equal table"

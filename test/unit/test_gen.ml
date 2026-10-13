@@ -1238,6 +1238,22 @@ let container_printers =
         (fun () -> Gen.(either nat (constant 'k'))),
         Either.Left 1,
         placeholder );
+    Printer
+      ( "either nat nat",
+        (fun () -> Gen.(either nat nat)),
+        Either.Left 1,
+        "Left (1)" );
+    Printer ("result nat nat", (fun () -> Gen.(result nat nat)), Ok 3, "Ok (3)");
+    Printer
+      ( "triple nat nat nat",
+        (fun () -> Gen.(triple nat nat nat)),
+        (1, 2, 3),
+        "(1, 2, 3)" );
+    Printer
+      ( "quad nat nat nat nat",
+        (fun () -> Gen.(quad nat nat nat nat)),
+        (1, 2, 3, 4),
+        "(1, 2, 3, 4)" );
   ]
 
 (* Each candidate is labelled against the drawn list: shorter, or the count of
@@ -1668,6 +1684,24 @@ let adjacent_swaps l =
         Some (Array.to_list b))
     (List.init (Int.max 0 (Array.length a - 1)) Fun.id)
 
+(* The lists that move an element of [l] in front of the larger elements
+   just before it, when two or more are. *)
+let moves l =
+  let a = Array.of_list l in
+  List.filter_map
+    (fun i ->
+      let rec start j =
+        if j > 0 && a.(j - 1) > a.(i) then start (j - 1) else j
+      in
+      let j = start i in
+      if i - j < 2 then None
+      else
+        let b = Array.copy a in
+        Array.blit a j b (j + 1) (i - j);
+        b.(j) <- a.(i);
+        Some (Array.to_list b))
+    (List.init (Array.length a) Fun.id)
+
 let rec increasing = function
   | a :: (b :: _ as rest) -> a < b && increasing rest
   | [ _ ] | [] -> true
@@ -1702,6 +1736,14 @@ let offers_every_swap seed =
       List.iter
         (fun swap -> mem (list int) swap candidates)
         (adjacent_swaps node))
+    (visit ~limit:100
+       (fun tree -> (value tree, candidate_values tree))
+       (at_seed (Gen.permutation (one_to 8)) seed))
+
+let offers_every_move seed =
+  List.iter
+    (fun (node, candidates) ->
+      List.iter (fun move -> mem (list int) move candidates) (moves node))
     (visit ~limit:100
        (fun tree -> (value tree, candidate_values tree))
        (at_seed (Gen.permutation (one_to 8)) seed))
@@ -1809,6 +1851,10 @@ let selections =
         "a permutation's every node offers each swap of two adjacent elements \
          out of order"
         ~count:30 Gen.int64 offers_every_swap;
+      prop
+        "a permutation's every node offers to move an element in front of the \
+         two or more larger elements just before it"
+        ~count:30 Gen.int64 offers_every_move;
       shrinks "a selection shrinks toward its values as given, or toward []"
         selection_shrink;
       test
@@ -2504,6 +2550,12 @@ let printers_rows =
   [
     Printer ("int", (fun () -> Gen.int), 42, "42");
     Printer ("unit", (fun () -> Gen.unit), (), "()");
+    Printer ("string_of", (fun () -> Gen.(string_of char)), "ab", {|"ab"|});
+    Printer
+      ( "bytes_of",
+        (fun () -> Gen.(bytes_of char)),
+        Bytes.of_string "ab",
+        {|Bytes.of_string "ab"|} );
     Printer
       ( "such_that, the underlying printer",
         (fun () -> Gen.(such_that even int)),

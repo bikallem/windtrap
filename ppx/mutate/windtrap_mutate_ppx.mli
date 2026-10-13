@@ -10,6 +10,15 @@
     [Instrument.transform_impl_file] with the ppxlib driver, under the name
     [windtrap_mutate], as a whole-file instrumentation of implementation files.
 
+    The registration adds six flags to the command line of the driver.
+    [-no-arm], [-no-call] and [-no-ret] switch off the [arm], the [call] and the
+    [ret] family of every file that the driver rewrites, and [-lit] switches on
+    the [lit] family, which is off by default. [-no-filter] switches off the
+    filters of [Instrument], and each [-log-function NAME] adds [NAME] to the
+    logging functions of the filters, as [-log-function Log.debug]. A dune
+    stanza gives them after the backend, as
+    [(instrumentation (backend ppx_windtrap.mutate -no-call))].
+
     The instrumentation is positioned after every rewriter that is not itself an
     instrumentation, so the function receives the expanded file and its mutants
     describe the code that runs. The one runtime dependency of the library is

@@ -5,7 +5,7 @@
 
 (* What git gives is pinned by test/cram/bin/since.t, which runs it in a
    repository of its own. This suite reads diffs that it states. It runs
-   [of_git] only with no git on [PATH]. *)
+   [of_git] only with no git on [PATH], or with a script in place of git. *)
 
 open Windtrap
 module Changed_lines = Windtrap.Private.Changed_lines
@@ -193,6 +193,39 @@ let without_git () =
   starts_with ~affix:"git rev-parse failed: "
     (require_error ~pp:(fun ppf _ -> Format.pp_print_string ppf "lines") result)
 
+(* A [PATH] whose git is a script. The script writes its arguments to a
+   file, one on each line, then a warning and an error on standard error,
+   and exits 128. *)
+let failing_git () =
+  if Sys.win32 then skip ~reason:"the git of this test is a shell script" ();
+  let path = Sys.getenv_opt "PATH" in
+  let dir = Filename.temp_dir "windtrap-path" "" in
+  let git = Filename.concat dir "git" and args = Filename.concat dir "args" in
+  Out_channel.with_open_bin git (fun oc ->
+      Printf.fprintf oc
+        "#!/bin/sh\n\
+         printf '%%s\\n' \"$@\" > %s\n\
+         echo 'warning: a warning' >&2\n\
+         echo 'fatal: an error' >&2\n\
+         exit 128\n"
+        (Filename.quote args));
+  Unix.chmod git 0o755;
+  Fun.protect ~finally:(fun () ->
+      Unix.putenv "PATH" (Option.value ~default:"" path);
+      List.iter
+        (fun file -> try Sys.remove file with Sys_error _ -> ())
+        [ git; args ];
+      Sys.rmdir dir)
+  @@ fun () ->
+  Unix.putenv "PATH" dir;
+  let result = Changed_lines.of_git ~root:"/the/root" "HEAD" in
+  equal string "git rev-parse failed: fatal: an error"
+    (require_error ~pp:(fun ppf _ -> Format.pp_print_string ppf "lines") result);
+  equal (list string)
+    [ "-C"; "/the/root"; "rev-parse"; "--verify"; "--quiet"; "HEAD"; "" ]
+    (String.split_on_char '\n'
+       (In_channel.with_open_bin args In_channel.input_all))
+
 let lines =
   group "Changed lines"
     [
@@ -232,6 +265,10 @@ let lines =
                ~pp:(fun ppf _ -> Format.pp_print_string ppf "lines")
                (Changed_lines.of_git ~root:"." rev)));
       test "of_git closes each descriptor when git cannot start" without_git;
+      test
+        "of_git runs git in the root, and a failure gives the last line that \
+         git wrote on standard error"
+        failing_git;
     ]
 
 let () = exit (run "changed_lines" [ lines ])

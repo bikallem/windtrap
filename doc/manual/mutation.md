@@ -134,7 +134,7 @@ calc: 10 passed in 1.3ms.
 ──────────────────────────────────────────────────────────
 
 reproduce: dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --arm calc.ml:10:16:ge
-mutants: 2 survived of 5 reached by this suite, 3 killed, score 60.0%
+mutants: 2 survived of 9 reached by this suite, 7 killed, score 77.8%
 ```
 
 ## Reproducing a survivor
@@ -173,9 +173,10 @@ mutant killed.
 
 To judge a new test, narrow the mutation run. `--mutate=PREFIX` tests
 only the mutants of the files whose path starts with a prefix, and still
-saves its verdicts. The filters select the tests as in any run; a
-filtered run lists the mutants its tests never reached and saves no
-verdict. `stays positive` checks a sign that `a - b → a + b` keeps:
+saves its verdicts. The test filters, as `-f`, select the tests as in
+any run. A run that they narrow lists the mutants its tests never
+reached and saves no verdict. `stays positive` checks a sign that
+`a - b → a + b` keeps:
 
 ```
 $ dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --mutate=calc.ml -f "stays positive"
@@ -189,13 +190,13 @@ calc: 1 passed in 0.5ms.
       subtraction › stays positive  test_calc.ml:11
 ──────────────────────────────────────────────────────────
 
-─────────────────── never reached (4) ────────────────────
-  4  calc.ml   lines 5, 8, 10
+─────────────────── never reached (7) ────────────────────
+  7  calc.ml   lines 5, 7-8, 10
 ──────────────────────────────────────────────────────────
 
 reproduce: dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --arm calc.ml:6:11:add -f 'stays positive'
 windtrap: verdicts not saved: this run's selection narrows the suite, and a partial run's verdicts would stand in the project merge as the whole.
-mutants: 1 survived of 1 reached by the 1 selected test, 4 never reached, score 0.0%
+mutants: 1 survived of 2 reached by the 1 selected test, 1 killed, 7 never reached, score 50.0%
 ```
 
 ## Testing the changed lines
@@ -208,7 +209,8 @@ line that a change only removes does not count. Each line of a file that
 git does not track counts, but not a file that git ignores, for example
 by a `.gitignore` rule. The project root must be in a git work tree.
 
-A mutant is on one line: the line where its expression starts. When an
+A mutant is on one line: the line where its expression starts, or for a
+`drop` mutant the line where the pattern of its case starts. When an
 expression has more than one line, a change to a later line does not
 put the mutant of the expression in scope. For example, when `total`
 is on one line and `+ tax` is on the next line, a change to the second
@@ -270,9 +272,10 @@ stops with exit code 1, because no mutant can be on a changed line.
 `WINDTRAP_MUTATE_SINCE` is the mirror of `--mutate-since`. Under
 `WINDTRAP_MUTATE`, a suite with no mutant on a changed line runs as
 usual and says why on standard error. It also writes its verdict file,
-with no verdict of a changed line. Thus `windtrap mutants --since`
-finds a file, and a pull request that no mutant is on passes the gate,
-also after a new build. Under `--mutate`, the same run stops with exit
+with no verdict of a test on a changed line, and with the
+[filtered mutants](#filtered-mutants) of these lines. Thus
+`windtrap mutants --since` finds a file, and a pull request that no
+tested mutant is on passes the gate, also after a new build. Under `--mutate`, the same run stops with exit
 code 1. Without `--mutate` and `WINDTRAP_MUTATE`, the revision changes
 nothing. A run that arms a mutant (`--arm`) tests only that mutant, and
 says nothing about the revision. Any other run says on standard error
@@ -360,7 +363,7 @@ calc: 10 passed in 0.3ms.
 ──────────────────────────────────────────────────────────
 
 reproduce: dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --arm calc.ml:10:16:ge
-mutants: 2 survived of 5 reached by this suite, 3 killed, score 60.0%
+mutants: 2 survived of 9 reached by this suite, 7 killed, score 77.8%
 ```
 
 Under `dune runtest`, the mirror `WINDTRAP_MUTATE_JOBS` sets the jobs of
@@ -397,16 +400,101 @@ dune `-j 1`, so that it runs one suite at a time.
 
 ## Dismissing an equivalent mutant
 
-A mutant that no test can tell from the original is equivalent. `abs`
+A mutant that no test can tell from the original is equivalent. The
+rewriter finds some equivalent mutants itself (see
+[Filtered mutants](#filtered-mutants)). `abs`
 returns `n` when `n >= 0`, and the mutant `n > 0` differs at zero only,
 where both branches return 0. To dismiss it, put `[@mutate off
 "reason"]` on the expression, as `calc.ml` does; the site is then
 neither tested nor counted. It dismisses every mutant of the
 expression, in this version and in any later one that gives the
-expression more mutants. `[@@mutate off]` dismisses a binding,
-`[@@@mutate off]` and `[@@@mutate on]` the structure items between
-them, and `[@@@mutate exclude_file]` a file. Only `off` takes a reason,
-which no report prints.
+expression more mutants. After parameters, as in `let f x =
+function[@mutate off "reason"] ...`, the attribute on `function`
+dismisses every mutant of its cases, and the parameters keep their
+mutants. A case is no expression: to dismiss the
+`drop` mutant of a case, put the attribute on its pattern, as in
+`| (Div [@mutate off "reason"]) -> ...`. The attribute must be on the
+whole pattern: in `| A | B [@mutate off "reason"]` it is on `B`. The
+rewriter refuses it when the case has a `drop` mutant, and does not
+read it when the case has none, as under `-no-arm`. Put an or-pattern
+or a tuple in brackets, as `| (A | B) [@mutate off "reason"]`. In
+`r := 0 [@mutate off "reason"]` the attribute is on `0`, and
+ocamlformat cannot format `(r := 0) [@mutate off "reason"]`. Thus, to
+dismiss the `skip` mutant of a statement that applies an operator,
+write `begin[@mutate off "reason"] r := 0 end`. `[@@mutate off]`
+dismisses a binding, `[@@@mutate off]` and `[@@@mutate on]` the
+structure items between them, and `[@@@mutate exclude_file]` a file.
+Only `off` takes a reason, which no report prints.
+
+## Filtered mutants
+
+The rewriter filters a mutant when the syntax shows that the mutant is
+equivalent to the original, or that it changes only a log or a failure
+message. It records the site as filtered, with a reason, and no child
+tests the mutant. The score does not include it. The reports give a
+`filtered` section with the number of mutants for each reason, and the
+outcome line gives their total, as `3 filtered`. The reasons are these:
+
+- `zero operand`: `x + 0` and `x - 0` are equal on integers, so their
+  `sub` and `add` mutants are filtered. On floats, `-0. +. 0.` is `0.`
+  and `-0. -. 0.` is `-0.`, so `x +. 0.` keeps its mutant.
+- `same operands`: `a && a` and `a || a` are `a` when `a` is a name,
+  `true`, `false` or a field, which only gives a value.
+- `same branches`: in `if c then e else e`, the `not` or comparison
+  mutant of `c` changes nothing. The sites inside `c` and `e` keep their
+  mutants.
+- `same body as the next case`: in `| A -> 0 | _ -> 0`, the `drop`
+  mutant of `A` sends `A` to `_`, which gives the same value. The case
+  has no guard, binds no variable and has no `lazy` pattern, which
+  forces a value. The next case is `_` without a guard.
+- `logging call`: each site in the arguments of `Logs.app`,
+  `Logs.err`, `Logs.warn`, `Logs.info`, `Logs.debug` and `Logs.msg`.
+  The call itself keeps its `skip` mutant. A statement in the
+  arguments, as `incr n;` in the message function, changes the state of
+  the program, so it keeps its mutants. The rewriter does not see other
+  effects, as those of a function that the message calls.
+- `failure message`: under `-lit`, a literal in the arguments of
+  `failwith` or `invalid_arg`. A statement in the arguments keeps its
+  mutants, as in a logging call.
+
+Two branches or two bodies are the same when they are the same code at
+two positions. Code whose value can depend on its position is never the
+same as other code: code that holds `__LINE__`, `assert`, a pattern that
+can fail, a `match` or a `function`. The rewriter does not see the
+types, so it does not know which `match` can fail, and it treats each
+one as a `match` that can fail. A test can read what `print_string`,
+`Printf.printf` and `Format.printf` print, so the arguments of these
+functions keep their mutants. A literal in the argument of `raise`
+keeps its mutant too, because a test can compare the exception.
+
+A project that logs through its own functions, or through
+`Printf.eprintf` or `prerr_endline`, gives their names with
+`-log-function` after the backend, one flag for each name, spelled as
+the source spells it:
+
+```lisp
+(instrumentation
+ (backend ppx_windtrap.mutate -log-function Log.debug -log-function Log.info))
+```
+
+`-no-filter` after the backend switches every filter off, and the run
+then tests each mutant:
+
+```lisp
+(instrumentation
+ (backend ppx_windtrap.mutate -no-filter))
+```
+
+`[@mutate off "reason"]` on a filtered site dismisses it, and the site
+is then neither tested nor counted.
+
+When each mutant that a run can test is dismissed or filtered, there
+is nothing to test. `--mutate` then refuses the run and exits 1, and
+`WINDTRAP_MUTATE` runs the suite without mutation. The two write no
+verdict file, so `windtrap mutants` does not count these filtered
+mutants. Under `WINDTRAP_MUTATE_SINCE`, `WINDTRAP_MUTATE` writes the
+verdict file with the filtered mutants of the changed lines (see
+[Testing the changed lines](#testing-the-changed-lines)).
 
 ## Mutation testing a project
 
@@ -449,7 +537,7 @@ calc: 10 passed in 1.0ms.
 ──────────────────────────────────────────────────────────
 
 reproduce: dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --arm calc.ml:10:16:ge
-mutants: 2 survived of 5 reached by this suite, 3 killed, score 60.0%
+mutants: 2 survived of 9 reached by this suite, 7 killed, score 77.8%
 $ dune exec windtrap -- mutants
 ───────────────────── survivors (2) ──────────────────────
   SURVIVED  calc.ml:10:16:ge  n > 0 → n >= 0
@@ -467,7 +555,7 @@ $ dune exec windtrap -- mutants
 ──────────────────────────────────────────────────────────
 
 reproduce: dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --arm calc.ml:10:16:ge
-mutants: 2 survived of 5 reached, 3 killed, 1 executable, score 60.0%
+mutants: 2 survived of 9 reached, 7 killed, 1 executable, score 77.8%
 ```
 
 Only code that a suite's own process runs reaches a mutant. A binary
@@ -487,9 +575,9 @@ test, and check what it prints with `expect` or `expect_file`.
 
 The outcome line gives the mutation score: the percentage of killed
 mutants among the mutants that were killed, survived or were not
-evaluated. A mutant that no test reached, or that ran outside every
-test, is not part of the score. When no mutant is part of it and no gate
-is given, the line gives no score.
+evaluated. A mutant that no test reached, that ran outside every test,
+or that the rewriter filtered, is not part of the score. When no mutant
+is part of it and no gate is given, the line gives no score.
 
 A project can keep a survivor that it does not plan to kill. To gate on
 the score and not on each survivor, give `--min-score PCT` to
@@ -500,7 +588,7 @@ scored mutant as 100:
 
 ```
 $ dune exec windtrap -- mutants --min-score 50 | tail -n 1
-mutants: 2 survived of 5 reached, 3 killed, 1 executable, score 60.0%, minimum 50%: ok
+mutants: 2 survived of 9 reached, 7 killed, 1 executable, score 77.8%, minimum 50%: ok
 ```
 
 A suite's mutation run gives the score too, and has no gate.
@@ -508,33 +596,50 @@ A suite's mutation run gives the score too, and has no gate.
 ## Exporting the verdicts
 
 For other tools, `--json` prints the merge as JSON on standard output,
-in place of the report. The document has its version, the counts and
-the score, the executables, and each mutant with its verdict. A
-survivor also has the tests that ran it. A test names its executable by
-its index in `executables`, because two executables can have the same
-name. Under `--min-score` the outcome line goes to standard error, and
-the exit code is that of the gate. Standard output can refuse the
-document, for example on a full disk. The command then gives the reason
-on standard error and exits 1. The gate does not run. A later version
-can add keys. A change to the meaning of a key increments `version`.
-[`bin/mutate_cmd.mli`](../../bin/mutate_cmd.mli) gives each key:
+in place of the report. The document has its version, the counts and the
+score, the executables, each mutant with its verdict, and each filtered
+mutant with its reason. A survivor also has the tests that ran it. A
+test names its executable by its index in `executables`, because two
+executables can have the same name. Under `--min-score` the outcome line
+goes to standard error, and the exit code is that of the gate. Standard
+output can refuse the document, for example on a full disk. The command
+then gives the reason on standard error and exits 1. The gate does not
+run. A later version can add keys. A change to the meaning of a key
+increments `version`. [`bin/mutate_cmd.mli`](../../bin/mutate_cmd.mli)
+gives each key:
 
 ```
 $ dune exec windtrap -- mutants --json
 { "version": 1,
-  "summary": { "reached": 5, "killed": 3, "survived": 2,
+  "summary": { "reached": 9, "killed": 7, "survived": 2,
     "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
-    "score": 60.00 },
+    "filtered": 0, "score": 77.78 },
   "executables": [
     { "name": "test_calc.exe", "path": "default/test_calc.exe" } ],
   "mutants": [
+    { "id": "calc.ml:5:4:drop",
+      "file": "calc.ml", "line": 5, "col": 4, "rewrite": "drop",
+      "before": "| Add -> ...", "after": "| Add when false -> ...",
+      "verdict": "killed" },
     { "id": "calc.ml:5:11:sub",
       "file": "calc.ml", "line": 5, "col": 11, "rewrite": "sub",
       "before": "a + b", "after": "a - b",
       "verdict": "killed" },
+    { "id": "calc.ml:6:4:drop",
+      "file": "calc.ml", "line": 6, "col": 4, "rewrite": "drop",
+      "before": "| Sub -> ...", "after": "| Sub when false -> ...",
+      "verdict": "killed" },
     { "id": "calc.ml:6:11:add",
       "file": "calc.ml", "line": 6, "col": 11, "rewrite": "add",
       "before": "a - b", "after": "a + b",
+      "verdict": "killed" },
+    { "id": "calc.ml:7:4:drop",
+      "file": "calc.ml", "line": 7, "col": 4, "rewrite": "drop",
+      "before": "| Mul -> ...", "after": "| Mul when false -> ...",
+      "verdict": "killed" },
+    { "id": "calc.ml:8:4:drop",
+      "file": "calc.ml", "line": 8, "col": 4, "rewrite": "drop",
+      "before": "| Div -> ...", "after": "| Div when false -> ...",
       "verdict": "killed" },
     { "id": "calc.ml:8:14:neq",
       "file": "calc.ml", "line": 8, "col": 14, "rewrite": "neq",
@@ -552,7 +657,8 @@ $ dune exec windtrap -- mutants --json
       "before": "n < 0", "after": "n <= 0",
       "verdict": "survived",
       "tests": [
-        { "executable": 0, "test": ["sign", "is -1 for a negative"] } ] } ] }
+        { "executable": 0, "test": ["sign", "is -1 for a negative"] } ] } ],
+  "filtered": [ ] }
 ```
 
 ## Killing a survivor
@@ -579,15 +685,15 @@ project's merge passes:
 ```
 $ dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --mutate
 calc: 11 passed in 2.9ms.
-mutants: 5 reached by this suite, 5 killed, score 100.0%
+mutants: 9 reached by this suite, 9 killed, score 100.0%
 $ dune exec windtrap -- mutants
-mutants: 5 reached, 5 killed, 1 executable, score 100.0%
+mutants: 9 reached, 9 killed, 1 executable, score 100.0%
 ```
 
 ## What is mutated
 
-Each mutant rewrites one expression, and the last part of its
-identifier names the rewrite:
+Each mutant rewrites one expression or one case of a match, and the
+last part of its identifier names the rewrite:
 
 - `not` negates a condition that is neither a comparison nor a
   connective: the condition of an `if` or a `while`, or a guard.
@@ -597,6 +703,26 @@ identifier names the rewrite:
 - `&&` becomes `||` (`or`), and `||` becomes `&&` (`and`).
 - `+` becomes `-` (`sub`) and `-` becomes `+` (`add`); `+.` and `-.`
   swap likewise (`fsub`, `fadd`).
+- `drop` removes one case of a `match`, a `function` or a `try`. A
+  value then goes on to the next case that matches it, or the match
+  raises `Match_failure`. An exception goes on to the next handler. The
+  identifier gives the position of the pattern of the case.
+- `skip` removes a call whose value the code discards: `e1` in
+  `e1; e2`, and `e` in `let () = e in body`, when it is an application.
+- `none` replaces `Some e` with `None`, and `tail` replaces `h :: t`
+  with `t`. The mutant does not evaluate `e` or `h`. A list literal
+  such as `[a; b; c]` is one site, at its bracket, and becomes `[b; c]`.
+  A chain such as `a :: b :: t` is also one site, and becomes `b :: t`.
+
+Under the backend flag `-lit`, literals are mutated too:
+
+- `inc` adds one to an integer literal, and `one` makes `0` a `1`.
+- `zero` makes a float literal other than zero `0.`, and `one` makes
+  `0.` a `1.`.
+- `flip` swaps `true` and `false`. A `true` or `false` that is a
+  condition has the `not` mutant and no `flip`.
+
+Strings and characters are not mutated.
 
 A comparison outside a condition, as in `let ok = a < b`, carries no
 mutant, and neither does an `assert`. In a chain of one operator, as
@@ -604,7 +730,49 @@ mutant, and neither does an `assert`. In a chain of one operator, as
 (`let%test`, `let%expect_test` and `module%test` with its helpers)
 carry no mutant, and the rest of their file is mutated. A file that
 rebinds an operator loses the rewrites of its family: the four
-arithmetic operators, the six comparisons or the two connectives.
+arithmetic operators, the six comparisons or the two connectives. A
+file that declares a constructor `true` or `false` has no `drop`
+mutant, and a file that declares a constructor `()` has no `skip`
+mutant. A file that declares a constructor `Some`, `None` or `(::)` has
+no `none` or `tail` mutant, and a file that declares `true` or `false`
+has no `flip` mutant. This applies to a constructor of a type and to an
+extension constructor.
+
+The rewriter does not see a constructor that comes from another module.
+When `Some e` builds a value of such a type, and the type has no `None`,
+the instrumented build fails to compile. This is also the case when
+`h :: t` builds a value of such a type, and `t` has another type. Put
+`[@mutate off "reason"]` on the expression.
+
+The right-hand side of a `let rec`, as in `let rec ones = 1 :: ones`,
+has no `none` or `tail` mutant outside its functions and its `lazy`
+bodies, because OCaml does not let such a value be an `if`.
+
+A case is not dropped when it is the only case of its match that a
+value reaches, because every value then raises. A match with a
+refutation case, as `| _ -> .`, a case that matches a value and an
+exception, as `| None | exception Not_found`, and an effect case, as
+`| effect Ask, k`, have no `drop` mutant.
+
+A `let () = e` at the top level of a module runs when the module
+initializes, and has no `skip` mutant.
+
+To switch the `drop`, the `skip` or the `none` and `tail` mutants off
+for a library, give `-no-arm`, `-no-call` or `-no-ret` after the
+backend. A library has many literals, and each one gives a mutant, so
+the mutants of literals are off until `-lit` switches them on:
+
+```lisp
+(instrumentation
+ (backend ppx_windtrap.mutate -no-arm -no-call -no-ret -lit))
+```
+
+A long list literal can make the instrumented build slow. When its
+elements are not constants, the time of `ocamlopt` increases as the
+square of their number. A mutant in each element makes the elements
+not constants, as `none` does in a generated table
+`[ (0, Some "a"); (1, Some "b"); ... ]` of thousands of elements. Put
+`[@@mutate off]` on the binding of such a table.
 
 ## Where the verdicts are
 
@@ -647,10 +815,12 @@ A mutation run forks a child process for each mutant. It is refused on
 Windows, and in a process that has started a domain. Under
 `--mutate-since`, it is refused when git cannot give the changed lines,
 for example when `REV` names no commit. `--mutate` and
-`--arm` together are a usage error. An interrupt ends the run: the
-running children are killed, the mutants under test are named on
-standard error, and no verdict file is written. When no child runs at
-the interrupt and mutants remain, standard error names the next
+`--arm` together are a usage error. `--arm` refuses a mutant that
+`[@mutate off]` dismisses or that the rewriter filtered, and exits 1:
+its site has no guard, so no run can arm it. An interrupt ends the
+run: the running children are killed, the mutants under test are named
+on standard error, and no verdict file is written. When no child runs
+at the interrupt and mutants remain, standard error names the next
 mutant, which no child tested. An interrupt after the last child exits
 stops nothing: the run writes the verdict file and the report as
 usual, and then dies by the signal.

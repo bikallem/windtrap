@@ -159,7 +159,10 @@ let of_diff text =
             match file with
             | None -> unreadable "a hunk comes before its file"
             | Some None -> t
-            | Some (Some _) when count = 0 -> t
+            | ((Some (Some _))
+               [@mutate off "a range of no line holds no line for mem"])
+              when count = 0 ->
+                t
             | Some (Some path) -> add_range t path (first, count)
           in
           read t file ~removed ~added:count lines
@@ -218,12 +221,24 @@ let git ?silent ~root args =
       @@ fun () ->
       match
         let open_file path flags =
-          Unix.openfile path (Unix.O_CLOEXEC :: flags) 0o600
+          Unix.openfile path
+            begin[@mutate
+                   off
+                     "only git starts while the descriptor is open, and git \
+                      gets it as its standard input or error"]
+              Unix.O_CLOEXEC :: flags
+            end
+            0o600
         in
         let closing fd fn = Fun.protect ~finally:(fun () -> Unix.close fd) fn in
         (* Each descriptor closes also when a later call raises. *)
         let pid, out =
-          let stdin = open_file Filename.null [ Unix.O_RDONLY ] in
+          let stdin =
+            open_file Filename.null
+              ([ Unix.O_RDONLY ]
+              [@mutate
+                off "O_RDONLY is 0, the mode that open takes without a flag"])
+          in
           closing stdin @@ fun () ->
           let stderr = open_file err_path [ Unix.O_WRONLY; Unix.O_TRUNC ] in
           closing stderr @@ fun () ->

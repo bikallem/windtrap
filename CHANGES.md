@@ -128,6 +128,63 @@
 - `windtrap mutants` exits 1 with the reason on standard error when
   standard output refuses its report or document, for example on a full
   disk, and runs no gate.
+- A mutant drops one case of a `match`, a `function` or a `try`, under
+  the name `drop`, so that the value goes on to the next case that
+  matches it (see
+  [What is mutated](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#what-is-mutated)).
+- A mutant skips a call whose value the code discards, under the name
+  `skip`: the left operand of `e1; e2`, and `e` in `let () = e in body`.
+- (breaking) The `drop` and `skip` mutants are on by default, so a
+  project that had no survivor can have new ones, and `-no-arm` and
+  `-no-call` after `ppx_windtrap.mutate` in an `instrumentation` field
+  switch them off.
+- A mutant replaces `Some e` with `None`, under the name `none`, and
+  `h :: t` with `t`, under the name `tail`, and does not evaluate `e`
+  or `h` (see
+  [What is mutated](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#what-is-mutated)).
+- (breaking) The `none` and `tail` mutants are on by default, so a
+  project that had no survivor can have new ones, and `-no-ret` after
+  `ppx_windtrap.mutate` in an `instrumentation` field switches them
+  off.
+- (breaking) A `Some e` or an `h :: t` whose constructor is that of a
+  type of another module, such as a type with a `Some` and no `None`,
+  can fail to compile under `ppx_windtrap.mutate`, and
+  `[@mutate off "reason"]` on it is the way out.
+- `-lit` after `ppx_windtrap.mutate` switches on the mutants of
+  literals: an integer becomes its successor, under `inc`, or `1` under
+  `one` when it is `0`, a float becomes `0.` under `zero`, or `1.` under
+  `one` when it is zero, and `true` and `false` swap under `flip`.
+- `[@mutate off "reason"]` on the pattern of a case dismisses the `drop`
+  mutant of that case; on one alternative of an or-pattern or one
+  component of a tuple, as in `| A | B [@mutate off "reason"]`, it is an
+  error when the case has a `drop` mutant, and
+  `| (A | B) [@mutate off "reason"]` dismisses the case (see
+  [Dismissing an equivalent mutant](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#dismissing-an-equivalent-mutant)).
+- `[@mutate off "reason"]` on a `function` after parameters, as in
+  `let f x = function[@mutate off "reason"] ...`, dismisses every mutant
+  of its cases, and a bad payload there is an error.
+- The texts of a mutant spell a labeled tuple of OCaml 5.4 as the source
+  does, as `(~x:0, ~y)`, and not as the extension node that ppxlib
+  encodes it as.
+- The rewriter filters a mutant that the syntax shows equivalent to
+  the original, as the `sub` mutant of `x + 0`, or that changes only a
+  logging call of `Logs` or a literal of a `failwith` message: no child
+  tests it, and the report counts it under its reason (see
+  [Filtered mutants](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#filtered-mutants)).
+- The outcome line of a mutation run and of `windtrap mutants` counts
+  the filtered mutants, as `2 filtered`, and the score leaves them out.
+- `-no-filter` after `ppx_windtrap.mutate` in an `instrumentation`
+  field tests every mutant, and `-log-function NAME` adds a logging
+  function, as `-log-function Log.debug`.
+- `windtrap mutants --json` gives the count `"filtered"` in
+  `"summary"`, and each filtered mutant with its `"reason"` in the
+  array `"filtered"`, not in `"mutants"`.
+- `WINDTRAP_MUTATE` on a suite whose mutants in scope are all dismissed
+  or filtered says that of the mutants that the run could test, not of
+  every mutant of the executable.
+- `--arm` refuses a mutant that `[@mutate off]` dismisses or that the
+  rewriter filtered, and exits 1: its site has no guard, so no run can
+  arm it.
 - `--mutate-jobs N` and its mirror `WINDTRAP_MUTATE_JOBS` let a
   mutation run test up to `N` mutants at the same time, at most 256, or
   one for each CPU with `auto`, and give the same report and verdict
@@ -165,10 +222,10 @@
   change and the test passes alone with no mutant, and runs every
   reaching test only when that test does not kill it (see
   [Where the verdicts are](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#where-the-verdicts-are)).
-- (breaking) A verdict file starts with `windtrap-mutants-v4` and keeps
-  the test that killed each mutant and a digest of its source file;
-  `windtrap mutants` refuses a file of 0.2.0, so run the suites with
-  their mutants again.
+- (breaking) A verdict file starts with `windtrap-mutants-v5` and keeps
+  the test that killed each mutant, a digest of its source file and the
+  reason of each filtered mutant; `windtrap mutants` refuses a file of
+  an earlier version, so run the suites with their mutants again.
 
 ## v0.2.0 2026-09-26
 

@@ -45,9 +45,11 @@ what is non-obvious.
   gives it `/dev/zero`, which never empties, and a child cannot keep a
   pipe full with certainty. The suite runs `plain_main.exe` as the
   zero-mutant control that must be declined by name, `runaway/` for the
-  hit-count budget and `inline/` for an armed inline partition. `pty_stubs.c`
-  opens a pseudo-terminal, which `Unix` does not do: the loop draws its
-  live line only when its standard output is a terminal.
+  hit-count budget, `inline/` for an armed inline partition and
+  `scoped/` for a second file whose one site is filtered, which a scope
+  of the other file must not record. `pty_stubs.c` opens a
+  pseudo-terminal, which `Unix` does not do: the loop draws its live
+  line only when its standard output is a terminal.
   Under `semantics/`, `coverage/` and `mutate/` are the
   semantics-preservation suites: a fixture library instrumented
   unconditionally through `(pps)`, run and compared with the
@@ -58,14 +60,21 @@ what is non-obvious.
   a real twin rather than an expectation someone could edit to match a
   defect. Each has a link-only executable listing the fixture library
   alone: the rewriter's `ppx_runtime_libraries` inject the runtime, and
-  nothing may pull the core in. `integration/` asks whether an
+  nothing may pull the core in. The mutation fixtures and the
+  `integration/` libraries are built with `-lit`, so that every family
+  of the rewriter is in them. `integration/` asks whether an
   instrumented build compiles and registers, one library per question:
-  generated code under fatal warnings, a shadowed `not` and `bool`, the
-  typing-order and expected-type corpora, and a registration suite that
-  arms each mutant and checks that the library then behaves as the
-  mutant's text says. An instrumenter change that cannot keep the
-  semantics suites green is rejected, not accommodated; grow the fixtures
-  with every expression form the instrumenter learns.
+  generated code under fatal warnings, a shadowed `not` and `bool`, a
+  constructor `()`, `true` or `false` of the file (declared or as an
+  extension constructor), a declared `Some` and `(::)`, a `let rec`
+  value of a structure, of an expression and of a class, a site of each
+  filter (a logging call through `-log-function`), the typing-order and
+  expected-type corpora, and a registration suite that arms each mutant
+  and checks that the library then behaves as the mutant's text says,
+  and that a filtered mutant changes nothing. An instrumenter change
+  that cannot keep the semantics suites green is rejected, not
+  accommodated; grow the fixtures with every expression form the
+  instrumenter learns.
 - `cram/`: cram sessions, one directory per subject. Cram pins stdout,
   stderr and the exit code natively, and `dune promote` is its
   acceptance.
@@ -108,21 +117,23 @@ what is non-obvious.
   executables that disagree about one library (`two_executables.t`), and
   the loop and the merge under `--mutate-since` and `--since` in a git
   repository of the session's own (`since.t`), also from a subdirectory,
-  for an executable outside any build directory, for verdict files under
-  one root and under two roots, for a project below the root of the
-  repository, under a configuration that changes what `git diff` prints,
-  and for a project in no repository. `test_changed_lines` in `unit/`
-  reads the diffs that it states, and `since.t` pins what git gives.
+  for filtered mutants, for an executable outside any build directory,
+  for verdict files under one root and under two roots, for a project
+  below the root of the repository, under a configuration that changes
+  what `git diff` prints, and for a project in no repository.
+  `test_changed_lines` in `unit/` reads the diffs that it states, and
+  runs a script in place of git for the arguments and the errors of git.
+  `since.t` pins what git gives.
   `mkdata.exe` writes the synthetic dumps and verdict files the sessions
   merge; `pins_add.exe` and `pins_sub.exe` are instrumented suites over
   `calc.ml`, a library under both backends in every build.
   `ppx/` holds the rewriters' sessions: their expansions and refusals,
-  one session per rewriter (`coverage.t`, `mutate.t`, `expect.t`), over
-  fixtures that are never compiled. Each block runs `pp.exe`, a
-  standalone ppxlib driver linking every rewriter, with `-apply` naming
-  the ones it applies. Under `-apply` ppxlib runs the instrumenting
-  rewriters in link order, so `coverage_first.exe` links them the other
-  way round for the one composition `pp.exe` cannot run.
+  one main session per rewriter (`coverage.t`, `mutate.t`,
+  `expect.t`), over fixtures that are never compiled. Each block runs
+  `pp.exe`, a standalone ppxlib driver linking every rewriter, with
+  `-apply` naming the ones it applies. Under `-apply` ppxlib runs the
+  instrumenting rewriters in link order, so `coverage_first.exe` links
+  them the other way round for the one composition `pp.exe` cannot run.
   `elide.exe` condenses each registration module to its file and its
   table of points or sites, and each session shows one in full. The
   outputs pin generated bytes, point indexes and byte extents included,
@@ -132,10 +143,23 @@ what is non-obvious.
   installed libraries to pin the type error of a mistyped
   `Expect_test_config.run`. A golden of text the compiler decides runs
   only from the OCaml version that prints it, so such blocks have
-  sessions of their own: `coverage_functions.t` from 5.2 (the printer's
-  spelling of a function), `expect_typing.t` from 5.4 (a type error's
-  wording); the conformance corpus gates `escaped_strings.ml` and
-  `hello_async.ml` the same way.
+  sessions of their own: `coverage_functions.t` and `mutate_functions.t`
+  from 5.2 (the printer's spelling of a function), `expect_typing.t`
+  from 5.4 (a type error's wording); the conformance corpus gates
+  `escaped_strings.ml` and `hello_async.ml` the same way. A fixture in
+  a syntax that an OCaml version adds also has its own session, which
+  runs only from that version: `mutate_effects.t` from 5.3 (effect
+  cases) and `mutate_labeled_tuples.t` from 5.4 (labeled tuples). Thus
+  a contributor on an older compiler does not run these goldens.
+  ppxlib 0.37 stops on a labeled tuple with a migration error, so
+  `mutate_labeled_tuples.t` also runs only from ppxlib 0.38.
+  `mutate_effects.t` removes the suffix that ppxlib 0.38 adds to the
+  name of the effect encoding, so that its golden holds with ppxlib 0.37
+  too.
+  `mutate_scale.t` runs the mutation rewriter on an else-if chain of
+  20000 branches under a limit of processor time. The limit stops a
+  rewriter whose time increases with the square of the chain length.
+  The session does not run on Windows, whose shell has no `ulimit`.
   `coverage.t` holds the two backends' attribute grammars in parity:
   both accept every spelling of `spellings.ml`, an `off` with a reason
   included, and each coverage refusal reads as the mutation one once

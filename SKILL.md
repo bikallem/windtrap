@@ -410,7 +410,7 @@ below a percentage; set it a little under the measured number and never
 lower it to pass.
 
 Mutation, after writing or changing a test, scoped to the file it
-exercises and filtered to the test:
+exercises and narrowed to the test with `-f`:
 
 ```
 dune exec --instrument-with ppx_windtrap.mutate test/test_mylib.exe -- --mutate=lib/mylib.ml -f "the test's name"
@@ -423,11 +423,27 @@ ran and did not notice. Resolve each one:
   mutant also gives): strengthen it until the mutant dies. The
   `reproduce:` line runs the suite with that mutant armed.
 - The mutant is equivalent, no test can tell it from the original:
-  dismiss it in the source with `[@mutate off "the reason"]`.
+  dismiss it in the source with `[@mutate off "the reason"]`. A `drop`
+  mutant removes a case of a match, and its attribute goes on the
+  case's whole pattern, as `| (None [@mutate off "the reason"]) -> ...`
+  or `| (A | B) [@mutate off "the reason"] -> ...`. On one alternative
+  or one component of a pattern, the attribute is an error. After
+  parameters, `let f x = function[@mutate off "the reason"] ...`
+  dismisses every mutant of the cases. A `skip`
+  mutant of an operator statement takes the form
+  `begin[@mutate off "the reason"] r := 0 end;`, which ocamlformat
+  can format.
+- The build fails under the backend at a `Some e` or an `h :: t` whose
+  constructor comes from a type of another module: put
+  `[@mutate off "the reason"]` on that expression.
+- The mutant is in the arguments of a logging function of the project:
+  give `-log-function Module.fn` after the backend in the
+  `instrumentation` field. The rewriter already filters the arguments
+  of `Logs` calls and some equivalent mutants, as that of `x + 0`.
 
-A filtered run exits 0 whatever it finds and saves no verdict. The
-project's answer merges every suite's verdicts, and exits 1 when a
-mutant survived every suite that reached it:
+A run that `-f` narrows exits 0 whatever it finds and saves no
+verdict. The project's answer merges every suite's verdicts, and exits
+1 when a mutant survived every suite that reached it:
 
 ```
 WINDTRAP_MUTATE=1 dune runtest --force --instrument-with ppx_windtrap.mutate
@@ -482,6 +498,6 @@ session runs, and `windtrap coverage` merges it with the suites'.
   expected values from the spec; inputs chosen to break the code.
 - Suite in the shape above; baseline stanzas run `--corrected`.
 - Every new test seen failing: the bug's test before the fix, the
-  filtered mutation run for the others, every survivor resolved.
+  narrowed mutation run for the others, every survivor resolved.
 - Every accepted baseline hunk read.
 - Coverage read for the code you changed.

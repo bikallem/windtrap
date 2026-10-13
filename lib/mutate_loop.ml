@@ -75,6 +75,17 @@ let population ~scope =
   | _, _, [] -> Error All_dismissed
   | _, _, population -> Ok population
 
+(* The mutants of the scope that the rewriter filtered, each with its
+   reason. They are not tested, and their verdicts say why. *)
+let filtered ~scope =
+  List.filter_map
+    (fun (m : Mutate.mutant) ->
+      match m.dismissed with
+      | Some (Mutate.Filtered reason) when in_scope ~scope m.id ->
+          Some (m, reason)
+      | Some (Mutate.Off _ | Mutate.Filtered _) | None -> None)
+    (Mutate.catalogue ())
+
 (* A prefix that leaves nothing is one sentence whatever the catalogue holds:
    the prefix is what the reader typed, and a build that is instrumented and
    fine must not be blamed for it. *)
@@ -105,8 +116,8 @@ let refusal ~scope = function
             (String.concat "," prefixes)
             rev rev)
   | All_dismissed ->
-      "every mutant this run could test is dismissed by [@mutate off]; there \
-       is nothing to test"
+      "every mutant this run could test is dismissed by [@mutate off] or \
+       filtered by the rewriter; there is nothing to test"
 
 let unmutated ~scope reason =
   let why =
@@ -129,7 +140,8 @@ let unmutated ~scope reason =
               (String.concat "," prefixes)
               rev)
     | All_dismissed ->
-        "every mutant of this executable is dismissed by [@mutate off]"
+        "every mutant this run could test is dismissed by [@mutate off] or \
+         filtered by the rewriter"
   in
   strf "WINDTRAP_MUTATE is set, but %s, so the suite runs without mutation" why
 
@@ -1067,7 +1079,9 @@ let test_mutants renderer loop reached =
           { mutant = shown mutant; invocation = loop.config.invocation }
         in
         pool.not_evaluated <- missed :: pool.not_evaluated
-    | Verdicts.Killed _ | Verdicts.Outside_tests | Verdicts.Unreached -> ());
+    | Verdicts.Killed _ | Verdicts.Outside_tests | Verdicts.Filtered _
+    | Verdicts.Unreached ->
+        ());
     pool.verdicts <- Verdicts.add pool.verdicts (record mutant verdict)
   in
   let rec commit_ready () =
@@ -1226,7 +1240,7 @@ let save ~scope verdicts =
       Some (strf "could not write the verdict file: %s" message)
 
 (* What the loop has to say about its verdict file, above the outcome line. *)
-let save_verdicts ~scope ~narrowed ~outside ~unreached tested =
+let save_verdicts ~scope ~narrowed ~outside ~unreached ~filtered tested =
   match tested.stopped with
   | Some _ -> None
   | None when narrowed ->
@@ -1238,11 +1252,15 @@ let save_verdicts ~scope ~narrowed ~outside ~unreached tested =
       save ~scope
         (List.fold_left Verdicts.add tested.verdicts
            (recorded Verdicts.Outside_tests outside
-           @ recorded Verdicts.Unreached unreached))
+           @ recorded Verdicts.Unreached unreached
+           @ List.map
+               (fun (m, reason) -> record m (Verdicts.Filtered reason))
+               filtered))
 
 (* A signal that came once the last child had ended stopped nothing: the
    report ends as usual, and the loop still dies by it. *)
-let finish renderer ~narrowed ~reach ~reached ~outside ~unreached forks =
+let finish renderer ~narrowed ~reach ~reached ~outside ~unreached ~filtered
+    forks =
   match forks with
   | Error message ->
       Report.mutation_refused renderer message;
@@ -1254,7 +1272,7 @@ let finish renderer ~narrowed ~reach ~reached ~outside ~unreached forks =
         match r.verdict with
         | Verdicts.Killed _ -> true
         | Verdicts.Survived _ | Verdicts.Not_evaluated | Verdicts.Outside_tests
-        | Verdicts.Unreached ->
+        | Verdicts.Filtered _ | Verdicts.Unreached ->
             false
       in
       let lines =
@@ -1266,6 +1284,7 @@ let finish renderer ~narrowed ~reach ~reached ~outside ~unreached forks =
           not_evaluated;
           unreached = lines unreached;
           outside_tests = lines outside;
+          filtered = List.map snd filtered;
           killed = List.length (List.filter is_killed records);
           not_tested = List.length reached - List.length records;
           scope =
@@ -1314,7 +1333,7 @@ let history reached =
                  Hashtbl.replace killers r.id test
              | ( ( Verdicts.Killed _ | Verdicts.Survived _
                  | Verdicts.Not_evaluated | Verdicts.Outside_tests
-                 | Verdicts.Unreached ),
+                 | Verdicts.Filtered _ | Verdicts.Unreached ),
                  _ ) ->
                  ())
            (Verdicts.records prior));
@@ -1322,6 +1341,7 @@ let history reached =
 
 let loop renderer ~scope ~jobs ~suite (config : Run.config) tests =
   let population = population ~scope in
+  let filtered = filtered ~scope in
   let reach =
     {
       sites = Hashtbl.create 256;
@@ -1395,15 +1415,16 @@ let loop renderer ~scope ~jobs ~suite (config : Run.config) tests =
                 Result.map
                   (fun tested ->
                     ( tested,
-                      save_verdicts ~scope ~narrowed ~outside ~unreached tested
-                    ))
+                      save_verdicts ~scope ~narrowed ~outside ~unreached
+                        ~filtered tested ))
                   (fork renderer loop reached)
               with
               | Supervision message -> Error message
               | Sys_error _ when interrupt.signal = Some Sys.sigpipe ->
                   Os.die_by Sys.sigpipe
             in
-            finish renderer ~narrowed ~reach ~reached ~outside ~unreached forks)
+            finish renderer ~narrowed ~reach ~reached ~outside ~unreached
+              ~filtered forks)
 
 (* The armed run *)
 
@@ -1428,12 +1449,31 @@ let xfail_failed (outcome : Run.outcome) =
     (fun (r : Run.result) -> Option.is_some r.xfail && counted_failure r)
     (Run.results outcome.run)
 
+(* A dismissed site has no guard, so an armed run of its mutant is the
+   unarmed run, and would end on a false "not evaluated". *)
+let unarmable (id : Mutate.id) dismissal =
+  let id = Mutate.id_to_string id in
+  match dismissal with
+  | Mutate.Off _ ->
+      strf
+        "%s: [@mutate off] dismisses this mutant, so its site has no guard and \
+         no run can arm it"
+        id
+  | Mutate.Filtered reason ->
+      strf
+        "%s: the rewriter filtered this mutant (%s), so its site has no guard \
+         and no run can arm it; give -no-filter after ppx_windtrap.mutate to \
+         test it"
+        id reason
+
 let armed renderer ~spec ~suite (config : Run.config) tests =
   match Result.bind (Mutate.id_of_string spec) Mutate.arm with
   | Error (Mutate.Uncatalogued _ as error) ->
       Os.say (Pp.to_string Mutate.pp_arm_error error);
       ordinary ~suite config tests
   | Error error -> refuse (Pp.to_string Mutate.pp_arm_error error)
+  | Ok ({ id; dismissed = Some dismissal; _ } : Mutate.mutant) ->
+      refuse (unarmable id dismissal)
   | Ok mutant ->
       let id = Mutate.id_to_string mutant.id in
       let config =
@@ -1461,15 +1501,23 @@ let armed renderer ~spec ~suite (config : Run.config) tests =
       flush_descriptors ();
       Ran result
 
-(* A revision that leaves no mutant of the catalogue in scope still writes
-   the verdict file, with no verdict on a changed line. Thus [windtrap
-   mutants --since] finds a file for each such executable, also after a new
-   build, and a change that no mutant is on passes the gate. The file holds
-   no new verdict, so a narrowed selection does not stop the save. *)
+(* A revision that leaves no mutant of the catalogue to test still writes
+   the verdict file, with no verdict of a child on a changed line. Thus
+   [windtrap mutants --since] finds a file for each such executable, also
+   after a new build, and a change that no tested mutant is on passes the
+   gate. As in a loop, the file holds a [Filtered] record for each mutant of
+   the scope that the rewriter filtered. No test gives these verdicts, so a
+   narrowed selection does not stop the save. *)
 let save_unmutated ~scope reason =
   match (reason, scope.since) with
   | (Out_of_scope | All_dismissed), Some _ ->
-      Option.iter Os.say (save ~scope Verdicts.empty)
+      let filtered =
+        List.map
+          (fun (m, reason) -> record m (Verdicts.Filtered reason))
+          (filtered ~scope)
+      in
+      Option.iter Os.say
+        (save ~scope (List.fold_left Verdicts.add Verdicts.empty filtered))
   | Uninstrumented, _ | (Out_of_scope | All_dismissed), None -> ()
 
 let execute_and_report ~suite (config : Run.config) tests =

@@ -15,6 +15,7 @@ module Mutate = Windtrap_runtime.Mutate
 module Oracle = Windtrap_mutate_forced.Oracle
 module Forced = Windtrap_mutate_forced.Forced
 module No_guard = Windtrap_mutate_forced.No_guard
+module Filtered = Windtrap_mutate_forced.Filtered
 module Disambiguate = Windtrap_mutate_disambiguate.Disambiguate
 module Expected_type = Windtrap_mutate_disambiguate.Expected_type
 
@@ -156,6 +157,41 @@ let originals =
     ( "a dismissed site's cap 20",
       "20",
       fun () -> Int.to_string (No_guard.cap 20) );
+    ("arm_pick 0", "zero", fun () -> Oracle.arm_pick 0);
+    ("arm_guarded 10", "big", fun () -> Oracle.arm_guarded 10);
+    ("arm_guarded 9", "small", fun () -> Oracle.arm_guarded 9);
+    ( "arm_handler of Not_found",
+      "caught",
+      fun () -> Oracle.arm_handler (fun () -> raise Not_found) );
+    ( "call_statement",
+      "1",
+      fun () -> Int.to_string (Oracle.call_statement (ref 0)) );
+    ("call_bound", "1", fun () -> Int.to_string (Oracle.call_bound (ref 0)));
+    ("lit_int", "41", fun () -> Int.to_string (Oracle.lit_int ()));
+    ("lit_negative", "-1", fun () -> Int.to_string (Oracle.lit_negative ()));
+    ("lit_zero_int64", "0", fun () -> Int64.to_string (Oracle.lit_zero_int64 ()));
+    ("lit_int32", "7", fun () -> Int32.to_string (Oracle.lit_int32 ()));
+    ( "lit_nativeint",
+      "3",
+      fun () -> Nativeint.to_string (Oracle.lit_nativeint ()) );
+    ("lit_float", "2.5", fun () -> Float.to_string (Oracle.lit_float ()));
+    ( "lit_zero_float",
+      "0.",
+      fun () -> Float.to_string (Oracle.lit_zero_float ()) );
+    ("lit_bool", "true", fun () -> Bool.to_string (Oracle.lit_bool ()));
+    ( "ret_some 1",
+      "1",
+      fun () -> Option.fold ~none:"none" ~some:Int.to_string (Oracle.ret_some 1)
+    );
+    ( "ret_cons 1 [ 2 ]",
+      "1,2",
+      fun () -> String.concat "," (ints (Oracle.ret_cons 1 [ 2 ])) );
+    ( "the operands of ret_some_order",
+      "e",
+      fun () -> traced (fun () -> Oracle.ret_some_order 1) );
+    ( "the operands of ret_cons_order",
+      "t,h",
+      fun () -> traced (fun () -> Oracle.ret_cons_order 1 [ 2 ]) );
   ]
 
 let disarmed =
@@ -218,6 +254,47 @@ let armings =
     oracle "add" "a - b" (fun () -> ints [ Oracle.ari_sub 5 3 ]) [ "8" ];
     oracle "fsub" "a +. b" (fun () -> floats [ Oracle.ari_fadd 5. 3. ]) [ "2." ];
     oracle "fadd" "a -. b" (fun () -> floats [ Oracle.ari_fsub 5. 3. ]) [ "8." ];
+    (* A dropped case gives its value to the next case, past a guard that it
+       no longer runs, and a dropped handler lets its exception go on. *)
+    oracle "drop" "| 0 -> ..." (fun () -> [ Oracle.arm_pick 0 ]) [ "other" ];
+    oracle "drop" "| n when n > 9 -> ..."
+      (fun () -> [ Oracle.arm_guarded 10 ])
+      [ "small" ];
+    oracle "drop" "| Not_found -> ..."
+      (fun () ->
+        [
+          (match Oracle.arm_handler (fun () -> raise Not_found) with
+          | caught -> caught
+          | exception Not_found -> "raised Not_found");
+        ])
+      [ "raised Not_found" ];
+    oracle "skip" "incr count"
+      (fun () -> ints [ Oracle.call_statement (ref 0) ])
+      [ "0" ];
+    oracle "skip" "incr total"
+      (fun () -> ints [ Oracle.call_bound (ref 0) ])
+      [ "0" ];
+    oracle "inc" "41" (fun () -> ints [ Oracle.lit_int () ]) [ "42" ];
+    oracle "inc" "(-1)" (fun () -> ints [ Oracle.lit_negative () ]) [ "0" ];
+    oracle "one" "0L"
+      (fun () -> [ Int64.to_string (Oracle.lit_zero_int64 ()) ])
+      [ "1" ];
+    oracle "inc" "7l"
+      (fun () -> [ Int32.to_string (Oracle.lit_int32 ()) ])
+      [ "8" ];
+    oracle "inc" "3n"
+      (fun () -> [ Nativeint.to_string (Oracle.lit_nativeint ()) ])
+      [ "4" ];
+    oracle "zero" "2.5" (fun () -> floats [ Oracle.lit_float () ]) [ "0." ];
+    oracle "one" "0." (fun () -> floats [ Oracle.lit_zero_float () ]) [ "1." ];
+    oracle "flip" "true" (fun () -> bools [ Oracle.lit_bool () ]) [ "false" ];
+    oracle "none" "Some x"
+      (fun () ->
+        [ Option.fold ~none:"none" ~some:Int.to_string (Oracle.ret_some 1) ])
+      [ "none" ];
+    oracle "tail" "h :: t"
+      (fun () -> ints (Oracle.ret_cons 1 [ 2; 3 ]))
+      [ "2"; "3" ];
     (* Armed, the two encodings that bind their operands still evaluate each
        once, right to left, and the connective runs its right operand when the
        rewrite says so. *)
@@ -234,6 +311,13 @@ let armings =
           traced (fun () -> Oracle.con_short true true);
         ])
       [ "r"; "" ];
+    (* Armed, a [ret] mutant evaluates what its [after] text holds alone. *)
+    oracle "none" "Some (note \"e\" x)"
+      (fun () -> [ traced (fun () -> Oracle.ret_some_order 1) ])
+      [ "" ];
+    oracle "tail" "(note \"h\" h) :: (note \"t\" t)"
+      (fun () -> [ traced (fun () -> Oracle.ret_cons_order 1 [ 2 ]) ])
+      [ "t" ];
     {
       file = "disambiguate.ml";
       rewrite = "add";
@@ -300,15 +384,24 @@ let armed_mutants =
 
 (* Every mutant *)
 
-(* [forced ()] reads the functions of forced.ml that its mutants change. *)
+(* [forced ()] reads the functions of forced.ml that its mutants change. A
+   dropped case can raise [Match_failure], which is a reading too. *)
 let forced () =
-  strf "%d %d %.1f %b %b %b %b %d %d %d %d %b" (Forced.sum 2 3)
-    (Forced.diff 9 4) (Forced.fsum 1.5 2.5) (Forced.both true false)
-    (Forced.either false true) (Forced.window 0 10 5)
-    (Forced.chain true true false)
-    (Forced.below 1 2) (Forced.same 1 1) (Forced.at_least 3 3)
-    (Forced.scaled 2 3)
-    (Forced.search (fun x -> x > 2) [ 1; 2; 3 ])
+  match
+    strf "%d %d %.1f %b %b %b %b %d %d %d %d %b %s %d %d %d" (Forced.sum 2 3)
+      (Forced.diff 9 4) (Forced.fsum 1.5 2.5) (Forced.both true false)
+      (Forced.either false true) (Forced.window 0 10 5)
+      (Forced.chain true true false)
+      (Forced.below 1 2) (Forced.same 1 1) (Forced.at_least 3 3)
+      (Forced.scaled 2 3)
+      (Forced.search (fun x -> x > 2) [ 1; 2; 3 ])
+      (Forced.show_shape Forced.Bool true)
+      (Forced.handled (fun () -> raise Not_found))
+      (Forced.bump (ref 0))
+      (Forced.bump_bound (ref 0))
+  with
+  | reading -> reading
+  | exception e -> "raised " ^ Printexc.to_string e
 
 let every_forced_mutant () =
   let original = forced () in
@@ -337,5 +430,79 @@ let every_mutant =
         every_forced_mutant;
     ]
 
+(* A file that declares the constructors of a guard *)
+
+(* The test reads [size], so that the module is linked and registers its
+   sites. *)
+let lost_families () =
+  let rewrite (m : Mutate.mutant) = m.id.rewrite in
+  equal int 3 Windtrap_mutate_forced.Own_constructors.size;
+  equal (list string) [ "ge"; "one"; "inc" ]
+    (List.map rewrite (mutants_of "own_constructors.ml"))
+
+(* Filtered sites *)
+
+let filtered_reading () =
+  Filtered.logged 4;
+  strf "%d %d %b %d %d %d %d" (Filtered.zero 4) (Filtered.chain 5 3)
+    (Filtered.same true)
+    (Filtered.branches false 7)
+    (Filtered.cases `B) (Filtered.message 2)
+    (Queue.take Filtered.Log.logged)
+
+let reason (m : Mutate.mutant) =
+  match m.dismissed with
+  | Some (Mutate.Filtered reason) -> Some reason
+  | Some (Mutate.Off _) | None -> None
+
+let filtered_reasons () =
+  equal (list string)
+    [
+      "zero operand";
+      "same operands";
+      "same branches";
+      "same body as the next case";
+      "failure message";
+      "logging call";
+    ]
+    (List.filter_map reason (mutants_of "filtered.ml"))
+
+let filtered_inert () =
+  let original = filtered_reading () in
+  equal string "4 8 true 7 0 2 8" original;
+  List.iter
+    (fun (m : Mutate.mutant) ->
+      match reason m with
+      | None -> ()
+      | Some _ ->
+          ignore
+            (require_ok ~pp:Mutate.pp_arm_error (Mutate.arm m.id)
+              : Mutate.mutant);
+          let armed = filtered_reading () in
+          disarm ();
+          equal ~msg:(Mutate.id_to_string m.id) string original armed)
+    (mutants_of "filtered.ml")
+
+let filtered =
+  group "Filtered sites"
+    [
+      test "each filtered site is catalogued with the reason of its filter"
+        filtered_reasons;
+      test "arming a filtered mutant changes no reading" filtered_inert;
+      test "the left operand of a filtered chain keeps its mutant" (fun () ->
+          equal string "2"
+            (armed ~file:"filtered.ml" ~rewrite:"sub" ~before:"a + b" (fun () ->
+                 Int.to_string (Filtered.chain 5 3))));
+    ]
+
+let lost =
+  group "Lost families"
+    [
+      test "a file that declares Some, (::) and true keeps no ret and no flip"
+        lost_families;
+    ]
+
 let () =
-  exit (run "mutate registration" [ disarmed; armed_mutants; every_mutant ])
+  exit
+    (run "mutate registration"
+       [ disarmed; armed_mutants; every_mutant; filtered; lost ])

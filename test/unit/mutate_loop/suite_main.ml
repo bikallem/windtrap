@@ -51,13 +51,15 @@ let weak =
     test "widen is not 99" (fun () -> is_true (Subject.widen 1 2 <> 99));
   ]
 
-(* Reaches the [@mutate off] site and pins nothing about it. Only the
-   dismissal keeps it out of the survivor blocks and out of the
-   denominator. *)
+(* Reaches the [@mutate off] site and the filtered site, and pins nothing
+   about them. Only the dismissal and the filter keep them out of the
+   survivor blocks and out of the denominator. *)
 let dismissed =
   [
     test "the dismissed site is run and not pinned" (fun () ->
         is_true (Subject.dismissed 1 2 <> 99));
+    test "the filtered site is run and not pinned" (fun () ->
+        is_true (Subject.filtered 1 <> 99));
   ]
 
 (* A second survivor: [orphan] is weakly reached by one test, where

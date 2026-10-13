@@ -7,9 +7,10 @@
 
     The command merges the verdict files that [--mutate] runs wrote and reports
     on a whole project. It reports the mutants that survived every executable
-    that reached them, and the mutants that no executable reached. It only reads
-    files, so it runs no test and drives no build. A build gates on its exit
-    code, since a [--mutate] run exits 0 whatever it finds.
+    that reached them, the mutants that no executable reached, and the number of
+    mutants that the rewriter filtered, for each reason. It only reads files, so
+    it runs no test and drives no build. A build gates on its exit code, since a
+    [--mutate] run exits 0 whatever it finds.
 
     {!run} is the whole command.
     {!Windtrap.Private.Report_sections.mutation_report} states what the report
@@ -54,9 +55,10 @@
     [--since REV] keeps, in each file that is kept, only the records of the
     mutants on a line that changed since the git revision [REV]
     ({!Windtrap.Private.Changed_lines.of_git}). The line of a mutant is that of
-    its identifier: the line of the first byte of its expression. The paths of
-    the records are relative to the root of the project that wrote the file, and
-    git runs in that root, once for each root:
+    its identifier: the line of the first byte of its expression, or of the
+    pattern of a dropped case. The paths of the records are relative to the root
+    of the project that wrote the file, and git runs in that root, once for each
+    root:
     - For a file below a build directory, the root is the parent of the build
       directory ({!Windtrap_runtime.Instr.build_root}).
     - For a file in a [_windtrap/mutants] directory, the root is the parent of
@@ -66,10 +68,10 @@
 
     The merge, the report, the document and the gate then see only these
     records, so a survivor on a line that did not change does not fail the
-    command. The lines are those of the work tree when the command runs. A
-    verdict file that a build of an earlier source wrote can put another mutant
-    on such a line, so the suites must run again after the change, before the
-    merge.
+    command, and a filtered mutant on such a line is not counted. The lines are
+    those of the work tree when the command runs. A verdict file that a build of
+    an earlier source wrote can put another mutant on such a line, so the suites
+    must run again after the change, before the merge.
 
     When the root of a file holds no file of its records, the command stops with
     exit code [1]. Git cannot give the lines of these mutants, and an empty
@@ -80,8 +82,9 @@
     The verdicts are those of [Windtrap_runtime.Verdicts.merge] over the files
     that are kept, in which a kill by one executable wins. A mutant that some
     file reached survives the merge iff it survived in each of those files, and
-    a mutant that no file reached is unreached. The counts of the report are
-    read off the merged verdicts, and its scope is
+    a mutant that no file reached is unreached. A mutant that a file filtered is
+    filtered when no other file has a verdict of a test for it. The counts of
+    the report are read off the merged verdicts, and its scope is
     {!Windtrap.Private.Report_sections.scope.Executables} with the number of
     files kept.
 
@@ -136,13 +139,14 @@
     others. A change to the meaning of a key increments ["version"].
 
     The document is one object with the keys ["version"], ["summary"],
-    ["executables"] and ["mutants"]. ["version"] is the number [1].
+    ["executables"], ["mutants"] and ["filtered"]. ["version"] is the number
+    [1].
 
     ["summary"] is an object with these keys:
     - ["reached"] is the sum of the three counts that follow it.
-    - ["killed"], ["survived"], ["not_evaluated"], ["outside_tests"] and
-      ["unreached"] are each the count of the merged mutants that have that
-      verdict.
+    - ["killed"], ["survived"], ["not_evaluated"], ["outside_tests"],
+      ["unreached"] and ["filtered"] are each the count of the merged mutants
+      that have that verdict.
     - ["score"] is the score of the {{!section-gate}gate}, with two decimals.
 
     ["executables"] is an array with one object for each file that is kept, in
@@ -154,18 +158,28 @@
       {!Windtrap_runtime.Instr.exe_identity} spells it. It is [null] for a file
       that records none.
 
-    ["mutants"] is an array with one object for each merged mutant, in the order
-    of [Windtrap_runtime.Mutate.compare_id]. The object has these keys:
+    ["mutants"] is an array with one object for each merged mutant that is not
+    filtered, in the order of [Windtrap_runtime.Mutate.compare_id]. The object
+    has these keys:
     - ["id"] is the identifier, as [Windtrap_runtime.Mutate.id_to_string] spells
       it.
     - ["file"], ["line"], ["col"] and ["rewrite"] are the four parts of the
       identifier.
-    - ["before"] is the source text of the original expression.
-    - ["after"] is the source text of the armed expression.
+    - ["before"] is the text of the original site, and ["after"] the text of the
+      mutant, as [Windtrap_runtime.Mutate.site] gives them. For most rewrites,
+      these are two expressions. For ["drop"], they are the pattern and the
+      guard of the case, with [...] for its body, as ["| Add -> ..."] and
+      ["| Add when false -> ..."]. For ["skip"], ["after"] is ["()"], and for
+      ["none"], ["None"].
     - ["verdict"] is one of ["killed"], ["survived"], ["not_evaluated"],
       ["outside_tests"] and ["unreached"].
     - ["tests"] is in the object of a survivor only. It is an array of the tests
       that reached the survivor.
+
+    ["filtered"] is an array with one object for each merged mutant that the
+    rewriter filtered, in the same order. The object has the keys of an object
+    of ["mutants"] from ["id"] to ["after"], and the key ["reason"] in place of
+    ["verdict"]. ["reason"] is the reason of the filter, as ["zero operand"].
 
     ["tests"] has one object for each reaching test of the survivor in each file
     in which it survived. The objects are sorted by file, and then by the names

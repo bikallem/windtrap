@@ -86,7 +86,7 @@ and gates on them:
   { "version": 1,
     "summary": { "reached": 1, "killed": 0, "survived": 1,
       "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
-      "score": 0.00 },
+      "filtered": 0, "score": 0.00 },
     "executables": [
       { "name": "pins_add.exe", "path": "default/test/pins_add.exe" } ],
     "mutants": [
@@ -95,11 +95,31 @@ and gates on them:
         "before": "a - b", "after": "a + b",
         "verdict": "survived",
         "tests": [
-          { "executable": 0, "test": ["sub", "sub is nonzero"] } ] } ] }
+          { "executable": 0, "test": ["sub", "sub is nonzero"] } ] } ],
+    "filtered": [ ] }
   --- stderr
   windtrap: mutants: 1 survived of 1 reached, 1 executable, score 0.0%, minimum 0%: ok
   $ run windtrap mutants --since HEAD~1 | tail -n 1
   mutants: 2 survived of 3 reached, 1 killed, 1 never reached, 1 executable, score 33.3%
+
+A filtered mutant also counts only on a changed line. Here a verdict
+file of the session has one filtered mutant on the changed line 13, and
+one on line 14:
+
+  $ mkdir filtered
+  $ "$bin/mkdata.exe" mutants filtered/f.mutants \
+  >   'test/cram/bin/calc.ml:13:14:add:a - b:a + b=filtered:zero operand' \
+  >   'test/cram/bin/calc.ml:14:17:sub:a + b:a - b=filtered:same operands'
+  $ run windtrap mutants filtered | tail -n 1
+  mutants: 0 reached, 2 filtered, 1 executable
+  $ run windtrap mutants --since HEAD filtered
+  ────────────────────── filtered (1) ──────────────────────
+    The rewriter found these mutants equivalent or of no interest, and no child tested them.
+    1  zero operand
+  ──────────────────────────────────────────────────────────
+  
+  mutants: 0 reached, 1 filtered, 1 executable
+  $ rm -r filtered
 
 A verdict file below a build directory has the parent of that directory
 as its root, also when a PATH argument gives it. Git runs in that root,

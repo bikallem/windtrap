@@ -751,7 +751,9 @@ let equality ~seen ~show ~anchors ~gutter ~(expected : Failure.text)
 let raise_sides ~seen ~expected ~actual =
   let spans_lines s = String.contains s '\n' in
   match actual with
-  | Some actual when not (spans_lines expected || spans_lines actual) ->
+  | ((Some actual)
+     [@mutate off "unmarked, sides draws a one-line pair as the next case does"])
+    when not (spans_lines expected || spans_lines actual) ->
       sides ~seen
         ~gutter:(2 + String.length "expected exception")
         ~anchors:("expected exception", "raised")
@@ -1432,6 +1434,7 @@ type mutation = {
   not_evaluated : not_evaluated list;
   unreached : (string * int) list;
   outside_tests : (string * int) list;
+  filtered : string list;
   killed : int;
   not_tested : int;
   scope : scope;
@@ -1547,6 +1550,7 @@ let mutation_line ~min (m : mutation) =
         [ styled `Yellow (strf "%d never reached" n) ])
     @ term (List.length m.outside_tests) (fun n ->
         [ styled `Yellow (strf "%d evaluated outside tests" n) ])
+    @ term (List.length m.filtered) (fun n -> [ plain (strf "%d filtered" n) ])
     @ term m.not_tested (fun n -> [ plain (strf "%d not tested" n) ])
     @ (match m.scope with
       | Executables n -> [ [ plain (counted n "executable") ] ]
@@ -1645,6 +1649,35 @@ let outside_tests_section =
           ];
       ]
 
+(* One row per reason, the most frequent first: a reader examines a filter
+   that removes many mutants before one that removes few. *)
+let filtered_section = function
+  | [] -> []
+  | reasons ->
+      let counts =
+        List.map
+          (fun reason ->
+            (reason, List.length (List.filter (String.equal reason) reasons)))
+          (List.sort_uniq String.compare reasons)
+      in
+      let counts =
+        List.stable_sort (fun (_, a) (_, b) -> Int.compare b a) counts
+      in
+      let width =
+        String.length
+          (string_of_int (List.fold_left max 0 (List.map snd counts)))
+      in
+      let row (reason, n) = Line [ plain (strf "  %*d  %s" width n reason) ] in
+      Rule (Some (strf "filtered (%d)" (List.length reasons)))
+      :: Line
+           [
+             plain
+               "  The rewriter found these mutants equivalent or of no \
+                interest, and no child tested them.";
+           ]
+      :: List.map row counts
+      @ [ Rule None ]
+
 (* The command arms the first survivor printed. *)
 let outcome ~invocation ~selection ~min (m : mutation) =
   (match m.survivors with
@@ -1662,6 +1695,7 @@ let mutation_closing ~(config : Run.config) (m : mutation) =
       not_evaluated_section ~selection m.not_evaluated;
       unreached_section m.unreached;
       outside_tests_section m.outside_tests;
+      filtered_section m.filtered;
     ]
   in
   let rest = join (sections @ [ outcome ~invocation ~selection ~min:None m ]) in
@@ -1697,5 +1731,6 @@ let mutation_report ~invocation ~min (m : mutation) =
       not_evaluated_section ~selection:"" m.not_evaluated;
       unreached_section m.unreached;
       outside_tests_section m.outside_tests;
+      filtered_section m.filtered;
       outcome ~invocation ~selection:"" ~min m;
     ]

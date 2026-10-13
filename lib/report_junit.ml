@@ -42,7 +42,9 @@ let text_entity = function
 (* A parser normalizes a tab in an attribute value to a space. *)
 let attr_entity = function
   | '"' -> Some "&quot;"
-  | '\'' -> Some "&apos;"
+  | ('\'' [@mutate off "a double-quoted value holds an apostrophe as it is"]) ->
+      Some "&apos;"
+      [@mutate off "a double-quoted value holds an apostrophe as it is"]
   | '\t' -> Some "&#9;"
   | c -> text_entity c
 
