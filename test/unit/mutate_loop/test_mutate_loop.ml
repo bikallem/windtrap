@@ -1692,11 +1692,9 @@ let git =
     (String.split_on_char ':'
        (Option.value ~default:"" (Sys.getenv_opt "PATH")))
 
-(* The project root is a new git repository, and quiet.ml is a file of it
-   that git does not track, so each of its lines changed since HEAD. Its
-   one mutant is filtered, so the run has nothing to test. It writes the
-   verdict file with the filtered mutant, as a loop does. *)
-let filtered_since () =
+(* A new git repository in a temporary directory, and a function that runs
+   git in it. *)
+let repository () =
   let git =
     match git with
     | None -> skip ~reason:"git is not on PATH" ()
@@ -1714,16 +1712,26 @@ let filtered_since () =
     equal (pair string text) ("exited 0", "") (ended r.Child.status, r.Child.err)
   in
   run_git [ "init"; "-q" ];
+  (root, run_git)
+
+(* The directory [path] under [root], with each directory that it needs. *)
+let directory root path =
+  List.fold_left
+    (fun dir name ->
+      let dir = Filename.concat dir name in
+      if not (Sys.file_exists dir) then Sys.mkdir dir 0o755;
+      dir)
+    root
+    (List.filter (( <> ) "") (String.split_on_char '/' path))
+
+(* The project root is a new git repository, and quiet.ml is a file of it
+   that git does not track, so each of its lines changed since HEAD. Its
+   one mutant is filtered, so the run has nothing to test. It writes the
+   verdict file with the filtered mutant, as a loop does. *)
+let filtered_since () =
+  let root, run_git = repository () in
   run_git [ "commit"; "-q"; "--allow-empty"; "-m"; "empty" ];
-  let dir =
-    List.fold_left
-      (fun dir name ->
-        let dir = Filename.concat dir name in
-        Sys.mkdir dir 0o755;
-        dir)
-      root
-      (String.split_on_char '/' (scope ^ "scoped"))
-  in
+  let dir = directory root (scope ^ "scoped") in
   write (Filename.concat dir "quiet.ml") "(* Each line changed. *)\n";
   let r =
     spawn ~exe:scoped_exe
@@ -1747,6 +1755,79 @@ let filtered_since () =
     (option (list string))
     (Some [ "scoped/quiet.ml:8 filtered: zero operand" ]) (rows r)
 
+(* A project root where git tracks subject.ml with 40 lines, and where the
+   lines of [changed] are different from the commit. The filtered site of
+   subject.ml is on line 38, and the killed site is on line 15. *)
+let changed_subject changed =
+  let root, run_git = repository () in
+  let path = Filename.concat (directory root scope) "subject.ml" in
+  let lines mark =
+    String.concat ""
+      (List.init 40 (fun i -> strf "(* line %d%s *)\n" (i + 1) (mark (i + 1))))
+  in
+  write path (lines (fun _ -> ""));
+  run_git [ "add"; "." ];
+  run_git [ "commit"; "-q"; "-m"; "subject" ];
+  write path (lines (fun n -> if List.mem n changed then ", changed" else ""));
+  root
+
+let subject_scope = scope ^ "subject.ml"
+
+(* A loop under --mutate-since records a filtered mutant only when its line
+   changed. *)
+let filtered_on_changed_line () =
+  let run changed =
+    spawn ~exe:scoped_exe
+      ~env:[ ("WINDTRAP_PROJECT_ROOT", changed_subject changed) ]
+      [ "--mutate=" ^ subject_scope; "--mutate-since=HEAD" ]
+  in
+  let other = run [ 15 ] and both = run [ 15; 38 ] in
+  equal (pair string text) ("exited 0", "") (other.status, other.err);
+  equal (option (list string)) (Some [ "subject.ml:15 killed" ]) (rows other);
+  equal string "mutants: 1 reached by this suite, 1 killed, score 100.0%"
+    (outcome other.out);
+  equal (pair string text) ("exited 0", "") (both.status, both.err);
+  equal
+    (option (list string))
+    (Some [ "subject.ml:15 killed"; "subject.ml:38 filtered: zero operand" ])
+    (rows both);
+  equal string
+    "mutants: 1 reached by this suite, 1 killed, 1 filtered, score 100.0%"
+    (outcome both.out)
+
+(* A run that has no mutant to test under WINDTRAP_MUTATE_SINCE records a
+   filtered mutant only when its line changed. *)
+let filtered_unmutated_on_changed_line () =
+  let run changed =
+    spawn ~exe:scoped_exe
+      ~env:
+        [
+          ("WINDTRAP_PROJECT_ROOT", changed_subject changed);
+          ("WINDTRAP_MUTATE", subject_scope);
+          ("WINDTRAP_MUTATE_SINCE", "HEAD");
+        ]
+      []
+  in
+  let other = run [ 1 ] and both = run [ 1; 38 ] in
+  equal string "exited 0" other.status;
+  equal text
+    (strf
+       "windtrap: WINDTRAP_MUTATE is set, but no mutant of this executable's \
+        catalogue under %s is on a line that changed since HEAD, so the suite \
+        runs without mutation\n"
+       subject_scope)
+    other.err;
+  equal (option (list string)) (Some []) (rows other);
+  equal string "exited 0" both.status;
+  equal text
+    "windtrap: WINDTRAP_MUTATE is set, but every mutant this run could test is \
+     dismissed by [@mutate off] or filtered by the rewriter, so the suite runs \
+     without mutation\n"
+    both.err;
+  equal
+    (option (list string))
+    (Some [ "subject.ml:38 filtered: zero operand" ]) (rows both)
+
 let environment =
   group "What the environment asks"
     [
@@ -1756,6 +1837,12 @@ let environment =
         "WINDTRAP_MUTATE_SINCE where every changed mutant is filtered writes \
          the filtered mutants"
         filtered_since;
+      test
+        "WINDTRAP_MUTATE_SINCE writes a filtered mutant only when its line \
+         changed"
+        filtered_unmutated_on_changed_line;
+      test "--mutate-since records a filtered mutant only when its line changed"
+        filtered_on_changed_line;
       test "WINDTRAP_MUTATE with no mutant in its scope runs the suite"
         (fun () ->
           let r =
