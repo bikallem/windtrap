@@ -37,7 +37,8 @@ let internal_unit defname =
 let[@inline never] delimit fn =
   match fn () with
   | v -> v
-  | exception e ->
+  | ((exception e)
+     [@mutate off "a match re-raises an exception that no case takes"]) ->
       Printexc.raise_with_backtrace e (Printexc.get_raw_backtrace ())
 
 (* A toolchain that changed this defname fails test_loc.ml's recognition

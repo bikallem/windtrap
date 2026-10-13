@@ -161,6 +161,14 @@
       has no out-edge.
     - a [||] that is a site is not rewritten, and its right operand is marked as
       a branch of the guard.
+    - an application that is the [call] site of a sequence, [e1] in [e1; e2],
+      has no out-edge. Its guard is an [if] without [else], so [e2] gets an
+      entry point.
+    - the expression of the [call] site of [let () = e] is the branch of an
+      [if], and gets an entry point. Its out-edge has no known successor, and is
+      a second point with the same extent. When its callee is one byte long, the
+      out-edge shares the entry point instead. That point counts when the call
+      starts, so a call that raises counts as visited.
 
     The points of such a file are not those of the file under this rewriter
     alone. *)

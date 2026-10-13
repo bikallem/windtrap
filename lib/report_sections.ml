@@ -751,7 +751,9 @@ let equality ~seen ~show ~anchors ~gutter ~(expected : Failure.text)
 let raise_sides ~seen ~expected ~actual =
   let spans_lines s = String.contains s '\n' in
   match actual with
-  | Some actual when not (spans_lines expected || spans_lines actual) ->
+  | ((Some actual)
+     [@mutate off "unmarked, sides draws a one-line pair as the next case does"])
+    when not (spans_lines expected || spans_lines actual) ->
       sides ~seen
         ~gutter:(2 + String.length "expected exception")
         ~anchors:("expected exception", "raised")

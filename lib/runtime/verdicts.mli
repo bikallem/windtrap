@@ -53,8 +53,10 @@ val survived : reaching_test list -> verdict
 
 type record = {
   id : Mutate.id;  (** The identifier of the mutant. *)
-  before : string;  (** The source text of the original expression. *)
-  after : string;  (** The source text of the armed expression. *)
+  before : string;
+      (** The text of the original site, as {!Mutate.type-mutant} gives it. *)
+  after : string;
+      (** The text of the mutant, as {!Mutate.type-mutant} gives it. *)
   verdict : verdict;  (** What the run made of the mutant. *)
 }
 (** The type for the record of one mutant. A record is self-describing: it

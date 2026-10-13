@@ -134,8 +134,11 @@
       it.
     - ["file"], ["line"], ["col"] and ["rewrite"] are the four parts of the
       identifier.
-    - ["before"] is the source text of the original expression.
-    - ["after"] is the source text of the armed expression.
+    - ["before"] is the text of the original site, and ["after"] the text of the
+      mutant, as [Windtrap_runtime.Mutate.site] gives them. For most rewrites,
+      these are two expressions. For ["drop"], they are the pattern and the
+      guard of the case, with [...] for its body, as ["| Add -> ..."] and
+      ["| Add when false -> ..."]. For ["skip"], ["after"] is ["()"].
     - ["verdict"] is one of ["killed"], ["survived"], ["not_evaluated"],
       ["outside_tests"] and ["unreached"].
     - ["tests"] is in the object of a survivor only. It is an array of the tests

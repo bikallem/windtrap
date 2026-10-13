@@ -5,10 +5,10 @@
 
 (* A guard replaces its site in place and its disarmed arm is the original
    expression, so the rewriter is a map that threads one context: whether an
-   expression must be a boolean, and whether it is a condition. Every arm
-   keeps the emission law of
-   instrument.mli, because all the mutants share one binary and one ill-typed
-   arm breaks the build of the whole project. *)
+   expression must be a boolean, whether it is a condition, and whether its
+   value is discarded. Every arm keeps the emission law of instrument.mli,
+   because all the mutants share one binary and one ill-typed arm breaks the
+   build of the whole project. *)
 
 open Ppxlib
 open Ast_builder.Default
@@ -61,6 +61,44 @@ let off_reason attributes =
 
 let is_off attributes = Option.is_some (off_reason attributes)
 
+(* ppxlib encodes a construct that its syntax tree does not have, as a
+   labeled tuple of OCaml 5.4 or an effect case of OCaml 5.3, as an
+   extension node with one of these names. *)
+let is_encoding name = String.starts_with ~prefix:"ppxlib.migration." name
+
+(* The parser puts a postfix attribute on the last alternative of an
+   or-pattern and on the last component of a tuple, so in [| A | B [@mutate
+   off]] the attribute is not on the pattern of the case. A [mutate]
+   attribute inside the pattern of a case is thus an error, and not a
+   dismissal that has no effect. *)
+let reject_inner_attributes p =
+  let check =
+    object
+      inherit Ast_traverse.iter as super
+
+      method! pattern p =
+        List.iter
+          (fun attribute ->
+            match directive attribute with
+            | No_directive -> ()
+            | Off _ ->
+                Location.raise_errorf ~loc:attribute.attr_loc
+                  "mutate off is not allowed inside a pattern. Put it on the \
+                   whole pattern of the case."
+            | On -> err_misplaced attribute "on"
+            | Exclude_file -> err_misplaced attribute "exclude_file")
+          p.ppat_attributes;
+        super#pattern p
+
+      (* An encoding holds the sub-patterns of the source in its payload. *)
+      method! extension ((name, _) as extension) =
+        if is_encoding name.txt then super#extension extension
+
+      method! attribute _ = ()
+    end
+  in
+  check#pattern_desc p.ppat_desc
+
 let excludes_file structure =
   List.exists
     (function
@@ -88,7 +126,7 @@ let is_test_item si =
 
 (* Operators *)
 
-type family = Ari | Cmp | Con
+type family = Ari | Cmp | Con | Arm | Call
 
 (* Each rewritten operator with its family, the name of its rewrite and the
    operator that replaces it. *)
@@ -111,12 +149,22 @@ let operators =
 (* A family keeps its sites only where its operators are Stdlib's: [ari]
    names its replacement, [con] turns [&&] into an [if], and [cmp] swaps
    operands of one type. A binding that this pass sees loses the family of
-   its name; what an [open] brings in is not seen. *)
+   its name; what an [open] brings in is not seen. A file that declares a
+   constructor of a guard, in a type or as an extension constructor, loses
+   the family of the guard: [()] that of [call], whose [let () = e] then
+   names it, and [true] or [false] that of [arm], whose constructors
+   warning 42 then reports. *)
 let kept_families structure =
   let lose name lost =
     match List.assoc_opt name operators with
     | Some (family, _, _) -> family :: lost
     | None -> lost
+  in
+  let lose_constructor name lost =
+    match name with
+    | "()" -> Call :: lost
+    | "true" | "false" -> Arm :: lost
+    | _ -> lost
   in
   let scan =
     object
@@ -132,6 +180,12 @@ let kept_families structure =
 
       method! value_description vd lost =
         super#value_description vd (lose vd.pval_name.txt lost)
+
+      method! constructor_declaration cd lost =
+        super#constructor_declaration cd (lose_constructor cd.pcd_name.txt lost)
+
+      method! extension_constructor ec lost =
+        super#extension_constructor ec (lose_constructor ec.pext_name.txt lost)
     end
   in
   let lost = scan#structure structure [] in
@@ -139,11 +193,13 @@ let kept_families structure =
 
 (* Mutants *)
 
-(* [Condition] is an [if] or [while] condition or an arm's guard, and
+(* [Condition] is an [if] or [while] condition or the guard of a case, and
    [Boolean] a direct operand of [&&] or [||]. [cmp] fires in these two
    alone, where the expression must be a boolean, so that a user's comparison
-   cannot give its two arms two types. *)
-type context = Condition | Boolean | Ordinary
+   cannot give its two arms two types. [Statement] is the left operand of a
+   sequence and [Unit_binding] the expression of [let () = e in body]: the
+   code discards their value, and [call] fires in these two alone. *)
+type context = Condition | Boolean | Statement | Unit_binding | Ordinary
 
 (* A bare operator applied to two unlabelled arguments. A qualified operator
    may be anything, and is no site. *)
@@ -175,20 +231,81 @@ let apply ~loc name args =
     (pexp_ident ~loc { txt = Lident name; loc })
     (List.map (fun arg -> (Nolabel, arg)) args)
 
+(* The printer of ppxlib prints an encoding as it is. A node that holds one
+   is thus converted to the parsetree of the compiler, which decodes it, and
+   the printer of the compiler prints it. *)
+let holds_encoding =
+  object
+    inherit [bool] Ast_traverse.fold as super
+
+    method! extension ((name, _) as extension) found =
+      found || is_encoding name.txt || super#extension extension found
+  end
+
+let print_expression e =
+  if holds_encoding#expression e false then
+    Astlib.Compiler_pprintast.string_of_expression
+      (Selected_ast.To_ocaml.copy_expression e)
+  else Pprintast.string_of_expression e
+
+let print_pattern p =
+  if holds_encoding#pattern p false then
+    Format.asprintf "%a" Astlib.Compiler_pprintast.pattern
+      (Selected_ast.To_ocaml.copy_pattern p)
+  else Format.asprintf "%a" Pprintast.pattern p
+
 (* A text is printed from the parsetree, since a preprocessor cannot rely on
    the path of its source, and each run of blanks becomes one space. *)
-let render e =
-  Pprintast.string_of_expression { e with pexp_attributes = [] }
-  |> String.map (function '\t' | '\n' | '\r' -> ' ' | c -> c)
+let one_line text =
+  String.map (function '\t' | '\n' | '\r' -> ' ' | c -> c) text
   |> String.split_on_char ' '
   |> List.filter (fun word -> word <> "")
   |> String.concat " "
+
+(* When the coverage rewriter ran first, its wrapper
+   [___windtrap_post_visit___ n call] stands in place of [call]. *)
+let post_visit e =
+  match e.pexp_desc with
+  | Pexp_apply
+      ( ({
+           pexp_desc = Pexp_ident { txt = Lident "___windtrap_post_visit___"; _ };
+           _;
+         } as visit),
+        [ (Nolabel, n); (Nolabel, call) ] ) ->
+      Some (visit, n, call)
+  | _ -> None
+
+(* A text has no attribute of the expression, nor of the call in its
+   wrapper. *)
+let rec bare e =
+  match post_visit e with
+  | Some (visit, n, call) ->
+      {
+        e with
+        pexp_desc = Pexp_apply (visit, [ (Nolabel, n); (Nolabel, bare call) ]);
+        pexp_attributes = [];
+      }
+  | None -> { e with pexp_attributes = [] }
+
+let render e = one_line (print_expression (bare e))
+
+(* The texts of an [arm] site are the pattern and the guard of its case,
+   and [...] stands for its body, which the source line of the report
+   shows. *)
+let render_arm c ~guard =
+  let pattern = print_pattern { c.pc_lhs with ppat_attributes = [] } in
+  one_line
+    (Printf.sprintf "| %s%s -> ..." pattern
+       (match guard with None -> "" | Some g -> " when " ^ g))
 
 (* How a guard arms its site. The emission law forbids naming a comparison's
    partner, so [cmp] negates the operator the source wrote: on a total order
    [a <= b] is [not (b < a)], so an ordering swaps its operands, and [a <> b]
    is [not (a = b)], so an equality does not. *)
-type guard = Neg | Operator of application * operator_guard
+type guard =
+  | Neg
+  | Skip (* [call] *)
+  | Operator of application * operator_guard
 
 and operator_guard =
   | Negate (* [cmp] on an equality *)
@@ -198,18 +315,42 @@ and operator_guard =
 
 type mutant = { guard : guard; rewrite : string; after : string }
 
+(* [called e] is the application of the user that [e] is. When the coverage
+   rewriter ran first, its visit [___windtrap_visit___ n] stands in a
+   statement, and to skip it changes nothing. To skip the wrapper of a call
+   skips the call. *)
+let rec called e =
+  match (post_visit e, e.pexp_desc) with
+  | Some (_, _, call), _ -> called call
+  | None, Pexp_apply ({ pexp_desc = Pexp_ident { txt = Lident name; _ }; _ }, _)
+    when String.starts_with ~prefix:"___windtrap_" name ->
+      None
+  | None, Pexp_apply _ -> Some e
+  | None, _ -> None
+
+(* The attributes of [e] and of the call that it wraps, so that a dismissal
+   of a call holds in the two orders of the rewriters. *)
+let attributes e =
+  match called e with
+  | Some call when call != e -> e.pexp_attributes @ call.pexp_attributes
+  | Some _ | None -> e.pexp_attributes
+
 (* A connective with a connective operand carries no mutant, since its guard
-   would hold another site. *)
+   would hold another site. [neg] and [call] come last, each in its own
+   contexts. *)
 let mutant ~keeps context e =
   let loc = e.pexp_loc in
-  let neg () =
-    if context <> Condition then None
-    else
-      let negated = apply ~loc "not" [ { e with pexp_attributes = [] } ] in
-      Some { guard = Neg; rewrite = "not"; after = render negated }
+  let last () =
+    match context with
+    | Condition ->
+        let negated = apply ~loc "not" [ bare e ] in
+        Some { guard = Neg; rewrite = "not"; after = render negated }
+    | (Statement | Unit_binding) when keeps Call && Option.is_some (called e) ->
+        Some { guard = Skip; rewrite = "skip"; after = "()" }
+    | Statement | Unit_binding | Boolean | Ordinary -> None
   in
   match application e with
-  | None -> neg ()
+  | None -> last ()
   | Some app -> (
       match List.assoc_opt app.name operators with
       | Some (family, rewrite, replacement) when keeps family -> (
@@ -222,12 +363,13 @@ let mutant ~keeps context e =
               if is_connective ~keeps app.left || is_connective ~keeps app.right
               then None
               else mutant Branch
-          | Cmp when context = Ordinary -> None
+          | Cmp when context <> Condition && context <> Boolean -> last ()
           | Cmp ->
               mutant
                 (if app.name = "=" || app.name = "<>" then Negate else Swap)
-          | Ari -> mutant (Replace replacement))
-      | Some _ | None -> neg ())
+          | Ari -> mutant (Replace replacement)
+          | Arm | Call (* no operator *) -> last ())
+      | Some _ | None -> last ())
 
 (* Guards *)
 
@@ -346,12 +488,97 @@ let branch ~loc ~module_name ~index e app left right =
     pexp_attributes = e.pexp_attributes;
   }
 
+(* [call] skips its application when armed. In a sequence the application
+   stays the left operand of one, so it types as before, with or without
+   [-strict-sequence]. In [let () = e] the expected type [unit] reaches [e]
+   through the [if]. The one [()] of the guard stands where [unit] is
+   expected, so a file's own constructor [()] cannot capture it. *)
+let skip ~loc ~module_name ~index context value =
+  let live = [%expr Stdlib.not [%e armed ~loc ~module_name index]] in
+  match context with
+  | Unit_binding -> [%expr if [%e live] then [%e value]]
+  | Statement | Condition | Boolean | Ordinary ->
+      [%expr
+        if [%e live] then (
+          [%e value];
+          ())]
+
+(* [arm] gives a case a guard that is [false] when armed, so that the value
+   goes to the next case that matches it. A guard that the case has runs
+   after the armed flag, as before. The guard is an [if] and not an
+   application, because the type-checker reads the branches of an [if] and
+   not its condition: a match whose cases are syntactic values stays one, and
+   its binding still generalizes. The constructors stand where [bool] is
+   expected. *)
+let arm_guard ~loc ~module_name ~index guard =
+  let otherwise = Option.value guard ~default:[%expr true] in
+  [%expr if [%e armed ~loc ~module_name index] then false else [%e otherwise]]
+
+(* [silence ~loc warnings e] is [e] with [[@ocaml.warning warnings]], the
+   [warning_attribute], before its attributes. A guarded case does not
+   count for exhaustiveness, so a match whose every case is guarded is
+   partial for the compiler (8). A dropped case then raises [Match_failure],
+   which is the mutant. Warning 57 examines a guard against the earlier
+   cases without a guard alone, so an [arm] guard on an earlier case can
+   make an or-pattern variable ambiguous in a later guarded case. The
+   compiler applies the attributes of a node from the last to the first.
+   The generated attribute thus applies last, and a warning attribute of the
+   user cannot turn these warnings on again. *)
+let warning_attribute ~loc warnings =
+  attribute ~loc
+    ~name:{ txt = "ocaml.warning"; loc }
+    ~payload:(PStr [ pstr_eval ~loc (estring ~loc warnings) [] ])
+
+let silence ~loc warnings e =
+  {
+    e with
+    pexp_attributes = warning_attribute ~loc warnings :: e.pexp_attributes;
+  }
+
+let is_refutation c =
+  match c.pc_rhs.pexp_desc with Pexp_unreachable -> true | _ -> false
+
+(* ppxlib encodes the effect pattern [effect e, k] of OCaml 5.3 as an
+   extension with this prefix. The name is [ppat_effect] in ppxlib 0.37 and
+   [ppat_effect_503] from ppxlib 0.38. *)
+let is_effect p =
+  match p.ppat_desc with
+  | Ppat_extension ({ txt; _ }, _) ->
+      String.starts_with ~prefix:"ppxlib.migration.ppat_effect" txt
+  | _ -> false
+
+(* [matches p] is whether [p] matches values and whether it matches
+   exceptions. The compiler refuses a guard on a case that does both. An
+   effect case matches neither. The compiler accepts an exception pattern
+   under a local open and under a type constraint, as [M.(exception E)]. *)
+let rec matches p =
+  match p.ppat_desc with
+  | _ when is_effect p -> (false, false)
+  | Ppat_exception _ -> (false, true)
+  | Ppat_open (_, inner) | Ppat_constraint (inner, _) -> matches inner
+  | Ppat_or (a, b) ->
+      let values_a, exceptions_a = matches a
+      and values_b, exceptions_b = matches b in
+      (values_a || values_b, exceptions_a || exceptions_b)
+  | _ -> (true, false)
+
+let matches_values p = fst (matches p)
+let is_mixed p = matches p = (true, true)
+
+let is_unit_binding vb =
+  match vb.pvb_pat.ppat_desc with
+  | Ppat_construct ({ txt = Lident "()"; _ }, None) -> true
+  | _ -> false
+
 (* Traversal *)
 
 (* [lazy] of a trivial syntactic value compiles as already forced, and a
    guard under it would change that. Coverage's predicate, verbatim. No guard
-   weakens the generalization of a binding, since every site is an
-   application or a condition, which is never a syntactic value. *)
+   weakens the generalization of a binding. The site of an operator or of
+   [call] is an application or a condition, which is never a syntactic
+   value. An [arm] site is a case, and its guard is an [if], whose
+   condition the type-checker does not read when it decides if a match is a
+   syntactic value. *)
 let rec is_trivial_syntactic_value e =
   match e.pexp_desc with
   | Pexp_function _ | Pexp_poly _ | Pexp_ident _ | Pexp_constant _
@@ -391,37 +618,31 @@ class instrumenter ~keeps ~module_name =
     method sites = List.rev sites
     method pins = pins
 
-    (* [site e mutant ~dismissed] records the site of [e] and is its index.
-       It is [None], with nothing recorded, for generated code and for a site
-       whose identifier another one has, as a deriver's copy does. *)
-    method private site e (mutant : mutant) ~dismissed =
-      let start = e.pexp_loc.loc_start in
+    (* [record loc ...] records a site at [loc] and is its index. It is
+       [None], with nothing recorded, for generated code and for a site whose
+       identifier another one has, as a deriver's copy does. *)
+    method private record (loc : location) ~rewrite ~before ~after ~dismissed =
+      let start = loc.loc_start in
       let line = start.pos_lnum and col = start.pos_cnum - start.pos_bol in
-      let key = (line, col, mutant.rewrite) in
-      if e.pexp_loc.loc_ghost || Hashtbl.mem seen key then None
+      let key = (line, col, rewrite) in
+      if loc.loc_ghost || Hashtbl.mem seen key then None
       else begin
         let index = Hashtbl.length seen in
         Hashtbl.add seen key ();
-        let site =
-          {
-            line;
-            col;
-            rewrite = mutant.rewrite;
-            before = render e;
-            after = mutant.after;
-            dismissed;
-          }
-        in
-        sites <- site :: sites;
+        sites <- { line; col; rewrite; before; after; dismissed } :: sites;
         Some index
       end
+
+    method private site e (mutant : mutant) ~dismissed =
+      self#record e.pexp_loc ~rewrite:mutant.rewrite ~before:(render e)
+        ~after:mutant.after ~dismissed
 
     (* [chained] marks the left operand of a site that applies the same
        operator: a chain of one operator carries one mutant, and reading it
        from the tree keeps a bracket from changing the count. A dismissal
        leaves [e] as written. *)
     method private mutate ?(chained = false) context e =
-      let off = off_reason e.pexp_attributes in
+      let off = off_reason (attributes e) in
       if is_opaque e then e
       else
         match (off, mutant ~keeps context e) with
@@ -435,9 +656,9 @@ class instrumenter ~keeps ~module_name =
             let index =
               if chained then None else self#site e mutant ~dismissed:None
             in
-            self#guard e mutant index
+            self#guard context e mutant index
 
-    method private guard e mutant index =
+    method private guard context e mutant index =
       let loc = { e.pexp_loc with loc_ghost = true } in
       match mutant.guard with
       | Neg -> (
@@ -445,6 +666,11 @@ class instrumenter ~keeps ~module_name =
           match index with
           | None -> value
           | Some index -> negation ~loc ~module_name ~index value)
+      | Skip -> (
+          let value = self#descend e in
+          match index with
+          | None -> value
+          | Some index -> skip ~loc ~module_name ~index context value)
       | Operator (app, guard) -> (
           let context =
             match guard with
@@ -512,7 +738,125 @@ class instrumenter ~keeps ~module_name =
                     (Nolabel, self#mutate Boolean right);
                   ] );
           }
+      | Pexp_sequence (first, rest) ->
+          let first = self#mutate Statement first in
+          let rest = self#expression rest in
+          { e with pexp_desc = Pexp_sequence (first, rest) }
+      | Pexp_let (rec_flag, bindings, body) ->
+          let binding vb =
+            if is_unit_binding vb then
+              { vb with pvb_expr = self#mutate Unit_binding vb.pvb_expr }
+            else self#value_binding vb
+          in
+          let bindings = List.map binding bindings in
+          let body = self#expression body in
+          { e with pexp_desc = Pexp_let (rec_flag, bindings, body) }
+      | Pexp_match (scrutinee, cases) ->
+          let scrutinee = self#expression scrutinee in
+          let cases, armed = self#arms ~handlers:false cases in
+          let e = { e with pexp_desc = Pexp_match (scrutinee, cases) } in
+          if armed then
+            silence ~loc:{ e.pexp_loc with loc_ghost = true } "-8-57" e
+          else e
+      | Pexp_function (params, constraint_, Pfunction_cases (cases, loc, attrs))
+        ->
+          let params = List.map self#function_param params in
+          let constraint_ = Option.map self#type_constraint constraint_ in
+          (* After parameters, the parser puts the attributes of [function]
+             on its cases. A dismissal there thus leaves the cases as
+             written, and the parameters keep their sites. The compiler
+             applies the attributes in an inner scope, so the generated
+             attribute also comes before them. *)
+          let cases, armed =
+            if is_off attrs then (cases, false)
+            else self#arms ~handlers:false cases
+          in
+          let attrs =
+            if armed && attrs <> [] then
+              warning_attribute ~loc:{ loc with loc_ghost = true } "-8-57"
+              :: attrs
+            else attrs
+          in
+          let body = Pfunction_cases (cases, loc, attrs) in
+          let e =
+            { e with pexp_desc = Pexp_function (params, constraint_, body) }
+          in
+          if armed then
+            silence ~loc:{ e.pexp_loc with loc_ghost = true } "-8-57" e
+          else e
+      | Pexp_try (body, cases) ->
+          let body = self#expression body in
+          let cases, armed = self#arms ~handlers:true cases in
+          let e = { e with pexp_desc = Pexp_try (body, cases) } in
+          if armed then
+            silence ~loc:{ e.pexp_loc with loc_ghost = true } "-57" e
+          else e
       | _ -> super#expression e
+
+    (* [arms ~handlers cases] rewrites [cases] and tells if a case got a
+       guard. [handlers] tells that the cases are those of a [try]. A match
+       with a refutation case has no [arm] site, since a guard on a case
+       before it makes it fail to type. The one case of a match that a value
+       can reach is no site, since without it every value raises. An effect
+       case is no site, because the family drops the cases of values and of
+       exceptions alone. *)
+    method private arms ~handlers cases =
+      let reachable = List.filter (fun c -> matches_values c.pc_lhs) cases in
+      let is_site c =
+        keeps Arm
+        && (not (List.exists is_refutation cases))
+        && (not (is_effect c.pc_lhs))
+        && (not (is_mixed c.pc_lhs))
+        && (handlers
+           || (not (matches_values c.pc_lhs))
+           || List.compare_length_with reachable 1 > 0)
+      in
+      let armed = ref false and armed_value = ref false in
+      let arm c =
+        if not (is_site c) then self#case c
+        else
+          let off =
+            reject_inner_attributes c.pc_lhs;
+            off_reason c.pc_lhs.ppat_attributes
+          in
+          let before = render_arm c ~guard:(Option.map render c.pc_guard) in
+          let after = render_arm c ~guard:(Some "false") in
+          let index =
+            self#record c.pc_lhs.ppat_loc ~rewrite:"drop" ~before ~after
+              ~dismissed:off
+          in
+          let c = self#case c in
+          match (off, index) with
+          | Some _, _ | None, None -> c
+          | None, Some index ->
+              armed := true;
+              if (not handlers) && matches_values c.pc_lhs then
+                armed_value := true;
+              let loc = { c.pc_lhs.ppat_loc with loc_ghost = true } in
+              {
+                c with
+                pc_guard = Some (arm_guard ~loc ~module_name ~index c.pc_guard);
+              }
+      in
+      let cases = List.map arm cases in
+      (* When the cases without a guard cover every value, the type-checker
+         finds the match total. After an [arm] guard fails, the compiled
+         match can read a mutable field again, and then finds the match
+         partial (74). The compiler gives warning 74 after the type-checker,
+         so no attribute disables it. Each other case of a value thus gets
+         the guard [true], and the match is partial for the type-checker
+         too. A case that also matches an exception cannot have a guard. *)
+      let steady c =
+        if
+          Option.is_none c.pc_guard && matches_values c.pc_lhs
+          && not (is_mixed c.pc_lhs)
+        then
+          let loc = { c.pc_lhs.ppat_loc with loc_ghost = true } in
+          { c with pc_guard = Some [%expr true] }
+        else c
+      in
+      let cases = if !armed_value then List.map steady cases else cases in
+      (cases, !armed)
 
     (* Inside a region, every structure item but a value binding reaches its
        expressions through here. *)
@@ -637,7 +981,7 @@ let runtime_initialization ~file ~module_name ~sites ~pins =
 let always_ignore_paths = [ "//toplevel//"; "(stdin)" ]
 let always_ignore_basenames = [ ".ocamlinit"; "topfind" ]
 
-let transform_impl_file ctxt ast =
+let transform_impl_file ?(arm = true) ?(call = true) ctxt ast =
   let file = Expansion_context.Base.input_name ctxt in
   if
     List.mem file always_ignore_paths
@@ -646,9 +990,13 @@ let transform_impl_file ctxt ast =
   then ast
   else
     let module_name = generated_module_name file in
-    let instrumenter =
-      new instrumenter ~keeps:(kept_families ast) ~module_name
+    let kept = kept_families ast in
+    let keeps = function
+      | Arm -> arm && kept Arm
+      | Call -> call && kept Call
+      | (Ari | Cmp | Con) as family -> kept family
     in
+    let instrumenter = new instrumenter ~keeps ~module_name in
     let instrumented = instrumenter#structure ast in
     match instrumenter#sites with
     | [] -> ast

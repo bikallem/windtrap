@@ -26,15 +26,16 @@ type id = { file : string; line : int; col : int; rewrite : string }
 (** The type for mutant identifiers. [file] is the path of the source file as
     the instrumenter read it, which under dune is relative to the workspace
     root, as [lib/calc.ml]. [line] is the 1-based line and [col] the 0-based
-    column of the first byte of the mutated expression. [rewrite] is a name of
-    {!rewrites}. *)
+    column of the first byte of the mutated expression, or of the pattern of the
+    case that ["drop"] removes. [rewrite] is a name of {!rewrites}. *)
 
 val rewrites : string list
 (** [rewrites] is the closed vocabulary of rewrite names, in this order:
     ["not"], the comparisons ["lt"], ["le"], ["gt"], ["ge"], ["eq"] and ["neq"],
-    the arithmetic ["add"], ["sub"], ["fadd"] and ["fsub"], and the connectives
-    ["and"] and ["or"]. A name is that of the replacement, never that of the
-    operator in the source. *)
+    the arithmetic ["add"], ["sub"], ["fadd"] and ["fsub"], the connectives
+    ["and"] and ["or"], ["drop"] for a case of a match and ["skip"] for a call.
+    A name is that of the replacement, never that of the operator in the source.
+*)
 
 val id_to_string : id -> string
 (** [id_to_string id] is [<file>:<line>:<col>:<rewrite>], as
@@ -53,15 +54,19 @@ val compare_id : id -> id -> int
 
 type site = {
   line : int;
-      (** The 1-based line of the first byte of the mutated expression. *)
+      (** The 1-based line of the first byte of the mutated expression, or of
+          the pattern of a dropped case. *)
   col : int;  (** The 0-based column of that byte. *)
   rewrite : string;  (** The name of the replacement, from {!rewrites}. *)
-  before : string;  (** The original expression, printed from the parsetree. *)
-  after : string;  (** The armed expression, printed from the parsetree. *)
+  before : string;
+      (** The text of the original site, printed from the parsetree: an
+          expression, or the pattern and the guard of a dropped case, with [...]
+          for its body. *)
+  after : string;  (** The text of the mutant, in the same form. *)
   dismissed : string option;
-      (** [Some reason] when the expression carries [[@mutate off]]. The site is
-          then catalogued and carries no guard, so a caller must leave it out of
-          what it tests and counts. *)
+      (** [Some reason] when the expression, or the pattern of a dropped case,
+          carries [[@mutate off]]. The site is then catalogued and carries no
+          guard, so a caller must leave it out of what it tests and counts. *)
 }
 (** The type for mutation sites: one entry of the site table of a file. *)
 
@@ -101,8 +106,11 @@ val register : file:string -> sites:site array -> int -> bool
 
 type mutant = {
   id : id;  (** The identifier of the mutant. *)
-  before : string;  (** The original expression, printed from the parsetree. *)
-  after : string;  (** The armed expression, printed from the parsetree. *)
+  before : string;
+      (** The text of the original site, printed from the parsetree: an
+          expression, or the pattern and the guard of a dropped case, with [...]
+          for its body. *)
+  after : string;  (** The text of the mutant, in the same form. *)
   dismissed : string option;  (** The reason of [[@mutate off]], if any. *)
 }
 (** The type for catalogued mutants: a {!type-site} with its file. *)
