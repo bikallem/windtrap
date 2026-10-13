@@ -29,6 +29,7 @@ let verdict_row = function
           (List.map (fun t -> "[" ^ quoted t ^ "]") (first :: others))
   | Not_evaluated -> "not evaluated"
   | Outside_tests -> "outside tests"
+  | Filtered reason -> strf "filtered %S" reason
   | Unreached -> "unreached"
 
 let record_row (r : Verdicts.record) =
@@ -84,6 +85,7 @@ let small_verdict =
          (1, Gen.constant Verdicts.Not_evaluated);
          (3, Gen.map Verdicts.survived (Gen.list ~size:(Gen.int_range 1 3) path));
          (1, Gen.constant Verdicts.Outside_tests);
+         (1, Gen.map (fun r -> Verdicts.Filtered r) (Gen.of_list [ "a"; "b" ]));
          (1, Gen.constant Verdicts.Unreached);
        ])
 
@@ -111,6 +113,7 @@ let any_record =
       [
         Gen.of_list Verdicts.[ Killed; Not_evaluated; Outside_tests; Unreached ];
         Gen.map Verdicts.survived (Gen.list ~size:(Gen.int_range 1 3) path);
+        Gen.map (fun r -> Verdicts.Filtered r) name;
       ]
   in
   Gen.map
@@ -140,10 +143,11 @@ let any_file =
 (* Verdicts *)
 
 let rank = function
-  | Verdicts.Killed -> 4
-  | Not_evaluated -> 3
-  | Survived _ -> 2
-  | Outside_tests -> 1
+  | Verdicts.Killed -> 5
+  | Not_evaluated -> 4
+  | Survived _ -> 3
+  | Outside_tests -> 2
+  | Filtered _ -> 1
   | Unreached -> 0
 
 (* The verdict of a mutant that one executable saw as [a] and another as [b],
@@ -152,6 +156,7 @@ let join a b =
   match (a, b) with
   | Verdicts.Survived x, Verdicts.Survived y ->
       Verdicts.survived ((x.first :: x.others) @ (y.first :: y.others))
+  | Verdicts.Filtered x, Verdicts.Filtered y -> Verdicts.Filtered (min x y)
   | _ -> if rank a >= rank b then a else b
 
 let combined (a, b) =
@@ -182,6 +187,11 @@ let lattice_examples =
       (Outside_tests, s [ [ "a" ] ]);
       (Not_evaluated, Outside_tests);
       (Unreached, Outside_tests);
+      (Filtered "a", Killed);
+      (Filtered "a", s [ [ "a" ] ]);
+      (Filtered "a", Outside_tests);
+      (Unreached, Filtered "a");
+      (Filtered "b", Filtered "a");
       (s [ [ "b" ]; [ "a" ] ], s [ [ "c" ]; [ "b" ] ]);
     ]
 
@@ -208,7 +218,7 @@ let record_of_mutant () =
       Mutate.id = id "lib/calc.ml" 4 2 "sub";
       before = "a - b";
       after = "a + b";
-      dismissed = Some "equivalent";
+      dismissed = Some (Mutate.Filtered "zero operand");
     }
   in
   equal string {|"lib/calc.ml":4:2:sub "a - b" -> "a + b": killed|}
@@ -292,7 +302,8 @@ let collections =
           equal (list string) [] (rows Verdicts.empty));
       prop
         "add combines two verdicts by Killed > Not_evaluated > Survived > \
-         Outside_tests > Unreached, and unites the reaching tests"
+         Outside_tests > Filtered > Unreached, unites the reaching tests and \
+         keeps the smaller filter reason"
         ~examples:lattice_examples
         (Gen.pair small_verdict small_verdict)
         combined;
@@ -343,6 +354,8 @@ let sample =
         Verdicts.Not_evaluated;
       record ~before:"a - b" ~after:"a + b" (id "lib/c.ml" 9 0 "add")
         Verdicts.Outside_tests;
+      record ~before:"x + 0" ~after:"x - 0" (id "lib/d.ml" 2 3 "sub")
+        (Verdicts.Filtered "zero operand");
     ]
 
 let digest = String.make 32 'a'
@@ -397,9 +410,9 @@ let headers =
   [
     ("the empty file", "");
     ("a coverage file", "windtrap-coverage-v3\n1\n");
-    ("a later version", "windtrap-mutants-v4\n0\n");
+    ("a later version", "windtrap-mutants-v5\n0\n");
     ("the magic in uppercase", "WINDTRAP-MUTANTS-V1\n0\n");
-    ("the magic and a digit", "windtrap-mutants-v30\n0\n");
+    ("the magic and a digit", "windtrap-mutants-v40\n0\n");
     ("plain text", "hello\nworld\n");
   ]
 
@@ -411,19 +424,19 @@ let unknown_format (_, text) =
          | Error (Verdicts.Unknown_format { path; _ }) -> Some path | _ -> None)
        loaded)
 
-let record_prefix = "windtrap-mutants-v3\n1\n8 lib/a.ml "
+let record_prefix = "windtrap-mutants-v4\n1\n8 lib/a.ml "
 
 let corrupt_files =
   [
-    ("the magic line alone", "windtrap-mutants-v3");
-    ("a negative record count", "windtrap-mutants-v3\n-1\n");
-    ("a record count past the input", "windtrap-mutants-v3\n99999999\n");
+    ("the magic line alone", "windtrap-mutants-v4");
+    ("a negative record count", "windtrap-mutants-v4\n-1\n");
+    ("a record count past the input", "windtrap-mutants-v4\n99999999\n");
     ( "fewer records than the count",
-      "windtrap-mutants-v3\n2\n8 lib/a.ml 1 2 3 add 1 b 1 a unreached\n" );
+      "windtrap-mutants-v4\n2\n8 lib/a.ml 1 2 3 add 1 b 1 a unreached\n" );
     ( "an empty file name",
-      "windtrap-mutants-v3\n1\n0  1 2 3 add 0 0 1 b 1 a unreached\n" );
+      "windtrap-mutants-v4\n1\n0  1 2 3 add 0 0 1 b 1 a unreached\n" );
     ( "a file name past the input",
-      "windtrap-mutants-v3\n1\n80 lib/a.ml 1 2 3 add 1 b 1 a unreached\n" );
+      "windtrap-mutants-v4\n1\n80 lib/a.ml 1 2 3 add 1 b 1 a unreached\n" );
     ("line 0", record_prefix ^ "0 2 3 add 1 b 1 a unreached\n");
     ("a negative line", record_prefix ^ "-3 2 3 add 1 b 1 a unreached\n");
     ("a negative column", record_prefix ^ "1 -2 3 add 1 b 1 a unreached\n");
@@ -436,6 +449,9 @@ let corrupt_files =
     ("no rendering", record_prefix ^ "1 2 3 add unreached\n");
     ("an after past the input", record_prefix ^ "1 2 3 add 1 b 80 a unreached\n");
     ("an unknown verdict", record_prefix ^ "1 2 3 add 1 b 1 a errored\n");
+    ("a filter with no reason", record_prefix ^ "1 2 3 add 1 b 1 a filtered\n");
+    ( "a filter reason past the input",
+      record_prefix ^ "1 2 3 add 1 b 1 a filtered 80 r\n" );
     ("no verdict", record_prefix ^ "1 2 3 add 1 b 1 a\n");
     ( "a survivor with no reaching test",
       record_prefix ^ "1 2 3 add 1 b 1 a survived 0\n" );
@@ -448,18 +464,18 @@ let corrupt_files =
     ( "a test name past the input",
       record_prefix ^ "1 2 3 add 1 b 1 a survived 1 1 80 g\n" );
     ( "two records of one identifier",
-      "windtrap-mutants-v3\n\
+      "windtrap-mutants-v4\n\
        2\n\
        8 lib/a.ml 1 2 3 add 1 b 1 a unreached\n\
        8 lib/a.ml 1 2 3 add 1 b 1 a killed\n" );
     ( "a malformed record after a valid one",
-      "windtrap-mutants-v3\n\
+      "windtrap-mutants-v4\n\
        2\n\
        8 lib/a.ml 1 2 3 add 1 b 1 a killed\n\
        8 lib/a.ml 0 2 3 add 1 b 1 a unreached\n" );
-    ("a short identity digest", "windtrap-mutants-v3\nexe abcd 1 a\n0\n");
-    ("an empty identity exe", "windtrap-mutants-v3\nexe " ^ digest ^ " 0 \n0\n");
-    ("bytes after the last record", "windtrap-mutants-v3\n0\nextra\n");
+    ("a short identity digest", "windtrap-mutants-v4\nexe abcd 1 a\n0\n");
+    ("an empty identity exe", "windtrap-mutants-v4\nexe " ^ digest ^ " 0 \n0\n");
+    ("bytes after the last record", "windtrap-mutants-v4\n0\nextra\n");
   ]
 
 let corrupt (_, text) =
@@ -491,6 +507,8 @@ let corrupt_reasons () =
     no rendering: expected before length at offset 43
     an after past the input: truncated after
     an unknown verdict: unknown verdict "errored"
+    a filter with no reason: expected filter reason length at offset 60
+    a filter reason past the input: truncated filter reason
     no verdict: expected verdict at offset 51
     a survivor with no reaching test: a survivor names no test (survived is not unreached)
     a reaching test count past the input: reaching test count exceeds data
@@ -519,7 +537,7 @@ let error_messages () =
        ])
   @@ __POS_OF__
        {|
-    f.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v3", found "junk"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
+    f.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v4", found "junk"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
     f.mutants: cannot read verdict file: No such file or directory
     f.mutants: corrupt verdict file: unknown verdict "errored"
     |}
@@ -542,26 +560,27 @@ let files =
         "format is the magic line, the mutants directory and extension, and \
          the verdict kind" (fun () ->
           equal (list string)
-            [ "windtrap-mutants-v3"; "mutants"; "mutants"; "verdict" ]
+            [ "windtrap-mutants-v4"; "mutants"; "mutants"; "verdict" ]
             Verdicts.[ format.magic; format.dir; format.ext; format.kind ]);
       test
         "save writes the magic line, the count, then the records by identifier"
         (fun () ->
           expect_exact (saved sample)
           @@ __POS_OF__
-               {|windtrap-mutants-v3
-5
+               {|windtrap-mutants-v4
+6
 8 lib/a.ml 1 2 3 add 5 a - b 5 a + b unreached
 8 lib/b.ml 3 4 3 not 6 p && q 12 not (p && q) killed
 8 lib/b.ml 5 0 2 or 6 a || b 6 a && b survived 2 1 1 x 2 1 y 1 z
 8 lib/c.ml 7 1 3 sub 5 a + b 5 a - b not_evaluated
 8 lib/c.ml 9 0 3 add 5 a - b 5 a + b outside_tests
+8 lib/d.ml 2 3 3 sub 5 x + 0 5 x - 0 filtered 12 zero operand
 |});
       test "save writes an identity after the magic line" (fun () ->
           expect_exact
             (saved ~identity:{ exe = "test/a.exe"; digest } Verdicts.empty)
           @@ __POS_OF__
-               {|windtrap-mutants-v3
+               {|windtrap-mutants-v4
 exe aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 10 test/a.exe
 0
 |});

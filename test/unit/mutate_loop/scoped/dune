@@ -1,0 +1,12 @@
+; quiet is a second instrumented file, whose only site is filtered.
+
+(library
+ (name mutate_loop_quiet)
+ (modules quiet)
+ (preprocess
+  (pps ppx_windtrap.mutate)))
+
+(executable
+ (name scoped_main)
+ (modules scoped_main)
+ (libraries windtrap mutate_loop_subject mutate_loop_quiet))

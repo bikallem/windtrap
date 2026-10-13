@@ -147,7 +147,7 @@ let survived_in verdicts =
       match r.verdict with
       | Survived { first; others } ->
           Ids.add (Mutate.id_to_string r.id) (first :: others) acc
-      | Killed | Not_evaluated | Outside_tests | Unreached -> acc)
+      | Killed | Not_evaluated | Outside_tests | Filtered _ | Unreached -> acc)
     Ids.empty
     (Verdicts.records verdicts)
 
@@ -201,7 +201,8 @@ let merge ~source files merged =
           &&
           match fr.verdict with
           | Not_evaluated -> true
-          | Killed | Survived _ | Outside_tests | Unreached -> false)
+          | Killed | Survived _ | Outside_tests | Filtered _ | Unreached ->
+              false)
         (Verdicts.records f.verdicts)
     in
     let invocation =
@@ -224,8 +225,18 @@ let merge ~source files merged =
         | Unreached -> (survivors, missed, site :: unreached, outside, killed)
         | Outside_tests ->
             (survivors, missed, unreached, site :: outside, killed)
+        | Filtered _ -> (survivors, missed, unreached, outside, killed)
         | Killed -> (survivors, missed, unreached, outside, killed + 1))
       (Verdicts.records merged) ([], [], [], [], 0)
+  in
+  let filtered =
+    List.filter_map
+      (fun (r : Verdicts.record) ->
+        match r.verdict with
+        | Filtered reason -> Some reason
+        | Killed | Survived _ | Not_evaluated | Outside_tests | Unreached ->
+            None)
+      (Verdicts.records merged)
   in
   (* The survivor the most tests watched is the one a reader can act on
      soonest. The sort is stable, so identifier order holds within a count. *)
@@ -262,6 +273,7 @@ let merge ~source files merged =
       not_evaluated;
       unreached;
       outside_tests;
+      filtered;
       killed;
       not_tested = 0;
       scope = Executables (List.length files);
@@ -275,6 +287,7 @@ let verdict_name : Verdicts.verdict -> string = function
   | Survived _ -> "survived"
   | Not_evaluated -> "not_evaluated"
   | Outside_tests -> "outside_tests"
+  | Filtered _ -> "filtered"
   | Unreached -> "unreached"
 
 (* A reaching test names its executable by its index in ["executables"],
@@ -307,20 +320,30 @@ let json files merged (m : Sections.mutation) =
         in
         strf ",\n      \"tests\": [%s ]"
           (String.concat "," (List.map test tests))
-    | Killed | Not_evaluated | Outside_tests | Unreached -> ""
+    | Killed | Not_evaluated | Outside_tests | Filtered _ | Unreached -> ""
   in
-  let mutant (r : Verdicts.record) =
+  let mutant ~key ~value (r : Verdicts.record) =
     strf
       "\n\
       \    { \"id\": %s,\n\
       \      \"file\": %s, \"line\": %d, \"col\": %d, \"rewrite\": %s,\n\
       \      \"before\": %s, \"after\": %s,\n\
-      \      \"verdict\": %s%s }"
+      \      \"%s\": %s%s }"
       (string (Mutate.id_to_string r.id))
       (string r.id.file) r.id.line r.id.col (string r.id.rewrite)
-      (string r.before) (string r.after)
-      (string (verdict_name r.verdict))
-      (tests r)
+      (string r.before) (string r.after) key (string value) (tests r)
+  in
+  (* A filtered mutant has its own array, so that ["mutants"] keeps the
+     verdicts that version 1 gives it. *)
+  let filtered, tested =
+    List.partition_map
+      (fun (r : Verdicts.record) ->
+        match r.verdict with
+        | Filtered reason -> Either.Left (mutant ~key:"reason" ~value:reason r)
+        | Killed | Survived _ | Not_evaluated | Outside_tests | Unreached ->
+            Either.Right
+              (mutant ~key:"verdict" ~value:(verdict_name r.verdict) r))
+      (Verdicts.records merged)
   in
   let survived = List.length m.survivors in
   let not_evaluated = List.length m.not_evaluated in
@@ -328,16 +351,18 @@ let json files merged (m : Sections.mutation) =
     "{ \"version\": 1,\n\
     \  \"summary\": { \"reached\": %d, \"killed\": %d, \"survived\": %d,\n\
     \    \"not_evaluated\": %d, \"outside_tests\": %d, \"unreached\": %d,\n\
-    \    \"score\": %.2f },\n\
+    \    \"filtered\": %d, \"score\": %.2f },\n\
     \  \"executables\": [%s ],\n\
-    \  \"mutants\": [%s ] }\n"
+    \  \"mutants\": [%s ],\n\
+    \  \"filtered\": [%s ] }\n"
     (m.killed + survived + not_evaluated)
     m.killed survived not_evaluated
     (List.length m.outside_tests)
-    (List.length m.unreached)
+    (List.length m.unreached) (List.length m.filtered)
     (Sections.mutation_score m)
     (String.concat "," (List.map executable files))
-    (String.concat "," (List.map mutant (Verdicts.records merged)))
+    (String.concat "," tested)
+    (String.concat "," filtered)
 
 (* Running *)
 

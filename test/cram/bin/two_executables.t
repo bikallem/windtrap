@@ -63,7 +63,7 @@ survivor with the tests that ran it in each executable:
   { "version": 1,
     "summary": { "reached": 3, "killed": 2, "survived": 1,
       "not_evaluated": 0, "outside_tests": 0, "unreached": 1,
-      "score": 66.67 },
+      "filtered": 0, "score": 66.67 },
     "executables": [
       { "name": "pins_add.exe", "path": "default/test/pins_add.exe" },
       { "name": "pins_sub.exe", "path": "default/test/pins_sub.exe" } ],
@@ -86,7 +86,8 @@ survivor with the tests that ran it in each executable:
       { "id": "test/cram/bin/calc.ml:15:16:add",
         "file": "test/cram/bin/calc.ml", "line": 15, "col": 16, "rewrite": "add",
         "before": "a - b", "after": "a + b",
-        "verdict": "unreached" } ] }
+        "verdict": "unreached" } ],
+    "filtered": [ ] }
   [1]
 
 With a gate, the score decides the exit code, and the survivor alone does

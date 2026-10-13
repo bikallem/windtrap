@@ -12,7 +12,8 @@
     the site table of the file with [Windtrap_runtime.Mutate] and binds the
     guard closure that the registration returns. The
     {{!section-dismissal}dismissal attributes} switch the rewriting off for an
-    expression, a binding, a region or a file.
+    expression, a binding, a region or a file, and the
+    {{!section-filters}filters} switch it off for some sites.
 
     Every mutant of a project is compiled into one binary, in which the runtime
     arms at most one. A mutant changes meaning only in the process that armed
@@ -218,8 +219,10 @@
       application alone is a site. The rule reads the tree and not the layout,
       so [(a + b) + c] and [f (a + b + c)] carry one mutant too. [a + b - c]
       carries two, because [sub] and [add] are two rewrites, and so does
-      [a + b + (c + d)].
+      [a + b + (c + d)]. A {{!section-filters}filter} ends a chain.
     - A literal, [Some e] and [h :: t] carry no other mutant.
+    - A filtered site, as a dismissed one, carries no guard. The sites inside it
+      keep their guards, except in the arguments of a logging call.
     - A guard binds its operands under the names [__windtrap_mut_<i>_<role>],
       where [<i>] is the index of the site and [<role>] is [p], [l] or [r]. *)
 
@@ -246,6 +249,62 @@
     so a top-level [let origin = 1 + 2] carries a site. The [--mutate] loop
     lists a site that ran outside tests alone as evaluated outside tests. *)
 
+(** {2:filters Filtered sites}
+
+    The rewriter records some sites as filtered, with the reason of the filter.
+    A filtered site has no guard, as a dismissed site. The syntax alone shows
+    that its mutant is equivalent to the original, or that the mutant changes a
+    logging call or a failure message alone. The reasons are these:
+    - [zero operand]: the [ari] mutant of [x + 0] or [x - 0], where [0] is an
+      integer literal without a suffix, as [0] or [0x0]. On floats, [-0. +. 0.]
+      is [0.] and [-0. -. 0.] is [-0.], so [x +. 0.] has no filter.
+    - [same operands]: the [con] mutant of [a && a] or [a || a], when [a] is an
+      identifier, a constructor without an argument, as [true], or a field of
+      such an expression, with or without a type constraint. Such an operand
+      gives one value each time and does nothing else.
+    - [same branches]: the [neg] or [cmp] mutant of the condition of
+      [if c then e else e], when the two branches are one expression. The sites
+      inside the condition and the branches keep their mutants. A [con] mutant
+      also changes which operand is evaluated, and has no filter.
+    - [same body as the next case]: the [arm] mutant of a case without a guard
+      whose pattern binds no variable and has no [lazy] pattern, when the next
+      case is [_] without a guard, or [exception _] for an exception case of a
+      [match], and the two bodies are one expression. A [lazy] pattern forces
+      the value, and the next case does not.
+    - [logging call]: each site in the arguments of a logging function, as in
+      [Logs.debug (fun m -> m "%d" (x + 1))]. The logging functions are
+      [Logs.app], [Logs.err], [Logs.warn], [Logs.info], [Logs.debug], [Logs.msg]
+      and the names that [log_functions] adds, as the source spells them. The
+      call itself keeps its [call] mutant. A statement in the arguments, which
+      is the left operand of a sequence or the expression of [let () = e in],
+      keeps its mutants, with the sites inside it, because it acts on the state
+      of the program. The filter does not see the other effects, as of a
+      function with an effect that the message calls. A printing function, as
+      [Printf.printf], is no logging function, because a test can read what it
+      prints.
+    - [failure message]: a [lit] site in the arguments of [failwith] or
+      [invalid_arg], with or without [Stdlib.]. A file that binds one of these
+      names loses this filter. A literal in the argument of [raise] has no
+      filter, because a test can compare the exception.
+
+    The arguments of [f] are those of [f x], of [f @@ x], of [x |> f], and of
+    [Printf.ksprintf f] and [Format.kasprintf f] applied to a format.
+
+    Two expressions are one expression when their parsetrees are equal without
+    their locations. An expression whose value can depend on its location is one
+    expression with no other: an expression that holds [assert], [__LOC__],
+    [__LINE__], [__POS__], [__LOC_OF__], [__LINE_OF__] or [__POS_OF__] under any
+    path, as [Stdlib.__LOC__], a [match], a [function] with cases, a pattern
+    that can fail to match, or an extension node. The rewriter does not see the
+    location that a backtrace gives for a call.
+
+    A filter ends the chain of its operator. In [a + b + 0], the operand [a + b]
+    starts at the first byte of the site and has its identifier. Thus the
+    filtered site is not recorded, and [a + b] carries the mutant of the chain.
+
+    A [[@mutate off]] has priority over a filter, and [filter] switches all the
+    filters off. *)
+
 (** {1:dismissal Dismissal attributes}
 
     The attribute is named [mutate] and follows the grammar of the [coverage]
@@ -257,9 +316,9 @@
     - [[@mutate off]] on an expression leaves the expression as written, with
       everything inside it. When the expression is itself a site, the site is
       recorded in the table as dismissed, with the reason, or with [""] when
-      none is given. It takes an index and no guard. When the expression is no
-      site, as a [match], nothing is recorded. The sites inside the expression
-      are never recorded.
+      none is given. It takes an index and no guard, and a filter of the site
+      does not apply. When the expression is no site, as a [match], nothing is
+      recorded. The sites inside the expression are never recorded.
     - [[@@mutate off]] leaves as written a value binding at the top level of a
       structure, and a module binding, recursive or not. On a [let … in] binding
       and on any other structure item it is ignored and its payload is not
@@ -345,7 +404,10 @@
     The module holds, in this order:
     - [type site = Windtrap_runtime.Mutate.site = { … }], the record of the
       runtime with its six fields spelled out. A runtime whose record differs
-      thus fails to compile against the generated code.
+      thus fails to compile against the generated code. The field [dismissed] of
+      a site is [None], [Some (Windtrap_runtime.Mutate.Off reason)] for a
+      [[@mutate off]], or [Some (Windtrap_runtime.Mutate.Filtered reason)] for a
+      {{!section-filters}filter}.
     - [type 'a operands = 'a * 'a], only in a file that holds the guard of an
       ordering rewrite, which annotates its pair of operands with it.
     - [___windtrap_armed___], bound to
@@ -391,14 +453,19 @@ val transform_impl_file :
   ?call:bool ->
   ?lit:bool ->
   ?ret:bool ->
+  ?filter:bool ->
+  ?log_functions:string list ->
   Ppxlib.Expansion_context.Base.t ->
   Ppxlib.Parsetree.structure ->
   Ppxlib.Parsetree.structure
-(** [transform_impl_file ~arm ~call ~lit ~ret ctxt ast] is [ast] with a guard at
-    each site and the {{!section-generated}generated module} prepended. [arm],
-    [call], [lit] and [ret] keep the family of that name. [lit] defaults to
-    [false], and the others to [true]. [ctxt] is read for the input name of the
-    file alone.
+(** [transform_impl_file ~arm ~call ~lit ~ret ~filter ~log_functions ctxt ast]
+    is [ast] with a guard at each site and the
+    {{!section-generated}generated module} prepended. [arm], [call], [lit] and
+    [ret] keep the family of that name. [filter] keeps the
+    {{!section-filters}filters}, and [log_functions] adds names to the logging
+    functions, spelled as the source spells them, as ["Log.debug"]. [lit]
+    defaults to [false], the other flags to [true], and [log_functions] to [[]].
+    [ctxt] is read for the input name of the file alone.
 
     The result is [ast] itself in three cases:
     - [ast] has a top-level [[@@@mutate exclude_file]].

@@ -15,6 +15,7 @@ module Mutate = Windtrap_runtime.Mutate
 module Oracle = Windtrap_mutate_forced.Oracle
 module Forced = Windtrap_mutate_forced.Forced
 module No_guard = Windtrap_mutate_forced.No_guard
+module Filtered = Windtrap_mutate_forced.Filtered
 module Disambiguate = Windtrap_mutate_disambiguate.Disambiguate
 module Expected_type = Windtrap_mutate_disambiguate.Expected_type
 
@@ -439,6 +440,58 @@ let lost_families () =
   equal (list string) [ "ge"; "one"; "inc" ]
     (List.map rewrite (mutants_of "own_constructors.ml"))
 
+(* Filtered sites *)
+
+let filtered_reading () =
+  strf "%d %d %b %d %d %d" (Filtered.zero 4) (Filtered.chain 5 3)
+    (Filtered.same true)
+    (Filtered.branches false 7)
+    (Filtered.cases `B) (Filtered.message 2)
+
+let reason (m : Mutate.mutant) =
+  match m.dismissed with
+  | Some (Mutate.Filtered reason) -> Some reason
+  | Some (Mutate.Off _) | None -> None
+
+let filtered_reasons () =
+  equal (list string)
+    [
+      "zero operand";
+      "same operands";
+      "same branches";
+      "same body as the next case";
+      "failure message";
+    ]
+    (List.filter_map reason (mutants_of "filtered.ml"))
+
+let filtered_inert () =
+  let original = filtered_reading () in
+  equal string "4 8 true 7 0 2" original;
+  List.iter
+    (fun (m : Mutate.mutant) ->
+      match reason m with
+      | None -> ()
+      | Some _ ->
+          ignore
+            (require_ok ~pp:Mutate.pp_arm_error (Mutate.arm m.id)
+              : Mutate.mutant);
+          let armed = filtered_reading () in
+          disarm ();
+          equal ~msg:(Mutate.id_to_string m.id) string original armed)
+    (mutants_of "filtered.ml")
+
+let filtered =
+  group "Filtered sites"
+    [
+      test "each filtered site is catalogued with the reason of its filter"
+        filtered_reasons;
+      test "arming a filtered mutant changes no reading" filtered_inert;
+      test "the left operand of a filtered chain keeps its mutant" (fun () ->
+          equal string "2"
+            (armed ~file:"filtered.ml" ~rewrite:"sub" ~before:"a + b" (fun () ->
+                 Int.to_string (Filtered.chain 5 3))));
+    ]
+
 let lost =
   group "Lost families"
     [
@@ -448,4 +501,5 @@ let lost =
 
 let () =
   exit
-    (run "mutate registration" [ disarmed; armed_mutants; every_mutant; lost ])
+    (run "mutate registration"
+       [ disarmed; armed_mutants; every_mutant; filtered; lost ])

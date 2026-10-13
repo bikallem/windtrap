@@ -436,6 +436,10 @@ ran and did not notice. Resolve each one:
 - The build fails under the backend at a `Some e` or an `h :: t` whose
   constructor comes from a type of another module: put
   `[@mutate off "the reason"]` on that expression.
+- The mutant is in the arguments of a logging function of the project:
+  give `-log-function Module.fn` after the backend in the
+  `instrumentation` field. The rewriter already filters the arguments
+  of `Logs` calls and some equivalent mutants, as that of `x + 0`.
 
 A filtered run exits 0 whatever it finds and saves no verdict. The
 project's answer merges every suite's verdicts, and exits 1 when a

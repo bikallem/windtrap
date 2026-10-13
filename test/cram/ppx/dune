@@ -79,6 +79,16 @@
    (>= %{version:ppxlib} 0.38)))
  (deps pp.exe elide.exe))
 
+; mutate_scale.t limits the processor time of the rewriter with ulimit,
+; which the shell of Windows does not have.
+
+(cram
+ (package ppx_windtrap)
+ (applies_to mutate_scale)
+ (enabled_if
+  (<> %{os_type} Win32))
+ (deps pp.exe elide.exe))
+
 (cram
  (package ppx_windtrap)
  (applies_to expect)

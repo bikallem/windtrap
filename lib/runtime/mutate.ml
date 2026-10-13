@@ -53,20 +53,22 @@ let compare_id a b =
 
 (* Sites and the catalogue *)
 
+type dismissal = Off of string | Filtered of string
+
 type site = {
   line : int;
   col : int;
   rewrite : string;
   before : string;
   after : string;
-  dismissed : string option;
+  dismissed : dismissal option;
 }
 
 type mutant = {
   id : id;
   before : string;
   after : string;
-  dismissed : string option;
+  dismissed : dismissal option;
 }
 
 let compare_mutant a b = compare_id a.id b.id
@@ -124,13 +126,18 @@ let validate ~file sites =
         err_site ~file i "unknown rewrite %S" s.rewrite)
     sites
 
+let dismissal_equal a b =
+  match (a, b) with
+  | Off a, Off b | Filtered a, Filtered b -> String.equal a b
+  | (Off _ | Filtered _), _ -> false
+
 let sites_equal a b =
   let site_equal a b =
     a.line = b.line && a.col = b.col
     && String.equal a.rewrite b.rewrite
     && String.equal a.before b.before
     && String.equal a.after b.after
-    && Option.equal String.equal a.dismissed b.dismissed
+    && Option.equal dismissal_equal a.dismissed b.dismissed
   in
   Array.length a = Array.length b && Array.for_all2 site_equal a b
 
