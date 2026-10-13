@@ -371,6 +371,55 @@ error. Here git looks for a repository only in the project root:
   windtrap: --since HEAD: git rev-parse failed: fatal: not a git repository (or any of the parent directories): .git
   [1]
 
+A drop mutant is on the line where the pattern of its case starts. The
+body of a case can start on a later line. In cases.ml, the pattern of
+the case `| 1` is on line 14, and its body is on lines 15 and 16. The
+library has no other mutant than the three drop mutants:
+
+  $ cases=$(cd "$(mktemp -d)" && pwd -P) && cd "$cases"
+  $ mkdir -p _build/default/test test/cram/bin
+  $ cp "$bin/pins_cases.exe" _build/default/test/ && cp "$bin/cases.ml" test/cram/bin/
+  $ printf '_build/\n' > .gitignore
+  $ git init -q && git add . && git commit -q -m cases
+  $ run _build/default/test/pins_cases.exe --mutate=test/cram/bin/cases.ml | tail -n 1
+  mutants: 3 reached by this suite, 3 killed, score 100.0%
+  $ sed -n 14,16p test/cram/bin/cases.ml
+    | 1 ->
+        "one, which is the first of the positive numbers and the smallest of \
+         them all"
+
+A change to each line of the body does not put the drop mutant of the
+case in scope:
+
+  $ sed -e '15s/^      "/      (* changed *) "/' -e '16s/$/ (* changed *)/' \
+  >   test/cram/bin/cases.ml > cases.ml.new
+  $ mv cases.ml.new test/cram/bin/cases.ml
+  $ git diff --stat
+   test/cram/bin/cases.ml | 4 ++--
+   1 file changed, 2 insertions(+), 2 deletions(-)
+  $ run _build/default/test/pins_cases.exe --mutate=test/cram/bin/cases.ml --mutate-since=HEAD
+  pins_cases: 3 passed in DURATION.
+  --- stderr
+  windtrap: --mutate=test/cram/bin/cases.ml and --mutate-since=HEAD leave no mutant in this executable's catalogue: no mutation site under the prefix is on a line that changed since HEAD
+  [1]
+  $ run windtrap mutants --since HEAD | tail -n 1
+  mutants: 0 reached, 1 executable
+
+A change to the line of the pattern puts it in scope:
+
+  $ git checkout -q test/cram/bin/cases.ml
+  $ sed '14s/$/ (* changed *)/' test/cram/bin/cases.ml > cases.ml.new
+  $ mv cases.ml.new test/cram/bin/cases.ml
+  $ git diff --stat
+   test/cram/bin/cases.ml | 2 +-
+   1 file changed, 1 insertion(+), 1 deletion(-)
+  $ run _build/default/test/pins_cases.exe --mutate=test/cram/bin/cases.ml --mutate-since=HEAD | tail -n 1
+  mutants: 1 reached by this suite, 1 killed, score 100.0%
+  $ run windtrap mutants --since HEAD --json | grep '"id"'
+      { "id": "test/cram/bin/cases.ml:14:4:drop",
+  $ run windtrap mutants --since HEAD | tail -n 1
+  mutants: 1 reached, 1 killed, 1 executable, score 100.0%
+
 The scratch projects leave with the session:
 
-  $ cd "$bin" && rm -rf "$root" "$outside"
+  $ cd "$bin" && rm -rf "$root" "$outside" "$cases"
