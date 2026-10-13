@@ -242,6 +242,22 @@ let call_statements () =
   let () = incr (note "b" r) in
   string_of_int !r
 
+(* {1 [lit] and [ret]: a guard adds no evaluation}
+
+   This library is built with [-lit]. [lit] puts an [if] around a literal,
+   whose branches are two literals. [ret] gives [None] in place of
+   [Some e], and a copy of [t] in place of [h :: t], each in the other
+   branch of an [if] that holds the original, so [e], [h] and [t] run once
+   each and in the order of the twin. The compiler evaluates [h :: t] right
+   to left, as it does an application. *)
+
+let lit_values () =
+  Printf.sprintf "%d %d %ld %Ld %nd %.1f %.1f %b" 0 41 7l 9L 3n 0. 2.5 true
+
+let ret_some a = match Some (note "e" a) with Some v -> v | None -> "none"
+let ret_cons a b = String.concat "," (note "h" a :: note "t" [ b ])
+let ret_list a b = String.concat "," [ note "h" a; note "t" b ]
+
 (* {1 Laziness}
 
    [lazy_thunk]'s body carries two [ari] sites, so it is not a trivial
@@ -288,16 +304,21 @@ let lazy_witness () =
 
 (* {1 Generalization}
 
-   No guard sits on a value spine, the spine a binding generalizes over:
-   every site of the four operators is an application or a conditional,
-   which is never a syntactic value, so a binding that generalizes
-   uninstrumented still generalizes instrumented. This binding is where
-   that would break first: put a guard anywhere on its spine and it
-   weakens to [bool * '_weak1 list]. Nothing here reads it at run time;
+   No guard of an operator sits on a value spine, the spine a binding
+   generalizes over: every site of the four operators is an application
+   or a conditional, which is never a syntactic value, so a binding that
+   generalizes uninstrumented still generalizes instrumented. The guards
+   of [lit] and [ret] do sit on the spine. Each is an [if] whose branches
+   are syntactic values, and the type-checker reads the branches of an
+   [if] and not its condition, so the binding still generalizes. This
+   binding is where that would break first: [true] carries a [flip]
+   guard, [Some []] a [none] guard and [[ [] ]] a [tail] guard, and a
+   guard that is no syntactic value weakens it to
+   [bool * '_weak1 list * ...]. Nothing here reads it at run time;
    the check is the module coercion in test_mutate_semantics.ml, which compares
    this copy's inferred signature against the twin's and fails to
    compile the day the two disagree. *)
-let generalizes = (true, [])
+let generalizes = (true, [], Some [], [ [] ])
 
 (* An [arm] guard is an [if], which is a syntactic value when its branches
    are, so a match of functions still generalizes to ['a -> 'a]. A guard
@@ -306,8 +327,8 @@ let generalizes = (true, [])
    evaluated at load, and the other case keeps its guard. *)
 let generalizes_by_case =
   match generalizes with
-  | ((true, _) [@mutate off "evaluated at module load"]) -> fun x -> x
-  | false, _ -> fun x -> x
+  | ((true, _, _, _) [@mutate off "evaluated at module load"]) -> fun x -> x
+  | false, _, _, _ -> fun x -> x
 
 (* {1 Tail position, measured}
 
@@ -470,4 +491,9 @@ let witnesses : (string * (unit -> string)) list =
     ("arm on a handler", fun () -> show (arm_try "h"));
     ( "call on a statement and a unit binding",
       fun () -> show (call_statements ()) );
+    ("lit on each type of literal", fun () -> show (lit_values ()));
+    ("ret on Some", fun () -> show (ret_some "a"));
+    ("ret on ::", fun () -> show (ret_cons "a" "b"));
+    ("ret on a list literal", fun () -> show (ret_list "a" "b"));
   ]
+[@@mutate off "evaluated at module load"]

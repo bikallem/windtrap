@@ -166,6 +166,31 @@ let originals =
       "1",
       fun () -> Int.to_string (Oracle.call_statement (ref 0)) );
     ("call_bound", "1", fun () -> Int.to_string (Oracle.call_bound (ref 0)));
+    ("lit_int", "41", fun () -> Int.to_string (Oracle.lit_int ()));
+    ("lit_negative", "-1", fun () -> Int.to_string (Oracle.lit_negative ()));
+    ("lit_zero_int64", "0", fun () -> Int64.to_string (Oracle.lit_zero_int64 ()));
+    ("lit_int32", "7", fun () -> Int32.to_string (Oracle.lit_int32 ()));
+    ( "lit_nativeint",
+      "3",
+      fun () -> Nativeint.to_string (Oracle.lit_nativeint ()) );
+    ("lit_float", "2.5", fun () -> Float.to_string (Oracle.lit_float ()));
+    ( "lit_zero_float",
+      "0.",
+      fun () -> Float.to_string (Oracle.lit_zero_float ()) );
+    ("lit_bool", "true", fun () -> Bool.to_string (Oracle.lit_bool ()));
+    ( "ret_some 1",
+      "1",
+      fun () -> Option.fold ~none:"none" ~some:Int.to_string (Oracle.ret_some 1)
+    );
+    ( "ret_cons 1 [ 2 ]",
+      "1,2",
+      fun () -> String.concat "," (ints (Oracle.ret_cons 1 [ 2 ])) );
+    ( "the operands of ret_some_order",
+      "e",
+      fun () -> traced (fun () -> Oracle.ret_some_order 1) );
+    ( "the operands of ret_cons_order",
+      "t,h",
+      fun () -> traced (fun () -> Oracle.ret_cons_order 1 [ 2 ]) );
   ]
 
 let disarmed =
@@ -248,6 +273,27 @@ let armings =
     oracle "skip" "incr total"
       (fun () -> ints [ Oracle.call_bound (ref 0) ])
       [ "0" ];
+    oracle "inc" "41" (fun () -> ints [ Oracle.lit_int () ]) [ "42" ];
+    oracle "inc" "(-1)" (fun () -> ints [ Oracle.lit_negative () ]) [ "0" ];
+    oracle "one" "0L"
+      (fun () -> [ Int64.to_string (Oracle.lit_zero_int64 ()) ])
+      [ "1" ];
+    oracle "inc" "7l"
+      (fun () -> [ Int32.to_string (Oracle.lit_int32 ()) ])
+      [ "8" ];
+    oracle "inc" "3n"
+      (fun () -> [ Nativeint.to_string (Oracle.lit_nativeint ()) ])
+      [ "4" ];
+    oracle "zero" "2.5" (fun () -> floats [ Oracle.lit_float () ]) [ "0." ];
+    oracle "one" "0." (fun () -> floats [ Oracle.lit_zero_float () ]) [ "1." ];
+    oracle "flip" "true" (fun () -> bools [ Oracle.lit_bool () ]) [ "false" ];
+    oracle "none" "Some x"
+      (fun () ->
+        [ Option.fold ~none:"none" ~some:Int.to_string (Oracle.ret_some 1) ])
+      [ "none" ];
+    oracle "tail" "h :: t"
+      (fun () -> ints (Oracle.ret_cons 1 [ 2; 3 ]))
+      [ "2"; "3" ];
     (* Armed, the two encodings that bind their operands still evaluate each
        once, right to left, and the connective runs its right operand when the
        rewrite says so. *)
@@ -264,6 +310,13 @@ let armings =
           traced (fun () -> Oracle.con_short true true);
         ])
       [ "r"; "" ];
+    (* Armed, a [ret] mutant evaluates what its [after] text holds alone. *)
+    oracle "none" "Some (note \"e\" x)"
+      (fun () -> [ traced (fun () -> Oracle.ret_some_order 1) ])
+      [ "" ];
+    oracle "tail" "(note \"h\" h) :: (note \"t\" t)"
+      (fun () -> [ traced (fun () -> Oracle.ret_cons_order 1 [ 2 ]) ])
+      [ "t" ];
     {
       file = "disambiguate.ml";
       rewrite = "add";
@@ -376,5 +429,23 @@ let every_mutant =
         every_forced_mutant;
     ]
 
+(* A file that declares the constructors of a guard *)
+
+(* The test reads [size], so that the module is linked and registers its
+   sites. *)
+let lost_families () =
+  let rewrite (m : Mutate.mutant) = m.id.rewrite in
+  equal int 3 Windtrap_mutate_forced.Own_constructors.size;
+  equal (list string) [ "ge"; "one"; "inc" ]
+    (List.map rewrite (mutants_of "own_constructors.ml"))
+
+let lost =
+  group "Lost families"
+    [
+      test "a file that declares Some, (::) and true keeps no ret and no flip"
+        lost_families;
+    ]
+
 let () =
-  exit (run "mutate registration" [ disarmed; armed_mutants; every_mutant ])
+  exit
+    (run "mutate registration" [ disarmed; armed_mutants; every_mutant; lost ])

@@ -105,6 +105,8 @@ let family (m : Mutate.mutant) =
   | "add" | "sub" | "fadd" | "fsub" -> "ari"
   | "drop" -> "arm"
   | "skip" -> "call"
+  | "inc" | "one" | "zero" | "flip" -> "lit"
+  | "none" | "tail" -> "ret"
   | other -> "unknown " ^ other
 
 let families mutants = List.sort_uniq String.compare (List.map family mutants)
@@ -133,8 +135,19 @@ let registration =
           equal (list string)
             (List.map in_this_directory fixture_sources)
             (sources ()));
-      test "no site is evaluated at module load" (fun () ->
-          equal reach [] reached_at_load);
+      test "module initialization evaluates the literals of top-level values"
+        (fun () ->
+          equal reach
+            [
+              ("flip", 1);
+              ("none", 1);
+              ("tail", 1);
+              ("one", 1);
+              ("one", 1);
+              ("inc", 1);
+              ("inc", 1);
+            ]
+            reached_at_load);
     ]
 
 (* The catalogue *)
@@ -142,9 +155,9 @@ let registration =
 let catalogue =
   group "The catalogue"
     [
-      test "the six families are catalogued" (fun () ->
+      test "the eight families are catalogued" (fun () ->
           equal (list string)
-            [ "ari"; "arm"; "call"; "cmp"; "con"; "neg" ]
+            [ "ari"; "arm"; "call"; "cmp"; "con"; "lit"; "neg"; "ret" ]
             (families (fixture_catalogue ())));
       test "an identifier names one site" (fun () ->
           let id (m : Mutate.mutant) = Mutate.id_to_string m.id in
@@ -170,6 +183,7 @@ let compiler_order =
       "r | r",
       fun () -> Twin.show (Twin.ari_exception_order ()) );
     ("a = b", "f | r,l", fun () -> Twin.show (Twin.cmp_eq 1 2));
+    ("h :: t", "a,b | t,h", fun () -> Twin.show (Twin.ret_cons "a" "b"));
   ]
 
 let as_twin (name, f) =
@@ -216,7 +230,7 @@ let observable_families () =
       (fixture_catalogue ())
   in
   equal (list string)
-    [ "ari"; "arm"; "call"; "cmp"; "con"; "neg" ]
+    [ "ari"; "arm"; "call"; "cmp"; "con"; "lit"; "neg"; "ret" ]
     (families (List.filter changes mutants));
   equal ~msg:"after disarming"
     (list (pair string string))
@@ -375,7 +389,17 @@ let lazy_reach () =
   let first = reached (fun () -> Lazy.force thunk) in
   let again = reached (fun () -> Lazy.force thunk) in
   equal (pair int reach)
-    (42, [ ("skip", 1); ("skip", 1); ("sub", 1); ("sub", 1) ])
+    ( 42,
+      [
+        ("skip", 1);
+        ("flip", 1);
+        ("skip", 1);
+        ("sub", 1);
+        ("inc", 1);
+        ("inc", 1);
+        ("sub", 1);
+        ("inc", 1);
+      ] )
     first;
   equal (pair int reach) (42, []) again;
   equal ~msg:"runs of the body" int 1 !runs
@@ -400,13 +424,14 @@ let laziness =
 
 (* Reach counts *)
 
-(* [sum_while n] evaluates its loop condition [n + 1] times, and its sum and
-   the assignment of the sum [n] times, so a guarded operand evaluated twice
-   shows in the counts. *)
+(* [sum_while n] evaluates its loop condition [n + 1] times, its sum and
+   the assignment of the sum [n] times, and the literals of its two
+   references once, so a guarded operand evaluated twice shows in the
+   counts. *)
 let loops =
   [
-    (10, (55, [ ("lt", 11); ("skip", 10); ("sub", 10) ]));
-    (0, (0, [ ("lt", 1) ]));
+    (10, (55, [ ("one", 1); ("inc", 1); ("lt", 11); ("skip", 10); ("sub", 10) ]));
+    (0, (0, [ ("one", 1); ("inc", 1); ("lt", 1) ]));
   ]
 
 let reach_counts =
@@ -421,7 +446,8 @@ let reach_counts =
       test "a skipped right arm adds no evaluation" (fun () ->
           equal
             (pair (pair bool (list string)) reach)
-            ((false, [ "left" ]), [ ("skip", 1); ("skip", 1); ("or", 1) ])
+            ( (false, [ "left" ]),
+              [ ("skip", 1); ("tail", 1); ("skip", 1); ("or", 1) ] )
             (reached (fun () ->
                  Mutsem_fixtures.Covsem_fixtures.and_trace false true)));
     ]
