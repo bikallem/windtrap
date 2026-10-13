@@ -433,6 +433,9 @@ ran and did not notice. Resolve each one:
   mutant of an operator statement takes the form
   `begin[@mutate off "the reason"] r := 0 end;`, which ocamlformat
   can format.
+- The build fails under the backend at a `Some e` or an `h :: t` whose
+  constructor comes from a type of another module: put
+  `[@mutate off "the reason"]` on that expression.
 
 A filtered run exits 0 whatever it finds and saves no verdict. The
 project's answer merges every suite's verdicts, and exits 1 when a

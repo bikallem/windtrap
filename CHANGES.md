@@ -138,6 +138,22 @@
   project that had no survivor can have new ones, and `-no-arm` and
   `-no-call` after `ppx_windtrap.mutate` in an `instrumentation` field
   switch them off.
+- A mutant replaces `Some e` with `None`, under the name `none`, and
+  `h :: t` with `t`, under the name `tail`, and does not evaluate `e`
+  or `h` (see
+  [What is mutated](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#what-is-mutated)).
+- (breaking) The `none` and `tail` mutants are on by default, so a
+  project that had no survivor can have new ones, and `-no-ret` after
+  `ppx_windtrap.mutate` in an `instrumentation` field switches them
+  off.
+- (breaking) A `Some e` or an `h :: t` whose constructor is that of a
+  type of another module, such as a type with a `Some` and no `None`,
+  can fail to compile under `ppx_windtrap.mutate`, and
+  `[@mutate off "reason"]` on it is the way out.
+- `-lit` after `ppx_windtrap.mutate` switches on the mutants of
+  literals: an integer becomes its successor, under `inc`, or `1` under
+  `one` when it is `0`, a float becomes `0.` under `zero`, or `1.` under
+  `one` when it is zero, and `true` and `false` swap under `flip`.
 - `[@mutate off "reason"]` on the pattern of a case dismisses the `drop`
   mutant of that case; on one alternative of an or-pattern or one
   component of a tuple, as in `| A | B [@mutate off "reason"]`, it is an

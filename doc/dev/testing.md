@@ -53,16 +53,19 @@ what is non-obvious.
   a real twin rather than an expectation someone could edit to match a
   defect. Each has a link-only executable listing the fixture library
   alone: the rewriter's `ppx_runtime_libraries` inject the runtime, and
-  nothing may pull the core in. `integration/` asks whether an
+  nothing may pull the core in. The mutation fixtures and the
+  `integration/` libraries are built with `-lit`, so that every family
+  of the rewriter is in them. `integration/` asks whether an
   instrumented build compiles and registers, one library per question:
   generated code under fatal warnings, a shadowed `not` and `bool`, a
   constructor `()`, `true` or `false` of the file (declared or as an
-  extension constructor), the typing-order and expected-type corpora,
-  and a registration suite that arms each mutant and checks that the
-  library then behaves as the mutant's text says. An instrumenter
-  change that cannot keep the semantics suites green is rejected, not
-  accommodated; grow the fixtures with every expression form the
-  instrumenter learns.
+  extension constructor), a declared `Some` and `(::)`, a `let rec`
+  value of a structure, of an expression and of a class, the
+  typing-order and expected-type corpora, and a registration suite that
+  arms each mutant and checks that the library then behaves as the
+  mutant's text says. An instrumenter change that cannot keep the
+  semantics suites green is rejected, not accommodated; grow the
+  fixtures with every expression form the instrumenter learns.
 - `cram/`: cram sessions, one directory per subject. Cram pins stdout,
   stderr and the exit code natively, and `dune promote` is its
   acceptance.

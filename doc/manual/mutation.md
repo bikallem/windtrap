@@ -468,6 +468,20 @@ last part of its identifier names the rewrite:
   identifier gives the position of the pattern of the case.
 - `skip` removes a call whose value the code discards: `e1` in
   `e1; e2`, and `e` in `let () = e in body`, when it is an application.
+- `none` replaces `Some e` with `None`, and `tail` replaces `h :: t`
+  with `t`. The mutant does not evaluate `e` or `h`. A list literal
+  such as `[a; b; c]` is one site, at its bracket, and becomes `[b; c]`.
+  A chain such as `a :: b :: t` is also one site, and becomes `b :: t`.
+
+Under the backend flag `-lit`, literals are mutated too:
+
+- `inc` adds one to an integer literal, and `one` makes `0` a `1`.
+- `zero` makes a float literal other than zero `0.`, and `one` makes
+  `0.` a `1.`.
+- `flip` swaps `true` and `false`. A `true` or `false` that is a
+  condition has the `not` mutant and no `flip`.
+
+Strings and characters are not mutated.
 
 A comparison outside a condition, as in `let ok = a < b`, carries no
 mutant, and neither does an `assert`. In a chain of one operator, as
@@ -478,8 +492,20 @@ rebinds an operator loses the rewrites of its family: the four
 arithmetic operators, the six comparisons or the two connectives. A
 file that declares a constructor `true` or `false` has no `drop`
 mutant, and a file that declares a constructor `()` has no `skip`
-mutant. This applies to a constructor of a type and to an extension
-constructor.
+mutant. A file that declares a constructor `Some`, `None` or `(::)` has
+no `none` or `tail` mutant, and a file that declares `true` or `false`
+has no `flip` mutant. This applies to a constructor of a type and to an
+extension constructor.
+
+The rewriter does not see a constructor that comes from another module.
+When `Some e` builds a value of such a type, and the type has no `None`,
+the instrumented build fails to compile. This is also the case when
+`h :: t` builds a value of such a type, and `t` has another type. Put
+`[@mutate off "reason"]` on the expression.
+
+The right-hand side of a `let rec`, as in `let rec ones = 1 :: ones`,
+has no `none` or `tail` mutant outside its functions and its `lazy`
+bodies, because OCaml does not let such a value be an `if`.
 
 A case is not dropped when it is the only case of its match that a
 value reaches, because every value then raises. A match with a
@@ -490,13 +516,22 @@ exception, as `| None | exception Not_found`, and an effect case, as
 A `let () = e` at the top level of a module runs when the module
 initializes, and has no `skip` mutant.
 
-To switch the `drop` or the `skip` mutants off for a library, give
-`-no-arm` or `-no-call` after the backend:
+To switch the `drop`, the `skip` or the `none` and `tail` mutants off
+for a library, give `-no-arm`, `-no-call` or `-no-ret` after the
+backend. A library has many literals, and each one gives a mutant, so
+the mutants of literals are off until `-lit` switches them on:
 
 ```lisp
 (instrumentation
- (backend ppx_windtrap.mutate -no-arm -no-call))
+ (backend ppx_windtrap.mutate -no-arm -no-call -no-ret -lit))
 ```
+
+A long list literal can make the instrumented build slow. When its
+elements are not constants, the time of `ocamlopt` increases as the
+square of their number. A mutant in each element makes the elements
+not constants, as `none` does in a generated table
+`[ (0, Some "a"); (1, Some "b"); ... ]` of thousands of elements. Put
+`[@@mutate off]` on the binding of such a table.
 
 ## Where the verdicts are
 
