@@ -43,8 +43,10 @@ let point = function
 
 let dismissal = function
   | [%expr None] -> Some ""
-  | [%expr Some [%e? reason]] ->
+  | [%expr Some (Windtrap_runtime.Mutate.Off [%e? reason])] ->
       Option.map (strf ", dismissed %s") (string reason)
+  | [%expr Some (Windtrap_runtime.Mutate.Filtered [%e? reason])] ->
+      Option.map (strf ", filtered %s") (string reason)
   | _ -> None
 
 let site = function
@@ -123,7 +125,7 @@ let mutation ~name = function
         rewrite : string;
         before : string;
         after : string;
-        dismissed : string option;
+        dismissed : Windtrap_runtime.Mutate.dismissal option;
       }]
     :: rest -> (
       let helper, rest =

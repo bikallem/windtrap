@@ -20,10 +20,11 @@ let suite_exe = Filename.concat exe_dir "suite_main.exe"
 let plain_exe = Filename.concat exe_dir "plain_main.exe"
 let runaway_exe = Filename.concat exe_dir "runaway/runaway_main.exe"
 let inline_exe = Filename.concat exe_dir "inline/runner_main.exe"
+let scoped_exe = Filename.concat exe_dir "scoped/scoped_main.exe"
 
 (* Under --instrument-with the fixtures link an instrumented core, so every
    loop scenario passes this directory as its scope: the counts below are
-   those of subject.ml, spinner.ml and inline_armed.ml alone. *)
+   those of subject.ml, spinner.ml, inline_armed.ml and quiet.ml alone. *)
 let scope = "test/unit/mutate_loop/"
 let mutate = "--mutate=" ^ scope
 let mutate_mirror = ("WINDTRAP_MUTATE", scope)
@@ -80,6 +81,7 @@ let verdict = function
           (List.map (String.concat " \u{203a} ") (first :: others))
   | Verdicts.Not_evaluated -> "not evaluated"
   | Verdicts.Outside_tests -> "outside tests"
+  | Verdicts.Filtered reason -> "filtered: " ^ reason
   | Verdicts.Unreached -> "unreached"
 
 let local file =
@@ -363,11 +365,12 @@ let green_rows =
      widen is not 99";
     "subject.ml:21 unreached";
     "subject.ml:27 unreached";
+    "subject.ml:38 filtered: zero operand";
   ]
 
 let green_outcome =
   "mutants: 1 survived of 2 reached by this suite, 1 killed, 2 never reached, \
-   score 50.0%"
+   1 filtered, score 50.0%"
 
 let not_saved =
   "windtrap: verdicts not saved: this run's selection narrows the suite, and a \
@@ -389,7 +392,7 @@ let running =
         (fun (_, env) ->
           let r = spawn ~env [] in
           equal string "exited 0" r.status;
-          equal text "calc: 6 passed in <time>.\n" (masked r.out);
+          equal text "calc: 7 passed in <time>.\n" (masked r.out);
           equal text "" r.err);
       test "a build with no mutants runs as it would without the seam"
         (fun () ->
@@ -415,10 +418,10 @@ let rewrites () =
 let population =
   group "Population"
     [
-      test "the fixture catalogues subject.ml's five sites in source order"
+      test "the fixture catalogues subject.ml's six sites in source order"
         (fun () ->
           equal (list string)
-            [ "15 add"; "18 sub"; "21 sub"; "27 add"; "33 sub" ]
+            [ "15 add"; "18 sub"; "21 sub"; "27 add"; "33 sub"; "38 sub" ]
             (rewrites ()));
       test "a scope keeps every mutant under it, and dismissal drops one"
         (fun () ->
@@ -477,7 +480,7 @@ let outside_tests () =
   equal text "" r.err;
   equal string
     "mutants: 1 survived of 2 reached by this suite, 1 killed, 2 evaluated \
-     outside tests, score 50.0%"
+     outside tests, 1 filtered, score 50.0%"
     (outcome r.out);
   equal
     (option (list string))
@@ -488,6 +491,7 @@ let outside_tests () =
           a retry, widen \u{203a} third reaches widen";
          "subject.ml:21 outside tests";
          "subject.ml:27 outside tests";
+         "subject.ml:38 filtered: zero operand";
        ])
     (rows r)
 
@@ -497,7 +501,7 @@ let tagged () =
   equal string "calc: 5 passed in <time>." (summary r.out);
   equal string
     "mutants: 1 survived of 2 reached by the 5 selected tests, 1 killed, 2 \
-     never reached, score 50.0%"
+     never reached, 1 filtered, score 50.0%"
     (outcome r.out);
   equal (list string)
     [
@@ -513,7 +517,7 @@ let dry_run =
       test "the dry run's report comes first and the loop's outcome line last"
         (fun () ->
           let r = Lazy.force green in
-          equal string "calc: 6 passed in <time>." (summary r.out);
+          equal string "calc: 7 passed in <time>." (summary r.out);
           equal string green_outcome (outcome r.out));
       test "the dry run of --mutate -u accepts what -u accepts" (fun () ->
           let b = Lazy.force baseline_loop in
@@ -583,7 +587,7 @@ let no_at_exit () =
   equal text "" r.err;
   equal string
     "mutants: 1 survived of 3 reached by this suite, 2 killed, 1 never \
-     reached, score 66.7%"
+     reached, 1 filtered, score 66.7%"
     (outcome r.out);
   equal int 1 (List.length (pids (read log)))
 
@@ -613,7 +617,8 @@ let inline_loop () =
   equal text "" r.err;
   contains ~sub:"inline_armed: 1 passed" r.out;
   equal string
-    "mutants: 1 reached by this suite, 1 killed, 3 never reached, score 100.0%"
+    "mutants: 1 reached by this suite, 1 killed, 3 never reached, 1 filtered, \
+     score 100.0%"
     (outcome r.out);
   equal (list string) [ "inline_armed.ml" ] left
 
@@ -623,8 +628,8 @@ let children =
       test "a child checks baselines read-only" (fun () ->
           let b = Lazy.force baseline_loop in
           equal string
-            "mutants: 1 reached by this suite, 1 killed, 3 never reached, \
-             score 100.0%"
+            "mutants: 1 reached by this suite, 1 killed, 3 never reached, 1 \
+             filtered, score 100.0%"
             (outcome b.ran.out);
           equal text "6\n" b.baseline);
       test "no at_exit function runs in a child, a fatal exception included"
@@ -658,7 +663,7 @@ let crashed () =
   equal text "" r.err;
   equal string
     "mutants: 1 survived of 3 reached by this suite, 2 killed, 1 never \
-     reached, score 66.7%"
+     reached, 1 filtered, score 66.7%"
     (outcome r.out);
   equal
     (option (list string))
@@ -669,6 +674,7 @@ let crashed () =
           \u{203a} widen is not 99";
          "subject.ml:21 unreached";
          "subject.ml:27 killed";
+         "subject.ml:38 filtered: zero operand";
        ])
     (rows r)
 
@@ -683,7 +689,7 @@ let not_evaluated () =
   equal (list string) [] (survivors r.out);
   equal string
     "mutants: 2 reached by this suite, 1 killed, 1 not evaluated, 2 never \
-     reached, score 50.0%"
+     reached, 1 filtered, score 50.0%"
     (outcome r.out);
   contains ~sub:(strf "arm: %s --arm %s\n" suite_exe (site 18)) r.out
 
@@ -692,7 +698,7 @@ let capped () =
   equal (list string) [ site 18; site 21 ] (survivors r.out);
   equal string
     "mutants: 2 survived of 3 reached by this suite, 1 killed, 1 never \
-     reached, score 33.3%"
+     reached, 1 filtered, score 33.3%"
     (outcome r.out);
   equal
     (option (list string))
@@ -703,6 +709,7 @@ let capped () =
           \u{203a} widen is not 99";
          "subject.ml:21 survived by orphan \u{203a} orphan is nonzero";
          "subject.ml:27 unreached";
+         "subject.ml:38 filtered: zero operand";
        ])
     (rows r)
 
@@ -718,8 +725,8 @@ let verdicts =
           let r = Lazy.force release in
           equal string "exited 0" r.status;
           equal string
-            "mutants: 1 reached by this suite, 1 killed, 3 never reached, \
-             score 100.0%"
+            "mutants: 1 reached by this suite, 1 killed, 3 never reached, 1 \
+             filtered, score 100.0%"
             (outcome r.out));
       test "a mutant its child did not evaluate is no survivor" not_evaluated;
       test "the verdict file records it as not evaluated" (fun () ->
@@ -731,6 +738,7 @@ let verdicts =
                  "subject.ml:18 not evaluated";
                  "subject.ml:21 unreached";
                  "subject.ml:27 unreached";
+                 "subject.ml:38 filtered: zero operand";
                ])
             (rows (Lazy.force memo)));
       test "its arm command, a new process, kills it" (fun () ->
@@ -738,15 +746,31 @@ let verdicts =
           equal string "exited 1" r.status;
           equal string "mutant killed." (outcome r.out));
       test "every survivor is named" capped;
-      test "a loop that kills everything it reaches prints its outcome alone"
-        (fun () ->
+      test
+        "a loop that kills everything it reaches prints its filtered mutants \
+         and its outcome alone" (fun () ->
           let r = spawn ~env:[ suite "pinned" ] [ mutate ] in
           equal string "exited 0" r.status;
           equal text "" r.err;
-          equal text
-            "calc: 6 passed in <time>.\n\
-             mutants: 4 reached by this suite, 4 killed, score 100.0%\n"
-            (masked r.out));
+          let unruled =
+            List.filter
+              (fun line -> not (String.starts_with ~prefix:"\u{2500}" line))
+              (String.split_on_char '\n' (masked r.out))
+          in
+          equal (list string)
+            [
+              "calc: 6 passed in <time>.";
+              "";
+              "  The rewriter found these mutants equivalent or of no \
+               interest, and no child tested them.";
+              "  1  zero operand";
+              "";
+              "mutants: 4 reached by this suite, 4 killed, 1 filtered, score \
+               100.0%";
+              "";
+            ]
+            unruled;
+          contains ~sub:" filtered (1) " r.out);
     ]
 
 (* Tests marked xfail *)
@@ -767,8 +791,8 @@ let no_xfail_witness () =
     ]
     (witnesses r.out);
   equal string
-    "mutants: 2 survived of 2 reached by this suite, 2 never reached, score \
-     0.0%"
+    "mutants: 2 survived of 2 reached by this suite, 2 never reached, 1 \
+     filtered, score 0.0%"
     (outcome r.out)
 
 let known_armed line = spawn ~env:[ suite "known" ] [ "--arm"; site line ]
@@ -791,6 +815,7 @@ let xfail =
                  "subject.ml:18 survived by known \u{203a} widen is nonzero";
                  "subject.ml:21 unreached";
                  "subject.ml:27 unreached";
+                 "subject.ml:38 filtered: zero operand";
                ])
             (rows (Lazy.force known)));
     ]
@@ -806,11 +831,11 @@ let budget (k, over) =
   in
   equal string
     (if over = 0 then
-       "mutants: 1 survived of 1 reached by this suite, 3 never reached, score \
-        0.0%"
+       "mutants: 1 survived of 1 reached by this suite, 3 never reached, 1 \
+        filtered, score 0.0%"
      else
-       "mutants: 1 reached by this suite, 1 killed, 3 never reached, score \
-        100.0%")
+       "mutants: 1 reached by this suite, 1 killed, 3 never reached, 1 \
+        filtered, score 100.0%")
     (outcome r.out)
 
 (* The runaway fixture's mutant spins; the hit budget stops it within
@@ -852,7 +877,8 @@ let deadline_kill () =
   equal string "exited 0" b.run.status;
   equal text "" b.run.err;
   equal string
-    "mutants: 1 reached by this suite, 1 killed, 3 never reached, score 100.0%"
+    "mutants: 1 reached by this suite, 1 killed, 3 never reached, 1 filtered, \
+     score 100.0%"
     (outcome b.run.out);
   equal
     (option (list string))
@@ -862,6 +888,7 @@ let deadline_kill () =
          "subject.ml:18 unreached";
          "subject.ml:21 unreached";
          "subject.ml:27 unreached";
+         "subject.ml:38 filtered: zero operand";
        ])
     (rows b.run)
 
@@ -873,8 +900,8 @@ let slow () =
   equal string "exited 0" r.status;
   equal text "" r.err;
   equal string
-    "mutants: 1 survived of 1 reached by this suite, 3 never reached, score \
-     0.0%"
+    "mutants: 1 survived of 1 reached by this suite, 3 never reached, 1 \
+     filtered, score 0.0%"
     (outcome r.out);
   equal
     (option (list string))
@@ -885,6 +912,7 @@ let slow () =
          "subject.ml:18 unreached";
          "subject.ml:21 unreached";
          "subject.ml:27 unreached";
+         "subject.ml:38 filtered: zero operand";
        ])
     (rows r)
 
@@ -945,8 +973,8 @@ let narrowed () =
   let r = Child.run ~env:(quiet []) suite_exe [ mutate; "-f"; "calc" ] in
   equal string "exited 0" (ended r.Child.status);
   equal string
-    "mutants: 1 reached by the 3 selected tests, 1 killed, 3 never reached, \
-     score 100.0%"
+    "mutants: 1 reached by the 3 selected tests, 1 killed, 3 never reached, 1 \
+     filtered, score 100.0%"
     (outcome r.Child.out);
   equal (option string) None (reproduce r.Child.out);
   equal text not_saved r.Child.err;
@@ -1016,15 +1044,44 @@ let unwritable () =
   let r = spawn ~exe ~env:[ suite "weak" ] [ mutate ] in
   equal string "exited 0" r.status;
   equal string
-    "mutants: 1 survived of 1 reached by this suite, 3 never reached, score \
-     0.0%"
+    "mutants: 1 survived of 1 reached by this suite, 3 never reached, 1 \
+     filtered, score 0.0%"
     (outcome r.out);
   starts_with ~affix:"windtrap: could not write the verdict file: " r.err;
   equal int 1 (List.length (lines (String.trim r.err)))
 
+(* scoped_main links subject.ml and quiet.ml, whose only site is
+   filtered. A scope of subject.ml leaves the filtered mutant of quiet.ml
+   out, as it leaves out the other mutants of quiet.ml. *)
+let filtered_in_scope () =
+  let subject_rows =
+    [
+      "subject.ml:15 killed";
+      "subject.ml:18 unreached";
+      "subject.ml:21 unreached";
+      "subject.ml:27 unreached";
+      "subject.ml:38 filtered: zero operand";
+    ]
+  in
+  let whole = spawn ~exe:scoped_exe [ mutate ] in
+  let one = spawn ~exe:scoped_exe [ "--mutate=" ^ scope ^ "subject.ml" ] in
+  equal (pair string text) ("exited 0", "") (whole.status, whole.err);
+  equal
+    (option (list string))
+    (Some ("scoped/quiet.ml:8 filtered: zero operand" :: subject_rows))
+    (rows whole);
+  equal (pair string text) ("exited 0", "") (one.status, one.err);
+  equal (option (list string)) (Some subject_rows) (rows one);
+  equal string
+    "mutants: 1 reached by this suite, 1 killed, 3 never reached, 1 filtered, \
+     score 100.0%"
+    (outcome one.out)
+
 let verdict_file =
   group "The verdict file"
     [
+      test "a scope records the filtered mutants of its files alone"
+        filtered_in_scope;
       test
         "a loop that ran whole under a scope writes its file, with its writer"
         written;
@@ -1087,6 +1144,22 @@ let environment =
              executable's catalogue is under perhaps, so the suite runs \
              without mutation\n"
             r.err);
+      test "WINDTRAP_MUTATE where every mutant is filtered runs the suite"
+        (fun () ->
+          let r =
+            spawn ~exe:scoped_exe
+              ~env:[ ("WINDTRAP_MUTATE", scope ^ "scoped/") ]
+              []
+          in
+          equal (pair string string)
+            ("exited 0", "scoped: 2 passed in <time>.")
+            (r.status, masked (String.trim r.out));
+          equal text
+            "windtrap: WINDTRAP_MUTATE is set, but every mutant this run could \
+             test is dismissed by [@mutate off] or filtered by the rewriter, \
+             so the suite runs without mutation\n"
+            r.err;
+          equal (option (list string)) None (rows r));
       test "WINDTRAP_MUTATE on a build with no mutants names the backend"
         (fun () ->
           if core_instrumented then
@@ -1191,6 +1264,15 @@ let refusals =
         no_backend;
       test "a scope is refused by name even where there is nothing to mutate"
         loud_scope;
+      test "a scope where every mutant is filtered is refused" (fun () ->
+          let r = spawn ~exe:scoped_exe [ "--mutate=" ^ scope ^ "scoped/" ] in
+          equal string "exited 1" r.status;
+          equal text
+            "windtrap: every mutant this run could test is dismissed by \
+             [@mutate off] or filtered by the rewriter; there is nothing to \
+             test\n"
+            r.err;
+          equal (option (list string)) None (rows r));
       test
         "a suite that spawned a domain is refused, since the loop cannot fork"
         (fun () ->
@@ -1294,6 +1376,23 @@ let plain_armed () =
   contains ~sub:"not this executable's mutant" r.err;
   contains ~sub:"instrumented with ppx_windtrap.mutate" r.err
 
+(* A dismissed or filtered site has no guard, so an armed run of its mutant
+   is the unarmed run, and would end on a false "not evaluated". [dismissed]
+   runs the two sites. Only [-no-filter] can arm a filtered mutant, and the
+   refusal is the one place that tells the user so: [hint] pins that text.
+   [-no-filter] does not arm a dismissed mutant, so its refusal must not give
+   the hint. *)
+let unarmable ?hint line reason () =
+  let r = spawn ~env:[ suite "dismissed" ] [ "--arm"; site line ] in
+  equal string "exited 1" r.status;
+  equal text "" r.out;
+  contains ~sub:(site line) r.err;
+  contains ~sub:reason r.err;
+  contains ~sub:"no run can arm it" r.err;
+  match hint with
+  | Some hint -> contains ~sub:hint r.err
+  | None -> not_contains ~sub:"-no-filter" r.err
+
 let inline_armed () = inline_run [ ("WINDTRAP_MUTATE_ARM", site 18) ]
 
 (* Exit 0 would be the correction-coverage downgrade firing on output an
@@ -1347,6 +1446,11 @@ let armed =
             r.out);
       test "an identifier of a build with no mutants declines by name"
         plain_armed;
+      test "a mutant that [@mutate off] dismisses is refused"
+        (unarmable 33 "[@mutate off] dismisses this mutant");
+      test "a mutant that the rewriter filtered is refused"
+        (unarmable 38 "the rewriter filtered this mutant (zero operand)"
+           ~hint:"give -no-filter after ppx_windtrap.mutate to test it");
       test "an armed site only tests marked xfail ran is not reached" (fun () ->
           let r = known_armed 21 in
           equal string "exited 0" r.status;
@@ -1506,8 +1610,8 @@ let held_order () =
     ]
     (witnesses r.out);
   equal string
-    "mutants: 2 survived of 2 reached by this suite, 2 never reached, score \
-     0.0%"
+    "mutants: 2 survived of 2 reached by this suite, 2 never reached, 1 \
+     filtered, score 0.0%"
     (outcome r.out);
   equal (option string)
     (Some (strf "%s --arm %s" suite_exe (site 15)))
@@ -1563,6 +1667,7 @@ let pinned_rows =
     "subject.ml:18 killed";
     "subject.ml:21 killed";
     "subject.ml:27 killed";
+    "subject.ml:38 filtered: zero operand";
   ]
 
 let left_mid_loop () =
@@ -1639,8 +1744,8 @@ let interrupted_by signal =
   (r, List.map fate (pids (read pidfile)), entries tmpdir)
 
 let interrupted_outcome =
-  "mutants: 1 survived of 3 reached by this suite, 1 never reached, 2 not \
-   tested, score 0.0%"
+  "mutants: 1 survived of 3 reached by this suite, 1 never reached, 1 \
+   filtered, 2 not tested, score 0.0%"
 
 let stopped () =
   let r, grandchildren, left = interrupted_by Sys.sigint in
@@ -1683,7 +1788,9 @@ let probe_interrupted () =
   let r = finish run in
   equal string "killed by SIGINT" r.status;
   equal text "windtrap: interrupted during the determinism probe\n" r.err;
-  equal string "mutants: 1 reached by this suite, 3 never reached, 1 not tested"
+  equal string
+    "mutants: 1 reached by this suite, 3 never reached, 1 filtered, 1 not \
+     tested"
     (outcome r.out);
   equal (list string) [] (entries tmpdir)
 
@@ -1700,8 +1807,8 @@ let after_last_child () =
   equal string "killed by SIGINT" r.status;
   equal text "" r.err;
   equal string
-    "mutants: 1 survived of 1 reached by this suite, 3 never reached, score \
-     0.0%"
+    "mutants: 1 survived of 1 reached by this suite, 3 never reached, 1 \
+     filtered, score 0.0%"
     (outcome r.out);
   equal
     (option (list string))
@@ -1712,6 +1819,7 @@ let after_last_child () =
          "subject.ml:18 unreached";
          "subject.ml:21 unreached";
          "subject.ml:27 unreached";
+         "subject.ml:38 filtered: zero operand";
        ])
     (rows r);
   equal (list string) [] (entries tmpdir)
@@ -1796,7 +1904,7 @@ let () =
   at_exit (fun () ->
       List.iter
         (fun exe -> remove (Verdicts.output_file ~exe))
-        [ suite_exe; inline_exe; runaway_exe; plain_exe ])
+        [ suite_exe; inline_exe; runaway_exe; plain_exe; scoped_exe ])
 
 let () =
   exit

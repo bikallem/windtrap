@@ -2208,6 +2208,7 @@ let loop_report =
     not_evaluated = [];
     unreached = [ ("lib/calc.ml", 40); ("lib/calc.ml", 41) ];
     outside_tests = [];
+    filtered = [];
     killed = 3;
     not_tested = 0;
     scope = Sections.Suite;
@@ -2252,6 +2253,7 @@ let merge_report =
       List.map (fun line -> ("lib/text.ml", line)) [ 12; 13; 14; 32 ]
       @ [ ("lib/run.ml", 40); ("lib/run.ml", 40); ("lib/report.ml", 61) ];
     outside_tests = [];
+    filtered = [];
     killed = 16;
     not_tested = 0;
     scope = Sections.Executables 3;
@@ -2344,6 +2346,7 @@ let mutation_entries () =
                 ("lib/b.ml", 1);
               ];
           outside_tests = [];
+          filtered = [];
           killed = 1;
           not_tested = 0;
           scope = Sections.Executables 1;
@@ -2357,6 +2360,45 @@ let mutation_entries () =
           Sections.survivors = [];
           outside_tests =
             [ ("lib/table.ml", 7); ("lib/calc.ml", 1); ("lib/calc.ml", 2) ];
+        } );
+    ( "filtered follows evaluated outside tests, one row per reason",
+      at_rest
+        {
+          loop_report with
+          Sections.survivors = [];
+          outside_tests = [ ("lib/table.ml", 7) ];
+          filtered =
+            [
+              "zero operand";
+              "same branches";
+              "logging call";
+              "same branches";
+              "logging call";
+              "logging call";
+              "logging call";
+              "logging call";
+              "logging call";
+              "logging call";
+              "logging call";
+              "logging call";
+            ];
+        } );
+    ( "filtered: the most mutants first, a tie by reason, the counts \
+       right-aligned",
+      at_rest
+        {
+          loop_report with
+          Sections.survivors = [];
+          unreached = [];
+          filtered =
+            [
+              "same branches";
+              "failure message";
+              "logging call";
+              "same branches";
+              "logging call";
+            ]
+            @ List.init 10 (fun _ -> "zero operand");
         } );
     ( "a loop's closing: the rule, the sections, the command, the outcome",
       closing ~ansi:true
@@ -2377,6 +2419,14 @@ let mutation_entries () =
           unreached = [];
           outside_tests = [ ("lib/table.ml", 7) ];
         } );
+    ( "filtered alone, in a loop: a blank line opens it",
+      closing
+        {
+          loop_report with
+          Sections.survivors = [];
+          unreached = [];
+          filtered = [ "same body as the next case" ];
+        } );
     ( "an interrupted loop counts what it did not test",
       closing
         ~invocation:
@@ -2392,7 +2442,8 @@ let mutation_entries () =
   ]
 
 let summary ?(survivors = []) ?(not_evaluated = []) ?(unreached = [])
-    ?(outside_tests = []) ?(not_tested = 0) ?min ~killed scope =
+    ?(outside_tests = []) ?(filtered = []) ?(not_tested = 0) ?min ~killed scope
+    =
   last_line
     (at_rest ?min
        {
@@ -2400,6 +2451,7 @@ let summary ?(survivors = []) ?(not_evaluated = []) ?(unreached = [])
          not_evaluated;
          unreached;
          outside_tests;
+         filtered;
          killed;
          not_tested;
          scope;
@@ -2461,6 +2513,13 @@ let summary_rows =
           ~killed:2 Sections.Suite),
       "mutants: 1 survived of 3 reached by this suite, 2 killed, 2 never \
        reached, 1 evaluated outside tests, score 66.7%" );
+    ( "a filtered mutant is neither reached nor scored",
+      (fun () ->
+        summary ~survivors:s
+          ~filtered:[ "zero operand"; "same branches" ]
+          ~killed:2 Sections.Suite),
+      "mutants: 1 survived of 3 reached by this suite, 2 killed, 2 filtered, \
+       score 66.7%" );
     ( "a mutant its child did not evaluate is reached",
       (fun () ->
         summary ~survivors:s ~not_evaluated:[ memo_missed ] ~killed:2

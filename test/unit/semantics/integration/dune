@@ -1,6 +1,7 @@
 (library
  (name windtrap_mutate_forced)
  (modules
+  filtered
   forced
   no_guard
   oracle
@@ -11,7 +12,7 @@
  (flags
   (:standard -w +a-70 -warn-error +a))
  (preprocess
-  (pps ppx_windtrap.mutate -lit)))
+  (pps ppx_windtrap.mutate -- -lit -log-function Log.debug)))
 
 ; Type-directed disambiguation is warning 40's subject, so this one keeps
 ; dune's default warning set.

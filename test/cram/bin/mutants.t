@@ -185,6 +185,21 @@ survivor: it is listed with the command that arms it, and exits 0:
   
   mutants: 2 reached, 1 killed, 1 not evaluated, 2 executables, score 50.0%
 
+A mutant that the rewriter filtered is counted by its reason and not
+scored, and a verdict of another executable outranks the filter:
+
+  $ plant "$scratch/filtered" && cd "$scratch/filtered"
+  $ mkdata mutants _build/_mutants/a.mutants "$add=killed" "$sub=filtered:zero operand" "$lt=filtered:same branches" "$or=filtered:same operands" "$and=filtered:same operands"
+  $ mkdata mutants _build/_mutants/b.mutants "$add=killed" "$lt=killed"
+  $ run windtrap mutants
+  ────────────────────── filtered (3) ──────────────────────
+    The rewriter found these mutants equivalent or of no interest, and no child tested them.
+    2  same operands
+    1  zero operand
+  ──────────────────────────────────────────────────────────
+  
+  mutants: 2 reached, 2 killed, 3 filtered, 2 executables, score 100.0%
+
 Survivors are ordered by how many tests reached them, then by identifier:
 
   $ plant "$scratch/order" && cd "$scratch/order"
@@ -538,7 +553,7 @@ executable by its index in "executables":
   { "version": 1,
     "summary": { "reached": 3, "killed": 2, "survived": 1,
       "not_evaluated": 0, "outside_tests": 0, "unreached": 2,
-      "score": 66.67 },
+      "filtered": 0, "score": 66.67 },
     "executables": [
       { "name": "windtrap-a.mutants", "path": null },
       { "name": "windtrap-b.mutants", "path": null },
@@ -566,7 +581,8 @@ executable by its index in "executables":
       { "id": "lib/util.ml:3:22:and",
         "file": "lib/util.ml", "line": 3, "col": 22, "rewrite": "and",
         "before": "p && q", "after": "p || q",
-        "verdict": "unreached" } ] }
+        "verdict": "unreached" } ],
+    "filtered": [ ] }
   [1]
   $ cp "$bin/out" json
 
@@ -579,7 +595,7 @@ records none:
   { "version": 1,
     "summary": { "reached": 1, "killed": 0, "survived": 1,
       "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
-      "score": 0.00 },
+      "filtered": 0, "score": 0.00 },
     "executables": [
       { "name": "t.exe", "path": "default/a/t.exe" },
       { "name": "t.exe", "path": "default/b/t.exe" } ],
@@ -589,14 +605,15 @@ records none:
         "before": "a + b", "after": "a - b",
         "verdict": "survived",
         "tests": [
-          { "executable": 1, "test": ["calc", "adds"] } ] } ] }
+          { "executable": 1, "test": ["calc", "adds"] } ] } ],
+    "filtered": [ ] }
   [1]
   $ cd "$scratch/labels"
   $ run windtrap mutants --json
   { "version": 1,
     "summary": { "reached": 1, "killed": 0, "survived": 1,
       "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
-      "score": 0.00 },
+      "filtered": 0, "score": 0.00 },
     "executables": [
       { "name": "my_lib_expect", "path": "default/lib/.my_lib_expect.inline-tests/inline-test-runner.exe" },
       { "name": "plain.mutants", "path": null },
@@ -610,7 +627,8 @@ records none:
           { "executable": 0, "test": ["my_lib_expect", "add"] },
           { "executable": 1, "test": ["hand", "written"] },
           { "executable": 2, "test": ["calc", "adds"] },
-          { "executable": 2, "test": ["calc", "adds zero"] } ] } ] }
+          { "executable": 2, "test": ["calc", "adds zero"] } ] } ],
+    "filtered": [ ] }
   [1]
 
 In one executable, the tests are sorted name by name, the outermost name
@@ -622,7 +640,7 @@ report compares the names that it prints, so its order can be different:
   $ run windtrap mutants --json | grep '"executable"'
           { "executable": 0, "test": ["a", "b"] },
           { "executable": 0, "test": ["a b"] },
-          { "executable": 0, "test": ["z", "b"] } ] } ] }
+          { "executable": 0, "test": ["z", "b"] } ] } ],
   $ run windtrap mutants | grep 's\.mutants  '
         s.mutants  a b
         s.mutants  a › b
@@ -637,7 +655,7 @@ every test, have their verdicts and no tests:
   { "version": 1,
     "summary": { "reached": 2, "killed": 1, "survived": 0,
       "not_evaluated": 1, "outside_tests": 1, "unreached": 0,
-      "score": 50.00 },
+      "filtered": 0, "score": 50.00 },
     "executables": [
       { "name": "a.mutants", "path": null } ],
     "mutants": [
@@ -652,7 +670,43 @@ every test, have their verdicts and no tests:
       { "id": "lib/calc.ml:3:14:lt",
         "file": "lib/calc.ml", "line": 3, "col": 14, "rewrite": "lt",
         "before": "a < b", "after": "a <= b",
-        "verdict": "outside_tests" } ] }
+        "verdict": "outside_tests" } ],
+    "filtered": [ ] }
+
+A filtered mutant is in the array "filtered", with its reason, and not in
+"mutants":
+
+  $ cd "$scratch/filtered"
+  $ run windtrap mutants --json
+  { "version": 1,
+    "summary": { "reached": 2, "killed": 2, "survived": 0,
+      "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
+      "filtered": 3, "score": 100.00 },
+    "executables": [
+      { "name": "a.mutants", "path": null },
+      { "name": "b.mutants", "path": null } ],
+    "mutants": [
+      { "id": "lib/calc.ml:1:14:add",
+        "file": "lib/calc.ml", "line": 1, "col": 14, "rewrite": "add",
+        "before": "a + b", "after": "a - b",
+        "verdict": "killed" },
+      { "id": "lib/calc.ml:3:14:lt",
+        "file": "lib/calc.ml", "line": 3, "col": 14, "rewrite": "lt",
+        "before": "a < b", "after": "a <= b",
+        "verdict": "killed" } ],
+    "filtered": [
+      { "id": "lib/calc.ml:2:14:sub",
+        "file": "lib/calc.ml", "line": 2, "col": 14, "rewrite": "sub",
+        "before": "a - b", "after": "a + b",
+        "reason": "zero operand" },
+      { "id": "lib/util.ml:1:13:or",
+        "file": "lib/util.ml", "line": 1, "col": 13, "rewrite": "or",
+        "before": "p || q", "after": "p && q",
+        "reason": "same operands" },
+      { "id": "lib/util.ml:3:22:and",
+        "file": "lib/util.ml", "line": 3, "col": 22, "rewrite": "and",
+        "before": "p && q", "after": "p || q",
+        "reason": "same operands" } ] }
 
 Each string is escaped as JSON needs, and bytes that are not UTF-8 become
 the replacement character:
@@ -660,7 +714,7 @@ the replacement character:
   $ plant "$scratch/escape" && cd "$scratch/escape"
   $ mkdata mutants _build/_mutants/e.mutants "$add=survived:t/say \"hi\"\\ $(printf '\t\001\377')"
   $ run windtrap mutants --json | grep '"test"'
-          { "executable": 0, "test": ["t", "say \"hi\"\\ \t\u0001\ufffd"] } ] } ] }
+          { "executable": 0, "test": ["t", "say \"hi\"\\ \t\u0001\ufffd"] } ] } ],
 
 Under a gate the document is the same, the exit code is that of the gate,
 and the outcome line goes to standard error:
@@ -715,13 +769,13 @@ is to delete it, which a coverage dump in the directory shares:
   $ printf 'windtrap-mutants-v0\n1\nsome older payload\n' > _build/_mutants/old.mutants
   $ run windtrap mutants
   --- stderr
-  windtrap: .../old.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v3", found "windtrap-mutants-v0"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
+  windtrap: .../old.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v4", found "windtrap-mutants-v0"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
   [1]
   $ rm _build/_mutants/old.mutants
   $ printf 'windtrap-coverage-v3\n0\n' > _build/_mutants/cov.mutants
   $ run windtrap mutants
   --- stderr
-  windtrap: .../cov.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v3", found "windtrap-coverage-v3"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
+  windtrap: .../cov.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v4", found "windtrap-coverage-v3"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
   [1]
 
 A PATH that cannot be used fails the command, and the files named beside

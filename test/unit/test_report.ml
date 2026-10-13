@@ -1885,6 +1885,7 @@ let loop_report =
     not_evaluated = [];
     unreached = [ ("lib/calc.ml", 40); ("lib/calc.ml", 41) ];
     outside_tests = [];
+    filtered = [];
     killed = 3;
     not_tested = 0;
     scope = Sections.Suite;

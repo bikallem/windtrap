@@ -42,7 +42,9 @@ what is non-obvious.
   through a real spawned process (a loop that forks cannot be observed
   from inside its own image), with `plain_main.exe` as the zero-mutant
   control that must be declined by name, `runaway/` for the hit-count
-  budget and `inline/` for an armed inline partition.
+  budget, `inline/` for an armed inline partition and `scoped/` for a
+  second file whose one site is filtered, which a scope of the other
+  file must not record.
   Under `semantics/`, `coverage/` and `mutate/` are the
   semantics-preservation suites: a fixture library instrumented
   unconditionally through `(pps)`, run and compared with the
@@ -60,12 +62,14 @@ what is non-obvious.
   generated code under fatal warnings, a shadowed `not` and `bool`, a
   constructor `()`, `true` or `false` of the file (declared or as an
   extension constructor), a declared `Some` and `(::)`, a `let rec`
-  value of a structure, of an expression and of a class, the
-  typing-order and expected-type corpora, and a registration suite that
-  arms each mutant and checks that the library then behaves as the
-  mutant's text says. An instrumenter change that cannot keep the
-  semantics suites green is rejected, not accommodated; grow the
-  fixtures with every expression form the instrumenter learns.
+  value of a structure, of an expression and of a class, a site of each
+  filter (a logging call through `-log-function`), the typing-order and
+  expected-type corpora, and a registration suite that arms each mutant
+  and checks that the library then behaves as the mutant's text says,
+  and that a filtered mutant changes nothing. An instrumenter change
+  that cannot keep the semantics suites green is rejected, not
+  accommodated; grow the fixtures with every expression form the
+  instrumenter learns.
 - `cram/`: cram sessions, one directory per subject. Cram pins stdout,
   stderr and the exit code natively, and `dune promote` is its
   acceptance.
@@ -138,6 +142,10 @@ what is non-obvious.
   `mutate_effects.t` removes the suffix that ppxlib 0.38 adds to the
   name of the effect encoding, so that its golden holds with ppxlib 0.37
   too.
+  `mutate_scale.t` runs the mutation rewriter on an else-if chain of
+  20000 branches under a limit of processor time. The limit stops a
+  rewriter whose time increases with the square of the chain length.
+  The session does not run on Windows, whose shell has no `ulimit`.
   `coverage.t` holds the two backends' attribute grammars in parity:
   both accept every spelling of `spellings.ml`, an `off` with a reason
   included, and each coverage refusal reads as the mutation one once

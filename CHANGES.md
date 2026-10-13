@@ -166,6 +166,28 @@
 - The texts of a mutant spell a labeled tuple of OCaml 5.4 as the source
   does, as `(~x:0, ~y)`, and not as the extension node that ppxlib
   encodes it as.
+- The rewriter filters a mutant that the syntax shows equivalent to
+  the original, as the `sub` mutant of `x + 0`, or that changes only a
+  logging call of `Logs` or a literal of a `failwith` message: no child
+  tests it, and the report counts it under its reason (see
+  [Filtered mutants](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#filtered-mutants)).
+- The outcome line of a mutation run and of `windtrap mutants` counts
+  the filtered mutants, as `2 filtered`, and the score leaves them out.
+- `-no-filter` after `ppx_windtrap.mutate` in an `instrumentation`
+  field tests every mutant, and `-log-function NAME` adds a logging
+  function, as `-log-function Log.debug`.
+- `windtrap mutants --json` gives the count `"filtered"` in
+  `"summary"`, and each filtered mutant with its `"reason"` in the
+  array `"filtered"`, not in `"mutants"`.
+- `WINDTRAP_MUTATE` on a suite whose mutants in scope are all dismissed
+  or filtered says that of the mutants that the run could test, not of
+  every mutant of the executable.
+- A verdict file starts with `windtrap-mutants-v4`, and
+  `windtrap mutants` refuses one of an earlier version; a new mutation
+  run writes it again.
+- `--arm` refuses a mutant that `[@mutate off]` dismisses or that the
+  rewriter filtered, and exits 1: its site has no guard, so no run can
+  arm it.
 
 ## v0.2.0 2026-09-26
 

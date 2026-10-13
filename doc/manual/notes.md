@@ -334,6 +334,17 @@ is no suppression file to drift from the source, and windtrap never
 writes the attribute itself, since an automatic dismissal would hide
 defects as readily as equivalent mutants.
 
+The rewriter filters some mutants without an attribute, but only when
+the syntax alone shows the result: `x + 0` and `x - 0` are equal on
+integers, and in `if c then e else e` the value of `c` changes nothing.
+A mutant that changes only a log or the text of a failure is filtered
+too, because such a survivor seldom shows a missing test. Each filter
+is a rule of the syntax, and no filter guesses what the code means. The
+report counts the filtered mutants under their reasons, and
+`-no-filter` tests them all. A mutant that is equivalent only because
+of what the code means, as `n >= 0` above, stays a decision of the
+reader, in the source.
+
 ## Nothing depends on dune
 
 Windtrap runs in any build. A suite is an executable, `-u` accepts
