@@ -234,8 +234,10 @@ names the commit "calc", which is HEAD~1:
   mutants: 1 survived of 1 reached, 1 executable, score 0.0%
 
 A new build has no verdict file. Under WINDTRAP_MUTATE, a run with no
-mutant on a changed line writes one, with no verdict of a changed line.
-Thus the gate passes on a change that no mutant is on:
+mutant to test on a changed line writes one. The file has no verdict of a
+test. It has only a filtered record for each filtered mutant on a changed
+line, and calc.ml has no filtered mutant. Thus the gate passes on a change
+that no mutant is on:
 
   $ rm -r _build/_mutants
   $ run env WINDTRAP_MUTATE=1 WINDTRAP_MUTATE_SINCE=HEAD _build/default/test/pins_add.exe

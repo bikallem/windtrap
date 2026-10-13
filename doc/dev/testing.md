@@ -127,6 +127,10 @@ what is non-obvious.
   `mkdata.exe` writes the synthetic dumps and verdict files the sessions
   merge; `pins_add.exe` and `pins_sub.exe` are instrumented suites over
   `calc.ml`, a library under both backends in every build.
+  `pins_cases.exe` is the suite over `cases.ml`, a library under the
+  mutation backend whose only mutants are drop mutants. `since.t` uses
+  them to pin the line of a drop mutant: the line of the pattern of its
+  case, not the line of its body.
   `ppx/` holds the rewriters' sessions: their expansions and refusals,
   one main session per rewriter (`coverage.t`, `mutate.t`,
   `expect.t`), over fixtures that are never compiled. Each block runs
