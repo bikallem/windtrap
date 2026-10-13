@@ -167,7 +167,14 @@ let flatten tests =
     match t.kind with
     | Test body ->
         {
-          path = List.rev (t.name :: rev_groups);
+          path =
+            List.rev
+              begin[@mutate
+                     off
+                       "a mutation child flattens its own tree here, and \
+                        refuses the duplicate paths before any test runs"]
+                t.name :: rev_groups
+              end;
           body;
           loc = t.loc;
           tags = a.tags;
@@ -178,7 +185,11 @@ let flatten tests =
         }
         :: acc
     | Group children ->
-        let rev_groups = t.name :: rev_groups in
+        let rev_groups =
+          begin[@mutate off "as for the path of a test"]
+            t.name :: rev_groups
+          end
+        in
         List.fold_left (add ~rev_groups ~inherited:a) acc children
   in
   List.rev
