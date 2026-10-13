@@ -26,6 +26,7 @@ type parsed = {
   color : Os.color_mode option;
   log_dir : string option;
   mutate : string list option;
+  mutate_jobs : int option;
   arm : string option;
   help : bool;
   version : bool;
@@ -53,6 +54,7 @@ let empty =
     color = None;
     log_dir = None;
     mutate = None;
+    mutate_jobs = None;
     arm = None;
     help = false;
     version = false;
@@ -122,6 +124,21 @@ let positive_int value =
   match int_of_string_opt value with
   | Some n when n > 0 -> Ok n
   | _ -> Error "a positive integer"
+
+(* The loop gives [select] the pipe of each child that runs, and [select]
+   refuses a descriptor of [FD_SETSIZE] (1024) or more. The limit keeps the
+   pipes below it, with a margin for the descriptors of the parent. [auto]
+   is read when the flag is, so the record holds the count. *)
+let max_jobs = 256
+
+let jobs value =
+  if String.lowercase_ascii value = "auto" then
+    Ok (min max_jobs (Domain.recommended_domain_count ()))
+  else
+    match positive_int value with
+    | Ok n when n <= max_jobs -> Ok n
+    | Ok _ | Error _ ->
+        Error (Printf.sprintf "a positive integer up to %d, or auto" max_jobs)
 
 let seconds ~expected accepts value =
   match float_of_string_opt value with
@@ -256,6 +273,10 @@ let entries =
          })
       ~mirror:(mirrored "WINDTRAP_MUTATE" (fun p -> p.mutate = None))
       "Test this executable's mutants, all or those under PREFIX.";
+    row "--mutate-jobs"
+      (value "N" jobs (fun p n -> { p with mutate_jobs = Some n }))
+      ~mirror:(mirrored "WINDTRAP_MUTATE_JOBS" (fun p -> p.mutate_jobs = None))
+      "Test up to N mutants at once, or one per CPU for auto (default 1).";
     row "--arm"
       (value "ID" any (fun p id -> { p with arm = Some id }))
       ~mirror:(mirrored "WINDTRAP_MUTATE_ARM" (fun p -> p.arm = None))
@@ -456,7 +477,10 @@ let settings cli =
   let* mutation =
     match (layered.mutate, layered.arm) with
     | None, None -> Ok Run.No_mutation
-    | Some prefixes, None -> Ok (Run.Loop prefixes)
+    | Some scope, None ->
+        Ok
+          (Run.Loop
+             { scope; jobs = Option.value layered.mutate_jobs ~default:1 })
     | None, Some id -> Ok (Run.Armed id)
     | Some _, Some _ -> Error (Incompatible_flags ("--mutate", "--arm"))
   in

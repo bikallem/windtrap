@@ -349,15 +349,18 @@ val mutation_not_reached : t -> unit
 
 (** {2:loop The report of a loop}
 
-    A client must call {!mutation_testing} before each child,
-    {!mutation_survivor} when a child ends on a survivor, and {!mutation_finish}
-    once, last. {!mutation_refused} and {!mutation_interrupted} are the two
-    other ways in which a report ends. *)
+    A client must call {!mutation_testing} when the set of running children
+    changes, {!mutation_survivor} for each survivor in catalogue order, and
+    {!mutation_finish} once, last. {!mutation_refused} and
+    {!mutation_interrupted} are the two other ways in which a report ends. *)
 
-val mutation_testing : t -> index:int -> total:int -> id:string -> unit
-(** [mutation_testing t ~index ~total ~id] draws the live line for the mutant
-    that the loop is trying: [index], counted from [1], [total], and [id]. The
-    line shows only while the live line is on (see {!create}). *)
+val mutation_testing :
+  t -> completed:int -> total:int -> running:string list -> unit
+(** [mutation_testing t ~completed ~total ~running] draws the live line for the
+    mutants whose children run: [completed], the count of children that ended,
+    [total], and the identifier of the first of [running], followed by the count
+    of the others. It draws nothing when [running] is empty. The line shows only
+    while the live line is on (see {!create}). *)
 
 val mutation_survivor : t -> Report_sections.survivor -> unit
 (** [mutation_survivor t s] commits the {!Report_sections.survivor_block} of
@@ -377,12 +380,18 @@ val mutation_refused : t -> string -> unit
 (** [mutation_refused t message] erases the live line, flushes [out] and says
     [message] on standard error ({!Os.say}). *)
 
-val mutation_interrupted :
-  t -> testing:string option -> Report_sections.mutation -> unit
-(** [mutation_interrupted t ~testing m] ends the report of a loop that a signal
-    is stopping. It says on standard error what was interrupted: the child of
-    the mutant [testing], or the determinism probe when [testing] is [None]. It
-    then calls {!mutation_finish} over [m]. *)
+(** What a signal stopped. *)
+type stopped =
+  | Probe  (** The determinism probe. *)
+  | Testing of string list
+      (** The children of these mutants, one or more, in catalogue order. *)
+  | Before of string
+      (** No child ran. The loop stopped before the child of this mutant. *)
+
+val mutation_interrupted : t -> stopped -> Report_sections.mutation -> unit
+(** [mutation_interrupted t stopped m] ends the report of a loop that a signal
+    is stopping. It says on standard error what [stopped] is, then calls
+    {!mutation_finish} over [m]. *)
 
 (** {1:projections Failure projections}
 

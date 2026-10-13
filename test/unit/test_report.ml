@@ -1898,8 +1898,8 @@ let loop_steps (m : Sections.mutation) =
          [
            ( strf "mutation_testing %d" (i + 1),
              fun r ->
-               Report.mutation_testing r ~index:(i + 1) ~total ~id:s.mutant.id
-           );
+               Report.mutation_testing r ~completed:i ~total
+                 ~running:[ s.mutant.id ] );
            ("mutation_survivor", fun r -> Report.mutation_survivor r s);
          ])
        m.survivors)
@@ -1927,12 +1927,36 @@ let mutation_entries () =
         [
           ( "mutation_testing 1",
             fun r ->
-              Report.mutation_testing r ~index:1 ~total:2
-                ~id:"lib/calc.ml:9:3:sub" );
+              Report.mutation_testing r ~completed:0 ~total:2
+                ~running:[ "lib/calc.ml:9:3:sub" ] );
           ( "mutation_testing 2",
             fun r ->
-              Report.mutation_testing r ~index:2 ~total:2
-                ~id:"lib/calc.ml:13:11:add" );
+              Report.mutation_testing r ~completed:1 ~total:2
+                ~running:[ "lib/calc.ml:13:11:add" ] );
+        ] );
+    ( "the live line names the first running mutant and counts the others",
+      timeline ~ansi:true ~terminal:true
+        [
+          ( "mutation_testing 3",
+            fun r ->
+              Report.mutation_testing r ~completed:2 ~total:9
+                ~running:
+                  [
+                    "lib/calc.ml:9:3:sub";
+                    "lib/calc.ml:13:11:add";
+                    "lib/calc.ml:21:16:ge";
+                  ] );
+          ( "a cut keeps the count",
+            fun r ->
+              Report.mutation_testing r ~completed:2 ~total:9
+                ~running:
+                  [
+                    "lib/a/very/long/path/that/no/terminal/line/holds/whole/calc.ml:9:3:sub";
+                    "lib/calc.ml:13:11:add";
+                  ] );
+          ( "no child runs",
+            fun r -> Report.mutation_testing r ~completed:9 ~total:9 ~running:[]
+          );
         ] );
     ( "every mutant killed: the outcome alone",
       loop ~ansi:true
@@ -1966,26 +1990,34 @@ let refused_after_live () =
     Report.create ~out:Format.std_formatter ~ansi:true ~terminal:true
       (config ())
   in
-  Report.mutation_testing r ~index:1 ~total:2 ~id:"lib/a.ml:1:0:add";
+  Report.mutation_testing r ~completed:0 ~total:2
+    ~running:[ "lib/a.ml:1:0:add" ];
   Report.mutation_refused r "no mutant";
   equal text
-    "\r\027[2K\027[2m  [1/2] lib/a.ml:1:0:add\u{2026}\027[0m\r\027[2Kwindtrap: \
+    "\r\027[2K\027[2m  [0/2] lib/a.ml:1:0:add\u{2026}\027[0m\r\027[2Kwindtrap: \
      no mutant\n"
     (output ())
 
 let interrupted_rows =
   [
     ( "a child",
-      ( Some "lib/calc.ml:9:12:add",
+      ( Report.Testing [ "lib/calc.ml:9:12:add" ],
         "windtrap: interrupted while testing lib/calc.ml:9:12:add\n" ) );
+    ( "several children",
+      ( Report.Testing [ "lib/calc.ml:9:12:add"; "lib/calc.ml:13:11:add" ],
+        "windtrap: interrupted while testing lib/calc.ml:9:12:add, \
+         lib/calc.ml:13:11:add\n" ) );
+    ( "no child",
+      ( Report.Before "lib/calc.ml:13:11:add",
+        "windtrap: interrupted before testing lib/calc.ml:13:11:add\n" ) );
     ( "the determinism probe",
-      (None, "windtrap: interrupted during the determinism probe\n") );
+      (Report.Probe, "windtrap: interrupted during the determinism probe\n") );
   ]
 
-let interrupted_loop (_, (testing, expected)) =
+let interrupted_loop (_, (stopped, expected)) =
   let t =
     rendered (fun r ->
-        Report.mutation_interrupted r ~testing
+        Report.mutation_interrupted r stopped
           { loop_report with Sections.survivors = []; unreached = [] })
   in
   equal (pair string string)
@@ -2003,8 +2035,8 @@ let mutation =
         (fun (_, (ansi, terminal)) ->
           equal string ""
             (rendered ~ansi ~terminal (fun r ->
-                 Report.mutation_testing r ~index:1 ~total:2
-                   ~id:"lib/calc.ml:9:3:sub")));
+                 Report.mutation_testing r ~completed:0 ~total:2
+                   ~running:[ "lib/calc.ml:9:3:sub" ])));
       test
         "mutation_refused erases the live line and flushes before its message"
         refused_after_live;

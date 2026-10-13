@@ -35,10 +35,12 @@ type invocation = [ `Exe of string | `Mirrors ]
     mutation testing. *)
 type mutation =
   | No_mutation  (** An ordinary run. The mutants are inert. *)
-  | Loop of string list
+  | Loop of { scope : string list; jobs : int }
       (** [--mutate[=PREFIX,…]]: the mutation loop, over the mutants whose
-          recorded source path starts with one of the prefixes. The bare flag
-          gives the empty list, which keeps every mutant. *)
+          recorded source path starts with one of the prefixes of [scope]. The
+          bare flag gives the empty list, which keeps every mutant. [jobs] is
+          [--mutate-jobs]: the most children that the loop runs at once. It is
+          from [1] to [256]. *)
   | Armed of string
       (** [--arm ID]: one ordinary run with the mutant [ID] armed. The
           identifier is kept as typed, and its grammar is that of
@@ -107,7 +109,7 @@ type config = {
   junit : string option;
       (** [--junit]: a file, or a directory, where a JUnit report is written
           too. [None] writes none. *)
-  mutation : mutation;  (** [--mutate] and [--arm]. *)
+  mutation : mutation;  (** [--mutate], [--mutate-jobs] and [--arm]. *)
   github : bool;
       (** Whether the report is written for GitHub Actions, with its group and
           its annotations (see {!Report}). *)

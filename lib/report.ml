@@ -889,11 +889,22 @@ let mutation_not_reached t =
   clear_live t;
   put t [ styled `Yellow "mutant not reached: only xfail tests ran the site." ]
 
-let mutation_testing t ~index ~total ~id =
-  progress t (strf "[%d/%d] %s\u{2026}" index total id)
+(* The first running mutant is the one the report waits for. A cut shortens
+   its identifier and never the count of the others. *)
+let mutation_testing t ~completed ~total ~running =
+  match running with
+  | [] -> ()
+  | first :: others ->
+      let tail =
+        match List.length others with
+        | 0 -> "\u{2026}"
+        | more -> strf " and %d more\u{2026}" more
+      in
+      progress ~tail t (strf "[%d/%d] %s" completed total first)
 
-(* A survivor's block is committed when its child ends, so a loop that dies
-   has printed what it found. *)
+(* The loop commits the block of a survivor when each mutant before it in the
+   catalogue has a verdict. The block is flushed, so a loop that dies has
+   printed the survivors that it committed. *)
 let mutation_survivor t survivor =
   print t
     (Sections.Line []
@@ -915,11 +926,14 @@ let mutation_refused t message =
   Pp.flush t.out ();
   Os.say message
 
-let mutation_interrupted t ~testing m =
+type stopped = Probe | Testing of string list | Before of string
+
+let mutation_interrupted t stopped m =
   mutation_refused t
-    (match testing with
-    | Some id -> "interrupted while testing " ^ id
-    | None -> "interrupted during the determinism probe");
+    (match stopped with
+    | Probe -> "interrupted during the determinism probe"
+    | Testing ids -> "interrupted while testing " ^ String.concat ", " ids
+    | Before id -> "interrupted before testing " ^ id);
   mutation_finish t m
 
 (* Failure projections *)

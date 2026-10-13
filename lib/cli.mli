@@ -83,6 +83,10 @@ type parsed = {
   mutate : string list option;
       (** [--mutate[=PREFIX,…]]: [Some []] for the bare flag, and else the
           comma-separated prefixes. *)
+  mutate_jobs : int option;
+      (** [--mutate-jobs N]: a positive integer up to [256], or [auto] in any
+          case, which is read as [Domain.recommended_domain_count ()], but at
+          most [256]. *)
   arm : string option;
       (** [--arm ID]: the identifier as typed. It is not parsed here, so a
           malformed one is no {!type-error}, and
@@ -166,9 +170,12 @@ val settings : parsed -> (Run.config, error) result
     - [baseline] is {!Baseline.Update} under [update], else
       {!Baseline.Corrected} under [corrected], else {!Baseline.Check}.
     - [mutation] is {!Run.Loop} of [mutate], {!Run.Armed} of [arm], or
-      {!Run.No_mutation}. Both at once is [Error (Incompatible_flags _)],
-      whichever layer gave each, and it is checked after every mirror. A prefix
-      that spells a boolean cannot go through the variable.
+      {!Run.No_mutation}. The [jobs] of a {!Run.Loop} is [mutate_jobs], and [1]
+      when no layer gives it. Outside a {!Run.Loop}, [mutate_jobs] is read and
+      checked, and changes nothing. Both at once is
+      [Error (Incompatible_flags _)], whichever layer gave each, and it is
+      checked after every mirror. A prefix that spells a boolean cannot go
+      through the variable.
     - A relative path of [--junit] or [-o] is made absolute, against the working
       directory when the command line gives it and against {!Os.project_root}
       when its mirror does. It is kept as given when that directory cannot be

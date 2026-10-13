@@ -41,7 +41,7 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
 
 (** {1:loop The loop}
 
-    The loop proceeds in this order, and its children run one at a time.
+    The loop proceeds in this order.
     + It fixes the population, which is the catalogue of the executable
       ({!val:Windtrap_runtime.Mutate.catalogue}) narrowed to the scope, without
       the mutants that [[@mutate off]] dismisses. The scope is the list of
@@ -60,14 +60,22 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
       that the dry run executed. The probe agrees iff it executed as many tests,
       skipped as many and counted no failure.
     + It forks one child per reached mutant, in the order of the catalogue, and
-      never forks one that is unreached or evaluated outside tests.
+      never forks one that is unreached or evaluated outside tests. Up to [jobs]
+      children of {!Run.Loop} run at once, and one more starts when one ends.
+      The verdict of a mutant is kept until each mutant before it in the
+      catalogue has a verdict. Then it is committed, and the block of a survivor
+      printed ({!Report.mutation_survivor}). Thus the report and the verdict
+      file are the same for every value of [jobs].
     + When the last child has ended it writes the verdict file.
 
     {b Children.} A child runs {!Run.execute} over {!Run.for_subset} of
     [config], with the reaching tests of its mutant as the allowlist. It checks
     baselines read-only and records no correction. Nothing that a child prints
     is visible, because both of its standard descriptors are [/dev/null]. No
-    [at_exit] function runs in a child.
+    [at_exit] function runs in a child. Each child has a log directory of its
+    own in the scratch directory of the loop, so children that run at once share
+    no file of the loop. Their tests can share a file or a port of their own,
+    which is why [jobs] is [1] unless a run sets it.
 
     {b Verdicts.} A mutant is {!Windtrap_runtime.Verdicts.Killed} when its child
     counted a failure, that of a fixture release included. It is also killed
@@ -90,6 +98,30 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     a share for the tests of the child. The share is ten times
     ([deadline_multiplier]) what the dry run measured for those tests, and at
     least one second. The probe has the same deadline, over every executed test.
+    The loop reads each pipe that is ready before it looks at a deadline. Thus a
+    child that exited keeps its verdict, also when a write of the report held
+    the loop for longer than the deadline of the child. The loop reads a pipe at
+    most 17 times ([drain_rounds]) before it looks at the deadlines and the
+    signal, and keeps the first 64 KiB ([output_limit]) of what a child writes.
+    Thus a child that writes and never stops cannot keep the loop past its
+    deadline, or fill the memory of the loop. When the children at once
+    outnumber the CPUs ([Domain.recommended_domain_count]), each deadline is
+    multiplied by the children for each CPU. The children at once are [jobs],
+    but at most the reached mutants. The probe runs alone, before the children
+    of the mutants, and its deadline is not multiplied. On Linux, the time that
+    a child or the probe waited for a CPU does not count toward its deadline
+    ([waited_for_cpu]). This time is the sum of the waits of the threads of the
+    processes in the group of the child, which include the processes that its
+    tests start ([read_threads]). Thus other processes that hold the CPUs, for
+    example the children of the other suites of a parallel [dune runtest], do
+    not kill a mutant by its deadline. The sum is at most the time since the
+    start of the child less [share] times the CPU time of these threads. [share]
+    is the factor of the deadline of the child, and [1.] for the probe. Thus the
+    deadline comes at the latest when the group used as much CPU time as the
+    deadline of one job, also when its threads wait at the same time, or wait
+    for the other children. The loop reads these times only when a child is past
+    its deadline. The wait of a process that ended before that read counts
+    toward the deadline. Other systems do not give these times.
 
     The runaway budget of a child ({!Windtrap_runtime.Mutate.arm}) is
     [(hits * 8) + 1000] ([budget_of]) for a site that the dry run evaluated
@@ -131,11 +163,13 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     - The probe disagrees with the dry run, and the sentence names the tests
       that failed in it, or it passes its deadline, is refused at startup, or
       reports nothing readable.
-    - A child cannot arm its mutant, or is refused at startup.
+    - A child cannot arm its mutant, or is refused at startup. The refusal comes
+      when the verdict of the mutant would be committed, and the children that
+      run then are killed.
     - The supervision fails. The scratch directory cannot be created, which is
-      tried before the probe, or [pipe], [fork] or [waitpid] fails for the probe
-      or for a child. [fork] fails in a process that has spawned a domain, in
-      the dry run or before it, and the sentence then says so. *)
+      tried before the probe, or [pipe], [fork], [select] or [waitpid] fails for
+      the probe or for a child. [fork] fails in a process that has spawned a
+      domain, in the dry run or before it, and the sentence then says so. *)
 
 (** {1:armed The armed run}
 
@@ -167,11 +201,17 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     during a run (see its {{!Run.section-signals}signals}).
 
     A child is a session of its own ([setsid]), which a terminal's signal does
-    not reach. The handler therefore kills the process group of the running
-    child, and the mutant of that child gets no verdict, whatever the child
-    reported. The loop then removes its scratch directory and writes no verdict
-    file. It dies by the same signal last, so its parent sees a death by signal
-    and no [at_exit] function runs.
+    not reach. The handler therefore kills the process group of each running
+    child, and the mutants of those children get no verdict, whatever the
+    children reported. A signal sent to the whole process tree also reaches each
+    child, and a child that it killed gets no verdict too. The report names
+    these mutants in catalogue order. The children that exited before the signal
+    keep their verdicts, also when the loop did not reap them yet, and the
+    report commits them in catalogue order. The loop starts no child after the
+    signal. When no child runs and mutants remain, the report names the next
+    mutant, which no child tested. The loop then removes its scratch directory
+    and writes no verdict file. It dies by the same signal last, so its parent
+    sees a death by signal and no [at_exit] function runs.
 
     A signal that arrives once the last child has ended stops nothing. The
     verdict file is written, a second signal excepted, and the report ends as
@@ -184,12 +224,36 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     [SIGPIPE] ignored, the [Sys_error] of the failed write escapes
     {!execute_and_report} instead, after the scratch directory is removed. *)
 
+(** {1:pipes The pipes of the children} *)
+
+val drain : (Unix.file_descr * Buffer.t) list -> Unix.file_descr list
+(** [drain pipes] reads each descriptor of [pipes] that is ready, with no wait,
+    and adds what it reads to the buffer of that descriptor. It does this again
+    until no descriptor is ready, but it reads a descriptor at most 17 times
+    ([drain_rounds]). A buffer keeps at most the first 64 KiB ([output_limit])
+    of what its descriptor gives. The result is the descriptors that got to
+    their end.
+
+    The loop calls [drain] with the pipes of its children before it looks at the
+    deadlines and the signal ({{!section-loop}Limits}). Thus a child that ended
+    and that left a full pipe of 64 KiB gets to its end in one call. A pipe that
+    a writer keeps full does not keep the loop from its next look.
+
+    The function is in this interface for the unit suite. A test gives it a
+    descriptor that never empties, as [/dev/zero]. A child cannot keep a pipe
+    full with certainty, because the loop can read faster than the child writes.
+    When [select] fails with an error other than [EINTR], [drain] raises the
+    exception that the loop reports as a failure of the supervision
+    ({{!section-loop}Refusals}). When [read] fails with such an error, it raises
+    [Unix.Unix_error]. *)
+
 (** {1:effects Effects}
 
     Beyond the effects of {!Report.run}, the loop calls [fork], [waitpid],
-    [pipe] and [select], and each child calls [setsid]. The loop calls [kill] on
-    the process group of a child that expired or was interrupted. It creates one
-    scratch directory per run under [Filename.get_temp_dir_name ()], and removes
-    it however the loop ends, a second signal excepted. For the source line of a
-    survivor it reads the recorded file of the mutant, under {!Os.project_root}
-    first and then as given. *)
+    [pipe] and [select], and each child calls [setsid] and closes the pipes of
+    the other children. The loop calls [kill] on the process group of a child
+    that expired or was interrupted. It creates one scratch directory per run
+    under [Filename.get_temp_dir_name ()], and removes it however the loop ends,
+    a second signal excepted. For the source line of a survivor it reads the
+    recorded file of the mutant, under {!Os.project_root} first and then as
+    given. *)

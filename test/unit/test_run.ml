@@ -147,7 +147,8 @@ let color_name = function
 
 let mutation_name = function
   | Run.No_mutation -> "none"
-  | Run.Loop prefixes -> "loop " ^ String.concat "," prefixes
+  | Run.Loop { scope; jobs } ->
+      strf "loop %s jobs %d" (String.concat "," scope) jobs
   | Run.Armed id -> "armed " ^ id
 
 let broadcast_name (b : Run.broadcast) =
@@ -237,7 +238,7 @@ let parent : Run.config =
     slow_threshold = 2.;
     verbose = true;
     junit = Some "out.xml";
-    mutation = Run.Loop [ "lib/" ];
+    mutation = Run.Loop { scope = [ "lib/" ]; jobs = 4 };
     github = true;
     invocation = `Exe "suite.exe";
     broadcast = { selection = true; mutate = true };
@@ -268,7 +269,7 @@ let subset_rules =
         ("broadcast", "none");
       ] );
     ( "keeps the mutation, which its tests may read",
-      [ ("mutation", "loop lib/") ] );
+      [ ("mutation", "loop lib/ jobs 4") ] );
     ( "captures into the log directory it is given",
       [ ("stream", "false"); ("log_dir", "child") ] );
     ( "bails as told and keeps every other field",

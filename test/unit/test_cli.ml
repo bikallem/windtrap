@@ -75,6 +75,7 @@ let flags (p : Cli.parsed) =
         some "color" color_name p.color;
         some "log_dir" Fun.id p.log_dir;
         some "mutate" words p.mutate;
+        some "mutate_jobs" string_of_int p.mutate_jobs;
         some "arm" Fun.id p.arm;
         bool "help" p.help;
         bool "version" p.version;
@@ -91,7 +92,8 @@ let parsed args = parsed_argv (Array.of_list ("windtrap-test" :: args))
 
 let mutation_name = function
   | Run.No_mutation -> "none"
-  | Run.Loop prefixes -> "loop " ^ words prefixes
+  | Run.Loop { scope; jobs = 1 } -> "loop " ^ words scope
+  | Run.Loop { scope; jobs } -> strf "loop %s jobs %d" (words scope) jobs
   | Run.Armed id -> "armed " ^ id
 
 let baseline_name = function
@@ -240,6 +242,9 @@ let mirrors =
           ("WINDTRAP_SEED", "--seed", "not-a-seed");
           ("WINDTRAP_PROP_COUNT", "--prop-count", "0");
           ("WINDTRAP_PROP_COUNT", "--prop-count", "1O0");
+          ("WINDTRAP_MUTATE_JOBS", "--mutate-jobs", "0");
+          ("WINDTRAP_MUTATE_JOBS", "--mutate-jobs", "all");
+          ("WINDTRAP_MUTATE_JOBS", "--mutate-jobs", "257");
           ("WINDTRAP_COLOR", "--color", "sometimes");
         ]
         refused_alike;
@@ -345,6 +350,7 @@ let messages () =
         [ "--slow-threshold"; "-1" ];
         [ "--prop-count"; "0" ];
         [ "--color"; "sometimes" ];
+        [ "--mutate-jobs"; "257" ];
       ]
   in
   let mirror =
@@ -369,6 +375,7 @@ let messages () =
     invalid value '-1' for --slow-threshold: expected a non-negative number
     invalid value '0' for --prop-count: expected a positive integer
     invalid value 'sometimes' for --color: expected always, never or auto
+    invalid value '257' for --mutate-jobs: expected a positive integer up to 256, or auto
     invalid value '0' for WINDTRAP_PROP_COUNT: expected a positive integer
     |}
 
@@ -425,14 +432,15 @@ let every_flag () =
     "filter [pat], exclude [ex], tags [a; b], exclude_tags [c], shard 2/4, \
      failed_only, list_only, bail, stream, update, seed s1:00000000000000ff, \
      timeout 2.5, slow_threshold 3, prop_count 50, verbose, junit out.xml, \
-     color never, log_dir logs, mutate [lib/a.ml; lib/b.ml], arm \
-     lib/a.ml:1:0:add"
+     color never, log_dir logs, mutate [lib/a.ml; lib/b.ml], mutate_jobs 3, \
+     arm lib/a.ml:1:0:add"
     (parsed
        (String.split_on_char ' '
           "-f pat -e ex --tag a --tag b --exclude-tag c --shard 2/4 --failed \
            -l -x -s -u --seed s1:00000000000000ff --timeout 2.5 \
            --slow-threshold 3 --prop-count 50 -v --junit out.xml --color never \
-           -o logs --mutate=lib/a.ml,lib/b.ml --arm lib/a.ml:1:0:add"))
+           -o logs --mutate=lib/a.ml,lib/b.ml --mutate-jobs 3 --arm \
+           lib/a.ml:1:0:add"))
 
 (* Whole arguments: each valueless flag in both spellings, value flags with a
    good value, and misspellings and separators, so that most vectors parse
@@ -526,6 +534,9 @@ let parsing =
           ([ "--output=logs" ], "log_dir logs");
           ([ "--mutate" ], "mutate []");
           ([ "--mutate=lib/a.ml, lib/b.ml" ], "mutate [lib/a.ml; lib/b.ml]");
+          ([ "--mutate-jobs"; "4" ], "mutate_jobs 4");
+          ([ "--mutate-jobs=1" ], "mutate_jobs 1");
+          ([ "--mutate-jobs=256" ], "mutate_jobs 256");
           ([ "--arm"; "lib/a.ml:1:0:add" ], "arm lib/a.ml:1:0:add");
           ([ "--arm=x" ], "arm x");
           ([ "-h" ], "help");
@@ -619,6 +630,11 @@ let parsing =
           ("--prop-count", "0");
           ("--prop-count", "-3");
           ("--prop-count", "many");
+          ("--mutate-jobs", "0");
+          ("--mutate-jobs", "-2");
+          ("--mutate-jobs", "many");
+          ("--mutate-jobs", "autom");
+          ("--mutate-jobs", "257");
           ("--seed", "42");
           ("--color", "sometimes");
         ]
@@ -814,6 +830,37 @@ let resolution =
             [ "--arm"; "lib/a.ml:9:12:add" ],
             "mutation armed lib/a.ml:9:12:add" );
         ];
+      resolve_rows
+        "the jobs of a loop are --mutate-jobs, else its mirror, else 1, and \
+         nothing else reads them"
+        [
+          ([], [ "--mutate"; "--mutate-jobs"; "4" ], "mutation loop [] jobs 4");
+          ( [ ("WINDTRAP_MUTATE_JOBS", " 3 ") ],
+            [ "--mutate=lib/" ],
+            "mutation loop [lib/] jobs 3" );
+          ( [ ("WINDTRAP_MUTATE_JOBS", "3") ],
+            [ "--mutate"; "--mutate-jobs=2" ],
+            "mutation loop [] jobs 2" );
+          ([ ("WINDTRAP_MUTATE_JOBS", "3") ], [], "defaults");
+          ( [],
+            [ "--arm"; "lib/a.ml:9:12:add"; "--mutate-jobs"; "4" ],
+            "mutation armed lib/a.ml:9:12:add" );
+        ];
+      test "--mutate-jobs auto, in any case, is one job per CPU, up to 256"
+        (fun () ->
+          let cpus =
+            resolved
+              [
+                "--mutate";
+                strf "--mutate-jobs=%d"
+                  (min 256 (Domain.recommended_domain_count ()));
+              ]
+          in
+          equal (list string) [ cpus; cpus ]
+            [
+              resolved [ "--mutate"; "--mutate-jobs=auto" ];
+              resolved ~env:[ ("WINDTRAP_MUTATE_JOBS", "Auto") ] [ "--mutate" ];
+            ]);
       resolve_rows "--mutate with --arm is refused, whichever layer gave each"
         [
           ([], [ "--mutate"; "--arm"; "x" ], "incompatible --mutate --arm");

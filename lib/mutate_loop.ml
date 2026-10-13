@@ -139,14 +139,15 @@ let observe reach (event : Run.event) =
 (* Signals *)
 
 (* A child is a session of its own, which a terminal's signal does not reach,
-   so the handler kills the running child's group. It prints nothing: it runs
-   at a safepoint of whatever the parent was doing, the report included. *)
+   so the handler kills the group of every running child. It prints nothing:
+   it runs at a safepoint of whatever the parent was doing, the report
+   included. *)
 type interrupt = {
   mutable signal : int option; (* the first signal received *)
-  mutable child : int option; (* the running child, until it is reaped *)
+  mutable children : int list; (* the running children, until each is reaped *)
 }
 
-let interrupt = { signal = None; child = None }
+let interrupt = { signal = None; children = [] }
 
 (* The group exists once the child has run [setsid]. *)
 let kill_group pid =
@@ -158,12 +159,16 @@ let kill_group pid =
    [Sys_error] and unwinds. *)
 let with_interrupts fn =
   interrupt.signal <- None;
-  interrupt.child <- None;
+  interrupt.children <- [];
   let handle signal =
     if Option.is_none interrupt.signal then interrupt.signal <- Some signal;
-    Option.iter kill_group interrupt.child
+    List.iter kill_group interrupt.children
   in
   Os.with_signals [ Sys.sigpipe; Sys.sigint; Sys.sigterm; Sys.sighup ] handle fn
+
+(* The signals by which a child dies when an interrupt stops it: the one of
+   the handler, and those that reach every process of the tree. *)
+let interrupting = [ Sys.sigkill; Sys.sigint; Sys.sigterm; Sys.sighup ]
 
 (* Children *)
 
@@ -218,23 +223,39 @@ let in_child fd body =
   (try write_all fd (line ^ "\n") 0 with _ -> ());
   Unix._exit 0
 
+(* A child that the parent started and did not reap. *)
+type running = {
+  pid : int;
+  pipe : Unix.file_descr; (* the read end of the child's verdict pipe *)
+  output : Buffer.t;
+      (* what the parent read from [pipe], [output_limit] at most *)
+  started : Os.counter;
+  deadline : float; (* seconds after [started] *)
+  share : float; (* the children for each CPU that [deadline] pays for *)
+  log_dir : string; (* removed once the child is reaped *)
+  threads : (int, float * float) Hashtbl.t;
+      (* the last CPU time and wait for a CPU that the parent read of each
+         thread of the group of the child, by thread id ([read_threads]) *)
+}
+
+(* How a child ended: it closed its pipe, or the parent killed its group at
+   its deadline or on a signal. *)
+type ending = Closed | Expired | Interrupted
+
 type child = {
   line : string; (* the first newline-terminated line, or [""] *)
   status : Unix.process_status;
-  expired : bool; (* the child passed its deadline *)
+  ending : ending;
 }
 
 (* [setsid] puts the child and whatever its tests spawn in one group, which
-   one signal kills. The parent reads the pipe to its end before it waits, so
-   a child that writes more than a pipe holds cannot block, and [select]
-   wakes it at the deadline. The pipe is close-on-exec: a process a test
-   execs must not hold it open past its group's death.
+   one signal kills. The pipe is close-on-exec: a process a test execs must
+   not hold it open past its group's death. A child closes the pipes of its
+   [siblings] and forgets their pids: it reads no pipe, and kills no group.
 
-   XXX two windows stay open. A second signal between [fork] returning and
-   the pid being recorded kills the parent with the child alive, and a signal
-   between [waitpid] and the reset of [interrupt.child] goes to a reaped
-   pid. *)
-let fork_child ~deadline body =
+   XXX a second signal between [fork] returning and the pid being recorded
+   kills the parent with the child alive. *)
+let start ~deadline ~share ~log_dir ~siblings body =
   flush_descriptors ();
   let read_fd, write_fd =
     try Unix.pipe ~cloexec:true ()
@@ -251,57 +272,304 @@ let fork_child ~deadline body =
       Unix.close write_fd;
       raise (Supervision domain_refusal)
   | 0 ->
+      interrupt.children <- [];
       (try Unix.close read_fd with _ -> ());
+      List.iter
+        (fun sibling -> try Unix.close sibling.pipe with _ -> ())
+        siblings;
       (try ignore (Unix.setsid ()) with _ -> ());
       in_child write_fd body
   | pid ->
-      interrupt.child <- Some pid;
+      interrupt.children <- pid :: interrupt.children;
       Unix.close write_fd;
-      let buffer = Buffer.create 128 in
-      let chunk = Bytes.create 4096 in
-      let started = Os.counter () in
-      (* The signal is looked for before every [select]: the handler may have
-         run where no system call was there to interrupt. *)
-      let rec watch () =
-        let remaining = deadline -. Os.count_s started in
-        if Option.is_some interrupt.signal then (
-          kill_group pid;
-          false)
-        else if remaining <= 0. then (
-          kill_group pid;
-          true)
-        else
-          match Unix.select [ read_fd ] [] [] remaining with
-          | [], _, _ -> watch ()
-          | _ -> (
-              match Unix.read read_fd chunk 0 (Bytes.length chunk) with
-              | 0 -> false
+      {
+        pid;
+        pipe = read_fd;
+        output = Buffer.create 128;
+        started = Os.counter ();
+        deadline;
+        share;
+        log_dir;
+        threads = Hashtbl.create 8;
+      }
+
+(* XXX a signal between [waitpid] and the removal of the pid from
+   [interrupt.children] goes to a reaped pid. *)
+let reap running ending =
+  (try Unix.close running.pipe with _ -> ());
+  let rec wait () =
+    match Unix.waitpid [] running.pid with
+    | _, status -> status
+    | exception Unix.Unix_error (Unix.EINTR, _, _) -> wait ()
+    | exception Unix.Unix_error (e, _, _) -> raise (failed "waitpid" e)
+  in
+  let status =
+    Fun.protect
+      ~finally:(fun () ->
+        interrupt.children <-
+          List.filter (fun pid -> pid <> running.pid) interrupt.children)
+      wait
+  in
+  Run.remove_tree running.log_dir;
+  let output = Buffer.contents running.output in
+  (* Bytes without their newline are a torn write, which must not read as a
+     survivor. *)
+  let line =
+    match String.index_opt output '\n' with
+    | Some i -> String.sub output 0 i
+    | None -> ""
+  in
+  { line; status; ending }
+
+(* The most reads of each pipe in one [drain]. A child that ended left at
+   most the capacity of a pipe, 64 KiB on Linux, which 16 reads and the read
+   of the end take. Thus a writer that never stops cannot keep a deadline
+   from its check. *)
+let drain_rounds = 17
+
+(* The most bytes of the output of a child that the parent keeps. Only the
+   first line counts, and a child that writes and never stops must not
+   fill the memory of the parent before its deadline. *)
+let output_limit = 65536
+
+let drain pipes =
+  let chunk = Bytes.create 4096 in
+  let rec drain closed rounds pipes =
+    match pipes with
+    | [] -> closed
+    | _ :: _ when rounds = 0 -> closed
+    | _ :: _ -> (
+        match Unix.select (List.map fst pipes) [] [] 0. with
+        | [], _, _ -> closed
+        | ready, _, _ ->
+            let at_end (pipe, output) =
+              List.mem pipe ready
+              &&
+              match Unix.read pipe chunk 0 (Bytes.length chunk) with
+              | 0 -> true
               | n ->
-                  Buffer.add_subbytes buffer chunk 0 n;
-                  watch ()
-              | exception Unix.Unix_error (Unix.EINTR, _, _) -> watch ())
-          | exception Unix.Unix_error (Unix.EINTR, _, _) -> watch ()
-      in
-      let expired = watch () in
-      (try Unix.close read_fd with _ -> ());
-      let rec reap () =
-        match Unix.waitpid [] pid with
-        | _, status -> status
-        | exception Unix.Unix_error (Unix.EINTR, _, _) -> reap ()
-        | exception Unix.Unix_error (e, _, _) -> raise (failed "waitpid" e)
-      in
-      let status =
-        Fun.protect ~finally:(fun () -> interrupt.child <- None) reap
-      in
-      let output = Buffer.contents buffer in
-      (* Bytes without their newline are a torn write, which must not read as
-         a survivor. *)
-      let line =
-        match String.index_opt output '\n' with
-        | Some i -> String.sub output 0 i
-        | None -> ""
-      in
-      { line; status; expired }
+                  let room = output_limit - Buffer.length output in
+                  Buffer.add_subbytes output chunk 0
+                    (Int.max 0 (Int.min n room));
+                  false
+              | exception Unix.Unix_error (Unix.EINTR, _, _) -> false
+            in
+            let ended, pipes = List.partition at_end pipes in
+            drain (List.map fst ended @ closed) (rounds - 1) pipes
+        | exception Unix.Unix_error (Unix.EINTR, _, _) -> closed
+        | exception Unix.Unix_error (e, _, _) -> raise (failed "select" e))
+  in
+  drain [] drain_rounds pipes
+
+(* The first line of the file [path], if it can be read. *)
+let first_line path =
+  match In_channel.with_open_bin path input_line with
+  | line -> Some line
+  | exception (Sys_error _ | End_of_file) -> None
+
+(* The numeric entries of the directory [dir]: the pids of /proc, or the
+   thread ids of /proc/<pid>/task. *)
+let ids dir =
+  match Sys.readdir dir with
+  | names -> List.filter_map int_of_string_opt (Array.to_list names)
+  | exception Sys_error _ -> []
+
+(* The process group of the process [pid], from /proc/<pid>/stat. The
+   second field, the name of the command, is in parentheses and can contain
+   spaces. The group is the third field after it. *)
+let group_of pid =
+  match first_line (strf "/proc/%d/stat" pid) with
+  | None -> None
+  | Some line -> (
+      match String.rindex_opt line ')' with
+      | None -> None
+      | Some i -> (
+          let rest = String.sub line (i + 1) (String.length line - i - 1) in
+          match String.split_on_char ' ' (String.trim rest) with
+          | _ :: _ :: group :: _ -> int_of_string_opt group
+          | _ -> None))
+
+(* The seconds that the thread [tid] of the process [pid] used a CPU, and
+   the seconds that it waited for a CPU while it could run. Linux gives the
+   two in nanoseconds, as the first two fields of
+   /proc/<pid>/task/<tid>/schedstat. *)
+let thread_times pid tid =
+  let seconds field =
+    Option.map (fun ns -> ns /. 1e9) (float_of_string_opt field)
+  in
+  match first_line (strf "/proc/%d/task/%d/schedstat" pid tid) with
+  | None -> None
+  | Some line -> (
+      match String.split_on_char ' ' line with
+      | used :: waited :: _ -> (
+          match (seconds used, seconds waited) with
+          | Some used, Some waited -> Some (used, waited)
+          | _ -> None)
+      | [] | [ _ ] -> None)
+
+(* [read_threads children] reads the times of each thread of each process
+   in the group of each child of [children] ([thread_times]). The group is
+   the child and the processes that its tests start ([start]), which
+   [kill_group] kills. One read of /proc serves all of [children].
+
+   The child keeps the last times of each thread in [threads]. Thus the
+   times of a process that ends after a read stay in [threads]. The times of
+   a process that ended before the first read are not in [threads]. Other
+   systems do not give these times, and [threads] stays empty there. *)
+let read_threads children =
+  let member pid =
+    match List.find_opt (fun child -> child.pid = pid) children with
+    | Some child -> Some child
+    | None -> (
+        match group_of pid with
+        | None -> None
+        | Some group -> List.find_opt (fun child -> child.pid = group) children)
+  in
+  let read pid child =
+    List.iter
+      (fun tid ->
+        Option.iter (Hashtbl.replace child.threads tid) (thread_times pid tid))
+      (ids (strf "/proc/%d/task" pid))
+  in
+  if children <> [] then
+    List.iter (fun pid -> Option.iter (read pid) (member pid)) (ids "/proc")
+
+(* The seconds that the group of [child] waited for a CPU, [elapsed] seconds
+   after its start, at the last [read_threads]. It is the sum of the waits of
+   its threads, because a test can do its work in a subprocess and wait for
+   it. But it is at most the [elapsed] seconds less [child.share] times the
+   CPU time of these threads.
+
+   Threads that use the CPUs at the same time, for example 8 processes that
+   each use the CPU, wait at the same time. Then the sum of their waits grows
+   faster than the clock, and without this limit the deadline never comes.
+   Children that outnumber the CPUs also wait for each other, and their
+   deadlines are already [share] times longer for this wait. Without [share]
+   in this limit, the wait moves their deadlines a second time, and a child
+   that uses the CPU uses [share] times the CPU time of the deadline of one
+   job. With the limit, the deadline comes at the latest when the group used
+   as much CPU time as the deadline of one job. *)
+let waited_for_cpu child ~elapsed =
+  let used, waited =
+    Hashtbl.fold
+      (fun _ (used, waited) (all_used, all_waited) ->
+        (all_used +. used, all_waited +. waited))
+      child.threads (0., 0.)
+  in
+  Float.max 0. (Float.min waited (elapsed -. (child.share *. used)))
+
+(* [await running] is the children of [running] that ended, reaped, and
+   those that continue to run, each in the order of [running], when one or
+   more children end. A child ends when the parent reads its pipe to the
+   end, so a child that writes more than a pipe holds cannot block. It also
+   ends when the parent kills its group, at its deadline or on a signal, and
+   a signal kills every child of [running].
+
+   The parent reads each pipe that is ready, with no wait, before it looks
+   at the signal and the deadlines. A write of the report can hold the
+   parent for longer than a deadline while other children run, and a child
+   that ended in that time keeps its verdict. On a signal, it keeps its
+   verdict too, except when the handler or that signal killed it before it
+   exited.
+
+   The signal is looked for before every [select]: the handler can run
+   where no system call was there to interrupt.
+
+   The time that a child waited for a CPU does not count toward its
+   deadline. Other processes, for example the children of the other suites
+   of a parallel [dune runtest], can hold the CPUs for longer than the dry
+   run measured, and a wait for them tells nothing about the mutant. The
+   time is read only for a child past its deadline: it only moves a
+   deadline later. It is the wait of the threads of all of the processes of
+   the group of the child ([waited_for_cpu]). *)
+let await running =
+  let remaining running =
+    let elapsed =
+      List.map
+        (fun ((_, child) as running) -> (running, Os.count_s child.started))
+        running
+    in
+    read_threads
+      (List.filter_map
+         (fun ((_, child), elapsed) ->
+           if elapsed < child.deadline then None else Some child)
+         elapsed);
+    List.map
+      (fun (((_, child) as running), elapsed) ->
+        let left = child.deadline -. elapsed in
+        ( running,
+          if left > 0. then left else left +. waited_for_cpu child ~elapsed ))
+      elapsed
+  in
+  let kill ending ((_, child) as running) =
+    kill_group child.pid;
+    (running, ending)
+  in
+  let rec watch () =
+    let closed =
+      drain (List.map (fun (_, child) -> (child.pipe, child.output)) running)
+    in
+    let is_closed (_, child) = List.mem child.pipe closed in
+    if Option.is_some interrupt.signal then
+      ( List.map
+          (fun ((_, child) as running) ->
+            if is_closed running then (running, Closed)
+            else kill Interrupted running)
+          running,
+        [] )
+    else
+      match List.partition is_closed running with
+      | (_ :: _ as ended), live ->
+          (List.map (fun running -> (running, Closed)) ended, live)
+      | [], _ -> (
+          (* One read of the clock decides the expiry and the timeout of
+             [select]. A second read can find a deadline that passed after
+             the first, and [select] reads a negative timeout as no
+             timeout. *)
+          let timed = remaining running in
+          match List.partition (fun (_, left) -> left <= 0.) timed with
+          | (_ :: _ as expired), live ->
+              ( List.map (fun (child, _) -> kill Expired child) expired,
+                List.map fst live )
+          | [], _ -> (
+              let pipes = List.map (fun (_, child) -> child.pipe) running in
+              let timeout =
+                List.fold_left
+                  (fun nearest (_, left) -> Float.min nearest left)
+                  Float.infinity timed
+              in
+              match Unix.select pipes [] [] timeout with
+              | _ -> watch ()
+              | exception Unix.Unix_error (Unix.EINTR, _, _) -> watch ()
+              | exception Unix.Unix_error (e, _, _) -> raise (failed "select" e)
+              ))
+  in
+  (* The handler kills with [SIGKILL]. A child that it killed also closes
+     its pipe, and gets no verdict. A signal sent to the whole process tree,
+     for example by [pkill], also reaches each child, which dies by it. *)
+  let ended (key, running) ending =
+    let child = reap running ending in
+    match (child.ending, child.status) with
+    | Closed, Unix.WSIGNALED signal
+      when List.mem signal interrupting && Option.is_some interrupt.signal ->
+        (key, { child with ending = Interrupted })
+    | _ -> (key, child)
+  in
+  let finished, live = watch () in
+  (List.map (fun (running, ending) -> ended running ending) finished, live)
+
+(* Kills and reaps the children of [running] that are not reaped yet, when
+   the loop leaves on an exception. It raises nothing: the exception that
+   ends the loop is the one to report. A reaped child closed its pipe, and
+   another child can use its descriptor number. *)
+let abandon running =
+  List.iter
+    (fun (_, child) ->
+      if List.mem child.pid interrupt.children then begin
+        kill_group child.pid;
+        try ignore (reap child Interrupted) with _ -> ()
+      end)
+    running
 
 (* [Unix.mkdir] fails on an existing entry, a symbolic link included, so the
    loop never adopts a directory planted at a predictable path of a
@@ -330,13 +598,17 @@ type loop = {
   reach : reach;
   dry_run_wall : float;
   scratch : string; (* a child killed at its deadline removes nothing *)
+  jobs : int; (* the most children at once, [1] or more *)
+  share : float; (* the children for each CPU, [1.] or more *)
 }
 
 let deadline_multiplier = 10.
 
 (* The dry run's wall clock bounds what a child pays before its first test:
-   the fork and a whole process's module initialization. *)
-let child_deadline loop paths =
+   the fork and a whole process's module initialization. Children that
+   outnumber the CPUs share them, and their deadlines grow by [share]. The
+   probe runs alone, and its share is [1.]. *)
+let child_deadline loop ~share paths =
   let took path =
     Hashtbl.find_opt loop.reach.durations (Test_tree.path_to_string path)
   in
@@ -345,7 +617,7 @@ let child_deadline loop paths =
       (fun acc path -> acc +. Option.value ~default:0. (took path))
       0. paths
   in
-  loop.dry_run_wall +. Float.max 1. (deadline_multiplier *. scheduled)
+  share *. (loop.dry_run_wall +. Float.max 1. (deadline_multiplier *. scheduled))
 
 (* A child reports on one line of fixed ASCII shape: a failed test is named
    by its index in the paths the parent handed it, and a diagnostic's line
@@ -358,7 +630,7 @@ let words line =
   | "error" :: diagnostic -> Error (String.concat " " diagnostic)
   | words -> Ok words
 
-let run_child loop ~log ~bail ~arm ~paths line =
+let start_child loop ~share ~log ~bail ~arm ~paths ~siblings line =
   let log_dir = Filename.concat loop.scratch log in
   let config = Run.for_subset loop.config ~log_dir ~bail in
   let body () =
@@ -370,9 +642,9 @@ let run_child loop ~log ~bail ~arm ~paths line =
         | Error error -> error_line (Run.startup_message error)
         | Ok outcome -> line outcome)
   in
-  let child = fork_child ~deadline:(child_deadline loop paths) body in
-  Run.remove_tree log_dir;
-  child
+  start
+    ~deadline:(child_deadline loop ~share paths)
+    ~share ~log_dir ~siblings body
 
 (* The determinism probe *)
 
@@ -407,9 +679,17 @@ let not_a_number =
 let probe loop =
   let paths = List.rev loop.reach.executed in
   let child =
-    run_child loop ~log:"probe" ~bail:false
-      ~arm:(fun () -> Ok ())
-      ~paths (probe_line ~paths)
+    match
+      await
+        [
+          ( (),
+            start_child loop ~share:1. ~log:"probe" ~bail:false
+              ~arm:(fun () -> Ok ())
+              ~paths ~siblings:[] (probe_line ~paths) );
+        ]
+    with
+    | ((), child) :: _, _ -> child
+    | [], _ -> (* [await] ends once a child ends. *) assert false
   in
   let disagreement ~executed ~skipped ~failed indices =
     let named index =
@@ -431,7 +711,7 @@ let probe loop =
       | names -> " (" ^ String.concat ", " names ^ ")")
       not_a_number
   in
-  if child.expired then
+  if child.ending = Expired then
     Error
       ("the determinism probe exceeded its deadline: the dry run completed and \
         its unarmed re-run did not. " ^ not_a_number)
@@ -480,10 +760,8 @@ let verdict_line (outcome : Run.outcome) =
 let budget_of hits =
   if hits > (max_int - 1000) / 8 then max_int else (hits * 8) + 1000
 
-(* A mutant that its child cannot arm ends the loop without a score: running
-   on with nothing armed would score it a survivor. *)
-let test_mutant loop ~index (mutant : Mutate.mutant) (site : site) =
-  let paths = List.rev site.tests in
+let start_mutant loop ~index ~siblings ((mutant : Mutate.mutant), (site : site))
+    =
   let arm () =
     match Mutate.arm ~budget:(budget_of site.hits) mutant.id with
     | Error error -> Error (Pp.to_string Mutate.pp_arm_error error)
@@ -492,20 +770,21 @@ let test_mutant loop ~index (mutant : Mutate.mutant) (site : site) =
         Mutate.reset_reach ();
         Ok ()
   in
-  let child =
-    run_child loop ~log:(strf "m%d" index) ~bail:true ~arm ~paths verdict_line
-  in
-  if child.expired then Verdicts.Killed
+  start_child loop ~share:loop.share ~log:(strf "m%d" index) ~bail:true ~arm
+    ~paths:(List.rev site.tests) ~siblings verdict_line
+
+(* A diagnostic is a child that could not arm its mutant or was refused at
+   startup. *)
+let verdict_of (site : site) child =
+  if child.ending = Expired then Ok Verdicts.Killed
   else
     match (words child.line, child.status) with
-    | Error diagnostic, _ ->
-        raise
-          (Supervision
-             (strf "%s: %s" (Mutate.id_to_string mutant.id) diagnostic))
-    | Ok [ "survived" ], Unix.WEXITED 0 -> Verdicts.survived paths
-    | Ok [ "not_evaluated" ], Unix.WEXITED 0 -> Verdicts.Not_evaluated
+    | Error diagnostic, _ -> Error diagnostic
+    | Ok [ "survived" ], Unix.WEXITED 0 ->
+        Ok (Verdicts.survived (List.rev site.tests))
+    | Ok [ "not_evaluated" ], Unix.WEXITED 0 -> Ok Verdicts.Not_evaluated
     | Ok _, (Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _) ->
-        Verdicts.Killed
+        Ok Verdicts.Killed
 
 (* Recorded paths are relative to the project root; under [dune runtest] the
    working directory is inside [_build], where they do not open. *)
@@ -553,65 +832,148 @@ type tested = {
   verdicts : Verdicts.t; (* of the children that ended *)
   survivors : Report_sections.survivor list; (* as their blocks printed *)
   not_evaluated : Report_sections.not_evaluated list; (* in catalogue order *)
-  stopped : (int * Mutate.mutant option) option;
-      (* the signal that stopped the forks, and the mutant whose child it
-         found running *)
+  stopped : (int * Report.stopped) option;
+      (* the signal that stopped the forks, and what it stopped *)
 }
 
-(* One child per reached mutant, in catalogue order. A signal is honoured
-   when a child has ended, never before a fork, so the mutant named as
-   interrupted is one the loop started. *)
+(* What the loop committed: the verdicts of the mutants before
+   [committed], in the order of the catalogue. *)
+type pool = {
+  mutable verdicts : Verdicts.t;
+  mutable survivors : Report_sections.survivor list; (* newest first *)
+  mutable not_evaluated : Report_sections.not_evaluated list; (* newest first *)
+  mutable committed : int;
+  mutable completed : int; (* the children that ended *)
+  mutable running : (int * running) list; (* by catalogue index *)
+}
+
+(* Up to [loop.jobs] children at once, started in catalogue order. A verdict
+   is kept by the catalogue index of its mutant until every mutant before it
+   has one. It is then committed, and a survivor's block printed, so the
+   report is the same for any number of jobs. A mutant that its child cannot
+   arm ends the loop without a score, when it is committed: running on with
+   nothing armed would score it a survivor.
+
+   The loop starts no child after a signal. The signal stops the children
+   that run, and a child that exited first keeps its verdict, reaped or
+   not. The verdicts that ended before it are committed in catalogue order,
+   over the gaps of the mutants it stopped. When no child runs and mutants
+   remain, the loop stops before the next mutant. *)
 let test_mutants renderer loop reached =
   let locations = Hashtbl.create 256 in
   List.iter
     (fun (case : Test_tree.case) ->
       Hashtbl.replace locations (Test_tree.path_to_string case.path) case.loc)
     (Test_tree.flatten loop.tests);
-  let total = List.length reached in
-  let rec next index verdicts survivors not_evaluated = function
-    | [] ->
-        {
-          verdicts;
-          survivors = List.rev survivors;
-          not_evaluated = List.rev not_evaluated;
-          stopped = None;
-        }
-    | ((mutant : Mutate.mutant), site) :: rest -> (
-        Report.mutation_testing renderer ~index:(index + 1) ~total
-          ~id:(Mutate.id_to_string mutant.id);
-        let verdict = test_mutant loop ~index mutant site in
-        match interrupt.signal with
-        | Some signal ->
-            {
-              verdicts;
-              survivors = List.rev survivors;
-              not_evaluated = List.rev not_evaluated;
-              stopped = Some (signal, Some mutant);
-            }
-        | None ->
-            let survivors, not_evaluated =
-              match verdict with
-              | Verdicts.Survived { first; others } ->
-                  let found = survivor ~locations mutant (first :: others) in
-                  Report.mutation_survivor renderer found;
-                  (found :: survivors, not_evaluated)
-              | Verdicts.Not_evaluated ->
-                  let missed : Report_sections.not_evaluated =
-                    {
-                      mutant = shown mutant;
-                      invocation = loop.config.invocation;
-                    }
-                  in
-                  (survivors, missed :: not_evaluated)
-              | Verdicts.Killed | Verdicts.Outside_tests | Verdicts.Unreached ->
-                  (survivors, not_evaluated)
-            in
-            let record = Verdicts.record_of_mutant mutant verdict in
-            next (index + 1)
-              (Verdicts.add verdicts record)
-              survivors not_evaluated rest)
+  let reached = Array.of_list reached in
+  let total = Array.length reached in
+  let ended = Array.make total None in
+  let pool =
+    {
+      verdicts = Verdicts.empty;
+      survivors = [];
+      not_evaluated = [];
+      committed = 0;
+      completed = 0;
+      running = [];
+    }
   in
-  next 0 Verdicts.empty [] [] reached
+  let commit index verdict =
+    let mutant, _ = reached.(index) in
+    (match verdict with
+    | Verdicts.Survived { first; others } ->
+        let found = survivor ~locations mutant (first :: others) in
+        Report.mutation_survivor renderer found;
+        pool.survivors <- found :: pool.survivors
+    | Verdicts.Not_evaluated ->
+        let missed : Report_sections.not_evaluated =
+          { mutant = shown mutant; invocation = loop.config.invocation }
+        in
+        pool.not_evaluated <- missed :: pool.not_evaluated
+    | Verdicts.Killed | Verdicts.Outside_tests | Verdicts.Unreached -> ());
+    pool.verdicts <-
+      Verdicts.add pool.verdicts (Verdicts.record_of_mutant mutant verdict)
+  in
+  let rec commit_ready () =
+    if pool.committed < total then
+      match ended.(pool.committed) with
+      | None -> ()
+      | Some (Error diagnostic) ->
+          let mutant, _ = reached.(pool.committed) in
+          raise
+            (Supervision
+               (strf "%s: %s" (Mutate.id_to_string mutant.id) diagnostic))
+      | Some (Ok verdict) ->
+          commit pool.committed verdict;
+          pool.committed <- pool.committed + 1;
+          commit_ready ()
+  in
+  let tested stopped =
+    {
+      verdicts = pool.verdicts;
+      survivors = List.rev pool.survivors;
+      not_evaluated = List.rev pool.not_evaluated;
+      stopped;
+    }
+  in
+  let id index = Mutate.id_to_string (fst reached.(index)).id in
+  let rec next index =
+    if
+      index < total
+      && Option.is_none interrupt.signal
+      && List.length pool.running < loop.jobs
+    then begin
+      let child =
+        start_mutant loop ~index
+          ~siblings:(List.map snd pool.running)
+          reached.(index)
+      in
+      pool.running <- pool.running @ [ (index, child) ];
+      next (index + 1)
+    end
+    else
+      match (pool.running, interrupt.signal) with
+      | [], Some signal when index < total ->
+          tested (Some (signal, Report.Before (id index)))
+      | [], _ -> tested None
+      | running, _ -> (
+          Report.mutation_testing renderer ~completed:pool.completed ~total
+            ~running:(List.map (fun (index, _) -> id index) running);
+          let finished, live = await running in
+          (* On a signal [await] gives every child. A signal that comes
+             after it stops the children that continue to run. *)
+          let finished, live =
+            match (interrupt.signal, live) with
+            | Some _, _ :: _ -> (finished @ fst (await live), [])
+            | Some _, [] | None, _ -> (finished, live)
+          in
+          pool.running <- live;
+          let stopped, finished =
+            List.partition
+              (fun (_, child) -> child.ending = Interrupted)
+              finished
+          in
+          List.iter
+            (fun (index, child) ->
+              ended.(index) <- Some (verdict_of (snd reached.(index)) child))
+            finished;
+          pool.completed <- pool.completed + List.length finished;
+          match (interrupt.signal, stopped) with
+          | Some signal, _ :: _ ->
+              Array.iteri
+                (fun index verdict ->
+                  match verdict with
+                  | Some (Ok verdict) when index >= pool.committed ->
+                      commit index verdict
+                  | Some _ | None -> ())
+                ended;
+              let stopped = List.sort Int.compare (List.map fst stopped) in
+              tested (Some (signal, Report.Testing (List.map id stopped)))
+          | Some _, [] | None, _ ->
+              commit_ready ();
+              next index)
+  in
+  Fun.protect ~finally:(fun () -> abandon pool.running) @@ fun () -> next 0
 
 (* The scratch directory is removed however the forks end. A signal
    outranks the disagreement of a probe it killed. *)
@@ -625,7 +987,7 @@ let fork renderer loop reached =
           verdicts = Verdicts.empty;
           survivors = [];
           not_evaluated = [];
-          stopped = Some (signal, None);
+          stopped = Some (signal, Report.Probe);
         }
   | (Error _ as refused), None -> refused
 
@@ -707,13 +1069,8 @@ let finish renderer ~narrowed ~reach ~reached ~outside ~unreached forks =
         }
       in
       match stopped with
-      | Some (signal, testing) ->
-          Report.mutation_interrupted renderer
-            ~testing:
-              (Option.map
-                 (fun (m : Mutate.mutant) -> Mutate.id_to_string m.id)
-                 testing)
-            report;
+      | Some (signal, stopped) ->
+          Report.mutation_interrupted renderer stopped report;
           flush_descriptors ();
           Os.die_by signal
       | None -> (
@@ -723,7 +1080,7 @@ let finish renderer ~narrowed ~reach ~reached ~outside ~unreached forks =
           | Some signal -> Os.die_by signal
           | None -> Reported 0))
 
-let loop renderer ~scope ~suite (config : Run.config) tests =
+let loop renderer ~scope ~jobs ~suite (config : Run.config) tests =
   let population = population ~scope in
   let reach =
     {
@@ -777,7 +1134,22 @@ let loop renderer ~scope ~suite (config : Run.config) tests =
                 with_interrupts @@ fun () ->
                 let loop =
                   let scratch = scratch_root () in
-                  { suite; config; tests; reach; dry_run_wall; scratch }
+                  let jobs = max 1 (min jobs (List.length reached)) in
+                  let share =
+                    Float.max 1.
+                      (float_of_int jobs
+                      /. float_of_int (Domain.recommended_domain_count ()))
+                  in
+                  {
+                    suite;
+                    config;
+                    tests;
+                    reach;
+                    dry_run_wall;
+                    scratch;
+                    jobs;
+                    share;
+                  }
                 in
                 Result.map
                   (fun tested ->
@@ -854,13 +1226,13 @@ let execute_and_report ~suite (config : Run.config) tests =
   | Run.Armed spec -> armed (Report.terminal config) ~spec ~suite config tests
   | Run.Loop _ when Sys.win32 ->
       refuse "mutation testing needs Unix.fork, which Windows does not have"
-  | Run.Loop scope when not config.broadcast.mutate ->
-      loop (Report.terminal config) ~scope ~suite config tests
-  | Run.Loop scope -> (
+  | Run.Loop { scope; jobs } when not config.broadcast.mutate ->
+      loop (Report.terminal config) ~scope ~jobs ~suite config tests
+  | Run.Loop { scope; jobs } -> (
       match (population ~scope, Run.list_selection config ~suite tests) with
       | Error reason, _ ->
           Os.say (unmutated ~scope reason);
           ordinary ~suite config tests
       | Ok _, Ok [] -> ordinary ~suite config tests
       | Ok _, (Ok (_ :: _) | Error _) ->
-          loop (Report.terminal config) ~scope ~suite config tests)
+          loop (Report.terminal config) ~scope ~jobs ~suite config tests)
