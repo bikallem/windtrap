@@ -270,17 +270,18 @@ root. When that root holds no source file of its mutants, the command
 stops with exit code 1, because no mutant can be on a changed line.
 
 `WINDTRAP_MUTATE_SINCE` is the mirror of `--mutate-since`. Under
-`WINDTRAP_MUTATE`, a suite with no mutant on a changed line runs as
-usual and says why on standard error. It also writes its verdict file,
-with no verdict of a test on a changed line, and with the
-[filtered mutants](#filtered-mutants) of these lines. Thus
-`windtrap mutants --since` finds a file, and a pull request that no
-tested mutant is on passes the gate, also after a new build. Under `--mutate`, the same run stops with exit
-code 1. Without `--mutate` and `WINDTRAP_MUTATE`, the revision changes
-nothing. A run that arms a mutant (`--arm`) tests only that mutant, and
-says nothing about the revision. Any other run says on standard error
-that it tests no mutant, and runs as usual. A `REV` that names no
-commit stops the run before the dry run, with exit code 1.
+`WINDTRAP_MUTATE`, a suite with no mutant to test on a changed line
+runs as usual and says why on standard error. It also writes its
+verdict file. That file has no verdict of a child for a changed line,
+but it has the [filtered mutants](#filtered-mutants) of these lines.
+Thus `windtrap mutants --since` finds a file, and a pull request with
+no mutant to test on its lines passes the gate, also after a new build.
+Under `--mutate`, the same run stops with exit code 1. Without
+`--mutate` and `WINDTRAP_MUTATE`, the revision changes nothing. A run
+that arms a mutant (`--arm`) tests only that mutant, and says nothing
+about the revision. Any other run says on standard error that it tests
+no mutant, and runs as usual. A `REV` that names no commit stops the
+run before the dry run, with exit code 1.
 
 Dune does not track `WINDTRAP_MUTATE_SINCE` or the commit that `REV`
 names. When only these change, dune does not run a suite again, so the
