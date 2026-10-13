@@ -134,7 +134,7 @@ calc: 10 passed in 1.3ms.
 ──────────────────────────────────────────────────────────
 
 reproduce: dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --arm calc.ml:10:16:ge
-mutants: 2 survived of 5 reached by this suite, 3 killed, score 60.0%
+mutants: 2 survived of 9 reached by this suite, 7 killed, score 77.8%
 ```
 
 ## Reproducing a survivor
@@ -189,13 +189,13 @@ calc: 1 passed in 0.5ms.
       subtraction › stays positive  test_calc.ml:11
 ──────────────────────────────────────────────────────────
 
-─────────────────── never reached (4) ────────────────────
-  4  calc.ml   lines 5, 8, 10
+─────────────────── never reached (7) ────────────────────
+  7  calc.ml   lines 5, 7-8, 10
 ──────────────────────────────────────────────────────────
 
 reproduce: dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --arm calc.ml:6:11:add -f 'stays positive'
 windtrap: verdicts not saved: this run's selection narrows the suite, and a partial run's verdicts would stand in the project merge as the whole.
-mutants: 1 survived of 1 reached by the 1 selected test, 4 never reached, score 0.0%
+mutants: 1 survived of 2 reached by the 1 selected test, 1 killed, 7 never reached, score 50.0%
 ```
 
 ## What a mutation run runs
@@ -239,10 +239,23 @@ where both branches return 0. To dismiss it, put `[@mutate off
 "reason"]` on the expression, as `calc.ml` does; the site is then
 neither tested nor counted. It dismisses every mutant of the
 expression, in this version and in any later one that gives the
-expression more mutants. `[@@mutate off]` dismisses a binding,
-`[@@@mutate off]` and `[@@@mutate on]` the structure items between
-them, and `[@@@mutate exclude_file]` a file. Only `off` takes a reason,
-which no report prints.
+expression more mutants. After parameters, as in `let f x =
+function[@mutate off "reason"] ...`, the attribute on `function`
+dismisses every mutant of its cases, and the parameters keep their
+mutants. A case is no expression: to dismiss the
+`drop` mutant of a case, put the attribute on its pattern, as in
+`| (Div [@mutate off "reason"]) -> ...`. The attribute must be on the
+whole pattern: in `| A | B [@mutate off "reason"]` it is on `B`. The
+rewriter refuses it when the case has a `drop` mutant, and does not
+read it when the case has none, as under `-no-arm`. Put an or-pattern
+or a tuple in brackets, as `| (A | B) [@mutate off "reason"]`. In
+`r := 0 [@mutate off "reason"]` the attribute is on `0`, and
+ocamlformat cannot format `(r := 0) [@mutate off "reason"]`. Thus, to
+dismiss the `skip` mutant of a statement that applies an operator,
+write `begin[@mutate off "reason"] r := 0 end`. `[@@mutate off]`
+dismisses a binding, `[@@@mutate off]` and `[@@@mutate on]` the
+structure items between them, and `[@@@mutate exclude_file]` a file.
+Only `off` takes a reason, which no report prints.
 
 ## Mutation testing a project
 
@@ -285,7 +298,7 @@ calc: 10 passed in 1.0ms.
 ──────────────────────────────────────────────────────────
 
 reproduce: dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --arm calc.ml:10:16:ge
-mutants: 2 survived of 5 reached by this suite, 3 killed, score 60.0%
+mutants: 2 survived of 9 reached by this suite, 7 killed, score 77.8%
 $ dune exec windtrap -- mutants
 ───────────────────── survivors (2) ──────────────────────
   SURVIVED  calc.ml:10:16:ge  n > 0 → n >= 0
@@ -303,7 +316,7 @@ $ dune exec windtrap -- mutants
 ──────────────────────────────────────────────────────────
 
 reproduce: dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --arm calc.ml:10:16:ge
-mutants: 2 survived of 5 reached, 3 killed, 1 executable, score 60.0%
+mutants: 2 survived of 9 reached, 7 killed, 1 executable, score 77.8%
 ```
 
 Only code that a suite's own process runs reaches a mutant. A binary
@@ -336,7 +349,7 @@ scored mutant as 100:
 
 ```
 $ dune exec windtrap -- mutants --min-score 50 | tail -n 1
-mutants: 2 survived of 5 reached, 3 killed, 1 executable, score 60.0%, minimum 50%: ok
+mutants: 2 survived of 9 reached, 7 killed, 1 executable, score 77.8%, minimum 50%: ok
 ```
 
 A suite's mutation run gives the score too, and has no gate.
@@ -358,19 +371,35 @@ can add keys. A change to the meaning of a key increments `version`.
 ```
 $ dune exec windtrap -- mutants --json
 { "version": 1,
-  "summary": { "reached": 5, "killed": 3, "survived": 2,
+  "summary": { "reached": 9, "killed": 7, "survived": 2,
     "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
-    "score": 60.00 },
+    "score": 77.78 },
   "executables": [
     { "name": "test_calc.exe", "path": "default/test_calc.exe" } ],
   "mutants": [
+    { "id": "calc.ml:5:4:drop",
+      "file": "calc.ml", "line": 5, "col": 4, "rewrite": "drop",
+      "before": "| Add -> ...", "after": "| Add when false -> ...",
+      "verdict": "killed" },
     { "id": "calc.ml:5:11:sub",
       "file": "calc.ml", "line": 5, "col": 11, "rewrite": "sub",
       "before": "a + b", "after": "a - b",
       "verdict": "killed" },
+    { "id": "calc.ml:6:4:drop",
+      "file": "calc.ml", "line": 6, "col": 4, "rewrite": "drop",
+      "before": "| Sub -> ...", "after": "| Sub when false -> ...",
+      "verdict": "killed" },
     { "id": "calc.ml:6:11:add",
       "file": "calc.ml", "line": 6, "col": 11, "rewrite": "add",
       "before": "a - b", "after": "a + b",
+      "verdict": "killed" },
+    { "id": "calc.ml:7:4:drop",
+      "file": "calc.ml", "line": 7, "col": 4, "rewrite": "drop",
+      "before": "| Mul -> ...", "after": "| Mul when false -> ...",
+      "verdict": "killed" },
+    { "id": "calc.ml:8:4:drop",
+      "file": "calc.ml", "line": 8, "col": 4, "rewrite": "drop",
+      "before": "| Div -> ...", "after": "| Div when false -> ...",
       "verdict": "killed" },
     { "id": "calc.ml:8:14:neq",
       "file": "calc.ml", "line": 8, "col": 14, "rewrite": "neq",
@@ -415,15 +444,15 @@ project's merge passes:
 ```
 $ dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --mutate
 calc: 11 passed in 2.9ms.
-mutants: 5 reached by this suite, 5 killed, score 100.0%
+mutants: 9 reached by this suite, 9 killed, score 100.0%
 $ dune exec windtrap -- mutants
-mutants: 5 reached, 5 killed, 1 executable, score 100.0%
+mutants: 9 reached, 9 killed, 1 executable, score 100.0%
 ```
 
 ## What is mutated
 
-Each mutant rewrites one expression, and the last part of its
-identifier names the rewrite:
+Each mutant rewrites one expression or one case of a match, and the
+last part of its identifier names the rewrite:
 
 - `not` negates a condition that is neither a comparison nor a
   connective: the condition of an `if` or a `while`, or a guard.
@@ -433,6 +462,12 @@ identifier names the rewrite:
 - `&&` becomes `||` (`or`), and `||` becomes `&&` (`and`).
 - `+` becomes `-` (`sub`) and `-` becomes `+` (`add`); `+.` and `-.`
   swap likewise (`fsub`, `fadd`).
+- `drop` removes one case of a `match`, a `function` or a `try`. A
+  value then goes on to the next case that matches it, or the match
+  raises `Match_failure`. An exception goes on to the next handler. The
+  identifier gives the position of the pattern of the case.
+- `skip` removes a call whose value the code discards: `e1` in
+  `e1; e2`, and `e` in `let () = e in body`, when it is an application.
 
 A comparison outside a condition, as in `let ok = a < b`, carries no
 mutant, and neither does an `assert`. In a chain of one operator, as
@@ -440,7 +475,28 @@ mutant, and neither does an `assert`. In a chain of one operator, as
 (`let%test`, `let%expect_test` and `module%test` with its helpers)
 carry no mutant, and the rest of their file is mutated. A file that
 rebinds an operator loses the rewrites of its family: the four
-arithmetic operators, the six comparisons or the two connectives.
+arithmetic operators, the six comparisons or the two connectives. A
+file that declares a constructor `true` or `false` has no `drop`
+mutant, and a file that declares a constructor `()` has no `skip`
+mutant. This applies to a constructor of a type and to an extension
+constructor.
+
+A case is not dropped when it is the only case of its match that a
+value reaches, because every value then raises. A match with a
+refutation case, as `| _ -> .`, a case that matches a value and an
+exception, as `| None | exception Not_found`, and an effect case, as
+`| effect Ask, k`, have no `drop` mutant.
+
+A `let () = e` at the top level of a module runs when the module
+initializes, and has no `skip` mutant.
+
+To switch the `drop` or the `skip` mutants off for a library, give
+`-no-arm` or `-no-call` after the backend:
+
+```lisp
+(instrumentation
+ (backend ppx_windtrap.mutate -no-arm -no-call))
+```
 
 ## Where the verdicts are
 

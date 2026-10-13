@@ -123,7 +123,7 @@ any executable killed it:
 
 ```
 $ dune exec windtrap -- mutants
-mutants: 18 reached, 18 killed, 4 executables, score 100.0%
+mutants: 20 reached, 20 killed, 4 executables, score 100.0%
 ```
 
 It exits 1 when a mutant survived every executable that reached it.
