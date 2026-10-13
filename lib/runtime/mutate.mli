@@ -33,9 +33,10 @@ val rewrites : string list
 (** [rewrites] is the closed vocabulary of rewrite names, in this order:
     ["not"], the comparisons ["lt"], ["le"], ["gt"], ["ge"], ["eq"] and ["neq"],
     the arithmetic ["add"], ["sub"], ["fadd"] and ["fsub"], the connectives
-    ["and"] and ["or"], ["drop"] for a case of a match and ["skip"] for a call.
-    A name is that of the replacement, never that of the operator in the source.
-*)
+    ["and"] and ["or"], ["drop"] for a case of a match, ["skip"] for a call, the
+    literals ["inc"], ["one"], ["zero"] and ["flip"], and ["none"] and ["tail"]
+    for a value of [Some] and of [(::)]. A name is that of the replacement,
+    never that of the operator in the source. *)
 
 val id_to_string : id -> string
 (** [id_to_string id] is [<file>:<line>:<col>:<rewrite>], as

@@ -138,7 +138,8 @@
       mutant, as [Windtrap_runtime.Mutate.site] gives them. For most rewrites,
       these are two expressions. For ["drop"], they are the pattern and the
       guard of the case, with [...] for its body, as ["| Add -> ..."] and
-      ["| Add when false -> ..."]. For ["skip"], ["after"] is ["()"].
+      ["| Add when false -> ..."]. For ["skip"], ["after"] is ["()"], and for
+      ["none"], ["None"].
     - ["verdict"] is one of ["killed"], ["survived"], ["not_evaluated"],
       ["outside_tests"] and ["unreached"].
     - ["tests"] is in the object of a survivor only. It is an array of the tests

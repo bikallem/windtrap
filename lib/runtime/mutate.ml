@@ -29,6 +29,12 @@ let rewrites =
     "or";
     "drop";
     "skip";
+    "inc";
+    "one";
+    "zero";
+    "flip";
+    "none";
+    "tail";
   ]
 
 let is_rewrite r = List.exists (String.equal r) rewrites

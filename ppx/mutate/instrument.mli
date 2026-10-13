@@ -49,7 +49,19 @@
     constructor [true] or [false] of the file makes warning 42 report the
     constructors of [arm], and the pattern of [let () = e] then names the
     constructor [()] of the file. A constructor that an [open] brings into scope
-    is not seen. *)
+    is not seen.
+
+    [lit] and [ret] name no value, and [tail] names [Stdlib.not] alone. The
+    constructors of [flip] stand where the type of the original [true] or
+    [false] is expected, and the [None] of [none] where the type of the original
+    [Some e] is expected. The armed arm of [tail] is a copy of [t] in [h :: t],
+    and gets the type of the original. A file that declares a constructor [true]
+    or [false] loses the [flip] rewrite of [lit], and a file that declares a
+    constructor [Some], [None] or [(::)] loses [ret]. A constructor that an
+    [open] or type-directed disambiguation takes from another module is not
+    seen. A [Some e] of a type that has no constructor [None], or an [h :: t]
+    whose [t] has another type, then fails to compile under instrumentation, and
+    [[@mutate off]] on the expression is the way out. *)
 
 (** {1:sites Sites}
 
@@ -140,8 +152,52 @@
     under [-strict-sequence] or not. The guard of [let () = e] is
     [if Stdlib.not armed then e], where [e] gets the expected type [unit].
 
-    The backend flags [-no-arm] and [-no-call] switch each family off, as in
-    [(instrumentation (backend ppx_windtrap.mutate -no-arm))]. *)
+    The backend flags [-no-arm] and [-no-call] switch these two families off, as
+    in [(instrumentation (backend ppx_windtrap.mutate -no-arm))].
+    {!section-values} gives the flags of [lit] and [ret]. *)
+
+(** {2:values Literals and values}
+
+    Two families change a value, and each has more than one rewrite.
+    - [lit] changes a literal. An integer literal becomes its successor, with
+      its suffix, under the name [one] for [0] and [inc] for the others. The
+      successor of the greatest integer is the least one, as the addition of the
+      type gives. A float literal other than zero becomes [0.] under [zero], and
+      a zero becomes [1.] under [one]. [true] and [false] swap under [flip],
+      except in a condition, where [neg] gives the same mutant. A string, a
+      character and a literal with a suffix that the compiler does not know are
+      no sites. An integer literal that its type cannot hold is no site, so that
+      the compiler reports the error.
+    - [ret] removes a part of a value. [Some e] becomes [None] under [none], and
+      [h :: t] becomes [t] under [tail]. A list literal [[a; b]] is one site, at
+      its bracket, and becomes [[b]], because the parser gives the other [(::)]
+      of the literal ghost locations. In a chain of [(::)], as [a :: b :: t],
+      the outermost [(::)] alone is a site, and becomes [b :: t]. A qualified
+      constructor, as [Option.Some], is no site.
+
+    The guard of [lit] is [if armed then c' else c], and that of [none] is
+    [if armed then None else Some e], so [e] is not evaluated when the mutant is
+    armed. The guard of [tail] is [if Stdlib.not armed then h :: t else t'],
+    where [t'] is a copy of [t] as the source wrote it. [t] is thus evaluated
+    once, and [h] is not evaluated when the mutant is armed. The type-checker
+    reads the branches of an [if] in order, so [h] gives its type to [t] as in
+    the original, and [t'] gets the type of the original. The sites inside [t']
+    have no guard, because when [t'] runs, its own site is the armed one. The
+    type-checker does not read the condition of an [if] when it decides if an
+    expression is a syntactic value, so a binding of a literal, of [Some v] or
+    of [h :: t] still generalizes.
+
+    The guard of [tail] holds a copy of [t], and its text holds the text of [t].
+    A site at each [(::)] of a chain would thus make the code grow as the square
+    of the length of the chain.
+
+    The right-hand side of a [let rec] cannot be an [if] that reads a variable
+    of the [let rec]. Thus an expression in such a right-hand side has no [ret]
+    site, except in a function or a [lazy] body inside it. This is true for a
+    [let rec] of a structure, of an expression and of a class.
+
+    [lit] is off by default, because a program has many literals. The backend
+    flag [-lit] switches it on, and [-no-ret] switches [ret] off. *)
 
 (** {2:placement Placement}
 
@@ -163,6 +219,7 @@
       so [(a + b) + c] and [f (a + b + c)] carry one mutant too. [a + b - c]
       carries two, because [sub] and [add] are two rewrites, and so does
       [a + b + (c + d)].
+    - A literal, [Some e] and [h :: t] carry no other mutant.
     - A guard binds its operands under the names [__windtrap_mut_<i>_<role>],
       where [<i>] is the index of the site and [<role>] is [p], [l] or [r]. *)
 
@@ -266,7 +323,9 @@
     The texts of an [arm] site give the pattern and the guard of its case, and
     [...] stands for the body: [| Some x when x > 0 -> ...] before and
     [| Some x when false -> ...] after. The [after] text of a [call] site is
-    [()].
+    [()], that of a [none] site is [None], and that of a [tail] site is [t]. The
+    printer gives a list as a list literal where it can, so [x :: [y]] is
+    recorded as [[x; y]], and a negative literal in brackets, as [(-1)].
 
     ppxlib encodes a construct that its parsetree does not have, as a labeled
     tuple of OCaml 5.4, as an extension node [[%ppxlib.migration.<name> ...]]. A
@@ -302,7 +361,9 @@
     as in [fun x -> function[@a] ...], the parser puts the attributes of
     [function] on its cases, and the generated attribute also comes before them.
     The compiler applies the attributes of a node from the last to the first, so
-    a warning attribute of the user cannot turn warnings 8 and 57 on again.
+    a warning attribute of the user cannot turn warnings 8 and 57 on again. The
+    copy [t'] of a [tail] guard is generated code too: each of its locations is
+    ghost, so that no two nodes share a location.
 
     In the driver that dune builds for a stanza naming both backends this
     rewriter runs first, so its sites are those stated here and the coverage
@@ -328,13 +389,16 @@
 val transform_impl_file :
   ?arm:bool ->
   ?call:bool ->
+  ?lit:bool ->
+  ?ret:bool ->
   Ppxlib.Expansion_context.Base.t ->
   Ppxlib.Parsetree.structure ->
   Ppxlib.Parsetree.structure
-(** [transform_impl_file ~arm ~call ctxt ast] is [ast] with a guard at each site
-    and the {{!section-generated}generated module} prepended. [arm] and [call]
-    keep the family of that name and default to [true]. [ctxt] is read for the
-    input name of the file alone.
+(** [transform_impl_file ~arm ~call ~lit ~ret ctxt ast] is [ast] with a guard at
+    each site and the {{!section-generated}generated module} prepended. [arm],
+    [call], [lit] and [ret] keep the family of that name. [lit] defaults to
+    [false], and the others to [true]. [ctxt] is read for the input name of the
+    file alone.
 
     The result is [ast] itself in three cases:
     - [ast] has a top-level [[@@@mutate exclude_file]].

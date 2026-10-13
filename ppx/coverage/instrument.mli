@@ -169,6 +169,9 @@
       a second point with the same extent. When its callee is one byte long, the
       out-edge shares the entry point instead. That point counts when the call
       starts, so a call that raises counts as visited.
+    - the disarmed arm of a [lit], a [none] or a [tail] guard keeps the location
+      of its site, and is marked as the branch of an [if]. The armed arm of a
+      [tail] guard is a copy whose locations are ghost, and takes no mark.
 
     The points of such a file are not those of the file under this rewriter
     alone. *)
