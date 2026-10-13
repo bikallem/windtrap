@@ -284,8 +284,9 @@
       prints.
     - [failure message]: a [lit] site in the arguments of [failwith] or
       [invalid_arg], with or without [Stdlib.]. A file that binds one of these
-      names loses this filter. A literal in the argument of [raise] has no
-      filter, because a test can compare the exception.
+      names loses this filter. A statement in the arguments keeps its mutants,
+      as in a logging call. A literal in the argument of [raise] has no filter,
+      because a test can compare the exception.
 
     The arguments of [f] are those of [f x], of [f @@ x], of [x |> f], and of
     [Printf.ksprintf f] and [Format.kasprintf f] applied to a format.
@@ -302,8 +303,8 @@
     starts at the first byte of the site and has its identifier. Thus the
     filtered site is not recorded, and [a + b] carries the mutant of the chain.
 
-    A [[@mutate off]] has priority over a filter, and [filter] switches all the
-    filters off. *)
+    A [[@mutate off]] has priority over a filter, and the backend flag
+    [-no-filter] switches all the filters off. *)
 
 (** {1:dismissal Dismissal attributes}
 

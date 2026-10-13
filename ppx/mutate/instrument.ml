@@ -952,8 +952,8 @@ class instrumenter ~keeps ~loggers ~module_name =
     val mutable suppressed = false (* inside a [[@@@mutate off]] region *)
 
     (* Inside the arguments of a logging call, and of [failwith] or
-       [invalid_arg]. A statement there is outside the logging call, because
-       it acts on the state of the program. *)
+       [invalid_arg]. A statement there is outside the two, because it acts
+       on the state of the program. *)
     val mutable logging = false
     val mutable message = false
 
@@ -989,6 +989,14 @@ class instrumenter ~keeps ~loggers ~module_name =
         let outer = message in
         message <- true;
         let result = f () in
+        message <- outer;
+        result
+
+    method private within_statement : 'a. (unit -> 'a) -> 'a =
+      fun f ->
+        let outer = message in
+        message <- false;
+        let result = self#within_logging false f in
         message <- outer;
         result
 
@@ -1201,7 +1209,7 @@ class instrumenter ~keeps ~loggers ~module_name =
           }
       | Pexp_sequence (first, rest) ->
           let first =
-            self#within_logging false (fun () -> self#mutate Statement first)
+            self#within_statement (fun () -> self#mutate Statement first)
           in
           let rest = self#expression rest in
           { e with pexp_desc = Pexp_sequence (first, rest) }
@@ -1211,7 +1219,7 @@ class instrumenter ~keeps ~loggers ~module_name =
               {
                 vb with
                 pvb_expr =
-                  self#within_logging false (fun () ->
+                  self#within_statement (fun () ->
                       self#mutate Unit_binding vb.pvb_expr);
               }
             else self#value_binding vb

@@ -288,7 +288,8 @@ outcome line gives their total, as `3 filtered`. The reasons are these:
   the program, so it keeps its mutants. The rewriter does not see other
   effects, as those of a function that the message calls.
 - `failure message`: under `-lit`, a literal in the arguments of
-  `failwith` or `invalid_arg`.
+  `failwith` or `invalid_arg`. A statement in the arguments keeps its
+  mutants, as in a logging call.
 
 Two branches or two bodies are the same when they are the same code at
 two positions. Code whose value can depend on its position is never the

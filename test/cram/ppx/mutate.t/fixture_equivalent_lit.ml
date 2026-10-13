@@ -2,7 +2,8 @@
    [failwith] or [invalid_arg] changes the message alone, as an integer, a
    zero, a float and a boolean do. The other sites there keep their
    mutants, and so does a literal of [raise], whose exception a test can
-   compare. *)
+   compare. A statement in the arguments acts on the state of the
+   program, so it keeps its mutants. *)
 
 let fail n = failwith (Printf.sprintf "item %d of %d" (n + 1) 10)
 let invalid () = Stdlib.invalid_arg (string_of_int 3)
@@ -15,3 +16,5 @@ let zero () = failwith (string_of_int 0)
 let float () = invalid_arg (string_of_float 2.5)
 let float_zero () = failwith (string_of_float 0.)
 let flag () = failwith (string_of_bool true)
+let stated r = failwith (r := 5; "boom")
+let bound r = invalid_arg (let () = r := 7 in "boom")

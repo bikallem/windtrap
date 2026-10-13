@@ -1433,19 +1433,23 @@ Code that gives its location keeps the mutants of its two copies:
 
   $ mut -lit --impl ./fixture_equivalent_lit.ml | ../elide.exe
   mutation sites of "./fixture_equivalent_lit.ml" in Windtrap_mut_________fixture_equivalent_lit___ml:
-    0: 7:54 "sub" "n + 1" -> "n - 1"
-    1: 7:59 "inc" "1" -> "2", filtered "failure message"
-    2: 7:62 "inc" "10" -> "11", filtered "failure message"
-    3: 8:51 "inc" "3" -> "4", filtered "failure message"
-    4: 9:54 "inc" "4" -> "5", filtered "failure message"
-    5: 10:29 "inc" "5" -> "6", filtered "failure message"
-    6: 11:55 "inc" "6" -> "7"
-    7: 12:56 "inc" "8" -> "9", filtered "failure message"
-    8: 13:50 "inc" "9" -> "10", filtered "failure message"
-    9: 14:38 "one" "0" -> "1", filtered "failure message"
-    10: 15:44 "zero" "2.5" -> "0.", filtered "failure message"
-    11: 16:46 "one" "0." -> "1.", filtered "failure message"
-    12: 17:39 "flip" "true" -> "false", filtered "failure message"
+    0: 8:54 "sub" "n + 1" -> "n - 1"
+    1: 8:59 "inc" "1" -> "2", filtered "failure message"
+    2: 8:62 "inc" "10" -> "11", filtered "failure message"
+    3: 9:51 "inc" "3" -> "4", filtered "failure message"
+    4: 10:54 "inc" "4" -> "5", filtered "failure message"
+    5: 11:29 "inc" "5" -> "6", filtered "failure message"
+    6: 12:55 "inc" "6" -> "7"
+    7: 13:56 "inc" "8" -> "9", filtered "failure message"
+    8: 14:50 "inc" "9" -> "10", filtered "failure message"
+    9: 15:38 "one" "0" -> "1", filtered "failure message"
+    10: 16:44 "zero" "2.5" -> "0.", filtered "failure message"
+    11: 17:46 "one" "0." -> "1.", filtered "failure message"
+    12: 18:39 "flip" "true" -> "false", filtered "failure message"
+    13: 19:25 "skip" "r := 5" -> "()"
+    14: 19:30 "inc" "5" -> "6"
+    15: 20:36 "skip" "r := 7" -> "()"
+    16: 20:41 "inc" "7" -> "8"
   let fail n =
     failwith
       (Printf.sprintf "item %d of %d"
@@ -1473,6 +1477,36 @@ Code that gives its location keeps the mutants of its two copies:
   let float () = invalid_arg (string_of_float 2.5)
   let float_zero () = failwith (string_of_float 0.)
   let flag () = failwith (string_of_bool true)
+  let stated r =
+    failwith
+      (if
+         Stdlib.not
+           (Windtrap_mut_________fixture_equivalent_lit___ml.___windtrap_armed___
+              13)
+       then
+         (r :=
+            (if
+               Windtrap_mut_________fixture_equivalent_lit___ml.___windtrap_armed___
+                 14
+             then 6
+             else 5);
+          ());
+       "boom")
+  let bound r =
+    invalid_arg
+      (let () =
+         if
+           Stdlib.not
+             (Windtrap_mut_________fixture_equivalent_lit___ml.___windtrap_armed___
+                15)
+         then
+           r :=
+             ((if
+                 Windtrap_mut_________fixture_equivalent_lit___ml.___windtrap_armed___
+                   16
+               then 8
+               else 7)) in
+       "boom")
 
   $ mut -lit --impl ./fixture_equivalent_lit_bound.ml | ../elide.exe | head -4
   mutation sites of "./fixture_equivalent_lit_bound.ml" in Windtrap_mut_________fixture_equivalent_lit_bound___ml:
@@ -1574,19 +1608,23 @@ records:
     13: 24:15 "skip" "incr y" -> "()"
     14: 26:2 "sub" "(!y) + x" -> "(!y) - x"
   $ sites -lit --impl ./fixture_equivalent_lit.ml
-    0: 7:54 "sub" "n + 1" -> "n - 1"
-    1: 7:59 "inc" "1" -> "2"
-    2: 7:62 "inc" "10" -> "11"
-    3: 8:51 "inc" "3" -> "4"
-    4: 9:54 "inc" "4" -> "5"
-    5: 10:29 "inc" "5" -> "6"
-    6: 11:55 "inc" "6" -> "7"
-    7: 12:56 "inc" "8" -> "9"
-    8: 13:50 "inc" "9" -> "10"
-    9: 14:38 "one" "0" -> "1"
-    10: 15:44 "zero" "2.5" -> "0."
-    11: 16:46 "one" "0." -> "1."
-    12: 17:39 "flip" "true" -> "false"
+    0: 8:54 "sub" "n + 1" -> "n - 1"
+    1: 8:59 "inc" "1" -> "2"
+    2: 8:62 "inc" "10" -> "11"
+    3: 9:51 "inc" "3" -> "4"
+    4: 10:54 "inc" "4" -> "5"
+    5: 11:29 "inc" "5" -> "6"
+    6: 12:55 "inc" "6" -> "7"
+    7: 13:56 "inc" "8" -> "9"
+    8: 14:50 "inc" "9" -> "10"
+    9: 15:38 "one" "0" -> "1"
+    10: 16:44 "zero" "2.5" -> "0."
+    11: 17:46 "one" "0." -> "1."
+    12: 18:39 "flip" "true" -> "false"
+    13: 19:25 "skip" "r := 5" -> "()"
+    14: 19:30 "inc" "5" -> "6"
+    15: 20:36 "skip" "r := 7" -> "()"
+    16: 20:41 "inc" "7" -> "8"
 
   $ mut --impl ./fixture_exclude.ml | ../elide.exe
   [@@@mutate exclude_file]

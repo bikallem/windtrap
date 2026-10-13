@@ -11,3 +11,15 @@ rewriter that reads the full chain at each if:
   mutation sites of "./chain.ml" in Windtrap_mut_________chain___ml:
     0: 20001:5 "neq" "x = 19999" -> "x <> 19999"
     1: 20000:5 "neq" "x = 19998" -> "x <> 19998"
+
+Two large branches of different sizes stop the counts later. The limit
+of the counts doubles each time, so the comparison costs the size of the
+smaller branch. A limit that increases by a fixed step makes the time
+increase with the square of that size, and the limit on processor time
+stops it:
+
+  $ awk 'BEGIN { n = 300000; printf "let f c =\n  if c then [|"; for (i = 0; i < n; i++) printf "%d;", i; printf "|]\n  else [|"; for (i = 0; i <= n; i++) printf "%d;", i; print "|]" }' > arrays.ml
+  $ ulimit -t 10
+  $ ../pp.exe -apply windtrap_mutate --impl ./arrays.ml | ../elide.exe | head -2
+  mutation sites of "./arrays.ml" in Windtrap_mut_________arrays___ml:
+    0: 2:5 "not" "c" -> "not c"
