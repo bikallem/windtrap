@@ -1484,6 +1484,18 @@ Code that gives its location keeps the mutants of its two copies:
     1: 3:24 "inc" "1" -> "2"
     2: 4:26 "inc" "7" -> "8"
 
+A [@mutate off] on a site that a filter would take dismisses the site,
+and keeps its reason:
+
+  $ mut -lit --impl ./fixture_equivalent_off.ml | ../elide.exe | grep -E '^ +[0-9]+: '
+    0: 4:13 "sub" "x + 0" -> "x - 0", dismissed "zero is kept"
+    1: 5:13 "or" "a && a" -> "a || a", dismissed "one operand"
+    2: 6:18 "not" "c" -> "not c", dismissed "one branch"
+    3: 7:22 "drop" "| `A -> ..." -> "| `A when false -> ...", dismissed "one case"
+    4: 7:59 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    5: 8:42 "sub" "x + 1" -> "x - 1", dismissed "a log"
+    6: 9:38 "inc" "3" -> "4", dismissed "a message"
+
 The backend flag -no-filter tests every mutant, which no filter then
 records:
 

@@ -185,6 +185,9 @@
 - A verdict file starts with `windtrap-mutants-v4`, and
   `windtrap mutants` refuses one of an earlier version; a new mutation
   run writes it again.
+- `--arm` refuses a mutant that `[@mutate off]` dismisses or that the
+  rewriter filtered, and exits 1: its site has no guard, so no run can
+  arm it.
 
 ## v0.2.0 2026-09-26
 

@@ -836,12 +836,31 @@ let xfail_failed (outcome : Run.outcome) =
     (fun (r : Run.result) -> Option.is_some r.xfail && counted_failure r)
     (Run.results outcome.run)
 
+(* A dismissed site has no guard, so an armed run of its mutant is the
+   unarmed run, and would end on a false "not evaluated". *)
+let unarmable (id : Mutate.id) dismissal =
+  let id = Mutate.id_to_string id in
+  match dismissal with
+  | Mutate.Off _ ->
+      strf
+        "%s: [@mutate off] dismisses this mutant, so its site has no guard and \
+         no run can arm it"
+        id
+  | Mutate.Filtered reason ->
+      strf
+        "%s: the rewriter filtered this mutant (%s), so its site has no guard \
+         and no run can arm it; give -no-filter after ppx_windtrap.mutate to \
+         test it"
+        id reason
+
 let armed renderer ~spec ~suite (config : Run.config) tests =
   match Result.bind (Mutate.id_of_string spec) Mutate.arm with
   | Error (Mutate.Uncatalogued _ as error) ->
       Os.say (Pp.to_string Mutate.pp_arm_error error);
       ordinary ~suite config tests
   | Error error -> refuse (Pp.to_string Mutate.pp_arm_error error)
+  | Ok ({ id; dismissed = Some dismissal; _ } : Mutate.mutant) ->
+      refuse (unarmable id dismissal)
   | Ok mutant ->
       let id = Mutate.id_to_string mutant.id in
       let config =

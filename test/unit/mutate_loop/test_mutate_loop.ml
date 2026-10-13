@@ -1376,6 +1376,17 @@ let plain_armed () =
   contains ~sub:"not this executable's mutant" r.err;
   contains ~sub:"instrumented with ppx_windtrap.mutate" r.err
 
+(* A dismissed or filtered site has no guard, so an armed run of its mutant
+   is the unarmed run, and would end on a false "not evaluated". [dismissed]
+   runs the two sites. *)
+let unarmable line reason () =
+  let r = spawn ~env:[ suite "dismissed" ] [ "--arm"; site line ] in
+  equal string "exited 1" r.status;
+  equal text "" r.out;
+  contains ~sub:(site line) r.err;
+  contains ~sub:reason r.err;
+  contains ~sub:"no run can arm it" r.err
+
 let inline_armed () = inline_run [ ("WINDTRAP_MUTATE_ARM", site 18) ]
 
 (* Exit 0 would be the correction-coverage downgrade firing on output an
@@ -1429,6 +1440,10 @@ let armed =
             r.out);
       test "an identifier of a build with no mutants declines by name"
         plain_armed;
+      test "a mutant that [@mutate off] dismisses is refused"
+        (unarmable 33 "[@mutate off] dismisses this mutant");
+      test "a mutant that the rewriter filtered is refused"
+        (unarmable 38 "the rewriter filtered this mutant (zero operand)");
       test "an armed site only tests marked xfail ran is not reached" (fun () ->
           let r = known_armed 21 in
           equal string "exited 0" r.status;

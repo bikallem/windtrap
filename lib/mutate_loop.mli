@@ -149,6 +149,11 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
       catalogues is [Reported 1], with the sentence of
       {!Windtrap_runtime.Mutate.pp_arm_error} on standard error, before anything
       runs.
+    - A mutant that {!Windtrap_runtime.Mutate.arm} arms but that is dismissed
+      ([dismissed] is [Some _]) is [Reported 1] before anything runs. Its site
+      has no guard, so an armed run of it is the unarmed run. The sentence on
+      standard error gives the reason. For a {!Windtrap_runtime.Mutate.Filtered}
+      mutant, it tells the user to give [-no-filter] to the rewriter.
     - {!Windtrap_runtime.Mutate.Uncatalogued} is no refusal. The same sentence
       goes to standard error before the transcript, and the result is [Ran] of
       the ordinary run under {!Run.No_mutation}.

@@ -625,9 +625,11 @@ the suite then runs with `--mutate`.
 
 A mutation run forks a child process for each mutant. It is refused on
 Windows, and in a process that has started a domain. `--mutate` and
-`--arm` together are a usage error. An interrupt ends the run: the
-running child is killed, the mutant under test is named on standard
-error, and no verdict file is written.
+`--arm` together are a usage error. `--arm` refuses a mutant that
+`[@mutate off]` dismisses or that the rewriter filtered, and exits 1:
+its site has no guard, so no run can arm it. An interrupt ends the
+run: the running child is killed, the mutant under test is named on
+standard error, and no verdict file is written.
 
 ## The command's options
 
