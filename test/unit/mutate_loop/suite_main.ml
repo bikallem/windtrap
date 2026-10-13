@@ -158,7 +158,9 @@ let fatal =
      where it is re-run: the dry run leaves the marker, the probe's
      unarmed re-run finds it and hangs. No mutant is armed in a probe,
      so only its own deadline can end it, and what an expiry proves is
-     non-determinism. *)
+     non-determinism.
+   - [probe_jobs] is [probe_block] beside [stalled], so it reaches two
+     mutants, and 16 jobs on one CPU give two children for that CPU. *)
 
 let hang () =
   (match Sys.getenv_opt "MUTATE_GRANDCHILD_PIDFILE" with
@@ -247,6 +249,185 @@ let pinned =
     test "crasher subtracts" (fun () -> equal int 2 (Subject.crasher 3 1));
   ]
 
+(* The fixtures of children that run at once (--mutate-jobs).
+
+   - [rendezvous] passes only where the children of [sub] and [widen] run at
+     the same time: each armed child leaves its mark in MUTATE_RENDEZVOUS
+     and waits for the mark of the other. One at a time, the first child
+     waits until its deadline kills it, and the second finds the mark.
+   - [hung] hangs the children of [sub] and of [widen], so a signal finds
+     two children running. Under MUTATE_GRANDCHILD_PIDFILE each records the
+     subprocess it starts, as [block] does.
+   - [gap] hangs the child of [sub], first in the catalogue, while the child
+     of [widen] survives and writes its pid to MUTATE_ENDED as its test
+     ends: a verdict that waits for the one before it.
+   - [stalled] holds the children of [sub] and of [widen] each at a gate
+     of its own ([wait_at]), so the harness can end them one at a time.
+     The two mutants survive.
+   - [queued] is [stalled] with a third test, which reaches [orphan]. Under
+     two jobs, the child of [orphan] starts only when a gate opens.
+   - [siblings] reaches [sub] and [widen], and pins nothing about them.
+     Under MUTATE_PIPES, each armed child writes the number of its pipes
+     ([fifos]) to the file [sub] or [widen] of that directory. Under two
+     jobs, the loop starts the child of [widen] while it holds the pipe of
+     the child of [sub].
+   - [closing] hangs the child of [sub]. Under MUTATE_CLOSED, the child of
+     [widen] closes its pipes and continues to run ([close_and_hang]). Thus
+     the loop reads the end of its pipe, and waits for it to exit. *)
+
+(* The descriptors from 3 to 255 that are pipes. A descriptor is an [int] on
+   Unix, and a child has no other name for its verdict pipe. *)
+let fifos () =
+  List.filter_map
+    (fun n ->
+      let fd : Unix.file_descr = Obj.magic n in
+      match Unix.fstat fd with
+      | { Unix.st_kind = Unix.S_FIFO; _ } -> Some fd
+      | _ -> None
+      | exception Unix.Unix_error _ -> None)
+    (List.init 253 (fun n -> n + 3))
+
+let meet ~mark ~other =
+  match Sys.getenv_opt "MUTATE_RENDEZVOUS" with
+  | None | Some "" -> ()
+  | Some dir ->
+      close_out (open_out (Filename.concat dir mark));
+      while not (Sys.file_exists (Filename.concat dir other)) do
+        Unix.sleepf 0.005
+      done
+
+let rendezvous =
+  [
+    test "sub meets widen" (fun () ->
+        if Subject.sub 10 4 <> 6 then meet ~mark:"sub" ~other:"widen";
+        is_true (Subject.sub 10 4 < 100));
+    test "widen meets sub" (fun () ->
+        if Subject.widen 3 4 <> 7 then meet ~mark:"widen" ~other:"sub";
+        is_true (Subject.widen 3 4 <> 0));
+  ]
+
+let hangs_on_sub =
+  test "hangs when sub changes" (fun () ->
+      if Subject.sub 10 4 <> 6 then hang ();
+      is_true (Subject.sub 10 4 < 100))
+
+let hung =
+  [
+    hangs_on_sub;
+    test "hangs when widen changes" (fun () ->
+        if Subject.widen 3 4 <> 7 then hang ();
+        is_true (Subject.widen 3 4 <> 0));
+  ]
+
+(* Under MUTATE_GATES, writes the pid of the child to the file [name] of
+   that directory, and waits for the file [name ^ ".open"]. *)
+let wait_at name =
+  match Sys.getenv_opt "MUTATE_GATES" with
+  | None | Some "" -> ()
+  | Some dir ->
+      let path = Filename.concat dir name in
+      Out_channel.with_open_bin (path ^ ".tmp") (fun oc ->
+          output_string oc (string_of_int (Unix.getpid ()) ^ "\n"));
+      Sys.rename (path ^ ".tmp") path;
+      while not (Sys.file_exists (path ^ ".open")) do
+        Unix.sleepf 0.005
+      done
+
+let stalled =
+  [
+    test "sub waits at its gate" (fun () ->
+        if Subject.sub 10 4 <> 6 then wait_at "sub";
+        is_true (Subject.sub 10 4 < 100));
+    test "widen waits at its gate" (fun () ->
+        if Subject.widen 3 4 <> 7 then wait_at "widen";
+        is_true (Subject.widen 3 4 <> 0));
+  ]
+
+let queued =
+  stalled
+  @ [ test "orphan is nonzero" (fun () -> is_true (Subject.orphan 3 4 <> 0)) ]
+
+let count_pipes name =
+  match Sys.getenv_opt "MUTATE_PIPES" with
+  | None | Some "" -> ()
+  | Some dir ->
+      let count = List.length (fifos ()) in
+      Out_channel.with_open_bin (Filename.concat dir name) (fun oc ->
+          output_string oc (string_of_int count ^ "\n"))
+
+let siblings =
+  [
+    test "sub counts its pipes" (fun () ->
+        if Subject.sub 10 4 <> 6 then count_pipes "sub";
+        is_true (Subject.sub 10 4 < 100));
+    test "widen counts its pipes" (fun () ->
+        if Subject.widen 3 4 <> 7 then count_pipes "widen";
+        is_true (Subject.widen 3 4 <> 0));
+  ]
+
+(* The pipes that the process [pid] holds, from /proc/[pid]/fd: each
+   descriptor with the name of its pipe, as ["pipe:[1234]"]. *)
+let held_pipes pid =
+  let dir = Printf.sprintf "/proc/%s/fd" pid in
+  let entries = try Sys.readdir dir with Sys_error _ -> [||] in
+  List.filter_map
+    (fun entry ->
+      match
+        (int_of_string_opt entry, Unix.readlink (Filename.concat dir entry))
+      with
+      | Some fd, name when String.starts_with ~prefix:"pipe:" name ->
+          Some (fd, name)
+      | _ -> None
+      | exception Unix.Unix_error _ -> None)
+    (Array.to_list entries)
+
+(* Closes the pipes of the child from descriptor 3, its verdict pipe
+   included, and waits until the loop holds fewer of them. The loop closes
+   its end of the verdict pipe when it reaps the child, before it waits for
+   the child to exit. The child then writes its pid to MUTATE_CLOSED, and
+   hangs until a signal kills it. *)
+let close_and_hang () =
+  match Sys.getenv_opt "MUTATE_CLOSED" with
+  | None | Some "" -> ()
+  | Some path ->
+      let loop = string_of_int (Unix.getppid ()) in
+      let own = List.filter (fun (fd, _) -> fd > 2) (held_pipes "self") in
+      let shared () =
+        List.length
+          (List.filter
+             (fun (_, name) -> List.exists (fun (_, n) -> n = name) own)
+             (held_pipes loop))
+      in
+      let before = shared () in
+      List.iter (fun (fd, _) -> Unix.close (Obj.magic fd : Unix.file_descr)) own;
+      while shared () >= before do
+        Unix.sleepf 0.005
+      done;
+      Out_channel.with_open_bin path (fun oc ->
+          output_string oc (string_of_int (Unix.getpid ()) ^ "\n"));
+      hang ()
+
+let closing =
+  [
+    hangs_on_sub;
+    test "widen closes its pipes and hangs" (fun () ->
+        if Subject.widen 3 4 <> 7 then close_and_hang ();
+        is_true (Subject.widen 3 4 <> 0));
+  ]
+
+let gap =
+  [
+    hangs_on_sub;
+    test "widen is nonzero, and says when it ends" (fun () ->
+        (if Subject.widen 3 4 <> 7 then
+           match Sys.getenv_opt "MUTATE_ENDED" with
+           | None | Some "" -> ()
+           | Some path ->
+               Out_channel.with_open_bin path (fun oc ->
+                   output_string oc (string_of_int (Unix.getpid ()) ^ "\n")));
+        is_true (Subject.widen 3 4 <> 0));
+  ]
+
 (* [late] reaches one mutant, so its child is the last. Armed, the test
    leaves a watcher behind that outlives the child. It waits until the
    loop's scratch directory, the one entry of TMPDIR, is gone, which the
@@ -295,6 +476,63 @@ let slow =
         is_true (Subject.sub 10 4 < 100));
   ]
 
+(* [starved] reaches [sub] and pins nothing about it. Outside the process
+   that measured the reach map, in the probe and in the child, its test
+   first uses 0.4 seconds of CPU time. The dry run does not, so the
+   deadlines do not grow with it. Under [hog], the process gets a session
+   of its own and uses the CPU until a signal kills it. *)
+let use_cpu seconds =
+  let start = Sys.time () in
+  while Sys.time () -. start < seconds do
+    ignore (Sys.opaque_identity ())
+  done
+
+let starved =
+  [
+    test "uses the CPU where it is re-run and pins nothing about sub" (fun () ->
+        if Unix.getpid () <> dry_run_pid then use_cpu 0.4;
+        is_true (Subject.sub 10 4 < 100));
+  ]
+
+(* [spawning] is [starved], but a subprocess uses the CPU ([burn]), and the
+   test waits for it. Thus the main thread of the probe and of the child
+   sleeps, and only the subprocess waits for the CPU. *)
+let burn () =
+  let fixture = "MUTATE_FIXTURE=" in
+  let env =
+    Unix.environment () |> Array.to_list
+    |> List.filter (fun v -> not (String.starts_with ~prefix:fixture v))
+  in
+  let pid =
+    Unix.create_process_env Sys.executable_name [| Sys.executable_name |]
+      (Array.of_list ((fixture ^ "burn") :: env))
+      Unix.stdin Unix.stdout Unix.stderr
+  in
+  match Unix.waitpid [] pid with
+  | _, Unix.WEXITED 0 -> ()
+  | _ -> fail "the subprocess that uses the CPU did not exit 0"
+
+let spawning =
+  [
+    test "waits for a process that uses the CPU and pins nothing about sub"
+      (fun () ->
+        if Unix.getpid () <> dry_run_pid then burn ();
+        is_true (Subject.sub 10 4 < 100));
+  ]
+
+(* [spinners] is [hung], but the test of a changed answer uses the CPU until
+   its deadline. It evaluates no site in this time, so the hit budget does
+   not stop it. *)
+let spinners =
+  [
+    test "spins when sub changes" (fun () ->
+        if Subject.sub 10 4 <> 6 then use_cpu Float.infinity;
+        is_true (Subject.sub 10 4 < 100));
+    test "spins when widen changes" (fun () ->
+        if Subject.widen 3 4 <> 7 then use_cpu Float.infinity;
+        is_true (Subject.widen 3 4 <> 0));
+  ]
+
 (* The probe says it started, beside the dry run's marker, before it
    blocks: a harness that signals the loop then knows the probe is the
    child that runs. *)
@@ -312,6 +550,36 @@ let probe_block =
               ignore (Unix.read never_written (Bytes.create 1) 0 1)
             end
             else close_out (open_out path));
+  ]
+
+(* [flood] reaches [sub] and pins nothing about it. Armed, the child and 7
+   processes that it forks write to each pipe that the child holds open for
+   writing ([fifos]), its verdict pipe included, and never stop: only the
+   deadline can end the child. They do not wait for room in the pipe, so
+   the pipe stays full where they run on more CPUs than the parent does. *)
+let flood_pipes () =
+  let chunk = Bytes.make 65536 'x' in
+  let pipes = fifos () in
+  List.iter
+    (fun fd -> try Unix.set_nonblock fd with Unix.Unix_error _ -> ())
+    pipes;
+  let written fd =
+    match Unix.write fd chunk 0 (Bytes.length chunk) with
+    | _ -> true
+    | exception Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) -> true
+    | exception Unix.Unix_error _ -> false
+  in
+  let rec write pipes = write (List.filter written pipes) in
+  for _ = 1 to 7 do
+    if Unix.fork () = 0 then write pipes
+  done;
+  write pipes
+
+let flood =
+  [
+    test "floods its pipes when sub changes" (fun () ->
+        if Subject.sub 10 4 <> 6 then flood_pipes ();
+        is_true (Subject.sub 10 4 < 100));
   ]
 
 (* What the dry run and the children do with what the suite is given.
@@ -446,11 +714,30 @@ let () =
   | "block" -> exit @@ run "calc" [ group "block" block ]
   | "held" -> exit @@ run "calc" [ group "held" held ]
   | "interrupted" -> exit @@ run "calc" [ group "held" interrupted ]
+  | "rendezvous" -> exit @@ run "calc" [ group "jobs" rendezvous ]
+  | "hung" -> exit @@ run "calc" [ group "jobs" hung ]
+  | "gap" -> exit @@ run "calc" [ group "jobs" gap ]
+  | "siblings" -> exit @@ run "calc" [ group "jobs" siblings ]
+  | "closing" -> exit @@ run "calc" [ group "jobs" closing ]
+  | "stalled" -> exit @@ run "calc" [ group "jobs" stalled ]
+  | "queued" -> exit @@ run "calc" [ group "jobs" queued ]
   | "pinned" ->
       exit @@ run "calc" [ group "calc" strong; group "pinned" pinned ]
   | "slow" -> exit @@ run "calc" [ group "slow" slow ]
+  | "starved" -> exit @@ run "calc" [ group "starved" starved ]
+  | "spawning" -> exit @@ run "calc" [ group "starved" spawning ]
+  | "spinners" -> exit @@ run "calc" [ group "jobs" spinners ]
+  | "burn" -> use_cpu 0.4
+  | "hog" ->
+      ignore (Unix.setsid ());
+      while true do
+        ignore (Sys.opaque_identity ())
+      done
+  | "flood" -> exit @@ run "calc" [ group "flood" flood ]
   | "late" -> exit @@ run "calc" [ group "late" late ]
   | "probe_block" -> exit @@ run "calc" [ group "probe" probe_block ]
+  | "probe_jobs" ->
+      exit @@ run "calc" [ group "probe" probe_block; group "jobs" stalled ]
   | "baseline" -> exit @@ run "calc" [ group "baseline" baseline ]
   | "release" -> exit @@ run "calc" [ group "release" release ]
   | "budget" -> exit @@ run "calc" [ group "budget" budget ]

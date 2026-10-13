@@ -7,7 +7,8 @@
    scenario starts suite_main.exe (or a sibling fixture) in a stated
    environment and reads what the loop decided from the dry run's summary,
    the outcome line, the survivors it named and the verdict file. How a
-   report lays these out is Report_sections'. *)
+   report lays these out is Report_sections'. Only [drain], which reads the
+   pipes of the children, is called in this process ([never_empty]). *)
 
 open Windtrap
 module Mutate = Windtrap_runtime.Mutate
@@ -27,6 +28,7 @@ let inline_exe = Filename.concat exe_dir "inline/runner_main.exe"
 let scope = "test/unit/mutate_loop/"
 let mutate = "--mutate=" ^ scope
 let mutate_mirror = ("WINDTRAP_MUTATE", scope)
+let jobs n = strf "--mutate-jobs=%d" n
 let suite name = ("MUTATE_FIXTURE", name)
 
 (* Under --instrument-with this executable's core catalogues its mutants,
@@ -179,10 +181,43 @@ let finish started =
   }
 
 (* A process this suite started must not outlive it: a file that never
-   comes kills the run and fails the test. *)
-let await ~what started path =
+   comes, or never holds what [ready] asks, kills the run and fails the
+   test. *)
+let await ?(ready = fun contents -> contents <> "") ~what started path =
   let rec poll attempts =
-    if read path <> "" then ()
+    if ready (read path) then ()
+    else if attempts = 0 then begin
+      (try Unix.kill started.pid Sys.sigkill with Unix.Unix_error _ -> ());
+      ignore (finish started);
+      failf "%s never happened" what
+    end
+    else begin
+      Unix.sleepf 0.01;
+      poll (attempts - 1)
+    end
+  in
+  poll 3000
+
+(* The parent reaps a child as soon as its pipe closes, so a pid that is gone
+   is a child whose verdict the loop holds. *)
+let reaped ~what started pid =
+  let rec poll attempts =
+    match Unix.kill pid 0 with
+    | () when attempts = 0 ->
+        (try Unix.kill started.pid Sys.sigkill with Unix.Unix_error _ -> ());
+        ignore (finish started);
+        failf "%s never happened" what
+    | () ->
+        Unix.sleepf 0.01;
+        poll (attempts - 1)
+    | exception Unix.Unix_error (Unix.ESRCH, _, _) -> ()
+  in
+  poll 3000
+
+(* A condition that never holds kills the run and fails the test. *)
+let until ~what started holds =
+  let rec poll attempts =
+    if holds () then ()
     else if attempts = 0 then begin
       (try Unix.kill started.pid Sys.sigkill with Unix.Unix_error _ -> ());
       ignore (finish started);
@@ -196,12 +231,14 @@ let await ~what started path =
   poll 3000
 
 (* A run that must end on its own is ended after [seconds], SIGTERM first,
-   which the loop answers by killing its running child's group. *)
-let finish_within ?(seconds = 10.) ~what started =
+   which the loop answers by killing its running child's group. While the
+   run goes, [meanwhile] runs every 10 ms. *)
+let finish_within ?(seconds = 10.) ?(meanwhile = ignore) ~what started =
   let rec wait_until time =
     match Unix.waitpid [ Unix.WNOHANG ] started.pid with
     | 0, _ when Unix.gettimeofday () > time -> None
     | 0, _ ->
+        meanwhile ();
         Unix.sleepf 0.01;
         wait_until time
     | _, status -> Some status
@@ -252,6 +289,47 @@ let fate pid =
   poll 100
 
 let pids text = List.filter_map int_of_string_opt (lines text)
+
+(* A child that ended and that its parent did not reap is a zombie. Where
+   /proc is missing, half a second stands in for the check. *)
+let exited ~what started pid =
+  let rec poll attempts =
+    if zombie pid then ()
+    else if attempts = 0 then begin
+      (try Unix.kill started.pid Sys.sigkill with Unix.Unix_error _ -> ());
+      ignore (finish started);
+      failf "%s never happened" what
+    end
+    else begin
+      Unix.sleepf 0.01;
+      poll (attempts - 1)
+    end
+  in
+  if Sys.file_exists "/proc/self/stat" then poll 3000 else Unix.sleepf 0.5
+
+(* Fills the pipe of [writer] until a write would block. *)
+let fill writer =
+  Unix.set_nonblock writer;
+  let rec write chunk =
+    match Unix.write writer chunk 0 (Bytes.length chunk) with
+    | _ -> write chunk
+    | exception Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) -> ()
+  in
+  write (Bytes.make 4096 'x');
+  write (Bytes.make 1 'x');
+  Unix.clear_nonblock writer
+
+let read_to_end fd =
+  let chunk = Bytes.create 65536 and contents = Buffer.create 65536 in
+  let rec read () =
+    match Unix.read fd chunk 0 (Bytes.length chunk) with
+    | 0 -> Buffer.contents contents
+    | n ->
+        Buffer.add_subbytes contents chunk 0 n;
+        read ()
+    | exception Unix.Unix_error (Unix.EINTR, _, _) -> read ()
+  in
+  read ()
 
 (* What a report says *)
 
@@ -865,6 +943,89 @@ let deadline_kill () =
        ])
     (rows b.run)
 
+(* The most memory, in kB, that the process [pid] has used until now: the
+   line VmHWM of /proc/<pid>/status. It is [0] where the system does not
+   give it, as for a process that exited. *)
+let high_water pid =
+  match
+    In_channel.with_open_bin (strf "/proc/%d/status" pid) In_channel.input_all
+  with
+  | status ->
+      List.find_map
+        (fun line ->
+          match String.split_on_char ':' line with
+          | [ "VmHWM"; size ] ->
+              Scanf.sscanf_opt (String.trim size) "%d kB" Fun.id
+          | _ -> None)
+        (lines status)
+      |> Option.value ~default:0
+  | exception Sys_error _ -> 0
+
+(* [flood]'s child writes to its verdict pipe and never stops, so the pipe
+   is never read to its end. In the second of its deadline, a loop that
+   kept all that it read used more than 700 MB, and with 64 KiB of it, 8
+   MB. *)
+let flooded () =
+  remove (Verdicts.output_file ~exe:suite_exe);
+  let run = start ~env:[ suite "flood" ] [ mutate ] in
+  let peak = ref 0 in
+  let r =
+    finish_within ~what:"the flooding child's deadline"
+      ~meanwhile:(fun () -> peak := Int.max !peak (high_water run.pid))
+      run
+  in
+  equal string "exited 0" r.status;
+  equal text "" r.err;
+  if Sys.file_exists "/proc/self/status" then less int ~than:100_000 !peak;
+  equal string
+    "mutants: 1 reached by this suite, 1 killed, 3 never reached, score 100.0%"
+    (outcome r.out);
+  equal
+    (option (list string))
+    (Some
+       [
+         "subject.ml:15 killed";
+         "subject.ml:18 unreached";
+         "subject.ml:21 unreached";
+         "subject.ml:27 unreached";
+       ])
+    (rows r)
+
+(* [/dev/zero] is always ready and never at its end, as a pipe that a
+   writer keeps full. But it has no race: the loop can empty the pipe of
+   [flood] when it reads faster than the writers write. Without the limit of
+   the reads, [drain] does not return, and the timeout of the test ends
+   it. *)
+let never_empty () =
+  let zero = Unix.openfile "/dev/zero" [ Unix.O_RDONLY; Unix.O_CLOEXEC ] 0 in
+  Fun.protect ~finally:(fun () -> Unix.close zero) @@ fun () ->
+  let kept = Buffer.create 4096 in
+  let ended = Private.Mutate_loop.drain [ (zero, kept) ] in
+  is_true (ended = []);
+  equal int 65536 (Buffer.length kept)
+
+(* A child that ended left a full pipe: 64 KiB, which the parent reads in
+   16 reads of 4 KiB. The read of the end is the 17th. *)
+let full_pipe () =
+  let reader, writer = Unix.pipe ~cloexec:true () in
+  Fun.protect ~finally:(fun () -> Unix.close reader) @@ fun () ->
+  Unix.set_nonblock writer;
+  let chunk = Bytes.make 4096 'x' in
+  let rec write written =
+    if written = 65536 then written
+    else
+      match Unix.write writer chunk 0 (Bytes.length chunk) with
+      | n -> write (written + n)
+      | exception Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) ->
+          written
+  in
+  let written = write 0 in
+  Unix.close writer;
+  let kept = Buffer.create 4096 in
+  let ended = Private.Mutate_loop.drain [ (reader, kept) ] in
+  is_true (ended = [ reader ]);
+  equal int written (Buffer.length kept)
+
 (* The sleep runs armed and unarmed alike, so the dry run prices it into
    the deadline; the verdict, not a stopwatch, says whether the clock
    ended the child. *)
@@ -902,9 +1063,185 @@ let probe_deadline () =
   contains ~sub:"the determinism probe exceeded its deadline" r.err;
   contains ~sub:"not a number" r.err
 
+let taskset =
+  List.find_map
+    (fun dir ->
+      let path = Filename.concat dir "taskset" in
+      if dir <> "" && Sys.file_exists path then Some path else None)
+    (String.split_on_char ':'
+       (Option.value ~default:"" (Sys.getenv_opt "PATH")))
+
+(* Under [taskset -c 0] the loop sees one CPU
+   ([Domain.recommended_domain_count]). *)
+let one_cpu () =
+  let taskset =
+    match taskset with
+    | None -> skip ~reason:"taskset is not on PATH" ()
+    | Some taskset -> taskset
+  in
+  let pinned =
+    spawn ~exe:taskset ~env:[ suite "catalogue" ] [ "-c"; "0"; suite_exe ]
+  in
+  if pinned.status <> "exited 0" then
+    skip ~reason:"taskset cannot hold a process to CPU 0" ();
+  remove (Verdicts.output_file ~exe:suite_exe);
+  taskset
+
+(* [hung] reaches two mutants, so on one CPU 16 jobs give two children,
+   which share the CPU, and each child of [hung] blocks until its deadline,
+   two seconds or more. With the 16 jobs of the command line, the deadline
+   would be sixteen seconds or more. *)
+let on_one_cpu () =
+  let taskset = one_cpu () in
+  let began = Unix.gettimeofday () in
+  let r =
+    finish_within ~seconds:30. ~what:"the deadlines of two children on one CPU"
+      (start ~exe:taskset
+         ~env:[ suite "hung" ]
+         [ "-c"; "0"; suite_exe; mutate; jobs 16 ])
+  in
+  let elapsed = Unix.gettimeofday () -. began in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal string
+    "mutants: 2 reached by this suite, 2 killed, 2 never reached, score 100.0%"
+    (outcome r.out);
+  at_least float_exact ~than:2.0 elapsed;
+  less float_exact ~than:8.0 elapsed
+
+(* [spinners] reaches two mutants, and each child uses the CPU until its
+   deadline, about one second for one job. On one CPU, 2 jobs give two
+   children for each CPU. Thus each deadline is two seconds, and each child
+   gets half of the CPU, so it uses about one second of CPU time. The wait
+   of each child for the other one does not move its deadline again: with
+   that wait, each child used two seconds. The loop reaps its children and
+   this test reaps the loop, so [tms_cutime] and [tms_cstime] hold their CPU
+   time. *)
+let spinning_on_one_cpu () =
+  let taskset = one_cpu () in
+  let children_cpu () =
+    let times = Unix.times () in
+    times.tms_cutime +. times.tms_cstime
+  in
+  let before = children_cpu () in
+  let r =
+    finish_within ~seconds:30. ~what:"the deadlines of two spinning children"
+      (start ~exe:taskset
+         ~env:[ suite "spinners" ]
+         [ "-c"; "0"; suite_exe; mutate; jobs 2 ])
+  in
+  let used = children_cpu () -. before in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal string
+    "mutants: 2 reached by this suite, 2 killed, 2 never reached, score 100.0%"
+    (outcome r.out);
+  less float_exact ~than:3.0 used
+
+(* [flood] armed is 8 processes that use the CPU. On one CPU, the sum of
+   their waits for the CPU grows 7 times as fast as the clock. The credit
+   for that wait is at most the time that they did not use the CPU, so the
+   deadline comes. *)
+let flooded_on_one_cpu () =
+  if not (Sys.file_exists "/proc/self/schedstat") then
+    skip ~reason:"the system does not give the time that a process waits" ();
+  let taskset = one_cpu () in
+  let r =
+    finish_within ~seconds:30. ~what:"the flooding child's deadline on one CPU"
+      (start ~exe:taskset
+         ~env:[ suite "flood" ]
+         [ "-c"; "0"; suite_exe; mutate ])
+  in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal string
+    "mutants: 1 reached by this suite, 1 killed, 3 never reached, score 100.0%"
+    (outcome r.out)
+
+(* [probe_jobs] reaches two mutants, so on one CPU 16 jobs give two
+   children for each CPU. The probe runs alone before them, and its
+   deadline, about one second, is that of one job. A probe deadline
+   multiplied by the two children for each CPU would take one second
+   more. *)
+let probe_alone () =
+  let taskset = one_cpu () in
+  let refused n =
+    let marker = Filename.concat (temp_dir ()) "marker" in
+    let began = Unix.gettimeofday () in
+    let r =
+      finish_within ~seconds:30. ~what:"the probe's deadline on one CPU"
+        (start ~exe:taskset
+           ~env:[ suite "probe_jobs"; ("MUTATE_PROBE_MARKER", marker) ]
+           [ "-c"; "0"; suite_exe; mutate; jobs n ])
+    in
+    equal string "exited 1" r.status;
+    contains ~sub:"the determinism probe exceeded its deadline" r.err;
+    Unix.gettimeofday () -. began
+  in
+  let one = refused 1 in
+  less float_exact ~than:(one +. 0.5) (refused 16)
+
+(* [starve fixture] runs [fixture] on one CPU beside 4 processes that use
+   it and never stop. Thus its probe and its child wait for the CPU 4 times
+   as long as they use it, and end after about 2 seconds, past their
+   deadlines of about 1 second. The time that a child waits for a CPU does
+   not count, so the probe agrees and the mutant survives. *)
+let starve fixture test_name =
+  if not (Sys.file_exists "/proc/self/schedstat") then
+    skip ~reason:"the system does not give the time that a process waits" ();
+  let taskset = one_cpu () in
+  let hogs =
+    List.init 4 (fun _ ->
+        Unix.create_process_env taskset
+          [| taskset; "-c"; "0"; suite_exe |]
+          (Child.environment [ suite "hog" ])
+          Unix.stdin Unix.stdout Unix.stderr)
+  in
+  let stop pid =
+    (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ());
+    ignore (Unix.waitpid [] pid)
+  in
+  let r =
+    Fun.protect ~finally:(fun () -> List.iter stop hogs) @@ fun () ->
+    finish_within ~seconds:30. ~what:"the starved probe and child"
+      (start ~exe:taskset
+         ~env:[ suite fixture ]
+         [ "-c"; "0"; suite_exe; mutate ])
+  in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal
+    (option (list string))
+    (Some
+       [
+         "subject.ml:15 survived by starved \u{203a} " ^ test_name;
+         "subject.ml:18 unreached";
+         "subject.ml:21 unreached";
+         "subject.ml:27 unreached";
+       ])
+    (rows r)
+
+let starved () =
+  starve "starved" "uses the CPU where it is re-run and pins nothing about sub"
+
+(* In [spawning], a subprocess of the probe and of the child uses the CPU,
+   and their main threads only wait for it. The wait of a thread of a
+   process in the group of a child also does not count. *)
+let spawning () =
+  starve "spawning"
+    "waits for a process that uses the CPU and pins nothing about sub"
+
 let limits =
   group "Limits"
     [
+      test
+        "children that outnumber the CPUs get deadlines longer by the children \
+         for each CPU"
+        on_one_cpu;
+      test
+        "children that outnumber the CPUs and use the CPU get the CPU time of \
+         the deadline of one job"
+        spinning_on_one_cpu;
+      test
+        "processes of a child that wait for one CPU at the same time do not \
+         keep the child past its deadline"
+        flooded_on_one_cpu;
       cases
         "the runaway budget is eight evaluations per measured one, plus 1000"
         ~name:(fun (k, over) -> strf "%d measured, budget %+d" k over)
@@ -913,6 +1250,16 @@ let limits =
       test "a mutant that never terminates is killed by its hit budget" runaway;
       test "a mutant that blocks is killed by its child's deadline"
         deadline_kill;
+      test
+        "a child that writes to its verdict pipe and never stops is killed by \
+         its deadline, and does not fill the memory of the loop"
+        flooded;
+      test ~timeout:5.
+        "the loop reads a pipe that never empties a limited number of times, \
+         and keeps 64 KiB of it"
+        never_empty;
+      test "the loop reads a full pipe of a child that ended to its end at once"
+        full_pipe;
       test "a child's deadline is at least one second" (fun () ->
           let b = Lazy.force blocked in
           equal string "exited 0" b.run.status;
@@ -924,6 +1271,18 @@ let limits =
       test "a slow but finite test is never killed by the clock" slow;
       test "a probe past its deadline is refused as non-determinism"
         probe_deadline;
+      test
+        "the probe's deadline is that of one job, whatever the children for \
+         each CPU"
+        probe_alone;
+      test
+        "the time that a child waits for a CPU does not count toward its \
+         deadline"
+        starved;
+      test
+        "the time that a subprocess of a child waits for a CPU does not count \
+         toward the deadline of the child"
+        spawning;
     ]
 
 (* The verdict file *)
@@ -1495,6 +1854,31 @@ let streamed () =
   starts_with ~affix:seen r.out;
   equal (list string) [ site 15; site 18 ] (survivors r.out)
 
+(* [held]'s two children start at once, and the second waits at the gate
+   while the first survives. *)
+let streamed_with_jobs () =
+  let dir = temp_dir () in
+  let began = Filename.concat dir "began"
+  and gate = Filename.concat dir "gate" in
+  remove (Verdicts.output_file ~exe:suite_exe);
+  let run =
+    start
+      ~env:[ suite "held"; ("MUTATE_STARTED", began); ("MUTATE_GATE", gate) ]
+      [ mutate; jobs 2 ]
+  in
+  await ~what:"the second child's start" run began;
+  await ~what:"the first survivor"
+    ~ready:(fun out -> survivors out <> [])
+    run run.out_path;
+  let seen = read run.out_path in
+  write gate "";
+  let r = finish run in
+  equal (list string) [ site 15 ] (survivors seen);
+  not_contains ~sub:"mutants:" seen;
+  equal string "exited 0" r.status;
+  starts_with ~affix:seen r.out;
+  equal (list string) [ site 15; site 18 ] (survivors r.out)
+
 let held_order () =
   let r = spawn ~env:[ suite "held" ] [ mutate ] in
   equal (list string) [ site 15; site 18 ] (survivors r.out);
@@ -1521,6 +1905,378 @@ let forks =
         held_order;
       test "a survivor is reported when its child ends, not when the loop does"
         streamed;
+      test
+        "with several jobs, a survivor is reported once every mutant before it \
+         has a verdict, while later children run"
+        streamed_with_jobs;
+    ]
+
+(* Jobs *)
+
+(* What a reader of a run sees, with each duration masked: the dry run's
+   summary is not always the first line. *)
+let seen r =
+  let timed line =
+    match String.rindex_opt line ' ' with
+    | Some i
+      when i >= 3
+           && String.sub line (i - 3) 3 = " in"
+           && String.ends_with ~suffix:"s." line ->
+        String.sub line 0 (i + 1) ^ "<time>."
+    | Some _ | None -> line
+  in
+  (r.status, String.concat "\n" (List.map timed (lines r.out)), r.err, rows r)
+
+let seen_witness = quad string text text (option (list string))
+
+let same_with_jobs (_, env, args) =
+  let one = spawn ~env [ mutate ] in
+  equal seen_witness (seen one) (seen (spawn ~env (mutate :: args)))
+
+let fixtures =
+  [
+    ("green", [], [ jobs 4 ]);
+    ("crash", [ suite "crash" ], [ jobs 4 ]);
+    ("fatal", [ suite "fatal" ], [ jobs 4 ]);
+    ("capped", [ suite "capped" ], [ jobs 4 ]);
+    ("known", [ suite "known" ], [ jobs 4 ]);
+    ("memo", [ suite "memo" ], [ jobs 4 ]);
+    ("boundary", [ suite "boundary" ], [ jobs 4 ]);
+    ("pinned", [ suite "pinned" ], [ jobs 4 ]);
+    ("release", [ suite "release" ], [ jobs 4 ]);
+    ("held", [ suite "held" ], [ jobs 4 ]);
+    ("tagged", [ suite "tagged"; ("WINDTRAP_TAG", "gated") ], [ jobs 4 ]);
+    ("capped, auto", [ suite "capped" ], [ "--mutate-jobs=auto" ]);
+    ("capped, mirror", [ suite "capped"; ("WINDTRAP_MUTATE_JOBS", "4") ], []);
+  ]
+
+(* Each armed child of [rendezvous] waits for the other's mark. *)
+let rendezvous env args =
+  let dir = temp_dir () in
+  spawn
+    ~env:(suite "rendezvous" :: ("MUTATE_RENDEZVOUS", dir) :: env)
+    (mutate :: args)
+
+let at_once () =
+  let typed = rendezvous [] [ jobs 2 ]
+  and mirrored = rendezvous [ ("WINDTRAP_MUTATE_JOBS", "2") ] [] in
+  List.iter
+    (fun r ->
+      equal (pair string text) ("exited 0", "") (r.status, r.err);
+      equal string
+        "mutants: 2 survived of 2 reached by this suite, 2 never reached, \
+         score 0.0%"
+        (outcome r.out))
+    [ typed; mirrored ]
+
+let one_at_a_time () =
+  let r = rendezvous [] [] in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal string
+    "mutants: 1 survived of 2 reached by this suite, 1 killed, 2 never \
+     reached, score 50.0%"
+    (outcome r.out)
+
+(* Under two jobs, the loop starts the child of [widen] while it holds the
+   pipe of the child of [sub]. Each child has its verdict pipe, and the
+   pipes that the two got from the same loop and runner. A child that kept
+   the pipe of the other child has one pipe more. *)
+let own_pipe () =
+  let dir = temp_dir () in
+  let r =
+    spawn ~env:[ suite "siblings"; ("MUTATE_PIPES", dir) ] [ mutate; jobs 2 ]
+  in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal string
+    "mutants: 2 survived of 2 reached by this suite, 2 never reached, score \
+     0.0%"
+    (outcome r.out);
+  let count name = read (Filename.concat dir name) in
+  is_true (count "sub" <> "");
+  equal string (count "sub") (count "widen")
+
+(* The pid of the child that waits at the gate [name] of [stalled], and the
+   function that opens the gate. *)
+let gate ~gates run name =
+  let path = Filename.concat gates name in
+  await ~what:("the start of the child of " ^ name) run path;
+  (List.hd (pids (read path)), fun () -> write (path ^ ".open") "")
+
+(* The two children of [stalled] wait at their gates at the same time, each
+   with a log directory of its own in the scratch directory of the loop,
+   the one entry of TMPDIR. The loop removes the directory of a child when
+   it reaps the child, while the other child continues to run. *)
+let nothing_left () =
+  let gates = temp_dir () and tmpdir = temp_dir () in
+  let run =
+    start
+      ~env:[ suite "stalled"; ("MUTATE_GATES", gates); ("TMPDIR", tmpdir) ]
+      [ mutate; jobs 2 ]
+  in
+  let first, open_first = gate ~gates run "sub" in
+  let _, open_second = gate ~gates run "widen" in
+  let logs =
+    match entries tmpdir with
+    | [ scratch ] -> fun () -> entries (Filename.concat tmpdir scratch)
+    | found -> failf "TMPDIR holds %d entries" (List.length found)
+  in
+  let both = logs () in
+  equal int 2 (List.length both);
+  open_first ();
+  reaped ~what:"the reaping of the first child" run first;
+  until ~what:"the removal of the first child's log directory" run (fun () ->
+      List.length (logs ()) = 1);
+  let left = logs () in
+  is_true (List.for_all (fun entry -> List.mem entry both) left);
+  open_second ();
+  let r = finish_within ~what:"the end of the second child" run in
+  equal string "exited 0" r.status;
+  equal (list string) [] (entries tmpdir)
+
+(* The two children of [fixture], [stalled] or [queued], wait at their
+   gates, and standard output is a pipe that this test fills. The child of
+   [sub] ends first, and the loop blocks in the write of its survivor. The
+   child of [widen] then ends while the loop is blocked, except when
+   [widen_ends] is false. [meanwhile] gets the pid of that child, and acts
+   before this test reads the pipe to its end. The result holds what the
+   loop wrote. *)
+let stalled_report ?(fixture = "stalled") ?(widen_ends = true) meanwhile =
+  let gates = temp_dir () and tmpdir = temp_dir () in
+  remove (Verdicts.output_file ~exe:suite_exe);
+  let reader, writer = Unix.pipe ~cloexec:true () in
+  let run =
+    start ~stdout:writer
+      ~env:[ suite fixture; ("MUTATE_GATES", gates); ("TMPDIR", tmpdir) ]
+      [ mutate; jobs 2 ]
+  in
+  let first, open_first = gate ~gates run "sub" in
+  let second, open_second = gate ~gates run "widen" in
+  fill writer;
+  Unix.close writer;
+  open_first ();
+  reaped ~what:"the reaping of the first child" run first;
+  if widen_ends then begin
+    open_second ();
+    exited ~what:"the end of the second child" run second
+  end;
+  meanwhile run second;
+  let out = read_to_end reader in
+  Unix.close reader;
+  ({ (finish run) with out }, tmpdir)
+
+let stalled_outcome =
+  "mutants: 2 survived of 2 reached by this suite, 2 never reached, score 0.0%"
+
+(* The verdict file of one job, where no gate holds a child. *)
+let stalled_rows () = rows (spawn ~env:[ suite "stalled" ] [ mutate ])
+
+(* The loop stays blocked past the deadline of the second child. *)
+let past_deadline () =
+  let share =
+    Float.max 1. (2. /. float_of_int (Domain.recommended_domain_count ()))
+  in
+  let r, tmpdir = stalled_report (fun _ _ -> Unix.sleepf (1.5 *. share)) in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal (list string) [ site 15; site 18 ] (survivors r.out);
+  equal string stalled_outcome (outcome r.out);
+  equal (list string) [] (entries tmpdir);
+  equal (option (list string)) (stalled_rows ()) (rows r)
+
+(* [stalled]'s two children wait at their gates, under SIGPIPE ignored, and
+   this test closes the pipe of standard output. The write of the survivor
+   of [sub] fails, and its [Sys_error] ends the loop while the child of
+   [widen] waits at its gate. *)
+let abandoned () =
+  let gates = temp_dir () and tmpdir = temp_dir () in
+  remove (Verdicts.output_file ~exe:suite_exe);
+  let reader, writer = Unix.pipe ~cloexec:true () in
+  let run =
+    start ~exe:"/bin/sh" ~stdout:writer
+      ~env:[ suite "stalled"; ("MUTATE_GATES", gates); ("TMPDIR", tmpdir) ]
+      [ "-c"; "trap '' PIPE; exec \"$0\" \"$@\""; suite_exe; mutate; jobs 2 ]
+  in
+  let _, open_first = gate ~gates run "sub" in
+  let second, _ = gate ~gates run "widen" in
+  Unix.close writer;
+  Unix.close reader;
+  open_first ();
+  let r = finish run in
+  let left = fate second in
+  (* A child that the loop left alive must not outlive this test. *)
+  (try Unix.kill (-second) Sys.sigkill with Unix.Unix_error _ -> ());
+  equal string "exited 2" r.status;
+  contains ~sub:"Sys_error" r.err;
+  equal string "gone" left;
+  equal (list string) [] (entries tmpdir);
+  equal (option (list string)) None (rows r)
+
+(* The live line *)
+
+external openpty : unit -> Unix.file_descr * Unix.file_descr
+  = "windtrap_test_openpty"
+
+(* Adds to [seen] what [master] holds at this time. When the other end of
+   the terminal is closed, a read gives EIO on Linux and 0 on macOS. *)
+let drain master seen =
+  let chunk = Bytes.create 4096 in
+  let rec read () =
+    match Unix.read master chunk 0 (Bytes.length chunk) with
+    | 0 -> ()
+    | n ->
+        Buffer.add_subbytes seen chunk 0 n;
+        read ()
+    | exception Unix.Unix_error (Unix.EINTR, _, _) -> read ()
+    | exception
+        Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK | Unix.EIO), _, _) ->
+        ()
+  in
+  read ()
+
+let without_escapes s =
+  let b = Buffer.create (String.length s) in
+  let rec go i =
+    if i >= String.length s then Buffer.contents b
+    else if s.[i] = '\027' && i + 1 < String.length s && s.[i + 1] = '[' then
+      let rec final j =
+        if j >= String.length s then j
+        else match s.[j] with '@' .. '~' -> j + 1 | _ -> final (j + 1)
+      in
+      go (final (i + 2))
+    else begin
+      Buffer.add_char b s.[i];
+      go (i + 1)
+    end
+  in
+  go 0
+
+(* Each text that the live line showed for the mutants, in its order. A
+   carriage return starts each live line. The live lines of the dry run
+   name tests, not mutants. *)
+let mutation_live out =
+  List.filter_map
+    (fun text ->
+      let text = String.trim text in
+      match index_of ~sub:"] " text with
+      | Some i
+        when String.starts_with ~prefix:"[" text
+             && index_of ~sub:scope ~from:i text = Some (i + 2) ->
+          Some text
+      | Some _ | None -> None)
+    (String.split_on_char '\r' (without_escapes out))
+
+(* Runs [queued] under two jobs, with standard output a terminal. Its
+   children of [sub] and of [widen] wait at their gates, and the child of
+   [orphan] waits for a job. [meanwhile] gets the run, the gates of [sub]
+   and of [widen] as [gate] gives them, and a function that gives the live
+   lines that the terminal showed until that time. The result is the live
+   lines of the run. *)
+let live_lines meanwhile =
+  let gates = temp_dir () in
+  let seen = Buffer.create 4096 in
+  let master, slave = openpty () in
+  Unix.set_nonblock master;
+  remove (Verdicts.output_file ~exe:suite_exe);
+  let run =
+    Fun.protect
+      ~finally:(fun () -> Unix.close slave)
+      (fun () ->
+        start ~stdout:slave
+          ~env:
+            [
+              suite "queued";
+              ("MUTATE_GATES", gates);
+              ("WINDTRAP_COLOR", "always");
+            ]
+          [ mutate; jobs 2 ])
+  in
+  let sub = gate ~gates run "sub" in
+  let widen = gate ~gates run "widen" in
+  let shown () =
+    drain master seen;
+    mutation_live (Buffer.contents seen)
+  in
+  let r =
+    Fun.protect
+      ~finally:(fun () -> snd widen ())
+      (fun () ->
+        meanwhile run ~sub ~widen shown;
+        finish run)
+  in
+  drain master seen;
+  Unix.close master;
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  mutation_live (Buffer.contents seen)
+
+(* When the child of [sub] ends, the child of [orphan] starts, and ends
+   while the child of [widen] waits. Thus the count of the live line is
+   not the position of a mutant that started. The loop draws the live
+   line each time that a child ends, and the third line comes when the
+   child of [orphan] ends. *)
+let live_count () =
+  equal (list string)
+    [
+      strf "[0/3] %s and 1 more\u{2026}" (site 15);
+      strf "[1/3] %s and 1 more\u{2026}" (site 18);
+      strf "[2/3] %s\u{2026}" (site 18);
+    ]
+    (live_lines (fun run ~sub:(_, open_sub) ~widen:(_, open_widen) shown ->
+         open_sub ();
+         until ~what:"the third live line of the loop" run (fun () ->
+             List.length (shown ()) >= 3);
+         open_widen ()))
+
+(* The loop stops while the children of [sub] and of [widen] end. When
+   the loop continues, one wait gives the two children. The live line
+   counts the two, and then names the child of [orphan] alone. *)
+let live_count_together () =
+  equal (list string)
+    [
+      strf "[0/3] %s and 1 more\u{2026}" (site 15);
+      strf "[2/3] %s\u{2026}" (site 21);
+    ]
+    (live_lines
+       (fun run ~sub:(sub, open_sub) ~widen:(widen, open_widen) shown ->
+         until ~what:"the first live line of the loop" run (fun () ->
+             shown () <> []);
+         Unix.kill run.pid Sys.sigstop;
+         Fun.protect
+           ~finally:(fun () ->
+             try Unix.kill run.pid Sys.sigcont with Unix.Unix_error _ -> ())
+           (fun () ->
+             open_sub ();
+             open_widen ();
+             exited ~what:"the end of the child of sub" run sub;
+             exited ~what:"the end of the child of widen" run widen)))
+
+let jobs_group =
+  group "Jobs"
+    [
+      cases "more jobs give the report and the verdict file of one"
+        ~name:(fun (name, _, _) -> name)
+        fixtures same_with_jobs;
+      test "children of several jobs run at once" at_once;
+      test "children of one job run one at a time" one_at_a_time;
+      test "a child does not keep the pipes of the other children" own_pipe;
+      test
+        "each child of several jobs has a log directory of its own, removed \
+         when the child is reaped"
+        nothing_left;
+      test
+        "a child that ends while a write of the report holds the loop keeps \
+         its verdict past its deadline"
+        past_deadline;
+      test
+        "an exception that ends the loop kills the children that continue to \
+         run"
+        abandoned;
+      test
+        "on a terminal, the live line counts the mutants whose children ended \
+         and names those that run"
+        live_count;
+      test
+        "on a terminal, the live line counts each child of a wait that gives \
+         more than one"
+        live_count_together;
     ]
 
 (* Signals *)
@@ -1595,15 +2351,7 @@ let pipe_ignored () =
    file costs it nothing either way. *)
 let late_interrupt () =
   let run, tmpdir, reader, writer, open_gate = held_at_the_gate "pinned" in
-  Unix.set_nonblock writer;
-  let rec fill chunk =
-    match Unix.write writer chunk 0 (Bytes.length chunk) with
-    | _ -> fill chunk
-    | exception Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) -> ()
-  in
-  fill (Bytes.make 4096 'x');
-  fill (Bytes.make 1 'x');
-  Unix.clear_nonblock writer;
+  fill writer;
   Unix.close writer;
   open_gate ();
   let path = Verdicts.output_file ~exe:suite_exe in
@@ -1716,9 +2464,187 @@ let after_last_child () =
     (rows r);
   equal (list string) [] (entries tmpdir)
 
+(* [hung]'s two children hang at once, each with a grandchild that ignores
+   SIGTERM. *)
+let two_interrupted () =
+  let pidfile = Filename.concat (temp_dir ()) "hanging"
+  and tmpdir = temp_dir () in
+  remove (Verdicts.output_file ~exe:suite_exe);
+  let run =
+    start
+      ~env:
+        [
+          suite "hung";
+          ("MUTATE_GRANDCHILD_PIDFILE", pidfile);
+          ("TMPDIR", tmpdir);
+        ]
+      [ mutate; jobs 2 ]
+  in
+  await ~what:"the two hanging children"
+    ~ready:(fun contents -> List.length (pids contents) = 2)
+    run pidfile;
+  Unix.kill run.pid Sys.sigint;
+  let r = finish run in
+  equal string "killed by SIGINT" r.status;
+  equal text
+    (strf "windtrap: interrupted while testing %s, %s\n" (site 15) (site 18))
+    r.err;
+  equal (list string) [] (survivors r.out);
+  equal string "mutants: 2 reached by this suite, 2 never reached, 2 not tested"
+    (outcome r.out);
+  equal (option (list string)) None (rows r);
+  equal (list string) [] (entries tmpdir);
+  equal (list string) [ "gone"; "gone" ] (List.map fate (pids (read pidfile)))
+
+(* [gap]'s first child hangs, and its second survives and ends. *)
+let over_the_gap () =
+  let ended = Filename.concat (temp_dir ()) "ended" and tmpdir = temp_dir () in
+  remove (Verdicts.output_file ~exe:suite_exe);
+  let run =
+    start
+      ~env:[ suite "gap"; ("MUTATE_ENDED", ended); ("TMPDIR", tmpdir) ]
+      [ mutate; jobs 2 ]
+  in
+  await ~what:"the end of the second child's test" run ended;
+  reaped ~what:"the reaping of the second child" run
+    (List.hd (pids (read ended)));
+  let held = read run.out_path in
+  Unix.kill run.pid Sys.sigint;
+  let r = finish run in
+  equal (list string) [] (survivors held);
+  equal string "killed by SIGINT" r.status;
+  equal text (strf "windtrap: interrupted while testing %s\n" (site 15)) r.err;
+  equal (list string) [ site 18 ] (survivors r.out);
+  equal string
+    "mutants: 1 survived of 2 reached by this suite, 2 never reached, 1 not \
+     tested, score 0.0%"
+    (outcome r.out);
+  equal (option (list string)) None (rows r);
+  equal (list string) [] (entries tmpdir)
+
+(* [closing]'s child of [widen] closes its pipe and continues to run, so the
+   loop waits for it to exit. The signal comes in that wait, and the handler
+   kills the two children. The wait gives the child of [widen], and a second
+   wait gives the child of [sub], which is first in the catalogue. *)
+let stopped_in_two_waits () =
+  if not (Sys.file_exists "/proc/self/fd") then
+    skip ~reason:"the system does not show the descriptors of a process" ();
+  let closed = Filename.concat (temp_dir ()) "closed"
+  and tmpdir = temp_dir () in
+  remove (Verdicts.output_file ~exe:suite_exe);
+  let run =
+    start
+      ~env:[ suite "closing"; ("MUTATE_CLOSED", closed); ("TMPDIR", tmpdir) ]
+      [ mutate; jobs 2 ]
+  in
+  await ~what:"the wait of the loop for the child of widen" run closed;
+  Unix.kill run.pid Sys.sigint;
+  let r = finish run in
+  equal string "killed by SIGINT" r.status;
+  equal text
+    (strf "windtrap: interrupted while testing %s, %s\n" (site 15) (site 18))
+    r.err;
+  equal string "mutants: 2 reached by this suite, 2 never reached, 2 not tested"
+    (outcome r.out);
+  equal (option (list string)) None (rows r);
+  equal (list string) [] (entries tmpdir)
+
+(* The signal comes after the last child ends, and before the loop reaps
+   it, because a write holds the loop. *)
+let after_last_unreaped () =
+  let r, tmpdir = stalled_report (fun run _ -> Unix.kill run.pid Sys.sigint) in
+  equal (pair string text) ("killed by SIGINT", "") (r.status, r.err);
+  equal (list string) [ site 15; site 18 ] (survivors r.out);
+  equal string stalled_outcome (outcome r.out);
+  equal (list string) [] (entries tmpdir);
+  equal (option (list string)) (stalled_rows ()) (rows r)
+
+(* The signal comes while a write holds the loop, and the handler kills the
+   child of [widen] at its gate. The pipe of that child closes before the
+   loop reads it. The slot of the child of [sub] is free, and the mutant of
+   [orphan] waits for it. *)
+let killed_unreaped () =
+  let r, tmpdir =
+    stalled_report ~fixture:"queued" ~widen_ends:false (fun run second ->
+        Unix.kill run.pid Sys.sigint;
+        exited ~what:"the death of the second child" run second)
+  in
+  equal string "killed by SIGINT" r.status;
+  equal text (strf "windtrap: interrupted while testing %s\n" (site 18)) r.err;
+  equal (list string) [ site 15 ] (survivors r.out);
+  equal string
+    "mutants: 1 survived of 3 reached by this suite, 1 never reached, 2 not \
+     tested, score 0.0%"
+    (outcome r.out);
+  equal (option (list string)) None (rows r);
+  equal (list string) [] (entries tmpdir)
+
+(* The signal comes while a write holds the loop, after the child of
+   [widen] ends. No child runs, and the mutant of [orphan] remains. *)
+let before_next () =
+  let r, tmpdir =
+    stalled_report ~fixture:"queued" (fun run _ -> Unix.kill run.pid Sys.sigint)
+  in
+  equal string "killed by SIGINT" r.status;
+  equal text (strf "windtrap: interrupted before testing %s\n" (site 21)) r.err;
+  equal (list string) [ site 15; site 18 ] (survivors r.out);
+  equal string
+    "mutants: 2 survived of 3 reached by this suite, 1 never reached, 1 not \
+     tested, score 0.0%"
+    (outcome r.out);
+  equal (option (list string)) None (rows r);
+  equal (list string) [] (entries tmpdir)
+
+(* A signal sent to the whole process tree, as [pkill] sends it, kills the
+   child of [widen] at its gate while a write holds the loop. The loop gets
+   the signal after the child dies. *)
+let tree_signal signal =
+  let r, tmpdir =
+    stalled_report ~widen_ends:false (fun run second ->
+        Unix.kill second signal;
+        exited ~what:"the death of the second child" run second;
+        Unix.kill run.pid signal)
+  in
+  equal string ("killed by " ^ signal_name signal) r.status;
+  equal text (strf "windtrap: interrupted while testing %s\n" (site 18)) r.err;
+  equal (list string) [ site 15 ] (survivors r.out);
+  equal string
+    "mutants: 1 survived of 2 reached by this suite, 2 never reached, 1 not \
+     tested, score 0.0%"
+    (outcome r.out);
+  equal (option (list string)) None (rows r);
+  equal (list string) [] (entries tmpdir)
+
 let signals =
   group "Signals"
     [
+      test
+        "a child that ended before a signal keeps its verdict, also when the \
+         loop did not reap it"
+        after_last_unreaped;
+      test "a signal kills every running child, and names each one"
+        two_interrupted;
+      test
+        "a signal names the children that it stopped in catalogue order, also \
+         when two waits give them"
+        stopped_in_two_waits;
+      test
+        "a child that the handler killed gets no verdict, also when its pipe \
+         closed before the loop read it, and no child starts after the signal"
+        killed_unreaped;
+      cases
+        "a child that a signal to the whole process tree killed gets no verdict"
+        ~name:signal_name
+        [ Sys.sigint; Sys.sigterm; Sys.sighup ]
+        tree_signal;
+      test
+        "a signal when no child runs stops the loop before the next mutant, \
+         and names it"
+        before_next;
+      test
+        "a signal commits the verdicts that ended before it, over the gap of a \
+         child it stopped"
+        over_the_gap;
       test
         "a signal stops the loop, reports what it found, and kills by that \
          signal"
@@ -1816,6 +2742,7 @@ let () =
          armed;
          reproducing;
          forks;
+         jobs_group;
          signals;
          effects;
        ])
