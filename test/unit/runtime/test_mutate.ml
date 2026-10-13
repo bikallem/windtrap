@@ -161,7 +161,7 @@ let refused =
     "lib/calc.ml:9:12:frobnicate";
     "lib/calc.ml:9:12:plus";
     "lib/calc.ml:9:12:LT";
-    "lib/calc.ml:9:12:drop";
+    "lib/calc.ml:9:12:swap";
     ":add";
     "x:add";
     "lib/calc.ml:9:add";
@@ -191,12 +191,12 @@ let reasons () =
     "": no ':' separator
     "add": no ':' separator
     "lib/calc.ml": no ':' separator
-    "lib/calc.ml:9": unknown rewrite "9" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or)
-    "a.ml:1:": unknown rewrite "" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or)
-    "lib/calc.ml:9:12:frobnicate": unknown rewrite "frobnicate" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or)
-    "lib/calc.ml:9:12:plus": unknown rewrite "plus" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or)
-    "lib/calc.ml:9:12:LT": unknown rewrite "LT" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or)
-    "lib/calc.ml:9:12:drop": unknown rewrite "drop" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or)
+    "lib/calc.ml:9": unknown rewrite "9" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip)
+    "a.ml:1:": unknown rewrite "" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip)
+    "lib/calc.ml:9:12:frobnicate": unknown rewrite "frobnicate" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip)
+    "lib/calc.ml:9:12:plus": unknown rewrite "plus" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip)
+    "lib/calc.ml:9:12:LT": unknown rewrite "LT" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip)
+    "lib/calc.ml:9:12:swap": unknown rewrite "swap" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip)
     ":add": no position before the rewrite
     "x:add": no position before the rewrite
     "lib/calc.ml:9:add": no line number
@@ -234,6 +234,8 @@ let identifiers =
               "fsub";
               "and";
               "or";
+              "drop";
+              "skip";
             ]
             Mutate.rewrites);
       cases "id_to_string is <file>:<line>:<col>:<rewrite>" ~name:snd spellings
@@ -261,7 +263,7 @@ let bad_tables =
     ("line 0", site 0 0 "lt");
     ("a negative column", site 1 (-2) "lt");
     ("an unknown rewrite", site 1 0 "plus");
-    ("drop, which no instrumenter emits", site 1 0 "drop");
+    ("swap, which no instrumenter emits", site 1 0 "swap");
     ("an operator's name", site 1 0 "LT");
   ]
 
@@ -283,7 +285,7 @@ let refusal_messages () =
     Windtrap_runtime.Mutate: t/bad.ml: site 1: line 0 is not 1-based
     Windtrap_runtime.Mutate: t/bad.ml: site 1: negative column -2
     Windtrap_runtime.Mutate: t/bad.ml: site 1: unknown rewrite "plus"
-    Windtrap_runtime.Mutate: t/bad.ml: site 1: unknown rewrite "drop"
+    Windtrap_runtime.Mutate: t/bad.ml: site 1: unknown rewrite "swap"
     Windtrap_runtime.Mutate: t/bad.ml: site 1: unknown rewrite "LT"
     |}
 
@@ -527,7 +529,7 @@ let arm_error_messages () =
        ])
   @@ __POS_OF__
        {|
-    "lib/calc.ml:9" is not a mutant identifier: unknown rewrite "9" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or); expected <file>:<line>:<col>:<rewrite>
+    "lib/calc.ml:9" is not a mutant identifier: unknown rewrite "9" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip); expected <file>:<line>:<col>:<rewrite>
     t/absent.ml:1:0:lt: not this executable's mutant; it catalogues no site in t/absent.ml (if you expected one, is the library under test instrumented with ppx_windtrap.mutate?)
     t/seven.ml:99:0:or: no such mutation site; t/seven.ml has these:
         t/seven.ml:1:0:or

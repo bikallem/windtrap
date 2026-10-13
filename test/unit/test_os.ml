@@ -428,6 +428,39 @@ let taken_names () =
     (fun () -> Os.atomic_write ~path "x");
   equal (list string) (List.sort String.compare taken) (entries dir)
 
+(* Every other temporary name is taken, so one of two writes meets a taken
+   name, and takes the next one. *)
+let taken_name_skipped () =
+  let dir = temp_dir () in
+  let taken =
+    List.init 320 (fun i -> strf ".tmp-%x-%x" (Unix.getpid ()) (2 * i))
+  in
+  List.iter
+    (fun name ->
+      Unix.close (Unix.openfile (Filename.concat dir name) [ O_CREAT ] 0o600))
+    taken;
+  let path = Filename.concat dir "target" in
+  Os.atomic_write ~path "first";
+  Os.atomic_write ~path "second";
+  equal
+    (pair string (list string))
+    ("second", List.sort String.compare ("target" :: taken))
+    (read path, entries dir)
+
+(* A duplicate takes the lowest free descriptor, so a descriptor that a write
+   leaves open moves it. *)
+let lowest_free () =
+  let fd = Unix.dup Unix.stdin in
+  Unix.close fd;
+  fd
+
+let no_descriptor_left () =
+  posix_only ();
+  let path = Filename.concat (temp_dir ()) "target" in
+  let before = lowest_free () in
+  Os.atomic_write ~path "x";
+  is_true ~msg:"the lowest free descriptor is the same" (before = lowest_free ())
+
 let atomic_writes =
   group "Atomic file writes"
     [
@@ -474,6 +507,9 @@ let atomic_writes =
         concurrent_writers;
       test "a write whose temporary names are all taken fails, and leaves them"
         taken_names;
+      test "a write takes the next temporary name when one is taken"
+        taken_name_skipped;
+      test "atomic_write leaves no descriptor open" no_descriptor_left;
     ]
 
 (* Project root and log root *)
@@ -957,6 +993,11 @@ let flushed_first () =
     "channel, unflushed; formatter, unflushed\nwindtrap: after both\n"
     (output ())
 
+let flushed_err_formatter () =
+  Format.eprintf "formatter, unflushed@\n";
+  Os.say "after it";
+  equal string "formatter, unflushed\nwindtrap: after it\n" (output ())
+
 let standard_error =
   group "Standard error"
     [
@@ -993,6 +1034,8 @@ let standard_error =
           equal (triple string string string) ("exited 0", "", err) (said f));
       test "say flushes standard output first, formatter and channel"
         flushed_first;
+      test "say flushes a pending Format.err_formatter first"
+        flushed_err_formatter;
     ]
 
 (* Signals *)
@@ -1037,6 +1080,29 @@ let handled_then_restored () =
     (pair (list string) string)
     ([ "SIGUSR1" ], "the handler found")
     (!got, disposition ~mine after)
+
+(* The disposition of each signal of the list, as the handler finds it in the
+   process that called [with_signals]. *)
+let defaults_while_handled () =
+  posix_only ();
+  let found =
+    (Sys.signal usr1 Sys.Signal_default, Sys.signal usr2 Sys.Signal_default)
+  in
+  let probe signal =
+    let disposition = Sys.signal signal Sys.Signal_default in
+    Sys.set_signal signal disposition;
+    disposition
+  in
+  let seen = ref [] in
+  Os.with_signals [ usr1; usr2 ]
+    (fun _ -> seen := [ probe usr1; probe usr2 ])
+    (fun () ->
+      raise_signal usr1;
+      until (fun () -> !seen <> []));
+  Sys.set_signal usr1 (fst found);
+  Sys.set_signal usr2 (snd found);
+  equal (list string) [ "default"; "default" ]
+    (List.map (disposition ~mine:ignore) !seen)
 
 (* A signal a process sends itself is delivered before [kill] returns, and its
    handler runs at the first safepoint, so ten polls would see it run. *)
@@ -1163,6 +1229,8 @@ let signals =
         handled_then_restored;
       test "a signal the process was started with ignored stays ignored"
         ignored_stays_ignored;
+      test "the handler runs with the signals of the list at their default"
+        defaults_while_handled;
       cases
         "a signal of the list that the handler sends ends the process at once"
         ~name:fst

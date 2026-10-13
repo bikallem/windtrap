@@ -1238,6 +1238,22 @@ let container_printers =
         (fun () -> Gen.(either nat (constant 'k'))),
         Either.Left 1,
         placeholder );
+    Printer
+      ( "either nat nat",
+        (fun () -> Gen.(either nat nat)),
+        Either.Left 1,
+        "Left (1)" );
+    Printer ("result nat nat", (fun () -> Gen.(result nat nat)), Ok 3, "Ok (3)");
+    Printer
+      ( "triple nat nat nat",
+        (fun () -> Gen.(triple nat nat nat)),
+        (1, 2, 3),
+        "(1, 2, 3)" );
+    Printer
+      ( "quad nat nat nat nat",
+        (fun () -> Gen.(quad nat nat nat nat)),
+        (1, 2, 3, 4),
+        "(1, 2, 3, 4)" );
   ]
 
 (* Each candidate is labelled against the drawn list: shorter, or the count of

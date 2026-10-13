@@ -40,6 +40,22 @@ let ari_sub a b = a - b
 let ari_fadd a b = a +. b
 let ari_fsub a b = a -. b
 
+(* [arm]: a dropped case gives its value to the next case that matches it,
+   and a dropped handler lets its exception go on. *)
+let arm_pick x = match x with 0 -> "zero" | _ -> "other"
+let arm_guarded x = match x with n when n > 9 -> "big" | _ -> "small"
+let arm_handler f = try f () with Not_found -> "caught"
+
+(* [call]: a skipped call has no effect, in a sequence and in
+   [let () = e]. *)
+let call_statement count =
+  incr count;
+  !count
+
+let call_bound total =
+  let () = incr total in
+  !total
+
 (* Evaluation order, multiplicity and short-circuiting. [note] records
    that it ran and returns its argument, so a trace says exactly which
    operands were evaluated and in which order. *)

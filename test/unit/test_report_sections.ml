@@ -140,6 +140,9 @@ let headline_rows =
     ( "a predicate's claim is the expected side",
       ( Failure.predicate ~claim:"a power of two" "12",
         "expected a power of two, got 12" ) );
+    ( "a predicate's claim beside a value of two lines",
+      ( Failure.predicate ~claim:"a sorted list" "[2;\n 1]",
+        "expected a sorted list, got [2;  1]" ) );
     ("equal renderings", (unequal "nan" "nan", "both sides render as: nan"));
     ( "a diff counts the lines the block prints",
       (unequal "a\nb\nc" "a\nB\nc", "expected and actual differ (5 diff lines)")
@@ -368,6 +371,8 @@ let equality_entries () =
       entry (unequal "line one \nline two" "line one\nline two") );
     ( "an inserted trailing run is marked at its columns",
       entry (unequal "ab\nline two" "ab  \nline two") );
+    ( "a ~ counts an accented letter before it as one column",
+      entry (unequal "caf\u{00e9} \nline two" "caf\u{00e9}\nline two") );
     ( "a trailing tab: the ~ line repeats the line's tabs, context keeps its \
        blanks",
       entry (unequal "a\tx\t\ncommon \ny" "a\tx\ncommon \ny") );

@@ -430,8 +430,8 @@ let corrupt_files =
     ( "a rewrite past the input",
       record_prefix ^ "1 2 30 add 1 b 1 a unreached\n" );
     ("an unknown rewrite", record_prefix ^ "1 2 4 plus 1 b 1 a unreached\n");
-    ( "drop, which no instrumenter emits",
-      record_prefix ^ "1 2 4 drop 1 b 1 a unreached\n" );
+    ( "swap, which no instrumenter emits",
+      record_prefix ^ "1 2 4 swap 1 b 1 a unreached\n" );
     ("a before past the input", record_prefix ^ "1 2 3 add 80 b 1 a unreached\n");
     ("no rendering", record_prefix ^ "1 2 3 add unreached\n");
     ("an after past the input", record_prefix ^ "1 2 3 add 1 b 80 a unreached\n");
@@ -486,7 +486,7 @@ let corrupt_reasons () =
     a negative column: negative column
     a rewrite past the input: truncated rewrite
     an unknown rewrite: unknown rewrite "plus"
-    drop, which no instrumenter emits: unknown rewrite "drop"
+    swap, which no instrumenter emits: unknown rewrite "swap"
     a before past the input: truncated before
     no rendering: expected before length at offset 43
     an after past the input: truncated after

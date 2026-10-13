@@ -1,6 +1,6 @@
 (library
  (name windtrap_mutate_forced)
- (modules forced no_guard oracle shadowed)
+ (modules forced no_guard oracle own_bool shadowed)
  (flags
   (:standard -w +a-70 -warn-error +a))
  (preprocess
@@ -11,7 +11,7 @@
 
 (library
  (name windtrap_mutate_disambiguate)
- (modules disambiguate expected_type)
+ (modules disambiguate expected_type own_extension own_unit)
  (preprocess
   (pps ppx_windtrap.mutate)))
 

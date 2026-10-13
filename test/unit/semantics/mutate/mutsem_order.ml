@@ -220,6 +220,28 @@ let neg_while limit =
 
 let neg_guard a = match a with _ when note "g" a -> "t" | _ -> "f"
 
+(* {1 [arm] and [call]: a guard adds no evaluation}
+
+   [arm] gives a case the guard [if armed then false else true], or puts the
+   armed flag before the guard that the case has, so the scrutinee and the
+   guard of a case run as often as before. [call] puts an [if] around a
+   statement and around the expression of [let () = e], which each run
+   once. *)
+
+let arm_match n =
+  match note "s" n with
+  | 0 -> "zero"
+  | n when note "g" (n > 9) -> "big"
+  | _ -> "small"
+
+let arm_try tag = try string_of_int (boom tag) with Boom tag -> tag
+
+let call_statements () =
+  let r = ref 0 in
+  incr (note "a" r);
+  let () = incr (note "b" r) in
+  string_of_int !r
+
 (* {1 Laziness}
 
    [lazy_thunk]'s body carries two [ari] sites, so it is not a trivial
@@ -276,6 +298,16 @@ let lazy_witness () =
    this copy's inferred signature against the twin's and fails to
    compile the day the two disagree. *)
 let generalizes = (true, [])
+
+(* An [arm] guard is an [if], which is a syntactic value when its branches
+   are, so a match of functions still generalizes to ['a -> 'a]. A guard
+   that applies [Stdlib.not] would weaken it to ['_weak1 -> '_weak1]. The
+   case that module initialization takes is dismissed, so that no site is
+   evaluated at load, and the other case keeps its guard. *)
+let generalizes_by_case =
+  match generalizes with
+  | ((true, _) [@mutate off "evaluated at module load"]) -> fun x -> x
+  | false, _ -> fun x -> x
 
 (* {1 Tail position, measured}
 
@@ -432,4 +464,10 @@ let witnesses : (string * (unit -> string)) list =
     ("neg in an if condition, false", fun () -> show (neg_if false));
     ("neg in a while condition", fun () -> show (neg_while 3));
     ("neg in a when guard", fun () -> show (neg_guard true));
+    ("arm on the first case", fun () -> show (arm_match 0));
+    ("arm on a guarded case", fun () -> show (arm_match 10));
+    ("arm on the last case", fun () -> show (arm_match 5));
+    ("arm on a handler", fun () -> show (arm_try "h"));
+    ( "call on a statement and a unit binding",
+      fun () -> show (call_statements ()) );
   ]

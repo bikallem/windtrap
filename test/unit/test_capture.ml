@@ -472,6 +472,24 @@ let outside_raises () =
   in
   equal string "log, log" after
 
+(* A duplicate takes the lowest free descriptor, so a descriptor that
+   [outside] leaves open moves it. *)
+let lowest_free () =
+  let fd = Unix.dup Unix.stdin in
+  Unix.close fd;
+  fd
+
+let outside_closes () =
+  posix_only ();
+  let cap, _ = state () in
+  let before, after =
+    attempt cap (fun () ->
+        let before = lowest_free () in
+        Capture.outside cap ignore;
+        (before, lowest_free ()))
+  in
+  is_true ~msg:"the lowest free descriptor is the same" (before = after)
+
 let outside_unredirected cap =
   let before = descriptors () in
   equal string "as before, as before"
@@ -530,6 +548,7 @@ let capturing =
         outside_elsewhere;
       test "outside points the descriptors back when its function raises"
         outside_raises;
+      test "outside closes the descriptors that it made" outside_closes;
       cases "outside with nothing redirected is its function" ~name:fst
         [
           ("no attempt running", fun () -> fst (state ()));

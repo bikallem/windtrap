@@ -445,7 +445,9 @@ let weights () =
   in
   let count name = List.length (List.filter (String.equal name) all) in
   greater int ~than:0 (count "b ()");
-  greater int ~than:(count "b ()") (count "a ()")
+  greater int ~msg:"a, listed twice, against 1.25 times b"
+    ~than:(5 * count "b ()" / 4)
+    (count "a ()")
 
 (* Four commands that take nothing, over 40 calls: a case calls every command
    of its subset. *)

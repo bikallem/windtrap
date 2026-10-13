@@ -156,6 +156,16 @@ let originals =
     ( "a dismissed site's cap 20",
       "20",
       fun () -> Int.to_string (No_guard.cap 20) );
+    ("arm_pick 0", "zero", fun () -> Oracle.arm_pick 0);
+    ("arm_guarded 10", "big", fun () -> Oracle.arm_guarded 10);
+    ("arm_guarded 9", "small", fun () -> Oracle.arm_guarded 9);
+    ( "arm_handler of Not_found",
+      "caught",
+      fun () -> Oracle.arm_handler (fun () -> raise Not_found) );
+    ( "call_statement",
+      "1",
+      fun () -> Int.to_string (Oracle.call_statement (ref 0)) );
+    ("call_bound", "1", fun () -> Int.to_string (Oracle.call_bound (ref 0)));
   ]
 
 let disarmed =
@@ -218,6 +228,26 @@ let armings =
     oracle "add" "a - b" (fun () -> ints [ Oracle.ari_sub 5 3 ]) [ "8" ];
     oracle "fsub" "a +. b" (fun () -> floats [ Oracle.ari_fadd 5. 3. ]) [ "2." ];
     oracle "fadd" "a -. b" (fun () -> floats [ Oracle.ari_fsub 5. 3. ]) [ "8." ];
+    (* A dropped case gives its value to the next case, past a guard that it
+       no longer runs, and a dropped handler lets its exception go on. *)
+    oracle "drop" "| 0 -> ..." (fun () -> [ Oracle.arm_pick 0 ]) [ "other" ];
+    oracle "drop" "| n when n > 9 -> ..."
+      (fun () -> [ Oracle.arm_guarded 10 ])
+      [ "small" ];
+    oracle "drop" "| Not_found -> ..."
+      (fun () ->
+        [
+          (match Oracle.arm_handler (fun () -> raise Not_found) with
+          | caught -> caught
+          | exception Not_found -> "raised Not_found");
+        ])
+      [ "raised Not_found" ];
+    oracle "skip" "incr count"
+      (fun () -> ints [ Oracle.call_statement (ref 0) ])
+      [ "0" ];
+    oracle "skip" "incr total"
+      (fun () -> ints [ Oracle.call_bound (ref 0) ])
+      [ "0" ];
     (* Armed, the two encodings that bind their operands still evaluate each
        once, right to left, and the connective runs its right operand when the
        rewrite says so. *)
@@ -300,15 +330,24 @@ let armed_mutants =
 
 (* Every mutant *)
 
-(* [forced ()] reads the functions of forced.ml that its mutants change. *)
+(* [forced ()] reads the functions of forced.ml that its mutants change. A
+   dropped case can raise [Match_failure], which is a reading too. *)
 let forced () =
-  strf "%d %d %.1f %b %b %b %b %d %d %d %d %b" (Forced.sum 2 3)
-    (Forced.diff 9 4) (Forced.fsum 1.5 2.5) (Forced.both true false)
-    (Forced.either false true) (Forced.window 0 10 5)
-    (Forced.chain true true false)
-    (Forced.below 1 2) (Forced.same 1 1) (Forced.at_least 3 3)
-    (Forced.scaled 2 3)
-    (Forced.search (fun x -> x > 2) [ 1; 2; 3 ])
+  match
+    strf "%d %d %.1f %b %b %b %b %d %d %d %d %b %s %d %d %d" (Forced.sum 2 3)
+      (Forced.diff 9 4) (Forced.fsum 1.5 2.5) (Forced.both true false)
+      (Forced.either false true) (Forced.window 0 10 5)
+      (Forced.chain true true false)
+      (Forced.below 1 2) (Forced.same 1 1) (Forced.at_least 3 3)
+      (Forced.scaled 2 3)
+      (Forced.search (fun x -> x > 2) [ 1; 2; 3 ])
+      (Forced.show_shape Forced.Bool true)
+      (Forced.handled (fun () -> raise Not_found))
+      (Forced.bump (ref 0))
+      (Forced.bump_bound (ref 0))
+  with
+  | reading -> reading
+  | exception e -> "raised " ^ Printexc.to_string e
 
 let every_forced_mutant () =
   let original = forced () in
