@@ -3,8 +3,8 @@
    SPDX-License-Identifier: ISC
   ---------------------------------------------------------------------------*)
 
-(** Strings read as text: lines, UTF-8 code points, byte search and control
-    bytes.
+(** Strings read as text: lines, UTF-8 code points, byte search, control bytes
+    and JSON string literals.
 
     Every function is pure, and {!elide_middle} is as pure as the [show] that it
     is given. Lengths are in code points. No function knows grapheme clusters or
@@ -98,3 +98,14 @@ val escape_controls : string -> string
     written as [\xNN] in lowercase hexadecimal. LF is escaped too, so the result
     is one line. Every other byte passes. It is not injective: the four
     characters [\x1b] print as ESC does. *)
+
+(** {1:json JSON} *)
+
+val json_string : string -> string
+(** [json_string s] is [s] as a JSON string literal, between double quotes. It
+    puts a backslash before each double quote and each backslash. It writes LF,
+    CR and TAB as [\n], [\r] and [\t]. It writes each other byte below [0x20] as
+    [\u00NN] in lowercase hexadecimal. [String.get_utf_8_uchar] decodes
+    replacement characters from bytes that are not well-formed UTF-8. It writes
+    each of these replacement characters as [\ufffd]. Thus the result is always
+    valid JSON text. Every other code point passes as its UTF-8 bytes. *)

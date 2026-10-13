@@ -132,7 +132,7 @@ scoped to the file, with --mutate:
   ──────────────────────────────────────────────────────────
   
   reproduce: ./test_calc.exe --arm calc.ml:2:16:ge
-  mutants: 2 survived of 3 reached by this suite, 1 killed
+  mutants: 2 survived of 3 reached by this suite, 1 killed, score 33.3%
 
 The reproduce: line is a command that runs as pasted. It arms the
 first survivor in an otherwise ordinary run:
@@ -165,7 +165,7 @@ suite that reached it is the one mutation exit code a build gates on:
   ──────────────────────────────────────────────────────────
   
   reproduce: PROJ/test_calc.exe --arm calc.ml:2:16:ge
-  mutants: 2 survived of 3 reached, 1 killed, 1 executable
+  mutants: 2 survived of 3 reached, 1 killed, 1 executable, score 33.3%
   [1]
 
 The scratch project is the session's own and leaves with it:

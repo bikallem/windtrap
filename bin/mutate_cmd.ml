@@ -12,6 +12,7 @@ module Cli = Windtrap.Private.Cli
 module Pp = Windtrap.Private.Pp
 module Run = Windtrap.Private.Run
 module Test_tree = Windtrap.Private.Test_tree
+module Text = Windtrap.Private.Text
 
 let strf = Printf.sprintf
 let ( let* ) = Result.bind
@@ -26,6 +27,7 @@ let fail ~code message =
 
 type file = {
   label : string; (* the executable, as the witness column names it *)
+  exe : string option; (* the executable, as the file records it *)
   invocation : Run.invocation; (* how that executable is run again *)
   verdicts : Verdicts.t;
 }
@@ -99,6 +101,7 @@ let fresh files =
         Ok
           {
             label = label ~path identity;
+            exe = Option.map (fun (i : Verdicts.identity) -> i.exe) identity;
             invocation = invocation identity;
             verdicts;
           }
@@ -148,14 +151,14 @@ let survived_in verdicts =
     Ids.empty
     (Verdicts.records verdicts)
 
+let merged files =
+  List.fold_left
+    (fun acc f -> Verdicts.merge acc f.verdicts)
+    Verdicts.empty files
+
 (* [Verdicts.merge] folds away which executable ran a reaching test, so a
    survivor's reaching tests are read from the files in which it survived. *)
-let merge ~source files =
-  let merged =
-    List.fold_left
-      (fun acc f -> Verdicts.merge acc f.verdicts)
-      Verdicts.empty files
-  in
+let merge ~source files merged =
   let survivals = List.map (fun f -> (f, survived_in f.verdicts)) files in
   let mutant (r : Verdicts.record) : Sections.mutant =
     {
@@ -265,6 +268,77 @@ let merge ~source files =
     },
     invocation )
 
+(* The document *)
+
+let verdict_name : Verdicts.verdict -> string = function
+  | Killed -> "killed"
+  | Survived _ -> "survived"
+  | Not_evaluated -> "not_evaluated"
+  | Outside_tests -> "outside_tests"
+  | Unreached -> "unreached"
+
+(* A reaching test names its executable by its index in ["executables"],
+   because two executables can have one label. A collection holds the
+   reaching tests of a survivor sorted and without duplicates, and
+   [survivals] is in the order of [files]. Thus the tests of a survivor are
+   sorted by file and then by test, without a sort here. *)
+let json files merged (m : Sections.mutation) =
+  let string = Text.json_string in
+  let survivals = List.mapi (fun i f -> (i, survived_in f.verdicts)) files in
+  let executable f =
+    strf "\n    { \"name\": %s, \"path\": %s }" (string f.label)
+      (match f.exe with Some exe -> string exe | None -> "null")
+  in
+  let test (i, path) =
+    strf "\n        { \"executable\": %d, \"test\": [%s] }" i
+      (String.concat ", " (List.map string path))
+  in
+  let tests (r : Verdicts.record) =
+    match r.verdict with
+    | Survived _ ->
+        let id = Mutate.id_to_string r.id in
+        let tests =
+          List.concat_map
+            (fun (i, survived) ->
+              match Ids.find_opt id survived with
+              | Some tests -> List.map (fun test -> (i, test)) tests
+              | None -> [])
+            survivals
+        in
+        strf ",\n      \"tests\": [%s ]"
+          (String.concat "," (List.map test tests))
+    | Killed | Not_evaluated | Outside_tests | Unreached -> ""
+  in
+  let mutant (r : Verdicts.record) =
+    strf
+      "\n\
+      \    { \"id\": %s,\n\
+      \      \"file\": %s, \"line\": %d, \"col\": %d, \"rewrite\": %s,\n\
+      \      \"before\": %s, \"after\": %s,\n\
+      \      \"verdict\": %s%s }"
+      (string (Mutate.id_to_string r.id))
+      (string r.id.file) r.id.line r.id.col (string r.id.rewrite)
+      (string r.before) (string r.after)
+      (string (verdict_name r.verdict))
+      (tests r)
+  in
+  let survived = List.length m.survivors in
+  let not_evaluated = List.length m.not_evaluated in
+  strf
+    "{ \"version\": 1,\n\
+    \  \"summary\": { \"reached\": %d, \"killed\": %d, \"survived\": %d,\n\
+    \    \"not_evaluated\": %d, \"outside_tests\": %d, \"unreached\": %d,\n\
+    \    \"score\": %.2f },\n\
+    \  \"executables\": [%s ],\n\
+    \  \"mutants\": [%s ] }\n"
+    (m.killed + survived + not_evaluated)
+    m.killed survived not_evaluated
+    (List.length m.outside_tests)
+    (List.length m.unreached)
+    (Sections.mutation_score m)
+    (String.concat "," (List.map executable files))
+    (String.concat "," (List.map mutant (Verdicts.records merged)))
+
 (* Running *)
 
 let usage = "usage: windtrap mutants [OPTIONS] [PATH...]"
@@ -281,10 +355,18 @@ built without one), walking up from the current directory to the enclosing
 project root; PATH arguments (.mutants files, or directories searched
 recursively) replace that default.
 
-Runs no tests and drives no build.
-Exits 1 when any mutant survived every executable that reached it.
+The score is the percentage of killed mutants among those killed, survived and
+not evaluated. Runs no tests and drives no build. Exits 1 when any mutant
+survived every executable that reached it, or under --min-score only when the
+score is below PCT.
 
 OPTIONS:
+  --min-score=PCT
+      Exit 1 when the score is below PCT, and not for a survivor alone.
+
+  --json
+      Machine-readable report on standard output.
+
   --color=MODE (env WINDTRAP_COLOR)
       Color output: always, never or auto.
 
@@ -295,63 +377,123 @@ ENVIRONMENT (no flag):
   NO_COLOR
       Any value: never style output (--color auto).|}
 
-(* [--color] and the help flags are the options; any other argument that
-   starts with [-] is refused, and the rest are PATHs. *)
+type options = {
+  min_score : float option;
+  json : bool;
+  color : Os.color_mode option;
+  paths : string list;
+}
+
+(* The flags are the options. Any other argument that starts with [-] is
+   refused, and the rest are PATHs. *)
 let options args =
   let usage_error message =
     Os.say message;
     prerr_endline usage;
     Error 2
   in
-  let rec parse color paths = function
-    | [] -> Ok (color, List.rev paths)
+  let rec parse o = function
+    | [] -> Ok { o with paths = List.rev o.paths }
     | ("-h" | "--help" | "-help") :: _ ->
         print_endline help;
         Error 0
+    | "--min-score" :: value :: args -> (
+        match float_of_string_opt value with
+        | Some min when 0. <= min && min <= 100. ->
+            parse { o with min_score = Some min } args
+        | Some _ | None ->
+            usage_error
+              (strf
+                 "invalid value '%s' for --min-score: expected a percentage \
+                  (0-100)"
+                 value))
+    | "--json" :: args -> parse { o with json = true } args
     | "--color" :: value :: args -> (
         match Cli.parse_color value with
-        | Ok color -> parse (Some color) paths args
+        | Ok color -> parse { o with color = Some color } args
         | Error error -> usage_error (Cli.error_message error))
-    | [ "--color" ] -> usage_error "option '--color' requires an argument"
+    | [ (("--min-score" | "--color") as flag) ] ->
+        usage_error (strf "option '%s' requires an argument" flag)
     | arg :: _ when String.starts_with ~prefix:"-" arg ->
         usage_error (strf "unknown option '%s'" arg)
-    | path :: args -> parse color (path :: paths) args
+    | path :: args -> parse { o with paths = path :: o.paths } args
   in
-  (* [--color=MODE] is [--color MODE]. *)
+  (* [--flag=value] is [--flag value] for a flag that takes a value. *)
   let split arg =
     match String.index_opt arg '=' with
-    | Some i when String.equal (String.sub arg 0 i) "--color" ->
-        [ "--color"; String.sub arg (i + 1) (String.length arg - i - 1) ]
+    | Some i when List.mem (String.sub arg 0 i) [ "--min-score"; "--color" ] ->
+        [
+          String.sub arg 0 i; String.sub arg (i + 1) (String.length arg - i - 1);
+        ]
     | Some _ | None -> [ arg ]
   in
-  parse None [] (List.concat_map split args)
+  parse
+    { min_score = None; json = false; color = None; paths = [] }
+    (List.concat_map split args)
 
 (* [WINDTRAP_COLOR] is read when [--color] is absent, refused on the runner's
-   terms and never read as [auto] out of a typo. *)
-let ansi color =
-  let color =
-    match color with Some color -> Ok color | None -> Cli.color_mode ()
-  in
-  match color with
-  | Error error -> fail ~code:2 (Cli.error_message error)
-  | Ok color ->
-      Ok
-        (Os.resolve_color color ~tty:(Os.is_tty_stdout ())
-           ~inside_dune:(Os.inside_dune ()) ~term_dumb:(Os.term_dumb ()))
+   terms and never read as [auto] out of a typo. A document is never styled,
+   so it reads no [WINDTRAP_COLOR]. *)
+let ansi o =
+  if o.json then Ok false
+  else
+    let color =
+      match o.color with Some color -> Ok color | None -> Cli.color_mode ()
+    in
+    match color with
+    | Error error -> fail ~code:2 (Cli.error_message error)
+    | Ok color ->
+        Ok
+          (Os.resolve_color color ~tty:(Os.is_tty_stdout ())
+             ~inside_dune:(Os.inside_dune ()) ~term_dumb:(Os.term_dumb ()))
+
+(* Without a gate, one survivor fails the command. With a gate, only the score
+   can fail it. A document does not contain the outcome line. Thus the gate
+   gives that line on standard error. *)
+let gate o (m : Sections.mutation) =
+  match o.min_score with
+  | None -> if m.survivors = [] then 0 else 1
+  | Some min ->
+      if o.json then
+        Os.say
+          (Sections.render ~ansi:false
+             (Sections.mutation_line ~min:(Some min) m));
+      if Sections.mutation_score m >= min then 0 else 1
+
+(* Standard output can refuse the text (a full disk, a closed descriptor). The
+   reader then has only a part of it, so the command fails and runs no gate.
+   Standard output is closed, so that the flush at exit does not try the write
+   again and stop the process with an exception. *)
+let write text =
+  match
+    print_string text;
+    flush stdout
+  with
+  | () -> Ok ()
+  | exception Sys_error reason ->
+      close_out_noerr stdout;
+      fail ~code:1 (strf "cannot write to standard output: %s" reason)
 
 let run args =
   let code =
-    let* color, paths = options args in
-    let* ansi = ansi color in
+    let* o = options args in
+    let* ansi = ansi o in
     let* files, roots =
-      match Data_files.discover Verdicts.format paths with
+      match Data_files.discover Verdicts.format o.paths with
       | Ok found -> Ok found
       | Error message -> fail ~code:1 message
     in
     let* files = fresh files in
-    let mutation, invocation = merge ~source:(source ~roots) files in
-    Sections.print ~out:Format.std_formatter ~ansi
-      (Sections.mutation_report ~invocation mutation);
-    Ok (if mutation.survivors = [] then 0 else 1)
+    let merged = merged files in
+    let mutation, invocation = merge ~source:(source ~roots) files merged in
+    let* () =
+      write
+        (if o.json then json files merged mutation
+         else
+           Pp.str "%a"
+             (fun out -> Sections.print ~out ~ansi)
+             (Sections.mutation_report ~invocation ~min:o.min_score mutation))
+    in
+    Ok (gate o mutation)
   in
   match code with Ok code | Error code -> code

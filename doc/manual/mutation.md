@@ -134,7 +134,7 @@ calc: 10 passed in 1.3ms.
 ──────────────────────────────────────────────────────────
 
 reproduce: dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --arm calc.ml:10:16:ge
-mutants: 2 survived of 5 reached by this suite, 3 killed
+mutants: 2 survived of 5 reached by this suite, 3 killed, score 60.0%
 ```
 
 ## Reproducing a survivor
@@ -195,7 +195,7 @@ calc: 1 passed in 0.5ms.
 
 reproduce: dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --arm calc.ml:6:11:add -f 'stays positive'
 windtrap: verdicts not saved: this run's selection narrows the suite, and a partial run's verdicts would stand in the project merge as the whole.
-mutants: 1 survived of 1 reached by the 1 selected test, 4 never reached
+mutants: 1 survived of 1 reached by the 1 selected test, 4 never reached, score 0.0%
 ```
 
 ## What a mutation run runs
@@ -255,7 +255,8 @@ over another library, runs as usual and says why on standard error. A
 mutant killed by one executable is killed. A mutant that no executable
 killed and one did not evaluate is not evaluated. The command exits 1
 when a mutant survived every executable that reached it, listing the
-most reached first.
+most reached first, unless a gate on the score is given (see
+[Gating on the score](#gating-on-the-score)).
 
 Dune does not track `WINDTRAP_MUTATE`. A suite that ran without it
 does not run again when it is set, unless its build changed, and the
@@ -284,7 +285,7 @@ calc: 10 passed in 1.0ms.
 ──────────────────────────────────────────────────────────
 
 reproduce: dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --arm calc.ml:10:16:ge
-mutants: 2 survived of 5 reached by this suite, 3 killed
+mutants: 2 survived of 5 reached by this suite, 3 killed, score 60.0%
 $ dune exec windtrap -- mutants
 ───────────────────── survivors (2) ──────────────────────
   SURVIVED  calc.ml:10:16:ge  n > 0 → n >= 0
@@ -302,7 +303,7 @@ $ dune exec windtrap -- mutants
 ──────────────────────────────────────────────────────────
 
 reproduce: dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --arm calc.ml:10:16:ge
-mutants: 2 survived of 5 reached, 3 killed, 1 executable
+mutants: 2 survived of 5 reached, 3 killed, 1 executable, score 60.0%
 ```
 
 Only code that a suite's own process runs reaches a mutant. A binary
@@ -317,6 +318,78 @@ each instrumented executable writes its own dump. A command-line tool
 can then be fully covered and have no mutant reached. To test those
 mutants, put the tool's entry point in the library, call it from a
 test, and check what it prints with `expect` or `expect_file`.
+
+## Gating on the score
+
+The outcome line gives the mutation score: the percentage of killed
+mutants among the mutants that were killed, survived or were not
+evaluated. A mutant that no test reached, or that ran outside every
+test, is not part of the score. When no mutant is part of it and no gate
+is given, the line gives no score.
+
+A project can keep a survivor that it does not plan to kill. To gate on
+the score and not on each survivor, give `--min-score PCT` to
+`windtrap mutants`. The command then exits 1 only when the score is less
+than `PCT`, and the outcome line gives the gate and its result. The
+gate compares the score before it is rounded, and reads a merge with no
+scored mutant as 100:
+
+```
+$ dune exec windtrap -- mutants --min-score 50 | tail -n 1
+mutants: 2 survived of 5 reached, 3 killed, 1 executable, score 60.0%, minimum 50%: ok
+```
+
+A suite's mutation run gives the score too, and has no gate.
+
+## Exporting the verdicts
+
+For other tools, `--json` prints the merge as JSON on standard output,
+in place of the report. The document has its version, the counts and
+the score, the executables, and each mutant with its verdict. A
+survivor also has the tests that ran it. A test names its executable by
+its index in `executables`, because two executables can have the same
+name. Under `--min-score` the outcome line goes to standard error, and
+the exit code is that of the gate. Standard output can refuse the
+document, for example on a full disk. The command then gives the reason
+on standard error and exits 1. The gate does not run. A later version
+can add keys. A change to the meaning of a key increments `version`.
+[`bin/mutate_cmd.mli`](../../bin/mutate_cmd.mli) gives each key:
+
+```
+$ dune exec windtrap -- mutants --json
+{ "version": 1,
+  "summary": { "reached": 5, "killed": 3, "survived": 2,
+    "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
+    "score": 60.00 },
+  "executables": [
+    { "name": "test_calc.exe", "path": "default/test_calc.exe" } ],
+  "mutants": [
+    { "id": "calc.ml:5:11:sub",
+      "file": "calc.ml", "line": 5, "col": 11, "rewrite": "sub",
+      "before": "a + b", "after": "a - b",
+      "verdict": "killed" },
+    { "id": "calc.ml:6:11:add",
+      "file": "calc.ml", "line": 6, "col": 11, "rewrite": "add",
+      "before": "a - b", "after": "a + b",
+      "verdict": "killed" },
+    { "id": "calc.ml:8:14:neq",
+      "file": "calc.ml", "line": 8, "col": 14, "rewrite": "neq",
+      "before": "b = 0", "after": "b <> 0",
+      "verdict": "killed" },
+    { "id": "calc.ml:10:16:ge",
+      "file": "calc.ml", "line": 10, "col": 16, "rewrite": "ge",
+      "before": "n > 0", "after": "n >= 0",
+      "verdict": "survived",
+      "tests": [
+        { "executable": 0, "test": ["sign", "is -1 for a negative"] },
+        { "executable": 0, "test": ["sign", "is 1 for a positive"] } ] },
+    { "id": "calc.ml:10:37:le",
+      "file": "calc.ml", "line": 10, "col": 37, "rewrite": "le",
+      "before": "n < 0", "after": "n <= 0",
+      "verdict": "survived",
+      "tests": [
+        { "executable": 0, "test": ["sign", "is -1 for a negative"] } ] } ] }
+```
 
 ## Killing a survivor
 
@@ -342,9 +415,9 @@ project's merge passes:
 ```
 $ dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --mutate
 calc: 11 passed in 2.9ms.
-mutants: 5 reached by this suite, 5 killed
+mutants: 5 reached by this suite, 5 killed, score 100.0%
 $ dune exec windtrap -- mutants
-mutants: 5 reached, 5 killed, 1 executable
+mutants: 5 reached, 5 killed, 1 executable, score 100.0%
 ```
 
 ## What is mutated
@@ -413,10 +486,18 @@ built without one), walking up from the current directory to the enclosing
 project root; PATH arguments (.mutants files, or directories searched
 recursively) replace that default.
 
-Runs no tests and drives no build.
-Exits 1 when any mutant survived every executable that reached it.
+The score is the percentage of killed mutants among those killed, survived and
+not evaluated. Runs no tests and drives no build. Exits 1 when any mutant
+survived every executable that reached it, or under --min-score only when the
+score is below PCT.
 
 OPTIONS:
+  --min-score=PCT
+      Exit 1 when the score is below PCT, and not for a survivor alone.
+
+  --json
+      Machine-readable report on standard output.
+
   --color=MODE (env WINDTRAP_COLOR)
       Color output: always, never or auto.
 

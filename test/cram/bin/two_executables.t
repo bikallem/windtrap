@@ -52,8 +52,54 @@ neither reached:
   ──────────────────────────────────────────────────────────
   
   reproduce: dune exec --instrument-with ppx_windtrap.mutate test/pins_add.exe -- --arm test/cram/bin/calc.ml:14:17:sub
-  mutants: 1 survived of 3 reached, 2 killed, 1 never reached, 2 executables
+  mutants: 1 survived of 3 reached, 2 killed, 1 never reached, 2 executables, score 66.7%
   [1]
+
+The document gives the same answer: each mutant with its verdict, and the
+survivor with the tests that ran it in each executable:
+
+  $ cp "$bin/out" merged
+  $ run windtrap mutants --json
+  { "version": 1,
+    "summary": { "reached": 3, "killed": 2, "survived": 1,
+      "not_evaluated": 0, "outside_tests": 0, "unreached": 1,
+      "score": 66.67 },
+    "executables": [
+      { "name": "pins_add.exe", "path": "default/test/pins_add.exe" },
+      { "name": "pins_sub.exe", "path": "default/test/pins_sub.exe" } ],
+    "mutants": [
+      { "id": "test/cram/bin/calc.ml:12:14:sub",
+        "file": "test/cram/bin/calc.ml", "line": 12, "col": 14, "rewrite": "sub",
+        "before": "a + b", "after": "a - b",
+        "verdict": "killed" },
+      { "id": "test/cram/bin/calc.ml:13:14:add",
+        "file": "test/cram/bin/calc.ml", "line": 13, "col": 14, "rewrite": "add",
+        "before": "a - b", "after": "a + b",
+        "verdict": "killed" },
+      { "id": "test/cram/bin/calc.ml:14:17:sub",
+        "file": "test/cram/bin/calc.ml", "line": 14, "col": 17, "rewrite": "sub",
+        "before": "a + b", "after": "a - b",
+        "verdict": "survived",
+        "tests": [
+          { "executable": 0, "test": ["shared", "shared is nonzero"] },
+          { "executable": 1, "test": ["shared", "shared is not 99"] } ] },
+      { "id": "test/cram/bin/calc.ml:15:16:add",
+        "file": "test/cram/bin/calc.ml", "line": 15, "col": 16, "rewrite": "add",
+        "before": "a - b", "after": "a + b",
+        "verdict": "unreached" } ] }
+  [1]
+
+With a gate, the score decides the exit code, and the survivor alone does
+not fail the command:
+
+  $ run windtrap mutants --min-score 60 > /dev/null
+  $ tail -n 1 "$bin/out"
+  mutants: 1 survived of 3 reached, 2 killed, 1 never reached, 2 executables, score 66.7%, minimum 60%: ok
+  $ run windtrap mutants --min-score 70 > /dev/null
+  [1]
+  $ tail -n 1 "$bin/out"
+  mutants: 1 survived of 3 reached, 2 killed, 1 never reached, 2 executables, score 66.7%, minimum 70%: FAILED
+  $ cp merged "$bin/out"
 
 The command's identifier, pasted into that executable, arms the survivor:
 

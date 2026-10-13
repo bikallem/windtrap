@@ -88,6 +88,11 @@
     unvisited point touches. It is empty for a file whose source the runtime
     does not find or judges stale ({!Windtrap_runtime.Coverage.file_reports}).
 
+    Each string is written by {!Windtrap.Private.Text.json_string}. Thus a
+    recorded name that is not valid UTF-8 has U+FFFD in its ["path"] in place of
+    the bytes that are not valid. That ["path"] is not equal to the [SF:] line
+    of the file in the LCOV document.
+
     {b LCOV.} The document is one record per source file, in the same order. A
     record is these lines, in this order:
     - [TN:], with no test name.

@@ -51,7 +51,7 @@ standard error, while the instrumented suite tests its mutant:
   fixture: 4 passed in DURATION.
   [unit: 0]
   mutant: 1 passed in DURATION.
-  mutants: 1 reached by this suite, 1 killed
+  mutants: 1 reached by this suite, 1 killed, score 100.0%
   [mutants: 0]
 
 A relative path in WINDTRAP_JUNIT or WINDTRAP_OUTPUT is read from the

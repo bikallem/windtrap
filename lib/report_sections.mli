@@ -439,6 +439,22 @@ type mutation = {
     [killed + List.length survivors + List.length not_evaluated + not_tested].
 *)
 
+val mutation_score : mutation -> float
+(** [mutation_score m] is the percentage of killed mutants among the scored
+    mutants of [m], unrounded. The scored mutants are those killed, those that
+    survived and those not evaluated. A mutant that no test reached and a mutant
+    that has no verdict do not count. It is {!percent} of [m.killed] in their
+    number, and thus [100.] when [m] has none. *)
+
+val mutation_line : min:float option -> mutation -> span list
+(** [mutation_line ~min m] is the outcome line of a mutation report. It gives
+    the reached count and each other count of [m] that is not zero, then
+    {!mutation_score} with one decimal when [m] has a scored mutant. Under a
+    gate [min] it always gives the score, then [min], printed by {!Pp.decimal},
+    and says whether the gate is met, that is whether {!mutation_score} is at
+    least [min]. The score is then styled as failing when the gate is not met.
+*)
+
 val survivor_block : exe_width:int option -> survivor -> section list
 (** [survivor_block ~exe_width s] is the block of [s]. It holds, in this order:
     - the title.
@@ -473,13 +489,15 @@ val mutation_closing : config:Run.config -> mutation -> section list
       [`Mirrors] it is the mirrors of the same flags in front of a forced
       [dune runtest] that names the mutation backend, except [--failed] and a
       filter or an exclusion of several patterns, which no mirror can hold.
-    - the outcome line, always last. *)
+    - the outcome line, {!mutation_line} with no gate, always last. *)
 
-val mutation_report : invocation:Run.invocation -> mutation -> section list
-(** [mutation_report ~invocation m] is [m] as a report at rest. It holds one
-    {!survivor_block} per survivor, between an opening rule that carries their
-    number and a closing rule. The executables of all blocks form one column,
-    which is absent when no reaching test names an executable. The not-evaluated
-    section, the never-reached section, the section of the mutants evaluated
-    outside tests, the [reproduce:] command and the outcome line follow, as
-    {!mutation_closing} builds them for a run that selects every test. *)
+val mutation_report :
+  invocation:Run.invocation -> min:float option -> mutation -> section list
+(** [mutation_report ~invocation ~min m] is [m] as a report at rest. It holds
+    one {!survivor_block} per survivor, between an opening rule that carries
+    their number and a closing rule. The executables of all blocks form one
+    column, which is absent when no reaching test names an executable. The
+    not-evaluated section, the never-reached section, the section of the mutants
+    evaluated outside tests, the [reproduce:] command and the outcome line
+    follow, as {!mutation_closing} builds them for a run that selects every
+    test, but the outcome line is {!mutation_line} under the gate [min]. *)

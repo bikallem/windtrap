@@ -2255,8 +2255,8 @@ let merge_report =
 let merge_invocation =
   `Exe "dune exec --instrument-with ppx_windtrap.mutate test/test_eval.exe --"
 
-let at_rest ?(ansi = false) ?(invocation = `Mirrors) m =
-  printed ~ansi (Sections.mutation_report ~invocation m)
+let at_rest ?(ansi = false) ?(invocation = `Mirrors) ?min m =
+  printed ~ansi (Sections.mutation_report ~invocation ~min m)
 
 let closing ?(ansi = false) ?(invocation = exe) ?(config = Fun.id) m =
   printed ~ansi
@@ -2313,6 +2313,12 @@ let mutation_entries () =
     ( "a merge's report: survivors counted, the executables one column",
       at_rest ~ansi:true ~invocation:merge_invocation merge_report );
     ("and without colour", at_rest ~invocation:merge_invocation merge_report);
+    ( "a merge under a gate it misses: the score red, and FAILED",
+      at_rest ~ansi:true ~min:90. { merge_report with Sections.unreached = [] }
+    );
+    ( "and under a gate it meets: the score plain, and ok",
+      at_rest ~ansi:true ~min:88.8 { merge_report with Sections.unreached = [] }
+    );
     ( "never reached alone: its rule, its rows, the outcome",
       at_rest { merge_report with Sections.survivors = [] } );
     ("survivors alone", at_rest { merge_report with Sections.unreached = [] });
@@ -2381,9 +2387,9 @@ let mutation_entries () =
   ]
 
 let summary ?(survivors = []) ?(not_evaluated = []) ?(unreached = [])
-    ?(outside_tests = []) ?(not_tested = 0) ~killed scope =
+    ?(outside_tests = []) ?(not_tested = 0) ?min ~killed scope =
   last_line
-    (at_rest
+    (at_rest ?min
        {
          Sections.survivors;
          not_evaluated;
@@ -2401,19 +2407,19 @@ let summary_rows =
   [
     ( "a suite, clean",
       (fun () -> summary ~killed:5 Sections.Suite),
-      "mutants: 5 reached by this suite, 5 killed" );
+      "mutants: 5 reached by this suite, 5 killed, score 100.0%" );
     ( "a selection, clean",
       (fun () -> summary ~killed:2 (Sections.Selected 2)),
-      "mutants: 2 reached by the 2 selected tests, 2 killed" );
+      "mutants: 2 reached by the 2 selected tests, 2 killed, score 100.0%" );
     ( "one selected test",
       (fun () -> summary ~killed:1 (Sections.Selected 1)),
-      "mutants: 1 reached by the 1 selected test, 1 killed" );
+      "mutants: 1 reached by the 1 selected test, 1 killed, score 100.0%" );
     ( "executables, clean",
       (fun () -> summary ~killed:14 (Sections.Executables 3)),
-      "mutants: 14 reached, 14 killed, 3 executables" );
+      "mutants: 14 reached, 14 killed, 3 executables, score 100.0%" );
     ( "one executable",
       (fun () -> summary ~killed:3 (Sections.Executables 1)),
-      "mutants: 3 reached, 3 killed, 1 executable" );
+      "mutants: 3 reached, 3 killed, 1 executable, score 100.0%" );
     ( "nothing reached, nothing killed",
       (fun () -> summary ~killed:0 Sections.Suite),
       "mutants: 0 reached by this suite" );
@@ -2423,38 +2429,59 @@ let summary_rows =
       "mutants: 0 reached, 2 never reached, 1 executable" );
     ( "a suite with a survivor",
       (fun () -> summary ~survivors:s ~killed:4 Sections.Suite),
-      "mutants: 1 survived of 5 reached by this suite, 4 killed" );
+      "mutants: 1 survived of 5 reached by this suite, 4 killed, score 80.0%" );
     ( "a selection with a survivor",
       (fun () -> summary ~survivors:s ~killed:1 (Sections.Selected 3)),
-      "mutants: 1 survived of 2 reached by the 3 selected tests, 1 killed" );
+      "mutants: 1 survived of 2 reached by the 3 selected tests, 1 killed, \
+       score 50.0%" );
     ( "executables, survivors and never reached",
       (fun () ->
         summary ~survivors:s ~unreached:two_lines ~killed:11
           (Sections.Executables 3)),
       "mutants: 1 survived of 12 reached, 11 killed, 2 never reached, 3 \
-       executables" );
+       executables, score 91.7%" );
     ( "no killed term when none was killed",
       (fun () -> summary ~survivors:s ~killed:0 Sections.Suite),
-      "mutants: 1 survived of 1 reached by this suite" );
+      "mutants: 1 survived of 1 reached by this suite, score 0.0%" );
     ( "what an interrupted loop did not test is reached, and last",
       (fun () ->
         summary ~survivors:s ~unreached:two_lines ~not_tested:3 ~killed:2
           Sections.Suite),
       "mutants: 1 survived of 6 reached by this suite, 2 killed, 2 never \
-       reached, 3 not tested" );
+       reached, 3 not tested, score 66.7%" );
     ( "a site evaluated outside tests is not reached",
       (fun () ->
         summary ~survivors:s ~unreached:two_lines
           ~outside_tests:[ ("lib/calc.ml", 3) ]
           ~killed:2 Sections.Suite),
       "mutants: 1 survived of 3 reached by this suite, 2 killed, 2 never \
-       reached, 1 evaluated outside tests" );
+       reached, 1 evaluated outside tests, score 66.7%" );
     ( "a mutant its child did not evaluate is reached",
       (fun () ->
         summary ~survivors:s ~not_evaluated:[ memo_missed ] ~killed:2
           Sections.Suite),
       "mutants: 1 survived of 4 reached by this suite, 2 killed, 1 not \
-       evaluated" );
+       evaluated, score 50.0%" );
+    ( "a mutant not evaluated is scored, as no mutant killed",
+      (fun () ->
+        summary ~not_evaluated:[ memo_missed ] ~killed:0 Sections.Suite),
+      "mutants: 1 reached by this suite, 1 not evaluated, score 0.0%" );
+    ( "the score is of the killed among the scored, unrounded under a gate",
+      (fun () ->
+        summary ~survivors:s ~not_evaluated:[ memo_missed ] ~killed:1 ~min:33.4
+          Sections.Suite),
+      "mutants: 1 survived of 3 reached by this suite, 1 killed, 1 not \
+       evaluated, score 33.3%, minimum 33.4%: FAILED" );
+    ( "a gate met at its bound",
+      (fun () -> summary ~survivors:s ~killed:3 ~min:75. Sections.Suite),
+      "mutants: 1 survived of 4 reached by this suite, 3 killed, score 75.0%, \
+       minimum 75%: ok" );
+    ( "a gate gives the score of no scored mutant, which is 100",
+      (fun () ->
+        summary ~unreached:two_lines ~killed:0 ~min:100.
+          (Sections.Executables 1)),
+      "mutants: 0 reached, 2 never reached, 1 executable, score 100.0%, \
+       minimum 100%: ok" );
   ]
 
 let block witnesses =

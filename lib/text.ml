@@ -185,3 +185,34 @@ let escape_controls s =
       s;
     Buffer.contents b
   end
+
+(* JSON *)
+
+(* JSON text is Unicode, so a malformed byte is written as the replacement
+   character rather than passed to a reader that refuses it. *)
+let json_string s =
+  let len = String.length s in
+  let b = Buffer.create len in
+  Buffer.add_char b '"';
+  let rec loop i =
+    if i < len then begin
+      let d = String.get_utf_8_uchar s i in
+      let n = Uchar.utf_decode_length d in
+      (if not (Uchar.utf_decode_is_valid d) then Buffer.add_string b "\\ufffd"
+       else
+         match s.[i] with
+         | ('"' | '\\') as c ->
+             Buffer.add_char b '\\';
+             Buffer.add_char b c
+         | '\n' -> Buffer.add_string b "\\n"
+         | '\r' -> Buffer.add_string b "\\r"
+         | '\t' -> Buffer.add_string b "\\t"
+         | c when c < ' ' ->
+             Buffer.add_string b (Printf.sprintf "\\u%04x" (Char.code c))
+         | _ -> Buffer.add_string b (String.sub s i n));
+      loop (i + n)
+    end
+  in
+  loop 0;
+  Buffer.add_char b '"';
+  Buffer.contents b

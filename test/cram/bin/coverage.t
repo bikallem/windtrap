@@ -214,6 +214,15 @@ as it is:
         "uncovered_lines": [] } ] }
   $ cd "$scratch/proj"
 
+Bytes that are not UTF-8, a lone byte or a cut sequence, become the
+replacement character, so the document is always valid JSON:
+
+  $ mkdir "$scratch/malformed" && cd "$scratch/malformed"
+  $ mkdata coverage _build/_coverage/names.coverage 'lib/a\255b\226\130c.ml=0'
+  $ run windtrap coverage --json | grep path
+      { "path": "lib/a\ufffdb\ufffdc.ml", "visited": 0, "total": 1,
+  $ cd "$scratch/proj"
+
 --lcov writes an LCOV tracefile: each file's lines with their visits, in
 the merged counts:
 

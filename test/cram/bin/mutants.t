@@ -67,7 +67,7 @@ file:
   ──────────────────────────────────────────────────────────
   
   reproduce: WINDTRAP_MUTATE_ARM=lib/calc.ml:2:14:sub dune runtest --force --instrument-with ppx_windtrap.mutate
-  mutants: 1 survived of 3 reached, 2 killed, 2 never reached, 3 executables
+  mutants: 1 survived of 3 reached, 2 killed, 2 never reached, 3 executables, score 66.7%
   [1]
   $ cp "$bin/out" merged
 
@@ -105,7 +105,7 @@ the counts as a suite's summary does; the command to reproduce stays plain:
   \e[2m──────────────────────────────────────────────────────────\e[0m
   
   reproduce: WINDTRAP_MUTATE_ARM=lib/calc.ml:2:14:sub dune runtest --force --instrument-with ppx_windtrap.mutate
-  mutants: \e[31m1 survived\e[0m of 3 reached, \e[32m2 killed\e[0m, \e[33m2 never reached\e[0m, 3 executables
+  mutants: \e[31m1 survived\e[0m of 3 reached, \e[32m2 killed\e[0m, \e[33m2 never reached\e[0m, 3 executables, score 66.7%
 
 B's file alone reports the survivor A kills. Survivors that as many tests
 reached are in identifier order:
@@ -130,7 +130,7 @@ reached are in identifier order:
   ──────────────────────────────────────────────────────────
   
   reproduce: WINDTRAP_MUTATE_ARM=lib/calc.ml:1:14:add dune runtest --force --instrument-with ppx_windtrap.mutate
-  mutants: 2 survived of 3 reached, 1 killed, 2 never reached, 1 executable
+  mutants: 2 survived of 3 reached, 1 killed, 2 never reached, 1 executable, score 33.3%
   [1]
 
 A project with nothing to report is one line, and exits 0:
@@ -138,7 +138,7 @@ A project with nothing to report is one line, and exits 0:
   $ plant "$scratch/clean" && cd "$scratch/clean"
   $ mkdata mutants _build/_mutants/all.mutants "$add=killed" "$sub=killed" "$lt=killed"
   $ run windtrap mutants
-  mutants: 3 reached, 3 killed, 1 executable
+  mutants: 3 reached, 3 killed, 1 executable, score 100.0%
 
 A mutant that no test reached is listed and not scored, so it leaves the
 exit code 0, and there is no command to reproduce:
@@ -150,7 +150,7 @@ exit code 0, and there is no command to reproduce:
     1  lib/util.ml   line 1
   ──────────────────────────────────────────────────────────
   
-  mutants: 2 reached, 2 killed, 1 never reached, 1 executable
+  mutants: 2 reached, 2 killed, 1 never reached, 1 executable, score 100.0%
 
 A site that ran outside every test in one executable is not never reached,
 and a test's verdict in another executable outranks it:
@@ -168,7 +168,7 @@ and a test's verdict in another executable outranks it:
     1  lib/util.ml   line 1
   ──────────────────────────────────────────────────────────
   
-  mutants: 1 reached, 1 killed, 1 never reached, 1 evaluated outside tests, 2 executables
+  mutants: 1 reached, 1 killed, 1 never reached, 1 evaluated outside tests, 2 executables, score 100.0%
 
 A mutant whose site one executable's child did not evaluate is no
 survivor: it is listed with the command that arms it, and exits 0:
@@ -183,7 +183,7 @@ survivor: it is listed with the command that arms it, and exits 0:
       arm: WINDTRAP_MUTATE_ARM=lib/calc.ml:2:14:sub dune runtest --force --instrument-with ppx_windtrap.mutate
   ──────────────────────────────────────────────────────────
   
-  mutants: 2 reached, 1 killed, 1 not evaluated, 2 executables
+  mutants: 2 reached, 1 killed, 1 not evaluated, 2 executables, score 50.0%
 
 Survivors are ordered by how many tests reached them, then by identifier:
 
@@ -208,7 +208,7 @@ Survivors are ordered by how many tests reached them, then by identifier:
   ──────────────────────────────────────────────────────────
   
   reproduce: WINDTRAP_MUTATE_ARM=lib/calc.ml:2:14:sub dune runtest --force --instrument-with ppx_windtrap.mutate
-  mutants: 2 survived of 2 reached, 2 executables
+  mutants: 2 survived of 2 reached, 2 executables, score 0.0%
   [1]
 
 Reaching tests sort by their spelled path, where a space sorts before the
@@ -227,7 +227,7 @@ separator:
   ──────────────────────────────────────────────────────────
   
   reproduce: WINDTRAP_MUTATE_ARM=lib/calc.ml:1:14:add dune runtest --force --instrument-with ppx_windtrap.mutate
-  mutants: 1 survived of 1 reached, 1 executable
+  mutants: 1 survived of 1 reached, 1 executable, score 0.0%
   [1]
 
 A survivor whose source is not found keeps its identifier and its
@@ -244,7 +244,7 @@ rewrite, with no source line:
   ──────────────────────────────────────────────────────────
   
   reproduce: WINDTRAP_MUTATE_ARM=lib/calc.ml:2:14:sub dune runtest --force --instrument-with ppx_windtrap.mutate
-  mutants: 1 survived of 1 reached, 1 executable
+  mutants: 1 survived of 1 reached, 1 executable, score 0.0%
   [1]
 
 Executables
@@ -272,7 +272,7 @@ executable through dune:
   ──────────────────────────────────────────────────────────
   
   reproduce: dune exec --instrument-with ppx_windtrap.mutate test/a.exe -- --arm lib/calc.ml:3:14:lt
-  mutants: 1 survived of 2 reached, 1 killed, 3 never reached, 1 executable
+  mutants: 1 survived of 2 reached, 1 killed, 3 never reached, 1 executable, score 50.0%
   [1]
 
 A file of an executable that no longer exists, or that was rebuilt since,
@@ -300,7 +300,7 @@ once:
   ──────────────────────────────────────────────────────────
   
   reproduce: dune exec --instrument-with ppx_windtrap.mutate test/a.exe -- --arm lib/calc.ml:3:14:lt
-  mutants: 1 survived of 2 reached, 1 killed, 3 never reached, 1 executable
+  mutants: 1 survived of 2 reached, 1 killed, 3 never reached, 1 executable, score 50.0%
   --- stderr
   windtrap: .../b.mutants: its executable (_build/default/test/b.exe) no longer exists; excluding it
   windtrap: .../c.mutants: not written by the executable now at _build/default/test/c.exe (rebuilt since); excluding it
@@ -370,7 +370,7 @@ comes first:
   ──────────────────────────────────────────────────────────
   
   reproduce: dune exec --instrument-with ppx_windtrap.mutate test/test_calc.exe -- --arm lib/calc.ml:1:14:add
-  mutants: 1 survived of 1 reached, 3 executables
+  mutants: 1 survived of 1 reached, 3 executables, score 0.0%
   [1]
 
 Without it, the survivor is reproduced through the build, since dune alone
@@ -432,6 +432,258 @@ shell would split is one quoted word, as is such a dune target:
   $ mkdata mutants _build/_mutants/a.mutants --exe "_build/default/my tests/a.exe" "$add=survived:calc/adds"
   $ run windtrap mutants | grep reproduce
   reproduce: dune exec --instrument-with ppx_windtrap.mutate 'my tests/a.exe' -- --arm lib/calc.ml:1:14:add
+
+The score and its gate
+
+The score is the share of the killed mutants among those killed, survived
+and not evaluated. Without a gate one survivor fails the command. With
+--min-score, the outcome line gives the gate, and only a score below it
+fails the command. The gate compares the score before it is rounded:
+
+  $ cd "$scratch/three"
+  $ for min in 0 60 66.6 66.7 100; do
+  >   run windtrap mutants --min-score=$min > gated; echo "[$?] $(tail -n 1 gated)"
+  > done
+  [0] mutants: 1 survived of 3 reached, 2 killed, 2 never reached, 3 executables, score 66.7%, minimum 0%: ok
+  [0] mutants: 1 survived of 3 reached, 2 killed, 2 never reached, 3 executables, score 66.7%, minimum 60%: ok
+  [0] mutants: 1 survived of 3 reached, 2 killed, 2 never reached, 3 executables, score 66.7%, minimum 66.6%: ok
+  [1] mutants: 1 survived of 3 reached, 2 killed, 2 never reached, 3 executables, score 66.7%, minimum 66.7%: FAILED
+  [1] mutants: 1 survived of 3 reached, 2 killed, 2 never reached, 3 executables, score 66.7%, minimum 100%: FAILED
+
+Under a gate the report is the same, but for its outcome line:
+
+  $ run windtrap mutants --min-score 50 > gated
+  $ diff merged gated
+  15c15
+  < mutants: 1 survived of 3 reached, 2 killed, 2 never reached, 3 executables, score 66.7%
+  ---
+  > mutants: 1 survived of 3 reached, 2 killed, 2 never reached, 3 executables, score 66.7%, minimum 50%: ok
+  [1]
+
+A score below the gate is red, and so is FAILED:
+
+  $ run WINDTRAP_COLOR=always windtrap mutants --min-score 70 > /dev/null
+  [1]
+  $ tail -n 1 "$bin/out" | esc
+  mutants: \e[31m1 survived\e[0m of 3 reached, \e[32m2 killed\e[0m, \e[33m2 never reached\e[0m, 3 executables, \e[31mscore 66.7%\e[0m, minimum 70%: \e[31mFAILED\e[0m
+
+A mutant that no test reached, or that ran outside every test, is not
+scored. With no scored mutant the line gives no score, and a gate reads it
+as 100:
+
+  $ plant "$scratch/none-scored" && cd "$scratch/none-scored"
+  $ mkdata mutants _build/_mutants/all.mutants "$add=unreached" "$sub=outside_tests"
+  $ run windtrap mutants | tail -n 1
+  mutants: 0 reached, 1 never reached, 1 evaluated outside tests, 1 executable
+  $ run windtrap mutants --min-score 100 | tail -n 1
+  mutants: 0 reached, 1 never reached, 1 evaluated outside tests, 1 executable, score 100.0%, minimum 100%: ok
+
+A mutant that a child did not evaluate is scored as not killed. Thus a
+gate can fail a merge in which no mutant survived:
+
+  $ plant "$scratch/unevaluated" && cd "$scratch/unevaluated"
+  $ mkdata mutants _build/_mutants/u.mutants "$add=killed" "$sub=not_evaluated"
+  $ for min in '' 50 60; do
+  >   run windtrap mutants ${min:+--min-score=$min} > gated; echo "[$?] $(tail -n 1 gated)"
+  > done
+  [0] mutants: 2 reached, 1 killed, 1 not evaluated, 1 executable, score 50.0%
+  [0] mutants: 2 reached, 1 killed, 1 not evaluated, 1 executable, score 50.0%, minimum 50%: ok
+  [1] mutants: 2 reached, 1 killed, 1 not evaluated, 1 executable, score 50.0%, minimum 60%: FAILED
+
+A value that is not a percentage from 0 to 100 is a usage error, and the
+flag needs its value:
+
+  $ for value in eleventy '' nan inf -1 100.5; do
+  >   run windtrap mutants "--min-score=$value"; echo "[$?]"
+  > done
+  --- stderr
+  windtrap: invalid value 'eleventy' for --min-score: expected a percentage (0-100)
+  usage: windtrap mutants [OPTIONS] [PATH...]
+  [2]
+  --- stderr
+  windtrap: invalid value '' for --min-score: expected a percentage (0-100)
+  usage: windtrap mutants [OPTIONS] [PATH...]
+  [2]
+  --- stderr
+  windtrap: invalid value 'nan' for --min-score: expected a percentage (0-100)
+  usage: windtrap mutants [OPTIONS] [PATH...]
+  [2]
+  --- stderr
+  windtrap: invalid value 'inf' for --min-score: expected a percentage (0-100)
+  usage: windtrap mutants [OPTIONS] [PATH...]
+  [2]
+  --- stderr
+  windtrap: invalid value '-1' for --min-score: expected a percentage (0-100)
+  usage: windtrap mutants [OPTIONS] [PATH...]
+  [2]
+  --- stderr
+  windtrap: invalid value '100.5' for --min-score: expected a percentage (0-100)
+  usage: windtrap mutants [OPTIONS] [PATH...]
+  [2]
+  $ run windtrap mutants --min-score
+  --- stderr
+  windtrap: option '--min-score' requires an argument
+  usage: windtrap mutants [OPTIONS] [PATH...]
+  [2]
+
+The document
+
+--json writes the merge as one document on standard output. Each mutant
+has its verdict, in the order of identifiers, and a survivor has the tests
+that ran it in each executable in which it survived. A test names its
+executable by its index in "executables":
+
+  $ cd "$scratch/three"
+  $ run windtrap mutants --json
+  { "version": 1,
+    "summary": { "reached": 3, "killed": 2, "survived": 1,
+      "not_evaluated": 0, "outside_tests": 0, "unreached": 2,
+      "score": 66.67 },
+    "executables": [
+      { "name": "windtrap-a.mutants", "path": null },
+      { "name": "windtrap-b.mutants", "path": null },
+      { "name": "windtrap-c.mutants", "path": null } ],
+    "mutants": [
+      { "id": "lib/calc.ml:1:14:add",
+        "file": "lib/calc.ml", "line": 1, "col": 14, "rewrite": "add",
+        "before": "a + b", "after": "a - b",
+        "verdict": "killed" },
+      { "id": "lib/calc.ml:2:14:sub",
+        "file": "lib/calc.ml", "line": 2, "col": 14, "rewrite": "sub",
+        "before": "a - b", "after": "a + b",
+        "verdict": "survived",
+        "tests": [
+          { "executable": 1, "test": ["cli", "subtracts"] },
+          { "executable": 2, "test": ["prop", "sub law"] } ] },
+      { "id": "lib/calc.ml:3:14:lt",
+        "file": "lib/calc.ml", "line": 3, "col": 14, "rewrite": "lt",
+        "before": "a < b", "after": "a <= b",
+        "verdict": "killed" },
+      { "id": "lib/util.ml:1:13:or",
+        "file": "lib/util.ml", "line": 1, "col": 13, "rewrite": "or",
+        "before": "p || q", "after": "p && q",
+        "verdict": "unreached" },
+      { "id": "lib/util.ml:3:22:and",
+        "file": "lib/util.ml", "line": 3, "col": 22, "rewrite": "and",
+        "before": "p && q", "after": "p || q",
+        "verdict": "unreached" } ] }
+  [1]
+  $ cp "$bin/out" json
+
+Two executables can have one name, and the index tells them apart. An
+executable has the path that its file records, and null for a file that
+records none:
+
+  $ cd "$scratch/launcher"
+  $ run windtrap mutants --json
+  { "version": 1,
+    "summary": { "reached": 1, "killed": 0, "survived": 1,
+      "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
+      "score": 0.00 },
+    "executables": [
+      { "name": "t.exe", "path": "default/a/t.exe" },
+      { "name": "t.exe", "path": "default/b/t.exe" } ],
+    "mutants": [
+      { "id": "lib/calc.ml:1:14:add",
+        "file": "lib/calc.ml", "line": 1, "col": 14, "rewrite": "add",
+        "before": "a + b", "after": "a - b",
+        "verdict": "survived",
+        "tests": [
+          { "executable": 1, "test": ["calc", "adds"] } ] } ] }
+  [1]
+  $ cd "$scratch/labels"
+  $ run windtrap mutants --json
+  { "version": 1,
+    "summary": { "reached": 1, "killed": 0, "survived": 1,
+      "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
+      "score": 0.00 },
+    "executables": [
+      { "name": "my_lib_expect", "path": "default/lib/.my_lib_expect.inline-tests/inline-test-runner.exe" },
+      { "name": "plain.mutants", "path": null },
+      { "name": "test_calc.exe", "path": "default/test/test_calc.exe" } ],
+    "mutants": [
+      { "id": "lib/calc.ml:1:14:add",
+        "file": "lib/calc.ml", "line": 1, "col": 14, "rewrite": "add",
+        "before": "a + b", "after": "a - b",
+        "verdict": "survived",
+        "tests": [
+          { "executable": 0, "test": ["my_lib_expect", "add"] },
+          { "executable": 1, "test": ["hand", "written"] },
+          { "executable": 2, "test": ["calc", "adds"] },
+          { "executable": 2, "test": ["calc", "adds zero"] } ] } ] }
+  [1]
+
+In one executable, the tests are sorted name by name, the outermost name
+first, and a test that the file records two times is given once. The
+report compares the names that it prints, so its order can be different:
+
+  $ plant "$scratch/json-order" && cd "$scratch/json-order"
+  $ mkdata mutants _build/_mutants/s.mutants "$add=survived:z/b;a b;a/b;z/b"
+  $ run windtrap mutants --json | grep '"executable"'
+          { "executable": 0, "test": ["a", "b"] },
+          { "executable": 0, "test": ["a b"] },
+          { "executable": 0, "test": ["z", "b"] } ] } ] }
+  $ run windtrap mutants | grep 's\.mutants  '
+        s.mutants  a b
+        s.mutants  a › b
+        s.mutants  z › b
+
+A mutant that a child did not evaluate, and a mutant that ran outside
+every test, have their verdicts and no tests:
+
+  $ plant "$scratch/json-verdicts" && cd "$scratch/json-verdicts"
+  $ mkdata mutants _build/_mutants/a.mutants "$add=killed" "$sub=not_evaluated" "$lt=outside_tests"
+  $ run windtrap mutants --json
+  { "version": 1,
+    "summary": { "reached": 2, "killed": 1, "survived": 0,
+      "not_evaluated": 1, "outside_tests": 1, "unreached": 0,
+      "score": 50.00 },
+    "executables": [
+      { "name": "a.mutants", "path": null } ],
+    "mutants": [
+      { "id": "lib/calc.ml:1:14:add",
+        "file": "lib/calc.ml", "line": 1, "col": 14, "rewrite": "add",
+        "before": "a + b", "after": "a - b",
+        "verdict": "killed" },
+      { "id": "lib/calc.ml:2:14:sub",
+        "file": "lib/calc.ml", "line": 2, "col": 14, "rewrite": "sub",
+        "before": "a - b", "after": "a + b",
+        "verdict": "not_evaluated" },
+      { "id": "lib/calc.ml:3:14:lt",
+        "file": "lib/calc.ml", "line": 3, "col": 14, "rewrite": "lt",
+        "before": "a < b", "after": "a <= b",
+        "verdict": "outside_tests" } ] }
+
+Each string is escaped as JSON needs, and bytes that are not UTF-8 become
+the replacement character:
+
+  $ plant "$scratch/escape" && cd "$scratch/escape"
+  $ mkdata mutants _build/_mutants/e.mutants "$add=survived:t/say \"hi\"\\ $(printf '\t\001\377')"
+  $ run windtrap mutants --json | grep '"test"'
+          { "executable": 0, "test": ["t", "say \"hi\"\\ \t\u0001\ufffd"] } ] } ] }
+
+Under a gate the document is the same, the exit code is that of the gate,
+and the outcome line goes to standard error:
+
+  $ cd "$scratch/three"
+  $ errs() { run "$@" > /dev/null; code=$?; cat "$bin/err"; return $code; }
+  $ errs windtrap mutants --json --min-score 70
+  windtrap: mutants: 1 survived of 3 reached, 2 killed, 2 never reached, 3 executables, score 66.7%, minimum 70%: FAILED
+  [1]
+  $ diff json "$bin/out"
+  $ errs windtrap mutants --json --min-score 50
+  windtrap: mutants: 1 survived of 3 reached, 2 killed, 2 never reached, 3 executables, score 66.7%, minimum 50%: ok
+  $ diff json "$bin/out"
+
+--color and a WINDTRAP_COLOR the report refuses change neither the
+document nor the exit code:
+
+  $ run windtrap mutants --json --color=always > shown
+  [1]
+  $ diff json shown
+  $ run WINDTRAP_COLOR=sometimes windtrap mutants --json > shown
+  [1]
+  $ diff json shown
 
 Files that cannot be merged
 
@@ -499,10 +751,18 @@ The command line
   project root; PATH arguments (.mutants files, or directories searched
   recursively) replace that default.
   
-  Runs no tests and drives no build.
-  Exits 1 when any mutant survived every executable that reached it.
+  The score is the percentage of killed mutants among those killed, survived and
+  not evaluated. Runs no tests and drives no build. Exits 1 when any mutant
+  survived every executable that reached it, or under --min-score only when the
+  score is below PCT.
   
   OPTIONS:
+    --min-score=PCT
+        Exit 1 when the score is below PCT, and not for a survivor alone.
+  
+    --json
+        Machine-readable report on standard output.
+  
     --color=MODE (env WINDTRAP_COLOR)
         Color output: always, never or auto.
   
