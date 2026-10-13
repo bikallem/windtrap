@@ -128,6 +128,27 @@
 - `windtrap mutants` exits 1 with the reason on standard error when
   standard output refuses its report or document, for example on a full
   disk, and runs no gate.
+- `--mutate-jobs N` and its mirror `WINDTRAP_MUTATE_JOBS` let a
+  mutation run test up to `N` mutants at the same time, at most 256, or
+  one for each CPU with `auto`, and give the same report and verdict
+  file for each `N` (see
+  [Testing mutants in parallel](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#testing-mutants-in-parallel)).
+- The deadline of a mutation child does not count the time that the
+  child, or a process that its tests start, waits for a CPU on Linux,
+  so that the children of other suites under a parallel `dune runtest`
+  do not kill its mutant (see
+  [Testing mutants in parallel](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#testing-mutants-in-parallel)).
+- A mutation run that a signal stops when no child runs starts no
+  other child, and names the next mutant as `interrupted before
+  testing`.
+- A signal that a mutation run gets after its last child exits stops
+  nothing, also before the run reaps that child: the run writes its
+  verdict file and its report, and then dies by that signal.
+- The live line of a mutation run counts the mutants whose children
+  ended, as `[3/10]`, where 0.2.0 counted the mutant that started.
+- The live line of a mutation run that runs more than one child names
+  the first of them and counts the others, as
+  `[2/9] lib/calc.ml:9:3:sub and 2 more…`.
 
 ## v0.2.0 2026-09-26
 

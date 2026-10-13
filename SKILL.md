@@ -438,6 +438,10 @@ dune exec windtrap -- mutants
 mutants. Set PCT a little under the measured score, as for `--min`.
 `--json` gives each verdict to other tools.
 
+`--mutate-jobs auto` (`WINDTRAP_MUTATE_JOBS=auto`) tests mutants on
+every CPU at once. Use it only when the suite's tests share no port or
+file, because a test that another child disturbs kills its mutant.
+
 Mutation testing forks a child per mutant and is refused on Windows.
 `windtrap coverage --help`, `windtrap mutants --help` and a suite's
 `--help` (`--mutate`, `--arm`) state the flags.

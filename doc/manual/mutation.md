@@ -231,6 +231,72 @@ reached, and an `--arm` run of its mutant ends on `mutant not reached`.
 The mutation run exits 0 whatever it finds. It exits 1, with a sentence
 on standard error, when a pass fails or no mutant is left to test.
 
+## Testing mutants in parallel
+
+A mutation run tests one mutant at a time. `--mutate-jobs N` lets up to
+`N` children run at the same time, and `--mutate-jobs auto` lets one
+child run for each CPU. The maximum is 256 children. The report and
+the verdict file are the same for each value of `N`. The run keeps the
+verdict of a mutant until each mutant before it in the file has a
+verdict, and only then prints the mutant if it survived. This run
+gives the report of the run with one job in
+[Testing a suite's mutants](#testing-a-suites-mutants):
+
+```
+$ dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --mutate --mutate-jobs auto
+calc: 10 passed in 0.3ms.
+
+─────────────────────── survivors ────────────────────────
+  SURVIVED  calc.ml:10:16:ge  n > 0 → n >= 0
+      10 │ let sign n = if n > 0 then 1 else if n < 0 then -1 else 0
+
+    2 tests ran this line and none failed:
+      sign › is -1 for a negative  test_calc.ml:32
+      sign › is 1 for a positive   test_calc.ml:31
+
+  SURVIVED  calc.ml:10:37:le  n < 0 → n <= 0
+      10 │ let sign n = if n > 0 then 1 else if n < 0 then -1 else 0
+
+    1 test ran this line and did not fail:
+      sign › is -1 for a negative  test_calc.ml:32
+──────────────────────────────────────────────────────────
+
+reproduce: dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --arm calc.ml:10:16:ge
+mutants: 2 survived of 5 reached by this suite, 3 killed, score 60.0%
+```
+
+Under `dune runtest`, the mirror `WINDTRAP_MUTATE_JOBS` sets the jobs of
+each suite, as in
+`WINDTRAP_MUTATE=1 WINDTRAP_MUTATE_JOBS=auto dune runtest --force --instrument-with ppx_windtrap.mutate`
+(see [Mutation testing a project](#mutation-testing-a-project) for
+`--force`).
+
+The default is 1, because the children of one suite run the same
+tests. Two children that use the same port or write the same file can
+make each other fail, and the mutant of a child that fails counts as
+killed. Use more than one job only when the tests can run at the same
+time. When the children are more than the CPUs, the deadline of each
+child is multiplied by the number of children for each CPU. For
+example, 8 children on 4 CPUs double each deadline. The probe runs
+alone before these children, and its deadline does not change.
+
+On Linux, the time that a child waits for a CPU does not count toward
+its deadline. This time includes the waits of the processes that the
+tests of the child start, and of all of their threads. Thus under a
+parallel `dune runtest`, the children of the other suites do not push a
+child past its deadline. But the loop reads this time only when a child
+is past its deadline. The wait of a process that ended before that read
+counts, for example of a short command that a test ran earlier.
+
+When the children are more than the CPUs, they also wait for each
+other. Their longer deadlines are for this wait, and the wait does not
+move them again. Thus a child that uses the CPU and never stops is
+killed when it used the CPU time of its deadline in a run with one job.
+
+Other systems do not give the time that a child waits for a CPU.
+There, if you set `WINDTRAP_MUTATE_JOBS` for `dune runtest`, also give
+dune `-j 1`, so that it runs one suite at a time.
+
 ## Dismissing an equivalent mutant
 
 A mutant that no test can tell from the original is equivalent. `abs`
@@ -465,8 +531,12 @@ the suite then runs with `--mutate`.
 A mutation run forks a child process for each mutant. It is refused on
 Windows, and in a process that has started a domain. `--mutate` and
 `--arm` together are a usage error. An interrupt ends the run: the
-running child is killed, the mutant under test is named on standard
-error, and no verdict file is written.
+running children are killed, the mutants under test are named on
+standard error, and no verdict file is written. When no child runs at
+the interrupt and mutants remain, standard error names the next
+mutant, which no child tested. An interrupt after the last child exits
+stops nothing: the run writes the verdict file and the report as
+usual, and then dies by the signal.
 
 ## The command's options
 

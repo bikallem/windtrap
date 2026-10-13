@@ -328,6 +328,9 @@ OPTIONS:
   --mutate[=PREFIX,...] (env WINDTRAP_MUTATE)
       Test this executable's mutants, all or those under PREFIX.
 
+  --mutate-jobs=N (env WINDTRAP_MUTATE_JOBS)
+      Test up to N mutants at once, or one per CPU for auto (default 1).
+
   --arm=ID (env WINDTRAP_MUTATE_ARM)
       Run once with mutant ID armed.
 
