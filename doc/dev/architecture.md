@@ -41,7 +41,7 @@ than a rewrite.
 | --- | --- | --- |
 | `windtrap` | stdlib, unix, its own C stubs, `windtrap.runtime` | the library: one wrapped library, `windtrap.mli` the whole contract, the mutation loop; the runtime is linked for the loop alone, and no run reads the coverage registry |
 | `windtrap.runtime` | stdlib | the one runtime every instrumented closure links, through both backends' `ppx_runtime_libraries`: `Windtrap_runtime.Coverage` (registration, the `.coverage` dump, report data), `Windtrap_runtime.Mutate` (the catalogue, the arming guard, the reach map), `Windtrap_runtime.Verdicts` (the verdict lattice and the `.mutants` format) and `Windtrap_runtime.Instr` (the versioned, executable-identified file plumbing both formats share). It reads no environment variable but `WINDTRAP_COVERAGE_FILE`; which mutants a run tests and which one it arms are the core's to resolve (`--mutate`, `--arm`) and hand down |
-| `windtrap` (binary) | `windtrap`, `windtrap.runtime` | `coverage [--min N] [--expect PATH] [--json] [--lcov] [-u] [PATH…]` and `mutants [--min-score PCT] [--json] [PATH…]`: merge data files and render, never run a test or drive a build; every remedy they print says what to do in words rather than spelling a build tool's command |
+| `windtrap` (binary) | `windtrap`, `windtrap.runtime` | `coverage [--min N] [--expect PATH] [--json] [--lcov] [-u] [PATH…]` and `mutants [--min-score PCT] [--since REV] [--json] [PATH…]`: merge data files and render, never run a test or drive a build (`--since` runs git, which reads the repository and changes nothing); every remedy they print says what to do in words rather than spelling a build tool's command |
 | `ppx_windtrap` | ppxlib | the expect and inline-test rewriter, a desugaring into `test`, `group`, `tags`, `expect`, `expect_exact` and `output`; `ppx_runtime_libraries windtrap ppx_windtrap.runtime ppx_windtrap.config`; the `inline_tests.backend` whose generated main calls `run --corrected` |
 | `ppx_windtrap.runtime` | `windtrap` (public API only), unix | the module-load registry, the runner main (dune's `inline-test-runner <lib> -partition <file>` protocol), the undriven-registration guard |
 | `ppx_windtrap.config` | nothing | the one-module library whose module is the top-level `Expect_test_config` (`run` and `sanitize`) generated code names unqualified |
@@ -76,7 +76,7 @@ report and the aggregate cannot drift apart.
 | `Gen` (with `Gen.Engine.Shrink_tree`), `Property`, `Stateful`, `Workers` | generators; the case loop (examples first, per-case seeds, the discard budget, the shrink search, label tables); commands and programs, compiled into properties, and the judge of a program on several domains; the worker domains that run its branches |
 | `Baseline`, `Source_patch`, `Capture` | the correction registry keyed by site or path, read-only checking, corrections gated per test and written once as `.corrected` files or in place; literal rewriting inside a source file; fd-level capture into per-test log files |
 | `Cli`, `Run`, `Report`, `Report_sections`, `Report_junit` | one declarative item table (flags and flagless settings) resolved once into the one `Run.config`, each mirror declared beside its flag and read through the flag's parser; the run record and the ambient slot, the sequential executor (startup checks, selection, the per-test boundary, SIGALRM timeouts, retries, fixture release, the last-failed store, the exit guard, the exit codes), which prints nothing and emits typed events; the transcript, the GitHub envelope and `Report.run`, execute reported; the failure projection every transport shares and the section vocabulary the coverage and mutation reports project into; the JUnit document and its file |
-| `Mutate_loop` | the dry run and its reach map, the scope applied to the population it forks over, the determinism probe, the fork loop (one child per reached mutant, each running only the tests that reach it, up to `--mutate-jobs` children at once and their verdicts committed in catalogue order), the verdict file, the per-executable report. It wraps `Report.run` rather than sitting beside it, because a mutation run must announce an armed mutant before any other output and fork after the dry run |
+| `Mutate_loop`, `Changed_lines` | the dry run and its reach map, the scope applied to the population it forks over (prefixes, and the lines that changed since a git revision, which `Changed_lines` reads from `git diff` for the loop and for `windtrap mutants --since`), the determinism probe, the fork loop (one child per reached mutant, each running only the tests that reach it, the test that killed it last time alone first, up to `--mutate-jobs` children at once and their verdicts committed in catalogue order), the verdict file, the per-executable report. It wraps `Report.run` rather than sitting beside it, because a mutation run must announce an armed mutant before any other output and fork after the dry run |
 | `Os`, `Pp`, `Text`, `Loc`, `Seed` | the clock, environment reading and its value vocabularies, atomic files, the project root and build-copy resolution; style-aware `Format` helpers; newline, UTF-8 and substring utilities, and the JSON string literal of the machine formats; `pos` and backtrace-derived attribution; SplitMix64, `s1:` tokens and the `(root, path, index)` derivation |
 
 The rows group by role, not by layer: `Os`, `Pp`, `Text`, `Loc` and
@@ -99,7 +99,8 @@ hints spell), calls `Mutate_loop.execute_and_report` (which in every
 uninstrumented build, every `--list` run, and every instrumented build
 the configuration asked nothing of *is* `Report.run`, same transcript,
 same bytes) and adds only what is its own: the `--list` listing, the
-focus warning and the exit code. `Report.run` is `Run.execute` observed
+focus warning, the note on a `--mutate-since` that no loop reads, and
+the exit code. `Report.run` is `Run.execute` observed
 by the transcript, inside the GitHub envelope when the configuration
 says so, followed by the blocks, the baseline report, the annotations
 and the JUnit file. A `--corrected` run, a stanza's action or the
@@ -242,6 +243,23 @@ a lossy `%g` spelling is asked for at the call site.
   links; an identifier-only record would give a project report strictly
   worse than the per-executable one, and renderings let a report outlive
   the executable that produced it.
+- The history orders children and gives no verdict without a run. A
+  record keeps the test that killed its mutant and the digest of its
+  source file, and the next loop runs that test alone first when the
+  digest is the same. The loop reads the file of any build for this,
+  because a child runs the test: a verdict that the loop copied from the
+  file without a run would be incorrect as soon as a test changed. When
+  the first child kills nothing, a second child runs every reaching test,
+  and gives the verdict. A first child does not run the tests before its
+  test, so a first child that kills is not always the verdict of a full
+  child. A test that needs the state of an earlier test can fail alone
+  with no mutant. Thus each such test first runs alone with no mutant
+  armed, and a test that fails there gets no first child. In a suite whose
+  tests depend on their order, a kill of a first child can still differ
+  from the verdict of a full child: the test fails alone only with the
+  mutant, but an earlier test can change the state so that it passes. The
+  killing test of a merge is the smaller one, which keeps
+  `Verdicts.merge` commutative.
 
 **The runtime (`Windtrap_runtime.Mutate`, `.Coverage`).**
 
