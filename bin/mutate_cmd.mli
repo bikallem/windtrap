@@ -16,8 +16,8 @@
     holds. This interface states the {{!section-files}files} that are merged,
     what the {{!section-merge}merge} decides (the verdicts, the reaching tests,
     the order of the survivors and the launcher of the [reproduce:] command),
-    the {{!section-gate}gate}, and the {{!section-format}machine format}, whose
-    keys and values are frozen. *)
+    the {{!section-gate}gate}, the {{!section-since}changed lines}, and the
+    {{!section-format}machine format}, whose keys and values are frozen. *)
 
 (** {1:files Files}
 
@@ -48,6 +48,32 @@
     current directory under [PATH] arguments. A survivor whose source is not
     found keeps its identifier and its rewrite, and its block has no source
     line. *)
+
+(** {1:since Changed lines}
+
+    [--since REV] keeps, in each file that is kept, only the records of the
+    mutants on a line that changed since the git revision [REV]
+    ({!Windtrap.Private.Changed_lines.of_git}). The line of a mutant is that of
+    its identifier: the line of the first byte of its expression. The paths of
+    the records are relative to the root of the project that wrote the file, and
+    git runs in that root, once for each root:
+    - For a file below a build directory, the root is the parent of the build
+      directory ({!Windtrap_runtime.Instr.build_root}).
+    - For a file in a [_windtrap/mutants] directory, the root is the parent of
+      [_windtrap].
+    - For another file, the root is the first root of {!Data_files.discover}:
+      the current directory under [PATH] arguments.
+
+    The merge, the report, the document and the gate then see only these
+    records, so a survivor on a line that did not change does not fail the
+    command. The lines are those of the work tree when the command runs. A
+    verdict file that a build of an earlier source wrote can put another mutant
+    on such a line, so the suites must run again after the change, before the
+    merge.
+
+    When the root of a file holds no file of its records, the command stops with
+    exit code [1]. Git cannot give the lines of these mutants, and an empty
+    report would pass the gate. *)
 
 (** {1:merge The merge}
 
@@ -161,7 +187,8 @@ val run : string list -> int
     The command line is [windtrap mutants [OPTIONS] [PATH...]]. [-h], [--help]
     and [-help] print the help page on standard output. [--min-score PCT] and
     [--json] are those of the {{!section-gate}gate} and the
-    {{!section-format}machine format}. [--color MODE] is the runner's flag, read
+    {{!section-format}machine format}, and [--since REV] that of the
+    {{!section-since}changed lines}. [--color MODE] is the runner's flag, read
     by {!Windtrap.Private.Cli.parse_color}. Without it, the colour mode of the
     report is its mirror [WINDTRAP_COLOR], read by
     {!Windtrap.Private.Cli.color_mode}. The mode is resolved for standard output
@@ -173,6 +200,8 @@ val run : string list -> int
     - It parses the arguments.
     - It reads [WINDTRAP_COLOR] for the report when [--color] is absent.
     - It finds the {{!section-files}files}, judges them and loads them.
+    - Under [--since], it reads the {{!section-since}changed lines} and keeps
+      the records on them.
     - It prints the report or the document of the {{!section-merge}merge} on
       standard output.
     - It runs the gate.
@@ -198,13 +227,16 @@ val run : string list -> int
     - [1], with no report, when a [PATH] cannot be used or when no verdict file
       is found. It is also [1] when a file that is not excluded cannot be read,
       is corrupt or has another format version. It is also [1] when every file
-      is excluded.
+      is excluded, and under [--since] when the changed lines cannot be read,
+      for example for a [REV] that names no commit, or when the root of a file
+      holds no file of its mutants.
     - [1] when standard output refuses the report or the document, for example
       on a full disk. The reader then has only a part of it. Standard error
       gives the reason, and the gate does not run.
     - [2] for a usage error. A usage error is an unknown option, a flag that
       lacks its value, a [--min-score] that is not in the interval
-      \[[0];[100]\], or a [--color] value that the flag refuses.
+      \[[0];[100]\], a [--since] value that is empty or starts with [-], or a
+      [--color] value that the flag refuses.
     - [2] also for a [WINDTRAP_COLOR] that the flag would refuse, when [--color]
       is absent and the report is printed. A document reads no [WINDTRAP_COLOR].
 *)

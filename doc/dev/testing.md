@@ -104,8 +104,15 @@ what is non-obvious.
   the two merges find their files and which they merge (`data.t`), the
   coverage and mutants reports (`coverage.t`, `mutants.t`), what they
   cannot read (`unreadable.t`), a standard output that refuses the
-  mutants report (`full.t`, on Linux, which alone has `/dev/full`), and
-  two executables that disagree about one library (`two_executables.t`).
+  mutants report (`full.t`, on Linux, which alone has `/dev/full`), two
+  executables that disagree about one library (`two_executables.t`), and
+  the loop and the merge under `--mutate-since` and `--since` in a git
+  repository of the session's own (`since.t`), also from a subdirectory,
+  for an executable outside any build directory, for verdict files under
+  one root and under two roots, for a project below the root of the
+  repository, under a configuration that changes what `git diff` prints,
+  and for a project in no repository. `test_changed_lines` in `unit/`
+  reads the diffs that it states, and `since.t` pins what git gives.
   `mkdata.exe` writes the synthetic dumps and verdict files the sessions
   merge; `pins_add.exe` and `pins_sub.exe` are instrumented suites over
   `calc.ml`, a library under both backends in every build.

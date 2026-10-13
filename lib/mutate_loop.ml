@@ -25,9 +25,39 @@ let ordinary ~suite (config : Run.config) tests =
 
 (* Population *)
 
+(* The mutants that a run tests: those whose file starts with one of
+   [prefixes], every one for none, and then only those on a line that
+   changed since the revision of [since]. *)
+type scope = {
+  prefixes : string list;
+  since : (string * Changed_lines.t) option; (* the revision and its lines *)
+}
+
 let in_scope ~scope (id : Mutate.id) =
-  scope = []
-  || List.exists (fun prefix -> String.starts_with ~prefix id.file) scope
+  (scope.prefixes = []
+  || List.exists
+       (fun prefix -> String.starts_with ~prefix id.file)
+       scope.prefixes)
+  &&
+  match scope.since with
+  | None -> true
+  | Some (_, lines) -> Changed_lines.mem lines ~file:id.file ~line:id.line
+
+(* The changed lines are read only for a catalogue that has a mutant: an
+   executable with none has no line to keep, and it must not need git. *)
+let resolve_scope ~prefixes ~since =
+  match since with
+  | None -> Ok { prefixes; since = None }
+  | Some _ when Mutate.catalogue () = [] -> Ok { prefixes; since = None }
+  | Some rev -> (
+      let lines =
+        match Os.project_root () with
+        | root -> Changed_lines.of_git ~root rev
+        | exception Sys_error reason -> Error reason
+      in
+      match lines with
+      | Ok lines -> Ok { prefixes; since = Some (rev, lines) }
+      | Error reason -> Error (strf "--mutate-since=%s: %s" rev reason))
 
 type no_mutant = Uninstrumented | Out_of_scope | All_dismissed
 
@@ -40,7 +70,7 @@ let population ~scope =
     List.filter (fun (m : Mutate.mutant) -> Option.is_none m.dismissed) scoped
   in
   match (catalogue, scoped, undismissed) with
-  | [], _, _ when scope = [] -> Error Uninstrumented
+  | [], _, _ when scope.prefixes = [] -> Error Uninstrumented
   | _, [], _ -> Error Out_of_scope
   | _, _, [] -> Error All_dismissed
   | _, _, population -> Ok population
@@ -53,13 +83,27 @@ let refusal ~scope = function
       "this executable links no instrumented module, so there is nothing to \
        mutate: instrument the library under test with ppx_windtrap.mutate and \
        re-run"
-  | Out_of_scope ->
-      strf
-        "--mutate=%s leaves no mutant in this executable's catalogue: no \
-         instrumented file matches the prefix (is the library under test \
-         instrumented with ppx_windtrap.mutate?), or the matched files have no \
-         mutation sites"
-        (String.concat "," scope)
+  | Out_of_scope -> (
+      match (scope.prefixes, scope.since) with
+      | prefixes, None ->
+          strf
+            "--mutate=%s leaves no mutant in this executable's catalogue: no \
+             instrumented file matches the prefix (is the library under test \
+             instrumented with ppx_windtrap.mutate?), or the matched files \
+             have no mutation sites"
+            (String.concat "," prefixes)
+      | [], Some (rev, _) ->
+          strf
+            "--mutate-since=%s leaves no mutant in this executable's \
+             catalogue: no mutation site is on a line that changed since %s"
+            rev rev
+      | prefixes, Some (rev, _) ->
+          strf
+            "--mutate=%s and --mutate-since=%s leave no mutant in this \
+             executable's catalogue: no mutation site under the prefix is on a \
+             line that changed since %s"
+            (String.concat "," prefixes)
+            rev rev)
   | All_dismissed ->
       "every mutant this run could test is dismissed by [@mutate off]; there \
        is nothing to test"
@@ -68,9 +112,22 @@ let unmutated ~scope reason =
   let why =
     match reason with
     | Uninstrumented -> "this executable links no instrumented module"
-    | Out_of_scope ->
-        strf "no mutant of this executable's catalogue is under %s"
-          (String.concat "," scope)
+    | Out_of_scope -> (
+        match (scope.prefixes, scope.since) with
+        | prefixes, None ->
+            strf "no mutant of this executable's catalogue is under %s"
+              (String.concat "," prefixes)
+        | [], Some (rev, _) ->
+            strf
+              "no mutant of this executable's catalogue is on a line that \
+               changed since %s"
+              rev
+        | prefixes, Some (rev, _) ->
+            strf
+              "no mutant of this executable's catalogue under %s is on a line \
+               that changed since %s"
+              (String.concat "," prefixes)
+              rev)
     | All_dismissed ->
         "every mutant of this executable is dismissed by [@mutate off]"
   in
@@ -600,6 +657,9 @@ type loop = {
   scratch : string; (* a child killed at its deadline removes nothing *)
   jobs : int; (* the most children at once, [1] or more *)
   share : float; (* the children for each CPU, [1.] or more *)
+  killers : (Mutate.id, Verdicts.reaching_test) Hashtbl.t;
+      (* the test that killed each mutant in the run before, when its source
+         did not change since ([history]) *)
 }
 
 let deadline_multiplier = 10.
@@ -655,22 +715,30 @@ let counted_failure (r : Run.result) =
   | Failure.Fail _ -> true
   | Failure.Pass | Failure.Skip _ -> false
 
+(* The index of the test of [r] in the paths that the parent handed the
+   child, or [-1]. *)
+let index_in paths (r : Run.result) =
+  let rec find i = function
+    | [] -> -1
+    | path :: paths ->
+        if List.equal String.equal path r.path then i else find (i + 1) paths
+  in
+  find 0 paths
+
+(* The path at the index that a child named, if the index is one. *)
+let named_in paths index =
+  match int_of_string_opt index with
+  | Some i when i >= 0 -> List.nth_opt paths i
+  | Some _ | None -> None
+
 let probe_line ~paths (outcome : Run.outcome) =
   let results = Run.results outcome.run in
   let failures = List.filter counted_failure results in
-  let index (r : Run.result) =
-    let rec find i = function
-      | [] -> -1
-      | path :: paths ->
-          if List.equal String.equal path r.path then i else find (i + 1) paths
-    in
-    find 0 paths
-  in
   String.concat " "
     (strf "probe %d %d %d" (List.length results)
        (List.length (List.filter is_skip results))
        (List.length failures)
-    :: List.map (fun r -> string_of_int (index r)) failures)
+    :: List.map (fun r -> string_of_int (index_in paths r)) failures)
 
 let not_a_number =
   "Mutation results over a non-deterministic suite are not a weaker number, \
@@ -693,10 +761,7 @@ let probe loop =
   in
   let disagreement ~executed ~skipped ~failed indices =
     let named index =
-      match int_of_string_opt index with
-      | Some i when i >= 0 ->
-          Option.map Test_tree.path_to_string (List.nth_opt paths i)
-      | Some _ | None -> None
+      Option.map Test_tree.path_to_string (named_in paths index)
     in
     let measured = List.length paths in
     strf
@@ -738,30 +803,34 @@ let probe loop =
 
 (* Verdicts *)
 
+(* A failure that kills a mutant: that of a test not marked xfail. *)
+let kills (r : Run.result) = Option.is_none r.xfail && counted_failure r
+
 (* Read off the outcome and never off its exit code, which is [2] for a
    selection that ran nothing: a fact about a filter, not about a mutant.
    The unexpected pass of a test marked xfail counts as a failure of the run
    and kills no mutant. *)
 let killed_by (outcome : Run.outcome) =
-  outcome.release_failures <> []
-  || List.exists
-       (fun (r : Run.result) -> Option.is_none r.xfail && counted_failure r)
-       (Run.results outcome.run)
+  outcome.release_failures <> [] || List.exists kills (Run.results outcome.run)
 
 (* A child that recorded no test did not test its mutant: a survivor would
    send the reader to strengthen tests that never ran. A child keeps the
    dry run's state, so a site whose result the dry run cached can pass
-   unevaluated. *)
-let verdict_line (outcome : Run.outcome) =
-  if killed_by outcome || Run.results outcome.run = [] then "killed"
+   unevaluated. A killed mutant names the test that failed first, by its
+   index in [paths], when a test failed. *)
+let verdict_line ~paths (outcome : Run.outcome) =
+  if killed_by outcome || Run.results outcome.run = [] then
+    match List.find_opt kills (Run.results outcome.run) with
+    | Some r -> strf "killed %d" (index_in paths r)
+    | None -> "killed"
   else if Mutate.armed_hits () = 0 then "not_evaluated"
   else "survived"
 
 let budget_of hits =
   if hits > (max_int - 1000) / 8 then max_int else (hits * 8) + 1000
 
-let start_mutant loop ~index ~siblings ((mutant : Mutate.mutant), (site : site))
-    =
+let start_mutant loop ~index ~siblings ~paths
+    ((mutant : Mutate.mutant), (site : site)) =
   let arm () =
     match Mutate.arm ~budget:(budget_of site.hits) mutant.id with
     | Error error -> Error (Pp.to_string Mutate.pp_arm_error error)
@@ -771,20 +840,22 @@ let start_mutant loop ~index ~siblings ((mutant : Mutate.mutant), (site : site))
         Ok ()
   in
   start_child loop ~share:loop.share ~log:(strf "m%d" index) ~bail:true ~arm
-    ~paths:(List.rev site.tests) ~siblings verdict_line
+    ~paths ~siblings (verdict_line ~paths)
 
 (* A diagnostic is a child that could not arm its mutant or was refused at
-   startup. *)
-let verdict_of (site : site) child =
-  if child.ending = Expired then Ok Verdicts.Killed
+   startup. [paths] are the tests that the parent handed the child. *)
+let verdict_of ~paths (site : site) child =
+  if child.ending = Expired then Ok (Verdicts.Killed { by = None })
   else
     match (words child.line, child.status) with
     | Error diagnostic, _ -> Error diagnostic
     | Ok [ "survived" ], Unix.WEXITED 0 ->
         Ok (Verdicts.survived (List.rev site.tests))
     | Ok [ "not_evaluated" ], Unix.WEXITED 0 -> Ok Verdicts.Not_evaluated
+    | Ok [ "killed"; index ], Unix.WEXITED 0 ->
+        Ok (Verdicts.Killed { by = named_in paths index })
     | Ok _, (Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _) ->
-        Ok Verdicts.Killed
+        Ok (Verdicts.Killed { by = None })
 
 (* Recorded paths are relative to the project root; under [dune runtest] the
    working directory is inside [_build], where they do not open. *)
@@ -811,6 +882,27 @@ let read_source =
         Hashtbl.add cache file source;
         source
 
+(* The digest of the source of a mutant, which the verdict file keeps, so
+   that the next run knows if the source changed ([history]). *)
+let source_digest =
+  let cache = Hashtbl.create 16 in
+  fun file ->
+    match Hashtbl.find_opt cache file with
+    | Some digest -> digest
+    | None ->
+        let digest =
+          Option.map
+            (fun source -> Digest.to_hex (Digest.string source))
+            (read_source file)
+        in
+        Hashtbl.add cache file digest;
+        digest
+
+let record (mutant : Mutate.mutant) verdict =
+  Verdicts.record_of_mutant
+    ?source_digest:(source_digest mutant.id.file)
+    mutant verdict
+
 let shown (mutant : Mutate.mutant) : Report_sections.mutant =
   {
     id = Mutate.id_to_string mutant.id;
@@ -836,6 +928,17 @@ type tested = {
       (* the signal that stopped the forks, and what it stopped *)
 }
 
+(* The tests that one child of a mutant runs. A first child runs the test
+   that killed the mutant before, alone ([first_test]), and a full child
+   runs every reaching test. *)
+type attempt = {
+  index : int; (* the catalogue index of the mutant *)
+  paths : string list list;
+      (* the tests of the child, in the order of the run *)
+  first : bool;
+      (* a first child, which a full child follows when it kills nothing *)
+}
+
 (* What the loop committed: the verdicts of the mutants before
    [committed], in the order of the catalogue. *)
 type pool = {
@@ -843,9 +946,76 @@ type pool = {
   mutable survivors : Report_sections.survivor list; (* newest first *)
   mutable not_evaluated : Report_sections.not_evaluated list; (* newest first *)
   mutable committed : int;
-  mutable completed : int; (* the children that ended *)
-  mutable running : (int * running) list; (* by catalogue index *)
+  mutable completed : int; (* the mutants whose last child ended *)
+  mutable running : (attempt * running) list; (* in the order of the starts *)
+  mutable again : int list;
+      (* the mutants whose first child killed nothing, in catalogue order *)
 }
+
+(* The test that the first child of a mutant runs alone: the test that
+   killed it in the run that wrote the verdict file before, when its source
+   did not change since. The test must reach the mutant, and not be the
+   first test that does: a full child runs that test first, and stops at
+   its failure. *)
+let first_test loop ((mutant : Mutate.mutant), (site : site)) =
+  match (Hashtbl.find_opt loop.killers mutant.id, List.rev site.tests) with
+  | Some killer, first :: _ :: _
+    when (not (List.equal String.equal killer first))
+         && List.exists (List.equal String.equal killer) site.tests ->
+      Some killer
+  | Some _, _ | None, _ -> None
+
+let alone_line (outcome : Run.outcome) =
+  if killed_by outcome || Run.results outcome.run = [] then "fails"
+  else "passes"
+
+(* A first child runs its test alone, from the state that the dry run left.
+   A test that needs the state that an earlier test sets can fail alone with
+   no mutant. Its first child would then kill a mutant that a full child
+   lets survive. Thus, before any mutant, each [first_test] runs alone in a
+   child with no mutant armed, and a test that does not pass there gets no
+   first child. Up to [loop.jobs] of these children run at once. After a
+   signal, no child starts, and the loop then starts no child of a
+   mutant. *)
+let passing_alone loop reached =
+  let tests =
+    List.sort_uniq
+      (List.compare String.compare)
+      (List.filter_map (first_test loop) reached)
+  in
+  let passing = Hashtbl.create 16 in
+  let running = ref [] in
+  let rec next index tests =
+    match tests with
+    | test :: rest
+      when Option.is_none interrupt.signal && List.length !running < loop.jobs
+      ->
+        let child =
+          start_child loop ~share:loop.share ~log:(strf "t%d" index) ~bail:true
+            ~arm:(fun () -> Ok ())
+            ~paths:[ test ] ~siblings:(List.map snd !running) alone_line
+        in
+        running := !running @ [ (test, child) ];
+        next (index + 1) rest
+    | _ when !running = [] -> ()
+    | _ ->
+        let finished, live = await !running in
+        running := live;
+        List.iter
+          (fun (test, child) ->
+            match (child.ending, words child.line, child.status) with
+            | Closed, Ok [ "passes" ], Unix.WEXITED 0 ->
+                Hashtbl.replace passing test ()
+            | _ -> ())
+          finished;
+        next index tests
+  in
+  Fun.protect ~finally:(fun () -> abandon !running) (fun () -> next 0 tests);
+  let killers = Hashtbl.copy loop.killers in
+  Hashtbl.filter_map_inplace
+    (fun _ test -> if Hashtbl.mem passing test then Some test else None)
+    killers;
+  { loop with killers }
 
 (* Up to [loop.jobs] children at once, started in catalogue order. A verdict
    is kept by the catalogue index of its mutant until every mutant before it
@@ -853,6 +1023,12 @@ type pool = {
    report is the same for any number of jobs. A mutant that its child cannot
    arm ends the loop without a score, when it is committed: running on with
    nothing armed would score it a survivor.
+
+   A mutant with a [first_test] that [passing_alone] kept has a first child,
+   which runs that test alone. When the first child kills the mutant, that
+   is its verdict. When it
+   does not, a full child runs every reaching test, before the loop starts
+   the child of a mutant after it, and its verdict is the verdict.
 
    The loop starts no child after a signal. The signal stops the children
    that run, and a child that exited first keeps its verdict, reaped or
@@ -876,6 +1052,7 @@ let test_mutants renderer loop reached =
       committed = 0;
       completed = 0;
       running = [];
+      again = [];
     }
   in
   let commit index verdict =
@@ -890,9 +1067,8 @@ let test_mutants renderer loop reached =
           { mutant = shown mutant; invocation = loop.config.invocation }
         in
         pool.not_evaluated <- missed :: pool.not_evaluated
-    | Verdicts.Killed | Verdicts.Outside_tests | Verdicts.Unreached -> ());
-    pool.verdicts <-
-      Verdicts.add pool.verdicts (Verdicts.record_of_mutant mutant verdict)
+    | Verdicts.Killed _ | Verdicts.Outside_tests | Verdicts.Unreached -> ());
+    pool.verdicts <- Verdicts.add pool.verdicts (record mutant verdict)
   in
   let rec commit_ready () =
     if pool.committed < total then
@@ -908,6 +1084,15 @@ let test_mutants renderer loop reached =
           pool.committed <- pool.committed + 1;
           commit_ready ()
   in
+  (* After a signal: the verdicts after the gaps, in catalogue order. *)
+  let commit_rest () =
+    Array.iteri
+      (fun index verdict ->
+        match verdict with
+        | Some (Ok verdict) when index >= pool.committed -> commit index verdict
+        | Some _ | None -> ())
+      ended
+  in
   let tested stopped =
     {
       verdicts = pool.verdicts;
@@ -917,61 +1102,81 @@ let test_mutants renderer loop reached =
     }
   in
   let id index = Mutate.id_to_string (fst reached.(index)).id in
+  let start attempt =
+    let child =
+      start_mutant loop ~index:attempt.index
+        ~siblings:(List.map snd pool.running)
+        ~paths:attempt.paths reached.(attempt.index)
+    in
+    pool.running <- pool.running @ [ (attempt, child) ]
+  in
+  let full index =
+    { index; paths = List.rev (snd reached.(index)).tests; first = false }
+  in
   let rec next index =
-    if
-      index < total
-      && Option.is_none interrupt.signal
-      && List.length pool.running < loop.jobs
-    then begin
-      let child =
-        start_mutant loop ~index
-          ~siblings:(List.map snd pool.running)
-          reached.(index)
-      in
-      pool.running <- pool.running @ [ (index, child) ];
-      next (index + 1)
-    end
-    else
-      match (pool.running, interrupt.signal) with
-      | [], Some signal when index < total ->
-          tested (Some (signal, Report.Before (id index)))
-      | [], _ -> tested None
-      | running, _ -> (
-          Report.mutation_testing renderer ~completed:pool.completed ~total
-            ~running:(List.map (fun (index, _) -> id index) running);
-          let finished, live = await running in
-          (* On a signal [await] gives every child. A signal that comes
-             after it stops the children that continue to run. *)
-          let finished, live =
-            match (interrupt.signal, live) with
-            | Some _, _ :: _ -> (finished @ fst (await live), [])
-            | Some _, [] | None, _ -> (finished, live)
-          in
-          pool.running <- live;
-          let stopped, finished =
-            List.partition
-              (fun (_, child) -> child.ending = Interrupted)
-              finished
-          in
-          List.iter
-            (fun (index, child) ->
-              ended.(index) <- Some (verdict_of (snd reached.(index)) child))
-            finished;
-          pool.completed <- pool.completed + List.length finished;
-          match (interrupt.signal, stopped) with
-          | Some signal, _ :: _ ->
-              Array.iteri
-                (fun index verdict ->
-                  match verdict with
-                  | Some (Ok verdict) when index >= pool.committed ->
-                      commit index verdict
-                  | Some _ | None -> ())
-                ended;
-              let stopped = List.sort Int.compare (List.map fst stopped) in
-              tested (Some (signal, Report.Testing (List.map id stopped)))
-          | Some _, [] | None, _ ->
-              commit_ready ();
-              next index)
+    if Option.is_none interrupt.signal && List.length pool.running < loop.jobs
+    then
+      match pool.again with
+      | again :: rest ->
+          pool.again <- rest;
+          start (full again);
+          next index
+      | [] when index < total ->
+          start
+            (match first_test loop reached.(index) with
+            | Some test -> { index; paths = [ test ]; first = true }
+            | None -> full index);
+          next (index + 1)
+      | [] -> wait index
+    else wait index
+  and wait index =
+    match (pool.running, interrupt.signal) with
+    | [], Some signal when index < total || pool.again <> [] ->
+        commit_rest ();
+        let untested = List.fold_left Int.min index pool.again in
+        tested (Some (signal, Report.Before (id untested)))
+    | [], _ -> tested None
+    | running, _ -> (
+        Report.mutation_testing renderer ~completed:pool.completed ~total
+          ~running:(List.map (fun (attempt, _) -> id attempt.index) running);
+        let finished, live = await running in
+        (* On a signal [await] gives every child. A signal that comes
+           after it stops the children that continue to run. *)
+        let finished, live =
+          match (interrupt.signal, live) with
+          | Some _, _ :: _ -> (finished @ fst (await live), [])
+          | Some _, [] | None, _ -> (finished, live)
+        in
+        pool.running <- live;
+        let stopped, finished =
+          List.partition (fun (_, child) -> child.ending = Interrupted) finished
+        in
+        List.iter
+          (fun (attempt, child) ->
+            match
+              verdict_of ~paths:attempt.paths
+                (snd reached.(attempt.index))
+                child
+            with
+            | Ok (Verdicts.Survived _ | Verdicts.Not_evaluated)
+              when attempt.first ->
+                pool.again <-
+                  List.merge Int.compare pool.again [ attempt.index ]
+            | verdict ->
+                ended.(attempt.index) <- Some verdict;
+                pool.completed <- pool.completed + 1)
+          finished;
+        match (interrupt.signal, stopped) with
+        | Some signal, _ :: _ ->
+            commit_rest ();
+            let stopped =
+              List.sort Int.compare
+                (List.map (fun (attempt, _) -> attempt.index) stopped)
+            in
+            tested (Some (signal, Report.Testing (List.map id stopped)))
+        | Some _, [] | None, _ ->
+            commit_ready ();
+            next index)
   in
   Fun.protect ~finally:(fun () -> abandon pool.running) @@ fun () -> next 0
 
@@ -980,7 +1185,7 @@ let test_mutants renderer loop reached =
 let fork renderer loop reached =
   Fun.protect ~finally:(fun () -> Run.remove_tree loop.scratch) @@ fun () ->
   match (probe loop, interrupt.signal) with
-  | Ok (), _ -> Ok (test_mutants renderer loop reached)
+  | Ok (), _ -> Ok (test_mutants renderer (passing_alone loop reached) reached)
   | Error _, Some signal ->
       Ok
         {
@@ -998,9 +1203,29 @@ let narrows_suite (config : Run.config) ~focus =
   || config.exclude_tags <> [] || config.failed_only || focus
   || config.shard <> None
 
-(* What the loop has to say about its verdict file, above the outcome line.
-   Under a scope, the records of the other files stay when this build wrote
-   them. *)
+(* Writes [verdicts], the verdicts of the scope, to the verdict file. Under
+   a scope, the records of the other files stay when this build wrote them.
+   The result is the note on a file that cannot be written. *)
+let save ~scope verdicts =
+  let exe = Windtrap_runtime.Instr.executable in
+  let path = Verdicts.output_file ~exe in
+  let identity = Verdicts.writer_identity ~exe in
+  let kept =
+    match (identity, Verdicts.load path) with
+    | Some identity, Ok (prior, Some writer) when writer = identity ->
+        List.filter
+          (fun (r : Verdicts.record) -> not (in_scope ~scope r.id))
+          (Verdicts.records prior)
+    | _ -> []
+  in
+  match
+    Verdicts.save ?identity path (List.fold_left Verdicts.add verdicts kept)
+  with
+  | () -> None
+  | exception Sys_error message ->
+      Some (strf "could not write the verdict file: %s" message)
+
+(* What the loop has to say about its verdict file, above the outcome line. *)
 let save_verdicts ~scope ~narrowed ~outside ~unreached tested =
   match tested.stopped with
   | Some _ -> None
@@ -1008,31 +1233,12 @@ let save_verdicts ~scope ~narrowed ~outside ~unreached tested =
       Some
         "verdicts not saved: this run's selection narrows the suite, and a \
          partial run's verdicts would stand in the project merge as the whole."
-  | None -> (
-      let exe = Windtrap_runtime.Instr.executable in
-      let path = Verdicts.output_file ~exe in
-      let identity = Verdicts.writer_identity ~exe in
-      let kept =
-        match (identity, Verdicts.load path) with
-        | Some identity, Ok (prior, Some writer) when writer = identity ->
-            List.filter
-              (fun (r : Verdicts.record) -> not (in_scope ~scope r.id))
-              (Verdicts.records prior)
-        | _ -> []
-      in
-      let recorded verdict =
-        List.map (fun m -> Verdicts.record_of_mutant m verdict)
-      in
-      let verdicts =
-        List.fold_left Verdicts.add tested.verdicts
-          (recorded Verdicts.Outside_tests outside
-          @ recorded Verdicts.Unreached unreached
-          @ kept)
-      in
-      match Verdicts.save ?identity path verdicts with
-      | () -> None
-      | exception Sys_error message ->
-          Some (strf "could not write the verdict file: %s" message))
+  | None ->
+      let recorded verdict = List.map (fun m -> record m verdict) in
+      save ~scope
+        (List.fold_left Verdicts.add tested.verdicts
+           (recorded Verdicts.Outside_tests outside
+           @ recorded Verdicts.Unreached unreached))
 
 (* A signal that came once the last child had ended stopped nothing: the
    report ends as usual, and the loop still dies by it. *)
@@ -1046,7 +1252,7 @@ let finish renderer ~narrowed ~reach ~reached ~outside ~unreached forks =
       let records = Verdicts.records verdicts in
       let is_killed (r : Verdicts.record) =
         match r.verdict with
-        | Verdicts.Killed -> true
+        | Verdicts.Killed _ -> true
         | Verdicts.Survived _ | Verdicts.Not_evaluated | Verdicts.Outside_tests
         | Verdicts.Unreached ->
             false
@@ -1079,6 +1285,40 @@ let finish renderer ~narrowed ~reach ~reached ~outside ~unreached forks =
           match interrupt.signal with
           | Some signal -> Os.die_by signal
           | None -> Reported 0))
+
+(* The test that killed each mutant in the run that wrote the verdict file
+   before, for the mutants whose source has the digest that it had then. Any
+   build counts, an earlier one included: a child runs the test, so the
+   history gives no verdict without a run. A file that is
+   not a regular file, or that does not load, gives no history. The loop
+   does not open a file of another kind, which can block. Only the mutants
+   in [reached] have children, and only their sources are read. *)
+let history reached =
+  let killers = Hashtbl.create 64 in
+  let path = Verdicts.output_file ~exe:Windtrap_runtime.Instr.executable in
+  let regular =
+    match Unix.stat path with
+    | { Unix.st_kind; _ } -> st_kind = Unix.S_REG
+    | exception Unix.Unix_error _ -> false
+  in
+  (if regular then
+     match Verdicts.load path with
+     | Error _ -> ()
+     | Ok (prior, _) ->
+         List.iter
+           (fun (r : Verdicts.record) ->
+             match (r.verdict, r.source_digest) with
+             | Verdicts.Killed { by = Some test }, Some digest
+               when Hashtbl.mem reached r.id
+                    && source_digest r.id.file = Some digest ->
+                 Hashtbl.replace killers r.id test
+             | ( ( Verdicts.Killed _ | Verdicts.Survived _
+                 | Verdicts.Not_evaluated | Verdicts.Outside_tests
+                 | Verdicts.Unreached ),
+                 _ ) ->
+                 ())
+           (Verdicts.records prior));
+  killers
 
 let loop renderer ~scope ~jobs ~suite (config : Run.config) tests =
   let population = population ~scope in
@@ -1149,6 +1389,7 @@ let loop renderer ~scope ~jobs ~suite (config : Run.config) tests =
                     scratch;
                     jobs;
                     share;
+                    killers = history reach.sites;
                   }
                 in
                 Result.map
@@ -1220,19 +1461,34 @@ let armed renderer ~spec ~suite (config : Run.config) tests =
       flush_descriptors ();
       Ran result
 
+(* A revision that leaves no mutant of the catalogue in scope still writes
+   the verdict file, with no verdict on a changed line. Thus [windtrap
+   mutants --since] finds a file for each such executable, also after a new
+   build, and a change that no mutant is on passes the gate. The file holds
+   no new verdict, so a narrowed selection does not stop the save. *)
+let save_unmutated ~scope reason =
+  match (reason, scope.since) with
+  | (Out_of_scope | All_dismissed), Some _ ->
+      Option.iter Os.say (save ~scope Verdicts.empty)
+  | Uninstrumented, _ | (Out_of_scope | All_dismissed), None -> ()
+
 let execute_and_report ~suite (config : Run.config) tests =
   match config.mutation with
   | Run.No_mutation -> ordinary ~suite config tests
   | Run.Armed spec -> armed (Report.terminal config) ~spec ~suite config tests
   | Run.Loop _ when Sys.win32 ->
       refuse "mutation testing needs Unix.fork, which Windows does not have"
-  | Run.Loop { scope; jobs } when not config.broadcast.mutate ->
-      loop (Report.terminal config) ~scope ~jobs ~suite config tests
-  | Run.Loop { scope; jobs } -> (
-      match (population ~scope, Run.list_selection config ~suite tests) with
-      | Error reason, _ ->
-          Os.say (unmutated ~scope reason);
-          ordinary ~suite config tests
-      | Ok _, Ok [] -> ordinary ~suite config tests
-      | Ok _, (Ok (_ :: _) | Error _) ->
-          loop (Report.terminal config) ~scope ~jobs ~suite config tests)
+  | Run.Loop { scope = prefixes; jobs; since } -> (
+      match resolve_scope ~prefixes ~since with
+      | Error message -> refuse message
+      | Ok scope when not config.broadcast.mutate ->
+          loop (Report.terminal config) ~scope ~jobs ~suite config tests
+      | Ok scope -> (
+          match (population ~scope, Run.list_selection config ~suite tests) with
+          | Error reason, _ ->
+              Os.say (unmutated ~scope reason);
+              save_unmutated ~scope reason;
+              ordinary ~suite config tests
+          | Ok _, Ok [] -> ordinary ~suite config tests
+          | Ok _, (Ok (_ :: _) | Error _) ->
+              loop (Report.terminal config) ~scope ~jobs ~suite config tests))

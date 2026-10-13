@@ -27,6 +27,7 @@ type parsed = {
   log_dir : string option;
   mutate : string list option;
   mutate_jobs : int option;
+  mutate_since : string option;
   arm : string option;
   help : bool;
   version : bool;
@@ -55,6 +56,7 @@ let empty =
     log_dir = None;
     mutate = None;
     mutate_jobs = None;
+    mutate_since = None;
     arm = None;
     help = false;
     version = false;
@@ -139,6 +141,12 @@ let jobs value =
     | Ok n when n <= max_jobs -> Ok n
     | Ok _ | Error _ ->
         Error (Printf.sprintf "a positive integer up to %d, or auto" max_jobs)
+
+(* Git reads a revision that starts with [-] as an option. *)
+let revision value =
+  if value = "" || String.starts_with ~prefix:"-" value then
+    Error "a git revision, which does not start with -"
+  else Ok value
 
 let seconds ~expected accepts value =
   match float_of_string_opt value with
@@ -277,6 +285,11 @@ let entries =
       (value "N" jobs (fun p n -> { p with mutate_jobs = Some n }))
       ~mirror:(mirrored "WINDTRAP_MUTATE_JOBS" (fun p -> p.mutate_jobs = None))
       "Test up to N mutants at once, or one per CPU for auto (default 1).";
+    row "--mutate-since"
+      (value "REV" revision (fun p rev -> { p with mutate_since = Some rev }))
+      ~mirror:
+        (mirrored "WINDTRAP_MUTATE_SINCE" (fun p -> p.mutate_since = None))
+      "Test only the mutants on lines changed since git revision REV.";
     row "--arm"
       (value "ID" any (fun p id -> { p with arm = Some id }))
       ~mirror:(mirrored "WINDTRAP_MUTATE_ARM" (fun p -> p.arm = None))
@@ -480,7 +493,11 @@ let settings cli =
     | Some scope, None ->
         Ok
           (Run.Loop
-             { scope; jobs = Option.value layered.mutate_jobs ~default:1 })
+             {
+               scope;
+               jobs = Option.value layered.mutate_jobs ~default:1;
+               since = layered.mutate_since;
+             })
     | None, Some id -> Ok (Run.Armed id)
     | Some _, Some _ -> Error (Incompatible_flags ("--mutate", "--arm"))
   in
@@ -523,6 +540,11 @@ let settings cli =
           Run.selection = selects layered && not (selects cli);
           mutate = cli.mutate = None && layered.mutate <> None;
         };
+      unused_since =
+        (match (mutation, layered.mutate_since, cli.mutate_since) with
+        | Run.No_mutation, Some _, Some _ -> Some "--mutate-since"
+        | Run.No_mutation, Some _, None -> Some "WINDTRAP_MUTATE_SINCE"
+        | (Run.No_mutation | Run.Loop _ | Run.Armed _), _, _ -> None);
     }
 
 let color_mode () =

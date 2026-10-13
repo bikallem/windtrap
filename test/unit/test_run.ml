@@ -147,8 +147,9 @@ let color_name = function
 
 let mutation_name = function
   | Run.No_mutation -> "none"
-  | Run.Loop { scope; jobs } ->
-      strf "loop %s jobs %d" (String.concat "," scope) jobs
+  | Run.Loop { scope; jobs; since } ->
+      strf "loop %s jobs %d%s" (String.concat "," scope) jobs
+        (Option.fold ~none:"" ~some:(strf " since %s") since)
   | Run.Armed id -> "armed " ^ id
 
 let broadcast_name (b : Run.broadcast) =
@@ -187,6 +188,7 @@ let fields (c : Run.config) =
       match c.invocation with `Exe cmd -> "exe " ^ cmd | `Mirrors -> "mirrors"
     );
     ("broadcast", broadcast_name c.broadcast);
+    ("unused_since", opt Fun.id c.unused_since);
   ]
 
 let project names c =
@@ -216,6 +218,7 @@ let given_no_flag =
     ("github", "false");
     ("invocation", "mirrors");
     ("broadcast", "none");
+    ("unused_since", "none");
   ]
 
 let parent : Run.config =
@@ -238,10 +241,11 @@ let parent : Run.config =
     slow_threshold = 2.;
     verbose = true;
     junit = Some "out.xml";
-    mutation = Run.Loop { scope = [ "lib/" ]; jobs = 4 };
+    mutation = Run.Loop { scope = [ "lib/" ]; jobs = 4; since = None };
     github = true;
     invocation = `Exe "suite.exe";
     broadcast = { selection = true; mutate = true };
+    unused_since = None;
   }
 
 let subset = Run.for_subset parent ~log_dir:"child" ~bail:true

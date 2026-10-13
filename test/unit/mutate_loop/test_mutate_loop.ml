@@ -75,7 +75,7 @@ let ended = function
   | Unix.WSTOPPED signal -> "stopped by " ^ signal_name signal
 
 let verdict = function
-  | Verdicts.Killed -> "killed"
+  | Verdicts.Killed _ -> "killed"
   | Verdicts.Survived { first; others } ->
       "survived by "
       ^ String.concat ", "
@@ -1319,7 +1319,8 @@ let elsewhere =
       { Mutate.file = "elsewhere/other.ml"; line = 1; col = 0; rewrite = "add" };
     before = "a - b";
     after = "a + b";
-    verdict = Verdicts.Killed;
+    source_digest = None;
+    verdict = Verdicts.Killed { by = None };
   }
 
 let rerun_over ?identity collection =
@@ -1380,6 +1381,197 @@ let unwritable () =
     (outcome r.out);
   starts_with ~affix:"windtrap: could not write the verdict file: " r.err;
   equal int 1 (List.length (lines (String.trim r.err)))
+
+(* The killing test of each killed record of the file at [path], by the
+   file under the scope and the line. *)
+let killers path =
+  match Verdicts.load path with
+  | Error _ -> []
+  | Ok (t, _) ->
+      List.filter_map
+        (fun (r : Verdicts.record) ->
+          match r.verdict with
+          | Verdicts.Killed { by = Some test } ->
+              Some
+                (strf "%s:%d %s" (local r.id.file) r.id.line
+                   (String.concat " \u{203a} " test))
+          | Verdicts.Killed { by = None }
+          | Verdicts.Survived _ | Verdicts.Not_evaluated
+          | Verdicts.Outside_tests | Verdicts.Unreached ->
+              None)
+        (Verdicts.records t)
+
+(* The verdict file of [suite_main.exe] with [change] applied to each
+   record, written by the same build. *)
+let rewrite change =
+  let path = Verdicts.output_file ~exe:suite_exe in
+  let t, identity = require_ok ~pp:Verdicts.pp_error (Verdicts.load path) in
+  Verdicts.save ?identity path
+    (List.fold_left Verdicts.add Verdicts.empty
+       (List.map change (Verdicts.records t)))
+
+(* A run of [fixture] that keeps the verdict file: its outcome, and the
+   words of the tests that the children ran with a mutant armed. *)
+let ordered_run ?(fixture = "ordered") ?(env = []) () =
+  let ran = Filename.concat (temp_dir ()) "ran" in
+  let r =
+    Child.run
+      ~env:(quiet ([ suite fixture; ("MUTATE_RAN", ran) ] @ env))
+      suite_exe [ mutate ]
+  in
+  equal string "exited 0" (ended r.Child.status);
+  equal text "" r.Child.err;
+  (outcome r.Child.out, List.filter (( <> ) "") (lines (read ran)))
+
+let ordered_outcome =
+  "mutants: 1 reached by this suite, 1 killed, 3 never reached, score 100.0%"
+
+let pinned_by = "subject.ml:15 ordered \u{203a} pins sub"
+
+let first_tests () =
+  let path = Verdicts.output_file ~exe:suite_exe in
+  remove path;
+  equal
+    (pair string (list string))
+    (ordered_outcome, [ "watches"; "pins" ])
+    (ordered_run ());
+  equal (list string) [ pinned_by ] (killers path);
+  equal
+    (pair string (list string))
+    (ordered_outcome, [ "pins" ])
+    (ordered_run ());
+  equal (list string) [ pinned_by ] (killers path)
+
+let changed_source () =
+  let path = Verdicts.output_file ~exe:suite_exe in
+  remove path;
+  ignore (ordered_run ());
+  rewrite (fun r -> { r with source_digest = Some (String.make 32 '0') });
+  equal
+    (pair string (list string))
+    (ordered_outcome, [ "watches"; "pins" ])
+    (ordered_run ());
+  equal (list string) [ pinned_by ] (killers path)
+
+(* The record [r] with [test] as its killing test, when it is killed. *)
+let killed_by test (r : Verdicts.record) =
+  match r.verdict with
+  | Verdicts.Killed _ -> { r with verdict = Verdicts.Killed { by = Some test } }
+  | Verdicts.Survived _ | Verdicts.Not_evaluated | Verdicts.Outside_tests
+  | Verdicts.Unreached ->
+      r
+
+let first_test_passes () =
+  let path = Verdicts.output_file ~exe:suite_exe in
+  remove path;
+  ignore (ordered_run ());
+  rewrite (killed_by [ "ordered"; "watches sub again without pinning it" ]);
+  equal
+    (pair string (list string))
+    (ordered_outcome, [ "again"; "watches"; "pins" ])
+    (ordered_run ());
+  equal (list string) [ pinned_by ] (killers path)
+
+(* The killing test was renamed: no test of the suite has its path. *)
+let renamed_killer () =
+  let path = Verdicts.output_file ~exe:suite_exe in
+  remove path;
+  ignore (ordered_run ());
+  rewrite (killed_by [ "ordered"; "pinned sub" ]);
+  equal
+    (pair string (list string))
+    (ordered_outcome, [ "watches"; "pins" ])
+    (ordered_run ());
+  equal (list string) [ pinned_by ] (killers path)
+
+let not_evaluated_first () =
+  let path = Verdicts.output_file ~exe:suite_exe in
+  let primed = ordered_run ~fixture:"primed" in
+  let pinned = "subject.ml:18 primed \u{203a} pins widen once primed" in
+  remove path;
+  equal
+    (pair string (list string))
+    (ordered_outcome, [ "primes"; "pins" ])
+    (primed ());
+  equal (list string) [ pinned ] (killers path);
+  equal
+    (pair string (list string))
+    (ordered_outcome, [ "primes"; "pins" ])
+    (primed ());
+  equal (list string) [ pinned ] (killers path)
+
+(* The killing test of the first run fails alone with no mutant. The second
+   run pins [sub] no more, and only a full child, which runs the first test
+   before it, gives the verdict. *)
+let failing_alone () =
+  let path = Verdicts.output_file ~exe:suite_exe in
+  let flagged = ordered_run ~fixture:"flagged" in
+  remove path;
+  equal
+    (pair string (list string))
+    (ordered_outcome, [ "raises"; "needs" ])
+    (flagged ());
+  equal (list string)
+    [ "subject.ml:15 flagged \u{203a} needs the flag" ]
+    (killers path);
+  equal
+    (pair string (list string))
+    ( "mutants: 1 survived of 1 reached by this suite, 3 never reached, score \
+       0.0%",
+      [ "raises"; "needs" ] )
+    (flagged ~env:[ ("MUTATE_WEAK", "1") ] ())
+
+(* A verdict file that does not load: [damage] gives its contents from those
+   of a file that loads. *)
+let unloadable damage () =
+  let path = Verdicts.output_file ~exe:suite_exe in
+  remove path;
+  ignore (ordered_run ());
+  write path (damage (read path));
+  (match Verdicts.load path with
+  | Ok _ -> failf "the damaged verdict file loads"
+  | Error _ -> ());
+  equal
+    (pair string (list string))
+    (ordered_outcome, [ "watches"; "pins" ])
+    (ordered_run ());
+  equal (list string) [ pinned_by ] (killers path)
+
+let history =
+  group "History"
+    [
+      test
+        "a killed mutant names the test that failed first, and the next run \
+         runs that test alone first"
+        first_tests;
+      test "a mutant whose source changed runs its reaching tests in order"
+        changed_source;
+      test
+        "a first test that kills nothing is followed by every reaching test, \
+         and the verdict is theirs"
+        first_test_passes;
+      test
+        "a first test that no longer reaches the mutant is not run, and every \
+         reaching test runs"
+        renamed_killer;
+      test
+        "a first test that does not evaluate the mutant is followed by every \
+         reaching test"
+        not_evaluated_first;
+      test
+        "a first test that fails alone with no mutant gets no first child, and \
+         every reaching test runs"
+        failing_alone;
+      cases
+        "a verdict file that does not load gives no history, and the run \
+         replaces it"
+        ~name:fst
+        [
+          ("a file of 0.2.0", fun _ -> "windtrap-mutants-v3\n");
+          ("bytes after the last record", fun raw -> raw ^ "junk\n");
+        ]
+        (fun (_, damage) -> unloadable damage ());
+    ]
 
 let verdict_file =
   group "The verdict file"
@@ -1455,6 +1647,33 @@ let environment =
                  plain_main catalogues its mutants"
               ();
           let r = spawn ~exe:plain_exe ~env:[ ("WINDTRAP_MUTATE", "1") ] [] in
+          equal (pair string string)
+            ("exited 0", "plain: 1 passed in <time>.")
+            (r.status, masked (String.trim r.out));
+          equal text
+            "windtrap: WINDTRAP_MUTATE is set, but this executable links no \
+             instrumented module, so the suite runs without mutation\n"
+            r.err);
+      (* dune runtest gives the two variables to every suite. Git refuses a
+         revision that names no commit, so a run that asked git would stop
+         with exit code 1. *)
+      test "WINDTRAP_MUTATE_SINCE on a build with no mutants runs no git"
+        (fun () ->
+          if core_instrumented then
+            skip
+              ~reason:
+                "under --instrument-with the core is instrumented, so \
+                 plain_main catalogues its mutants"
+              ();
+          let r =
+            spawn ~exe:plain_exe
+              ~env:
+                [
+                  ("WINDTRAP_MUTATE", "1");
+                  ("WINDTRAP_MUTATE_SINCE", "no-such-revision");
+                ]
+              []
+          in
           equal (pair string string)
             ("exited 0", "plain: 1 passed in <time>.")
             (r.status, masked (String.trim r.out));
@@ -2595,6 +2814,56 @@ let before_next () =
   equal (option (list string)) None (rows r);
   equal (list string) [] (entries tmpdir)
 
+(* [retried]'s mutant of [widen] has a killing test in the verdict file,
+   which its first child runs alone. The child of [orphan] ends, the child
+   of [sub] ends and the loop blocks in the write of its survivor, and then
+   the first child of [widen] ends. The signal comes before the loop reads
+   that the first child killed nothing, so no child runs and the full child
+   of [widen] remains. *)
+let before_full_child () =
+  let path = Verdicts.output_file ~exe:suite_exe in
+  remove path;
+  ignore (spawn ~env:[ suite "retried" ] [ mutate ]);
+  rewrite (fun r ->
+      if r.id = site_id 18 then
+        {
+          r with
+          verdict =
+            Verdicts.Killed
+              { by = Some [ "retried"; "widen waits at its gate" ] };
+        }
+      else r);
+  let gates = temp_dir () and tmpdir = temp_dir () in
+  let reader, writer = Unix.pipe ~cloexec:true () in
+  let run =
+    start ~stdout:writer
+      ~env:[ suite "retried"; ("MUTATE_GATES", gates); ("TMPDIR", tmpdir) ]
+      [ mutate; jobs 3 ]
+  in
+  let first, open_first = gate ~gates run "sub" in
+  let second, open_second = gate ~gates run "widen" in
+  let third, open_third = gate ~gates run "orphan" in
+  open_third ();
+  reaped ~what:"the reaping of the child of orphan" run third;
+  fill writer;
+  Unix.close writer;
+  open_first ();
+  reaped ~what:"the reaping of the child of sub" run first;
+  open_second ();
+  exited ~what:"the end of the first child of widen" run second;
+  Unix.kill run.pid Sys.sigint;
+  let out = read_to_end reader in
+  Unix.close reader;
+  let r = { (finish run) with out } in
+  equal string "killed by SIGINT" r.status;
+  equal text (strf "windtrap: interrupted before testing %s\n" (site 18)) r.err;
+  equal (list string) [ site 15; site 21 ] (survivors r.out);
+  equal string
+    "mutants: 2 survived of 3 reached by this suite, 1 never reached, 1 not \
+     tested, score 0.0%"
+    (outcome r.out);
+  equal (list string) [] (entries tmpdir)
+
 (* A signal sent to the whole process tree, as [pkill] sends it, kills the
    child of [widen] at its gate while a write holds the loop. The loop gets
    the signal after the child dies. *)
@@ -2657,6 +2926,10 @@ let signals =
             (strf "windtrap: interrupted while testing %s\n" (site 18))
             r.err;
           equal string interrupted_outcome (outcome r.out));
+      test
+        "a signal after a first child that killed nothing commits the verdicts \
+         after its mutant, and names that mutant as not tested"
+        before_full_child;
       test "a signal during the determinism probe names the probe"
         probe_interrupted;
       test
@@ -2737,6 +3010,7 @@ let () =
          xfail;
          limits;
          verdict_file;
+         history;
          environment;
          refusals;
          armed;

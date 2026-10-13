@@ -53,3 +53,16 @@
  (applies_to full)
  (enabled_if
   (= %{system} linux)))
+
+; since.t runs the mutation loop, which Windows refuses for want of fork,
+; and git in a repository of its own. A host with no git on PATH, such as a
+; minimal package sandbox, skips it.
+
+(cram
+ (package ppx_windtrap)
+ (applies_to since)
+ (enabled_if
+  (and
+   (<> %{os_type} Win32)
+   %{bin-available:git}))
+ (deps pins_add.exe calc.ml))

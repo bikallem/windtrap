@@ -60,6 +60,11 @@
  (libraries windtrap))
 
 (test
+ (name test_changed_lines)
+ (modules test_changed_lines)
+ (libraries windtrap unix))
+
+(test
  (name test_testable)
  (modules test_testable)
  (libraries windtrap))

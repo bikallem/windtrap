@@ -149,6 +149,26 @@
 - The live line of a mutation run that runs more than one child names
   the first of them and counts the others, as
   `[2/9] lib/calc.ml:9:3:sub and 2 more…`.
+- `--mutate-since REV` and its mirror `WINDTRAP_MUTATE_SINCE` let a
+  mutation run test only the mutants on the lines that changed in the
+  work tree since the git revision `REV`, and keep the verdicts of the
+  other lines that the same build wrote (see
+  [Testing the changed lines](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#testing-the-changed-lines)).
+- A run given `--mutate-since` or `WINDTRAP_MUTATE_SINCE` without
+  `--mutate`, `WINDTRAP_MUTATE`, `--arm` or `WINDTRAP_MUTATE_ARM` says
+  on standard error that it tests no mutant, and runs as usual.
+- `windtrap mutants --since REV` reports and gates on only the mutants
+  on the lines that changed since `REV` (see
+  [Testing the changed lines](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#testing-the-changed-lines)).
+- A mutation run first runs the test that killed a mutant in the
+  previous run, alone, when the source file of the mutant did not
+  change and the test passes alone with no mutant, and runs every
+  reaching test only when that test does not kill it (see
+  [Where the verdicts are](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#where-the-verdicts-are)).
+- (breaking) A verdict file starts with `windtrap-mutants-v4` and keeps
+  the test that killed each mutant and a digest of its source file;
+  `windtrap mutants` refuses a file of 0.2.0, so run the suites with
+  their mutants again.
 
 ## v0.2.0 2026-09-26
 
