@@ -2383,6 +2383,23 @@ let mutation_entries () =
               "logging call";
             ];
         } );
+    ( "filtered: the most mutants first, a tie by reason, the counts \
+       right-aligned",
+      at_rest
+        {
+          loop_report with
+          Sections.survivors = [];
+          unreached = [];
+          filtered =
+            [
+              "same branches";
+              "failure message";
+              "logging call";
+              "same branches";
+              "logging call";
+            ]
+            @ List.init 10 (fun _ -> "zero operand");
+        } );
     ( "a loop's closing: the rule, the sections, the command, the outcome",
       closing ~ansi:true
         ~invocation:

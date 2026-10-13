@@ -935,12 +935,13 @@ filtered, with its reason, and gives it no guard:
 
   $ mut --impl ./fixture_equivalent_ari.ml | ../elide.exe
   mutation sites of "./fixture_equivalent_ari.ml" in Windtrap_mut_________fixture_equivalent_ari___ml:
-    0: 6:13 "sub" "x + 0" -> "x - 0", filtered "zero operand"
-    1: 7:14 "add" "x - 0" -> "x + 0", filtered "zero operand"
-    2: 8:12 "sub" "x + 0x0" -> "x - 0x0", filtered "zero operand"
-    3: 9:13 "sub" "0 + x" -> "0 - x"
-    4: 10:14 "fsub" "x +. 0." -> "x -. 0."
-    5: 11:16 "sub" "a + b" -> "a - b"
+    0: 7:13 "sub" "x + 0" -> "x - 0", filtered "zero operand"
+    1: 8:14 "add" "x - 0" -> "x + 0", filtered "zero operand"
+    2: 9:12 "sub" "x + 0x0" -> "x - 0x0", filtered "zero operand"
+    3: 10:13 "sub" "0 + x" -> "0 - x"
+    4: 11:14 "fsub" "x +. 0." -> "x -. 0."
+    5: 12:16 "sub" "a + b" -> "a - b"
+    6: 13:17 "sub" "x + 0l" -> "x - 0l"
   let plus x = x + 0
   let minus x = x - 0
   let hex x = x + 0x0
@@ -959,6 +960,11 @@ filtered, with its reason, and gives it no guard:
      if Windtrap_mut_________fixture_equivalent_ari___ml.___windtrap_armed___ 5
      then __windtrap_mut_5_l - __windtrap_mut_5_r
      else __windtrap_mut_5_l + __windtrap_mut_5_r) + 0
+  let suffixed x =
+    let (__windtrap_mut_6_l, __windtrap_mut_6_r) = (x, 0l) in
+    if Windtrap_mut_________fixture_equivalent_ari___ml.___windtrap_armed___ 6
+    then __windtrap_mut_6_l - __windtrap_mut_6_r
+    else __windtrap_mut_6_l + __windtrap_mut_6_r
 
   $ mut --impl ./fixture_equivalent_con.ml | ../elide.exe
   mutation sites of "./fixture_equivalent_con.ml" in Windtrap_mut_________fixture_equivalent_con___ml:
@@ -991,17 +997,18 @@ filtered, with its reason, and gives it no guard:
 
   $ mut --impl ./fixture_equivalent_neg.ml | ../elide.exe
   mutation sites of "./fixture_equivalent_neg.ml" in Windtrap_mut_________fixture_equivalent_neg___ml:
-    0: 7:36 "sub" "x + 1" -> "x - 1"
-    1: 7:25 "sub" "x + 1" -> "x - 1"
-    2: 7:18 "not" "c" -> "not c", filtered "same branches"
-    3: 8:21 "le" "a < b" -> "a <= b", filtered "same branches"
-    4: 9:19 "not" "f (x + 1)" -> "not (f (x + 1))", filtered "same branches"
-    5: 9:21 "sub" "x + 1" -> "x - 1"
-    6: 10:20 "or" "a && b" -> "a || b"
-    7: 11:17 "not" "c" -> "not c"
-    8: 12:16 "not" "c" -> "not c"
-    9: 13:18 "not" "c" -> "not c"
-    10: 15:5 "not" "c" -> "not c"
+    0: 8:36 "sub" "x + 1" -> "x - 1"
+    1: 8:25 "sub" "x + 1" -> "x - 1"
+    2: 8:18 "not" "c" -> "not c", filtered "same branches"
+    3: 9:21 "le" "a < b" -> "a <= b", filtered "same branches"
+    4: 10:19 "not" "f (x + 1)" -> "not (f (x + 1))", filtered "same branches"
+    5: 10:21 "sub" "x + 1" -> "x - 1"
+    6: 11:20 "or" "a && b" -> "a || b"
+    7: 12:17 "not" "c" -> "not c"
+    8: 13:16 "not" "c" -> "not c"
+    9: 14:18 "not" "c" -> "not c"
+    10: 16:5 "not" "c" -> "not c"
+    11: 17:21 "neq" "a = b" -> "a <> b", filtered "same branches"
   let flag c x =
     if c
     then
@@ -1081,27 +1088,35 @@ filtered, with its reason, and gives it no guard:
        else __windtrap_mut_10_p)
     then match x with | Some y -> y
     else (match x with | Some y -> y)
+  let equal a b x = if a = b then x else x
 
   $ mut --impl ./fixture_equivalent_arm.ml | ../elide.exe
   mutation sites of "./fixture_equivalent_arm.ml" in Windtrap_mut_________fixture_equivalent_arm___ml:
-    0: 7:20 "drop" "| `A -> ..." -> "| `A when false -> ...", filtered "same body as the next case"
-    1: 7:30 "drop" "| _ -> ..." -> "| _ when false -> ..."
-    2: 8:21 "drop" "| Some _x -> ..." -> "| Some _x when false -> ..."
-    3: 8:36 "drop" "| _ -> ..." -> "| _ when false -> ..."
-    4: 9:25 "drop" "| `A when p -> ..." -> "| `A when false -> ..."
-    5: 9:33 "not" "p" -> "not p"
-    6: 9:42 "drop" "| _ -> ..." -> "| _ when false -> ..."
-    7: 10:21 "drop" "| `A -> ..." -> "| `A when false -> ..."
-    8: 10:31 "drop" "| x -> ..." -> "| x when false -> ..."
-    9: 10:36 "skip" "ignore x" -> "()"
-    10: 11:22 "drop" "| `A -> ..." -> "| `A when false -> ...", filtered "same body as the next case"
-    11: 11:35 "drop" "| _ -> ..." -> "| _ when false -> ..."
-    12: 12:30 "drop" "| Not_found -> ..." -> "| Not_found when false -> ...", filtered "same body as the next case"
-    13: 12:47 "drop" "| _ -> ..." -> "| _ when false -> ..."
-    14: 14:27 "drop" "| exception Not_found -> ..." -> "| exception Not_found when false -> ...", filtered "same body as the next case"
-    15: 14:54 "drop" "| exception _ -> ..." -> "| exception _ when false -> ..."
-    16: 15:22 "drop" "| (lazy 0) -> ..." -> "| (lazy 0) when false -> ..."
-    17: 15:36 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    0: 9:20 "drop" "| `A -> ..." -> "| `A when false -> ...", filtered "same body as the next case"
+    1: 9:30 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    2: 10:21 "drop" "| Some _x -> ..." -> "| Some _x when false -> ..."
+    3: 10:36 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    4: 11:25 "drop" "| `A when p -> ..." -> "| `A when false -> ..."
+    5: 11:33 "not" "p" -> "not p"
+    6: 11:42 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    7: 12:21 "drop" "| `A -> ..." -> "| `A when false -> ..."
+    8: 12:31 "drop" "| x -> ..." -> "| x when false -> ..."
+    9: 12:36 "skip" "ignore x" -> "()"
+    10: 13:22 "drop" "| `A -> ..." -> "| `A when false -> ...", filtered "same body as the next case"
+    11: 13:35 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    12: 14:30 "drop" "| Not_found -> ..." -> "| Not_found when false -> ...", filtered "same body as the next case"
+    13: 14:47 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    14: 16:27 "drop" "| exception Not_found -> ..." -> "| exception Not_found when false -> ...", filtered "same body as the next case"
+    15: 16:54 "drop" "| exception _ -> ..." -> "| exception _ when false -> ..."
+    16: 17:22 "drop" "| (lazy 0) -> ..." -> "| (lazy 0) when false -> ..."
+    17: 17:36 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    18: 18:30 "drop" "| `A -> ..." -> "| `A when false -> ..."
+    19: 18:40 "drop" "| _ when p -> ..." -> "| _ when false -> ..."
+    20: 18:47 "not" "p" -> "not p"
+    21: 19:30 "drop" "| exception Not_found -> ..." -> "| exception Not_found when false -> ..."
+    22: 20:28 "drop" "| 1 -> ..." -> "| 1 when false -> ..."
+    23: 20:37 "drop" "| 2 -> ..." -> "| 2 when false -> ..."
+    24: 20:46 "drop" "| exception _ -> ..." -> "| exception _ when false -> ..."
   let kind =
     ((function
       | `A when true -> 0
@@ -1218,6 +1233,60 @@ filtered, with its reason, and gives it no guard:
           then false
           else true -> 1)
     [@ocaml.warning "-8-57"])
+  let next_guarded =
+    ((fun p ->
+        function
+        | `A when
+            if
+              Windtrap_mut_________fixture_equivalent_arm___ml.___windtrap_armed___
+                18
+            then false
+            else true -> 0
+        | _ when
+            if
+              Windtrap_mut_________fixture_equivalent_arm___ml.___windtrap_armed___
+                19
+            then false
+            else
+              (let __windtrap_mut_20_p = p in
+               if
+                 Windtrap_mut_________fixture_equivalent_arm___ml.___windtrap_armed___
+                   20
+               then Stdlib.not __windtrap_mut_20_p
+               else __windtrap_mut_20_p)
+            -> 0)
+    [@ocaml.warning "-8-57"])
+  let value f =
+    ((match f () with
+      | exception Not_found when
+          if
+            Windtrap_mut_________fixture_equivalent_arm___ml.___windtrap_armed___
+              21
+          then false
+          else true -> 0
+      | _ -> 0)
+    [@ocaml.warning "-8-57"])
+  let exn f =
+    ((match f () with
+      | 1 when
+          if
+            Windtrap_mut_________fixture_equivalent_arm___ml.___windtrap_armed___
+              22
+          then false
+          else true -> 0
+      | 2 when
+          if
+            Windtrap_mut_________fixture_equivalent_arm___ml.___windtrap_armed___
+              23
+          then false
+          else true -> 0
+      | exception _ when
+          if
+            Windtrap_mut_________fixture_equivalent_arm___ml.___windtrap_armed___
+              24
+          then false
+          else true -> 0)
+    [@ocaml.warning "-8-57"])
 
 Each filter reads these forms, and a form that it does not read keeps its
 mutant:
@@ -1251,16 +1320,19 @@ mutant:
 
 Code that gives its location keeps the mutants of its two copies:
 
-  $ mut --impl ./fixture_equivalent_located.ml | ../elide.exe | head -9
+  $ mut --impl ./fixture_equivalent_located.ml | ../elide.exe | head -12
   mutation sites of "./fixture_equivalent_located.ml" in Windtrap_mut_________fixture_equivalent_located___ml, with type 'a operands:
-    0: 6:20 "ge" "x > 0" -> "x >= 0"
-    1: 7:15 "not" "c" -> "not c"
-    2: 8:21 "not" "c" -> "not c"
-    3: 9:15 "not" "c" -> "not c"
-    4: 10:16 "not" "c" -> "not c"
-    5: 11:20 "drop" "| 0 -> ..." -> "| 0 when false -> ..."
-    6: 11:42 "drop" "| _ -> ..." -> "| _ when false -> ..."
-    7: 12:21 "not" "c" -> "not c"
+    0: 7:20 "ge" "x > 0" -> "x >= 0"
+    1: 8:15 "not" "c" -> "not c"
+    2: 9:21 "not" "c" -> "not c"
+    3: 10:15 "not" "c" -> "not c"
+    4: 11:16 "not" "c" -> "not c"
+    5: 12:20 "drop" "| 0 -> ..." -> "| 0 when false -> ..."
+    6: 12:42 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    7: 13:21 "not" "c" -> "not c"
+    8: 16:21 "not" "c" -> "not c"
+    9: 17:23 "not" "c" -> "not c"
+    10: 18:18 "not" "c" -> "not c"
 
   $ mut --impl ./fixture_equivalent_log.ml | ../elide.exe
   mutation sites of "./fixture_equivalent_log.ml" in Windtrap_mut_________fixture_equivalent_log___ml:
@@ -1359,15 +1431,19 @@ Code that gives its location keeps the mutants of its two copies:
 
   $ mut -lit --impl ./fixture_equivalent_lit.ml | ../elide.exe
   mutation sites of "./fixture_equivalent_lit.ml" in Windtrap_mut_________fixture_equivalent_lit___ml:
-    0: 6:54 "sub" "n + 1" -> "n - 1"
-    1: 6:59 "inc" "1" -> "2", filtered "failure message"
-    2: 6:62 "inc" "10" -> "11", filtered "failure message"
-    3: 7:51 "inc" "3" -> "4", filtered "failure message"
-    4: 8:54 "inc" "4" -> "5", filtered "failure message"
-    5: 9:29 "inc" "5" -> "6", filtered "failure message"
-    6: 10:55 "inc" "6" -> "7"
-    7: 11:56 "inc" "8" -> "9", filtered "failure message"
-    8: 12:50 "inc" "9" -> "10", filtered "failure message"
+    0: 7:54 "sub" "n + 1" -> "n - 1"
+    1: 7:59 "inc" "1" -> "2", filtered "failure message"
+    2: 7:62 "inc" "10" -> "11", filtered "failure message"
+    3: 8:51 "inc" "3" -> "4", filtered "failure message"
+    4: 9:54 "inc" "4" -> "5", filtered "failure message"
+    5: 10:29 "inc" "5" -> "6", filtered "failure message"
+    6: 11:55 "inc" "6" -> "7"
+    7: 12:56 "inc" "8" -> "9", filtered "failure message"
+    8: 13:50 "inc" "9" -> "10", filtered "failure message"
+    9: 14:38 "one" "0" -> "1", filtered "failure message"
+    10: 15:44 "zero" "2.5" -> "0.", filtered "failure message"
+    11: 16:46 "one" "0." -> "1.", filtered "failure message"
+    12: 17:39 "flip" "true" -> "false", filtered "failure message"
   let fail n =
     failwith
       (Printf.sprintf "item %d of %d"
@@ -1391,23 +1467,112 @@ Code that gives its location keeps the mutants of its two copies:
              else 6)))
   let kformatted () = Format.kasprintf failwith "code %d" 8
   let qualified () = Stdlib.failwith (string_of_int 9)
+  let zero () = failwith (string_of_int 0)
+  let float () = invalid_arg (string_of_float 2.5)
+  let float_zero () = failwith (string_of_float 0.)
+  let flag () = failwith (string_of_bool true)
 
-  $ mut -lit --impl ./fixture_equivalent_lit_bound.ml | ../elide.exe | head -3
+  $ mut -lit --impl ./fixture_equivalent_lit_bound.ml | ../elide.exe | head -4
   mutation sites of "./fixture_equivalent_lit_bound.ml" in Windtrap_mut_________fixture_equivalent_lit_bound___ml:
     0: 3:17 "sub" "n + 1" -> "n - 1"
     1: 3:21 "inc" "1" -> "2"
+    2: 4:23 "inc" "7" -> "8"
 
-The backend flag -no-filter tests every mutant:
+  $ mut -lit --impl ./fixture_equivalent_lit_bound_invalid.ml | ../elide.exe | head -4
+  mutation sites of "./fixture_equivalent_lit_bound_invalid.ml" in Windtrap_mut_________fixture_equivalent_lit_bound_invalid___ml:
+    0: 3:20 "sub" "n + 1" -> "n - 1"
+    1: 3:24 "inc" "1" -> "2"
+    2: 4:26 "inc" "7" -> "8"
 
-  $ mut -no-filter --impl ./fixture_equivalent_ari.ml | ../elide.exe | head -8
+The backend flag -no-filter tests every mutant, which no filter then
+records:
+
+  $ mut -no-filter --impl ./fixture_equivalent_ari.ml | ../elide.exe | head -9
   mutation sites of "./fixture_equivalent_ari.ml" in Windtrap_mut_________fixture_equivalent_ari___ml:
-    0: 6:13 "sub" "x + 0" -> "x - 0"
-    1: 7:14 "add" "x - 0" -> "x + 0"
-    2: 8:12 "sub" "x + 0x0" -> "x - 0x0"
-    3: 9:13 "sub" "0 + x" -> "0 - x"
-    4: 10:14 "fsub" "x +. 0." -> "x -. 0."
-    5: 11:16 "sub" "(a + b) + 0" -> "(a + b) - 0"
+    0: 7:13 "sub" "x + 0" -> "x - 0"
+    1: 8:14 "add" "x - 0" -> "x + 0"
+    2: 9:12 "sub" "x + 0x0" -> "x - 0x0"
+    3: 10:13 "sub" "0 + x" -> "0 - x"
+    4: 11:14 "fsub" "x +. 0." -> "x -. 0."
+    5: 12:16 "sub" "(a + b) + 0" -> "(a + b) - 0"
+    6: 13:17 "sub" "x + 0l" -> "x - 0l"
   let plus x =
+  $ sites() { mut -no-filter "$@" | ../elide.exe | grep -E '^ +[0-9]+: '; }
+  $ sites --impl ./fixture_equivalent_con.ml
+    0: 7:13 "or" "a && a" -> "a || a"
+    1: 8:15 "and" "a || a" -> "a && a"
+    2: 9:14 "or" "r.ok && r.ok" -> "r.ok || r.ok"
+    3: 10:16 "or" "(f x) && (f x)" -> "(f x) || (f x)"
+    4: 11:16 "or" "a && b" -> "a || b"
+  $ sites --impl ./fixture_equivalent_neg.ml
+    0: 8:36 "sub" "x + 1" -> "x - 1"
+    1: 8:25 "sub" "x + 1" -> "x - 1"
+    2: 8:18 "not" "c" -> "not c"
+    3: 9:21 "le" "a < b" -> "a <= b"
+    4: 10:19 "not" "f (x + 1)" -> "not (f (x + 1))"
+    5: 10:21 "sub" "x + 1" -> "x - 1"
+    6: 11:20 "or" "a && b" -> "a || b"
+    7: 12:17 "not" "c" -> "not c"
+    8: 13:16 "not" "c" -> "not c"
+    9: 14:18 "not" "c" -> "not c"
+    10: 16:5 "not" "c" -> "not c"
+    11: 17:21 "neq" "a = b" -> "a <> b"
+  $ sites --impl ./fixture_equivalent_arm.ml
+    0: 9:20 "drop" "| `A -> ..." -> "| `A when false -> ..."
+    1: 9:30 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    2: 10:21 "drop" "| Some _x -> ..." -> "| Some _x when false -> ..."
+    3: 10:36 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    4: 11:25 "drop" "| `A when p -> ..." -> "| `A when false -> ..."
+    5: 11:33 "not" "p" -> "not p"
+    6: 11:42 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    7: 12:21 "drop" "| `A -> ..." -> "| `A when false -> ..."
+    8: 12:31 "drop" "| x -> ..." -> "| x when false -> ..."
+    9: 12:36 "skip" "ignore x" -> "()"
+    10: 13:22 "drop" "| `A -> ..." -> "| `A when false -> ..."
+    11: 13:35 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    12: 14:30 "drop" "| Not_found -> ..." -> "| Not_found when false -> ..."
+    13: 14:47 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    14: 16:27 "drop" "| exception Not_found -> ..." -> "| exception Not_found when false -> ..."
+    15: 16:54 "drop" "| exception _ -> ..." -> "| exception _ when false -> ..."
+    16: 17:22 "drop" "| (lazy 0) -> ..." -> "| (lazy 0) when false -> ..."
+    17: 17:36 "drop" "| _ -> ..." -> "| _ when false -> ..."
+    18: 18:30 "drop" "| `A -> ..." -> "| `A when false -> ..."
+    19: 18:40 "drop" "| _ when p -> ..." -> "| _ when false -> ..."
+    20: 18:47 "not" "p" -> "not p"
+    21: 19:30 "drop" "| exception Not_found -> ..." -> "| exception Not_found when false -> ..."
+    22: 20:28 "drop" "| 1 -> ..." -> "| 1 when false -> ..."
+    23: 20:37 "drop" "| 2 -> ..." -> "| 2 when false -> ..."
+    24: 20:46 "drop" "| exception _ -> ..." -> "| exception _ when false -> ..."
+  $ sites --impl ./fixture_equivalent_log.ml
+    0: 8:45 "sub" "x + 1" -> "x - 1"
+    1: 8:70 "none" "Some x" -> "None"
+    2: 9:42 "add" "x - 1" -> "x + 1"
+    3: 10:33 "sub" "x + 1" -> "x - 1"
+    4: 13:2 "skip" "Log.debug (fun m -> m \"%d\" (x + 1))" -> "()"
+    5: 13:29 "sub" "x + 1" -> "x - 1"
+    6: 16:38 "sub" "x + 1" -> "x - 1"
+    7: 17:38 "sub" "x + 1" -> "x - 1"
+    8: 18:40 "sub" "x + 1" -> "x - 1"
+    9: 19:48 "sub" "x + 1" -> "x - 1"
+    10: 22:2 "skip" "Logs.debug (fun m -> y := ((!y) + 1); (let () = incr y in m \"%d\" (!y)))" -> "()"
+    11: 23:6 "skip" "y := ((!y) + 1)" -> "()"
+    12: 23:11 "sub" "(!y) + 1" -> "(!y) - 1"
+    13: 24:15 "skip" "incr y" -> "()"
+    14: 26:2 "sub" "(!y) + x" -> "(!y) - x"
+  $ sites -lit --impl ./fixture_equivalent_lit.ml
+    0: 7:54 "sub" "n + 1" -> "n - 1"
+    1: 7:59 "inc" "1" -> "2"
+    2: 7:62 "inc" "10" -> "11"
+    3: 8:51 "inc" "3" -> "4"
+    4: 9:54 "inc" "4" -> "5"
+    5: 10:29 "inc" "5" -> "6"
+    6: 11:55 "inc" "6" -> "7"
+    7: 12:56 "inc" "8" -> "9"
+    8: 13:50 "inc" "9" -> "10"
+    9: 14:38 "one" "0" -> "1"
+    10: 15:44 "zero" "2.5" -> "0."
+    11: 16:46 "one" "0." -> "1."
+    12: 17:39 "flip" "true" -> "false"
 
   $ mut --impl ./fixture_exclude.ml | ../elide.exe
   [@@@mutate exclude_file]

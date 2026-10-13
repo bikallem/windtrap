@@ -218,6 +218,17 @@ mutants: 3 reached by this suite, 3 killed, 2 never reached, 3 evaluated outside
 
 mutants: 3 reached by this suite, 3 killed, 2 never reached, 1 evaluated outside tests, 12 filtered, score 100.0%
 
+=== filtered: the most mutants first, a tie by reason, the counts right-aligned
+───────────────────── filtered (15) ──────────────────────
+  The rewriter found these mutants equivalent or of no interest, and no child tested them.
+  10  zero operand
+   2  logging call
+   2  same branches
+   1  failure message
+──────────────────────────────────────────────────────────
+
+mutants: 3 reached by this suite, 3 killed, 15 filtered, score 100.0%
+
 === a loop's closing: the rule, the sections, the command, the outcome
 «d|──────────────────────────────────────────────────────────»
 

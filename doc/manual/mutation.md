@@ -173,9 +173,10 @@ mutant killed.
 
 To judge a new test, narrow the mutation run. `--mutate=PREFIX` tests
 only the mutants of the files whose path starts with a prefix, and still
-saves its verdicts. The filters select the tests as in any run; a
-filtered run lists the mutants its tests never reached and saves no
-verdict. `stays positive` checks a sign that `a - b → a + b` keeps:
+saves its verdicts. The test filters, as `-f`, select the tests as in
+any run. A run that they narrow lists the mutants its tests never
+reached and saves no verdict. `stays positive` checks a sign that
+`a - b → a + b` keeps:
 
 ```
 $ dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --mutate=calc.ml -f "stays positive"
@@ -300,11 +301,19 @@ because a test can compare the exception.
 A project that logs through its own functions, or through
 `Printf.eprintf` or `prerr_endline`, gives their names with
 `-log-function` after the backend, one flag for each name, spelled as
-the source spells it. `-no-filter` switches every filter off:
+the source spells it:
 
 ```lisp
 (instrumentation
  (backend ppx_windtrap.mutate -log-function Log.debug -log-function Log.info))
+```
+
+`-no-filter` after the backend switches every filter off, and the run
+then tests each mutant:
+
+```lisp
+(instrumentation
+ (backend ppx_windtrap.mutate -no-filter))
 ```
 
 `[@mutate off "reason"]` on a filtered site dismisses it, and the site

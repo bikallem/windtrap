@@ -443,10 +443,12 @@ let lost_families () =
 (* Filtered sites *)
 
 let filtered_reading () =
-  strf "%d %d %b %d %d %d" (Filtered.zero 4) (Filtered.chain 5 3)
+  Filtered.logged 4;
+  strf "%d %d %b %d %d %d %d" (Filtered.zero 4) (Filtered.chain 5 3)
     (Filtered.same true)
     (Filtered.branches false 7)
     (Filtered.cases `B) (Filtered.message 2)
+    (Queue.take Filtered.Log.logged)
 
 let reason (m : Mutate.mutant) =
   match m.dismissed with
@@ -461,12 +463,13 @@ let filtered_reasons () =
       "same branches";
       "same body as the next case";
       "failure message";
+      "logging call";
     ]
     (List.filter_map reason (mutants_of "filtered.ml"))
 
 let filtered_inert () =
   let original = filtered_reading () in
-  equal string "4 8 true 7 0 2" original;
+  equal string "4 8 true 7 0 2 8" original;
   List.iter
     (fun (m : Mutate.mutant) ->
       match reason m with
