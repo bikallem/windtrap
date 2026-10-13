@@ -12,9 +12,10 @@
      string escapes, so a session can name any byte.
 
    mkdata mutants OUT [--exe EXE] FILE:LINE:COL:REWRITE:BEFORE:AFTER=VERDICT...
-     VERDICT is killed, not_evaluated, outside_tests, unreached or
-     survived:TESTS, where TESTS are ';'-separated paths of '/'-separated
-     names.
+     VERDICT is killed, killed:TEST, not_evaluated, outside_tests,
+     unreached or survived:TESTS, where a TEST is a path of '/'-separated
+     names and TESTS are ';'-separated TESTs. No record has a source
+     digest.
 
    --exe records the identity of the executable at EXE as it is now. *)
 
@@ -63,12 +64,14 @@ let coverage ~identity out records =
   Instr.write_file out (Buffer.contents b)
 
 let verdict = function
-  | "killed" -> Verdicts.Killed
+  | "killed" -> Verdicts.Killed { by = None }
   | "not_evaluated" -> Verdicts.Not_evaluated
   | "outside_tests" -> Verdicts.Outside_tests
   | "unreached" -> Verdicts.Unreached
   | v -> (
       match String.split_on_char ':' v with
+      | [ "killed"; test ] ->
+          Verdicts.Killed { by = Some (String.split_on_char '/' test) }
       | [ "survived"; tests ] ->
           Verdicts.survived
             (List.map (String.split_on_char '/')
@@ -87,7 +90,7 @@ let record spec =
           rewrite;
         }
       in
-      { Verdicts.id; before; after; verdict = verdict v }
+      { Verdicts.id; before; after; source_digest = None; verdict = verdict v }
   | _ -> die "%S: not FILE:LINE:COL:REWRITE:BEFORE:AFTER" mutant
 
 let mutants ~identity out specs =

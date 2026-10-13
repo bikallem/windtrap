@@ -257,6 +257,17 @@ let run ?(argv = Sys.argv) suite tests =
       | Ok config when parsed.list_only = Some true ->
           list_selection ~suite config tests
       | Ok config ->
+          (* A gate on a run that tests no mutant passes, so the run says
+             that it ignores the revision. *)
+          Option.iter
+            (fun source ->
+              Os.say
+                (Pp.str
+                   "%s gives a revision, but neither --mutate nor \
+                    WINDTRAP_MUTATE is given, so the suite runs without \
+                    mutation"
+                   source))
+            config.unused_since;
           let corrected = config.baseline = Baseline.Corrected in
           let invocation = invocation ~corrected argv0 in
           execute ~suite { config with invocation } tests)
@@ -266,6 +277,7 @@ let run ?(argv = Sys.argv) suite tests =
 module Private = struct
   module Baseline = Baseline
   module Capture = Capture
+  module Changed_lines = Changed_lines
   module Check = Check
   module Cli = Cli
   module Diff = Diff

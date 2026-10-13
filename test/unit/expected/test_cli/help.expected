@@ -70,6 +70,9 @@ OPTIONS:
   --mutate-jobs=N (env WINDTRAP_MUTATE_JOBS)
       Test up to N mutants at once, or one per CPU for auto (default 1).
 
+  --mutate-since=REV (env WINDTRAP_MUTATE_SINCE)
+      Test only the mutants on lines changed since git revision REV.
+
   --arm=ID (env WINDTRAP_MUTATE_ARM)
       Run once with mutant ID armed.
 

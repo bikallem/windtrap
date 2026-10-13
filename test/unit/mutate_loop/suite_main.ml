@@ -702,6 +702,89 @@ let boundary =
     test "fifth reaches sub" (fun () -> equal int (-6) (Subject.sub (-10) (-4)));
   ]
 
+(* [ordered] reaches [sub] with three tests, and only the second pins it.
+   When [sub]'s answer changes, each test appends its word to MUTATE_RAN,
+   so the harness reads which tests a child ran, in their order. *)
+let ran word =
+  match Sys.getenv_opt "MUTATE_RAN" with
+  | None | Some "" -> ()
+  | Some path ->
+      let oc = open_out_gen [ Open_append; Open_creat ] 0o644 path in
+      output_string oc (word ^ "\n");
+      close_out oc
+
+let ordered =
+  [
+    test "watches sub without pinning it" (fun () ->
+        if Subject.sub 10 4 <> 6 then ran "watches";
+        is_true (Subject.sub 10 4 < 100));
+    test "pins sub" (fun () ->
+        if Subject.sub 10 4 <> 6 then ran "pins";
+        equal int 6 (Subject.sub 10 4));
+    test "watches sub again without pinning it" (fun () ->
+        if Subject.sub 10 4 <> 6 then ran "again";
+        is_true (Subject.sub 10 4 < 100));
+  ]
+
+(* [primed]'s second test runs [widen] only after the first test, and only
+   once: the dry run leaves the flag down, so a child that runs the second
+   test alone does not evaluate [widen]. Only the second test pins it. *)
+let primed = ref false
+
+let priming =
+  [
+    test "primes widen" (fun () ->
+        primed := true;
+        if Subject.widen 3 4 <> 7 then ran "primes";
+        is_true (Subject.widen 3 4 <> 0));
+    test "pins widen once primed" (fun () ->
+        if !primed then begin
+          primed := false;
+          if Subject.widen 3 4 <> 7 then ran "pins";
+          equal int 7 (Subject.widen 3 4)
+        end);
+  ]
+
+(* [retried] holds the child of [sub] at its gate, the child of [widen] at
+   its gate when it runs the last test of [widen] alone, and the child of
+   [orphan] at its gate. Each mutant survives. *)
+let retried =
+  [
+    test "sub waits at its gate" (fun () ->
+        if Subject.sub 10 4 <> 6 then wait_at "sub";
+        is_true (Subject.sub 10 4 < 100));
+    test "widen is nonzero" (fun () -> is_true (Subject.widen 3 4 <> 0));
+    test "widen waits at its gate" (fun () ->
+        if Subject.widen 3 4 <> 7 then wait_at "widen";
+        is_true (Subject.widen 3 4 <> 0));
+    test "orphan waits at its gate" (fun () ->
+        if Subject.orphan 3 4 <> 7 then wait_at "orphan";
+        is_true (Subject.orphan 3 4 <> 0));
+  ]
+
+(* [flagged]'s second test needs a flag that only the first test raises, and
+   lowers it when it ends. The dry run leaves the flag down, so the second
+   test fails alone with no mutant. It pins [sub] only without
+   MUTATE_WEAK. *)
+let flag = ref false
+
+let flagged =
+  [
+    test "raises the flag" (fun () ->
+        flag := true;
+        if Subject.sub 10 4 <> 6 then ran "raises";
+        is_true (Subject.sub 10 4 < 100));
+    test "needs the flag" (fun () ->
+        Fun.protect
+          ~finally:(fun () -> flag := false)
+          (fun () ->
+            if Subject.sub 10 4 <> 6 then ran "needs";
+            is_true !flag;
+            match Sys.getenv_opt "MUTATE_WEAK" with
+            | None | Some "" -> equal int 6 (Subject.sub 10 4)
+            | Some _ -> is_true (Subject.sub 10 4 < 100)));
+  ]
+
 let () =
   match Option.value ~default:"green" (Sys.getenv_opt "MUTATE_FIXTURE") with
   | "catalogue" ->
@@ -711,6 +794,10 @@ let () =
             (Windtrap_runtime.Mutate.id_to_string m.Windtrap_runtime.Mutate.id))
         (Windtrap_runtime.Mutate.catalogue ())
   | "weak" -> exit @@ run "calc" [ group "widen" weak ]
+  | "ordered" -> exit @@ run "calc" [ group "ordered" ordered ]
+  | "primed" -> exit @@ run "calc" [ group "primed" priming ]
+  | "flagged" -> exit @@ run "calc" [ group "flagged" flagged ]
+  | "retried" -> exit @@ run "calc" [ group "retried" retried ]
   | "block" -> exit @@ run "calc" [ group "block" block ]
   | "held" -> exit @@ run "calc" [ group "held" held ]
   | "interrupted" -> exit @@ run "calc" [ group "held" interrupted ]

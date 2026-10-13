@@ -15,7 +15,7 @@ type invocation = [ `Exe of string | `Mirrors ]
 
 type mutation =
   | No_mutation
-  | Loop of { scope : string list; jobs : int }
+  | Loop of { scope : string list; jobs : int; since : string option }
   | Armed of string
 
 type broadcast = { selection : bool; mutate : bool }
@@ -43,6 +43,7 @@ type config = {
   github : bool;
   invocation : invocation;
   broadcast : broadcast;
+  unused_since : string option;
 }
 
 let not_broadcast = { selection = false; mutate = false }
@@ -71,6 +72,7 @@ let default_config () =
     github = false;
     invocation = `Mirrors;
     broadcast = not_broadcast;
+    unused_since = None;
   }
 
 let for_subset config ~log_dir ~bail =

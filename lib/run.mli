@@ -35,12 +35,14 @@ type invocation = [ `Exe of string | `Mirrors ]
     mutation testing. *)
 type mutation =
   | No_mutation  (** An ordinary run. The mutants are inert. *)
-  | Loop of { scope : string list; jobs : int }
+  | Loop of { scope : string list; jobs : int; since : string option }
       (** [--mutate[=PREFIX,…]]: the mutation loop, over the mutants whose
           recorded source path starts with one of the prefixes of [scope]. The
           bare flag gives the empty list, which keeps every mutant. [jobs] is
           [--mutate-jobs]: the most children that the loop runs at once. It is
-          from [1] to [256]. *)
+          from [1] to [256]. [since] is [--mutate-since]: a git revision, and
+          the loop then keeps only the mutants on a line that changed since that
+          revision ({!Changed_lines.of_git}). *)
   | Armed of string
       (** [--arm ID]: one ordinary run with the mutant [ID] armed. The
           identifier is kept as typed, and its grammar is that of
@@ -109,7 +111,8 @@ type config = {
   junit : string option;
       (** [--junit]: a file, or a directory, where a JUnit report is written
           too. [None] writes none. *)
-  mutation : mutation;  (** [--mutate], [--mutate-jobs] and [--arm]. *)
+  mutation : mutation;
+      (** [--mutate], [--mutate-jobs], [--mutate-since] and [--arm]. *)
   github : bool;
       (** Whether the report is written for GitHub Actions, with its group and
           its annotations (see {!Report}). *)
@@ -119,6 +122,11 @@ type config = {
   broadcast : broadcast;
       (** Which of the selection and the {!Loop} came from the environment
           alone. The executor does not read it. *)
+  unused_since : string option;
+      (** The source of a revision that no {!Loop} reads: ["--mutate-since"] or
+          ["WINDTRAP_MUTATE_SINCE"] when [mutation] is {!No_mutation}, and
+          [None] otherwise. The entry point of a suite says on standard error
+          that the run tests no mutant. The executor does not read it. *)
 }
 (** The type for the configuration of a run: what one invocation resolves from
     its command line, its mirrors and the defaults, in that precedence (see
@@ -130,9 +138,9 @@ type config = {
 val default_config : unit -> config
 (** [default_config ()] is the configuration of a run given no flag: no
     selection, every boolean [false], {!Baseline.Check}, no limit and no count,
-    [color = Os.Auto], [slow_threshold = 1.], {!No_mutation}, [`Mirrors] and
-    nothing broadcast. Every call draws [seed] from {!Seed.random} and takes
-    [log_dir] from {!Os.default_log_dir}. *)
+    [color = Os.Auto], [slow_threshold = 1.], {!No_mutation}, [`Mirrors],
+    nothing broadcast and no [unused_since]. Every call draws [seed] from
+    {!Seed.random} and takes [log_dir] from {!Os.default_log_dir}. *)
 
 val for_subset : config -> log_dir:string -> bail:bool -> config
 (** [for_subset config ~log_dir ~bail] is [config] for a run over part of the
