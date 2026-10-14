@@ -195,6 +195,10 @@
   so that the children of other suites under a parallel `dune runtest`
   do not kill its mutant (see
   [Testing mutants in parallel](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#testing-mutants-in-parallel)).
+- A mutation child writes no last-failed store. The run removes the
+  store with the child, and on a busy file system the write can take
+  seconds. This time counted toward the deadline of the child, and a
+  mutant that survived could count as killed.
 - A mutation run that a signal stops when no child runs starts no
   other child, and names the next mutant as `interrupted before
   testing`.

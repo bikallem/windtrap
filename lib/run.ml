@@ -34,6 +34,7 @@ type config = {
   timeout : float option;
   prop_count : int option;
   log_dir : string;
+  store : bool;
   allow_focus : bool;
   color : Os.color_mode;
   slow_threshold : float;
@@ -63,6 +64,7 @@ let default_config () =
     timeout = None;
     prop_count = None;
     log_dir = Os.default_log_dir ();
+    store = true;
     allow_focus = false;
     color = Os.Auto;
     slow_threshold = 1.0;
@@ -86,6 +88,7 @@ let for_subset config ~log_dir ~bail =
     stream = false;
     baseline = Baseline.Check;
     log_dir;
+    store = false;
     allow_focus = true;
     junit = None;
     broadcast = not_broadcast;
@@ -1299,7 +1302,7 @@ let execute ?(on_event = ignore) ?allowlist config ~suite tests =
   let results = results run in
   let bailed = config.bail && List.exists (fun r -> r.counted) results in
   let full = (not bailed) && List.length results = total in
-  update_store (store_path config ~suite) ~full results;
+  if config.store then update_store (store_path config ~suite) ~full results;
   Baseline.write baselines;
   Option.iter interrupt run.interrupted;
   let refused =
