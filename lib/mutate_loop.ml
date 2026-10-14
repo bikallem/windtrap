@@ -533,8 +533,11 @@ let waited_for_cpu child ~elapsed =
    does not get its wait after its last read. Without this limit, the next
    read comes only when the wait of the last read is used up. A test that
    waits for a subprocess and continues after the subprocess ends then gets
-   its deadline at that read. With the limit, a process loses at most the
-   wait of [reread] seconds. Something else that holds the loop, for
+   its deadline at that read. With the limit, the loop loses at most the
+   wait of [reread] seconds for each thread of a process that ends. The
+   wait of the group is the sum of the waits of all of its threads. Thus k
+   threads that wait at the same time lose at most k times [reread] seconds
+   of wait. Something else that holds the loop, for
    example a write of the report, can make the time between two reads
    longer. *)
 let reread = 0.1

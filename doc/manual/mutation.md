@@ -390,7 +390,8 @@ child past its deadline. But the loop reads this time only when a child
 is past its deadline, and then at least every 0.1 seconds. The wait of
 a process that ended before the first read counts, for example of a
 short command that a test ran earlier. So does the wait of a process
-after its last read, which is at most 0.1 seconds.
+after its last read. This wait is at most 0.1 seconds for each thread
+of the process.
 
 The time that a child waits for the file system counts toward its
 deadline. A child writes no last-failed store, but it writes the

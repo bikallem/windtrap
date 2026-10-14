@@ -156,8 +156,9 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     for the other children. The loop reads these times only when a child is past
     its deadline, and then at least every 0.1 seconds ([reread]). The wait of a
     process that ended before the first read counts toward the deadline. So does
-    the wait of a process after its last read, which is at most 0.1 seconds
-    while nothing else holds the loop. Other systems do not give these times.
+    the wait of a process after its last read. While nothing else holds the
+    loop, this wait is at most 0.1 seconds for each thread of the process. Other
+    systems do not give these times.
 
     The runaway budget of a child ({!Windtrap_runtime.Mutate.arm}) is
     [(hits * 8) + 1000] ([budget_of]) for a site that the dry run evaluated
