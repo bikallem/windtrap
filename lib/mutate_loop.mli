@@ -77,12 +77,18 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
 
     {b Children.} A child runs {!Run.execute} over {!Run.for_subset} of
     [config], with the reaching tests of its mutant as the allowlist, or with
-    the one test of its history for a first child. It checks baselines read-only
-    and records no correction. Nothing that a child prints is visible, because
-    both of its standard descriptors are [/dev/null]. No [at_exit] function runs
-    in a child. Each child has a log directory of its own in the scratch
-    directory of the loop, so children that run at once share no file of the
-    loop. Their tests can share a file or a port of their own, which is why
+    the one test of its history for a first child. It checks baselines
+    read-only, records no correction and writes no last-failed store
+    ({!Run.config.store}). The loop removes the log directory of the child, and
+    on a busy file system a write of the store can take seconds, which count
+    toward the deadline of the child. But a child writes the capture log of each
+    test, because a test can read its captured output ({!Capture.val-output}).
+    The time of these writes also counts toward the deadline, and a stall of the
+    file system there can expire it. Nothing that a child prints is visible,
+    because both of its standard descriptors are [/dev/null]. No [at_exit]
+    function runs in a child. Each child has a log directory of its own in the
+    scratch directory of the loop, so children that run at once share no file of
+    the loop. Their tests can share a file or a port of their own, which is why
     [jobs] is [1] unless a run sets it.
 
     {b History.} Before the first child, the loop reads the verdict file of the
@@ -148,8 +154,11 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     deadline comes at the latest when the group used as much CPU time as the
     deadline of one job, also when its threads wait at the same time, or wait
     for the other children. The loop reads these times only when a child is past
-    its deadline. The wait of a process that ended before that read counts
-    toward the deadline. Other systems do not give these times.
+    its deadline, and then at least every 0.1 seconds ([reread]). The wait of a
+    process that ended before the first read counts toward the deadline. So does
+    the wait of a process after its last read. While nothing else holds the
+    loop, this wait is at most 0.1 seconds for each thread of the process. Other
+    systems do not give these times.
 
     The runaway budget of a child ({!Windtrap_runtime.Mutate.arm}) is
     [(hits * 8) + 1000] ([budget_of]) for a site that the dry run evaluated
@@ -292,6 +301,24 @@ val drain : (Unix.file_descr * Buffer.t) list -> Unix.file_descr list
     exception that the loop reports as a failure of the supervision
     ({{!section-loop}Refusals}). When [read] fails with such an error, it raises
     [Unix.Unix_error]. *)
+
+(** {1:looks The looks at a child} *)
+
+val next_look : left:float -> waited:(unit -> float) -> float * float
+(** [next_look ~left ~waited] is the seconds until the deadline of a child, and
+    the most seconds until the loop looks at the child again. [left] is the
+    seconds from the clock to the deadline that the dry run gives the child.
+
+    If [left] is more than [0.], the two numbers are [left], and [next_look]
+    does not call [waited]. If not, the child is past this deadline. Then
+    [waited ()] is the seconds that the group of the child waited for a CPU,
+    which move the deadline later. The first number is [left +. waited ()], and
+    the second number is at most 0.1 seconds ([reread]). Thus the loop reads the
+    wait again at least every 0.1 seconds ({{!section-loop}Limits}). The loop
+    kills the child when the first number is [0.] or less.
+
+    The function is in this interface for the unit suite. A test of the loop
+    cannot make sure that a process of a child ends between two looks. *)
 
 (** {1:effects Effects}
 

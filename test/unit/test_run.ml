@@ -177,6 +177,7 @@ let fields (c : Run.config) =
     ("timeout", opt string_of_float c.timeout);
     ("prop_count", opt string_of_int c.prop_count);
     ("log_dir", c.log_dir);
+    ("store", string_of_bool c.store);
     ("allow_focus", string_of_bool c.allow_focus);
     ("color", color_name c.color);
     ("slow_threshold", string_of_float c.slow_threshold);
@@ -209,6 +210,7 @@ let given_no_flag =
     ("baseline", "check");
     ("timeout", "none");
     ("prop_count", "none");
+    ("store", "true");
     ("allow_focus", "false");
     ("color", "auto");
     ("slow_threshold", "1.");
@@ -236,6 +238,7 @@ let parent : Run.config =
     timeout = Some 3.;
     prop_count = Some 7;
     log_dir = "parent";
+    store = true;
     allow_focus = false;
     color = Os.Never;
     slow_threshold = 2.;
@@ -276,6 +279,7 @@ let subset_rules =
       [ ("mutation", "loop lib/ jobs 4") ] );
     ( "captures into the log directory it is given",
       [ ("stream", "false"); ("log_dir", "child") ] );
+    ("writes no last-failed store, which no run reads", [ ("store", "false") ]);
     ( "bails as told and keeps every other field",
       [
         ("bail", "true");
@@ -3843,6 +3847,20 @@ let no_store =
     ~failed_only:true
     [ test "any" ignore ]
 
+(* The first run records "t". The second, under [store = false], passes
+   "t" and does not clear its entry, so --failed runs "t" again. *)
+let unstored =
+  let dir = Scratch.dir "windtrap-unstored-" in
+  let suite = [ test "t" (fun () -> fail "x") ] in
+  let first = with_store dir suite in
+  let second =
+    Recorded.execute
+      ~config:(fun c -> { c with log_dir = dir; store = false })
+      [ test "t" ignore ]
+  in
+  let rerun = with_store dir ~failed_only:true suite in
+  [ first; second; rerun ]
+
 let sanitized_store =
   Recorded.execute ~suite:"lib/a.ml" [ test "t" (fun () -> fail "x") ]
 
@@ -3913,6 +3931,10 @@ let store =
             (List.map ran unexpected_in_store));
       test "--failed without a store is refused" (fun () ->
           equal string "refused: no recorded failures" (ran no_store));
+      test "a run under store = false leaves the store as it was" (fun () ->
+          equal (list string)
+            [ "exit 1: t"; "exit 0: t"; "exit 1: t" ]
+            (List.map ran unstored));
       test "the store is <log_dir>/<sanitized suite>/.last-failed"
         the_store_is_under_the_sanitized_suite;
       test

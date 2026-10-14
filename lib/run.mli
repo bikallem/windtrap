@@ -96,6 +96,9 @@ type config = {
       (** [-o]: the root directory of the capture logs and of the last-failed
           store. {!execute} uses it as given, so a relative one follows a test
           that changes the working directory. *)
+  store : bool;
+      (** Whether {!execute} rewrites {{!section-store}the last-failed store}.
+      *)
   allow_focus : bool;
       (** Whether a suite that holds a focused test runs under [CI] (see
           {!Focused_in_ci}). *)
@@ -137,10 +140,10 @@ type config = {
 
 val default_config : unit -> config
 (** [default_config ()] is the configuration of a run given no flag: no
-    selection, every boolean [false], {!Baseline.Check}, no limit and no count,
-    [color = Os.Auto], [slow_threshold = 1.], {!No_mutation}, [`Mirrors],
-    nothing broadcast and no [unused_since]. Every call draws [seed] from
-    {!Seed.random} and takes [log_dir] from {!Os.default_log_dir}. *)
+    selection, every boolean [false] but [store], {!Baseline.Check}, no limit
+    and no count, [color = Os.Auto], [slow_threshold = 1.], {!No_mutation},
+    [`Mirrors], nothing broadcast and no [unused_since]. Every call draws [seed]
+    from {!Seed.random} and takes [log_dir] from {!Os.default_log_dir}. *)
 
 val for_subset : config -> log_dir:string -> bail:bool -> config
 (** [for_subset config ~log_dir ~bail] is [config] for a run over part of the
@@ -156,6 +159,8 @@ val for_subset : config -> log_dir:string -> bail:bool -> config
       each program on the test's domain in both. No child reads it to test
       mutants.
     - [stream] is [false] and [log_dir] is the argument.
+    - [store] is [false]. The parent removes the log directory of a child, so no
+      run reads a store there, and a write of it only takes time.
     - [bail] is the argument, and every other field is [config]'s.
 
     A selection field added to {!type-config} must be cleared here. A child
@@ -578,9 +583,10 @@ val startup_message : startup_error -> string
 
     {!execute} makes the {{!section-startup}startup checks}, selects the tests
     and runs them one at a time, in declaration order. It then
-    {{!section-release}releases the fixtures}, updates the last-failed store,
-    writes the kept corrections and computes the exit code. The subsections
-    after {!list_selection} say what each step guarantees. *)
+    {{!section-release}releases the fixtures}, updates the last-failed store
+    when [config.store] is [true], writes the kept corrections and computes the
+    exit code. The subsections after {!list_selection} say what each step
+    guarantees. *)
 
 (* What a test's author is told about limits, retries, scopes, expected
    failures, corrections, exits and signals is stated in windtrap.mli. The
@@ -633,11 +639,11 @@ val execute :
       store, under [config.log_dir].
 
     [execute] reads [CI] once, at startup, and writes the capture logs unless
-    [config.stream], the store and the kept corrections. On the process, it
-    registers the exit guard and turns the recording of backtraces on (see
-    {{!section-exits}exits}), handles three {{!section-signals}signals} while it
-    runs, and owns the state that {{!section-attempts}attempts} names during
-    each of them.
+    [config.stream], the store if [config.store] and the kept corrections. On
+    the process, it registers the exit guard and turns the recording of
+    backtraces on (see {{!section-exits}exits}), handles three
+    {{!section-signals}signals} while it runs, and owns the state that
+    {{!section-attempts}attempts} names during each of them.
 
     An exception that [on_event] raises leaves [execute], except on
     {!Interrupted}, {!Shrinking} and {!Shrunk}, where it is ignored. The run
@@ -787,8 +793,8 @@ val list_selection :
     {!Os.sanitize_component}. {!execute} rewrites it atomically
     ({!Os.atomic_write}) at the end of every run that passed its startup checks,
     a run that executed nothing included. {!list_selection} does not touch it.
-    Nor does a run that an exception ended, or a {{!section-signals}signal}
-    before this point.
+    Nor does a run under [config.store = false], a run that an exception ended,
+    or a {{!section-signals}signal} before this point.
 
     A test that counted as failed is recorded once, and an executed test that
     did not is cleared. The entry of a test that the run did not execute

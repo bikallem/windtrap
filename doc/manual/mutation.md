@@ -387,8 +387,19 @@ its deadline. This time includes the waits of the processes that the
 tests of the child start, and of all of their threads. Thus under a
 parallel `dune runtest`, the children of the other suites do not push a
 child past its deadline. But the loop reads this time only when a child
-is past its deadline. The wait of a process that ended before that read
-counts, for example of a short command that a test ran earlier.
+is past its deadline, and then at least every 0.1 seconds. The wait of
+a process that ended before the first read counts, for example of a
+short command that a test ran earlier. So does the wait of a process
+after its last read. This wait is at most 0.1 seconds for each thread
+of the process.
+
+The time that a child waits for the file system counts toward its
+deadline. A child writes no last-failed store, but it writes the
+captured output of each test to a log file, because a test can read
+its captured output. On a busy file system, the creation of a log file
+can take more than 0.5 seconds. Then a child can pass its deadline, and
+its mutant counts as killed. The loop does not get this time from the
+system.
 
 When the children are more than the CPUs, they also wait for each
 other. Their longer deadlines are for this wait, and the wait does not

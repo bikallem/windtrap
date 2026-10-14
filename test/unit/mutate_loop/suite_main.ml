@@ -498,15 +498,17 @@ let starved =
 
 (* [spawning] is [starved], but a subprocess uses the CPU ([burn]), and the
    test waits for it. Thus the main thread of the probe and of the child
-   sleeps, and only the subprocess waits for the CPU. *)
-let burn () =
+   sleeps, and only the subprocess waits for the CPU. The subprocess uses
+   [seconds] of CPU time, which it gets as its argument. *)
+let burn ?(seconds = 0.4) () =
   let fixture = "MUTATE_FIXTURE=" in
   let env =
     Unix.environment () |> Array.to_list
     |> List.filter (fun v -> not (String.starts_with ~prefix:fixture v))
   in
   let pid =
-    Unix.create_process_env Sys.executable_name [| Sys.executable_name |]
+    Unix.create_process_env Sys.executable_name
+      [| Sys.executable_name; string_of_float seconds |]
       (Array.of_list ((fixture ^ "burn") :: env))
       Unix.stdin Unix.stdout Unix.stderr
   in
@@ -519,6 +521,39 @@ let spawning =
     test "waits for a process that uses the CPU and pins nothing about sub"
       (fun () ->
         if Unix.getpid () <> dry_run_pid then burn ();
+        is_true (Subject.sub 10 4 < 100));
+  ]
+
+(* [burn_then_sleep] is [spawning] with a deadline of about 2.2 seconds,
+   because the dry run sleeps 0.2 seconds. The probe does not sleep and
+   starts no subprocess. The armed child waits for a subprocess that uses
+   0.7 seconds of CPU time, then sleeps 0.9 seconds. *)
+let burn_then_sleep =
+  [
+    test
+      "waits for a process that uses the CPU, then sleeps, and pins nothing \
+       about sub" (fun () ->
+        if Unix.getpid () = dry_run_pid then Unix.sleepf 0.2
+        else if Subject.sub 10 4 <> 6 then begin
+          burn ~seconds:0.7 ();
+          Unix.sleepf 0.9
+        end;
+        is_true (Subject.sub 10 4 < 100));
+  ]
+
+(* [late_burn] is [starved], but then the test waits for a subprocess that
+   uses the CPU ([burn]). The subprocess starts after about 2 seconds, past
+   the deadline of about 1 second. Thus it starts after the first read of
+   the group of the child, and gets a new pid. *)
+let late_burn =
+  [
+    test
+      "uses the CPU, then waits for a process that uses the CPU, and pins \
+       nothing about sub" (fun () ->
+        if Unix.getpid () <> dry_run_pid then begin
+          use_cpu 0.4;
+          burn ()
+        end;
         is_true (Subject.sub 10 4 < 100));
   ]
 
@@ -815,8 +850,10 @@ let () =
   | "slow" -> exit @@ run "calc" [ group "slow" slow ]
   | "starved" -> exit @@ run "calc" [ group "starved" starved ]
   | "spawning" -> exit @@ run "calc" [ group "starved" spawning ]
+  | "burn_then_sleep" -> exit @@ run "calc" [ group "starved" burn_then_sleep ]
+  | "late_burn" -> exit @@ run "calc" [ group "starved" late_burn ]
   | "spinners" -> exit @@ run "calc" [ group "jobs" spinners ]
-  | "burn" -> use_cpu 0.4
+  | "burn" -> use_cpu (float_of_string Sys.argv.(1))
   | "hog" ->
       ignore (Unix.setsid ());
       while true do

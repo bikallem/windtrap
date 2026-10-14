@@ -524,6 +524,9 @@ let settings cli =
         Option.value
           (absolute_path ~cli ~layered (fun p -> p.log_dir))
           ~default:defaults.Run.log_dir;
+      (* Only a forked mutation child writes no store, through
+         [Run.for_subset]. *)
+      store = true;
       (* Only a forked mutation child focuses, through [Run.for_subset]. *)
       allow_focus = false;
       color = Option.value layered.color ~default:defaults.Run.color;
