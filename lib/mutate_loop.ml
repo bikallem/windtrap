@@ -539,6 +539,17 @@ let waited_for_cpu child ~elapsed =
    longer. *)
 let reread = 0.1
 
+(* [next_look ~left ~waited] is the seconds until the deadline of a child and
+   the seconds until the loop looks at the child again. [left] is the seconds
+   until the deadline of the dry run. Past that deadline, [waited ()] is the
+   wait of the group of the child ([waited_for_cpu]), which moves the
+   deadline later. *)
+let next_look ~left ~waited =
+  if left > 0. then (left, left)
+  else
+    let left = left +. waited () in
+    (left, Float.min left reread)
+
 (* [await running] is the children of [running] that ended, reaped, and
    those that continue to run, each in the order of [running], when one or
    more children end. A child ends when the parent reads its pipe to the
@@ -580,11 +591,11 @@ let await running =
        the loop looks at it again. *)
     List.map
       (fun (((_, child) as running), elapsed) ->
-        let left = child.deadline -. elapsed in
-        if left > 0. then (running, left, left)
-        else
-          let left = left +. waited_for_cpu child ~elapsed in
-          (running, left, Float.min left reread))
+        let left, next =
+          next_look ~left:(child.deadline -. elapsed) ~waited:(fun () ->
+              waited_for_cpu child ~elapsed)
+        in
+        (running, left, next))
       elapsed
   in
   let kill ending ((_, child) as running) =

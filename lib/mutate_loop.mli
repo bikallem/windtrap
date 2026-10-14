@@ -301,6 +301,24 @@ val drain : (Unix.file_descr * Buffer.t) list -> Unix.file_descr list
     ({{!section-loop}Refusals}). When [read] fails with such an error, it raises
     [Unix.Unix_error]. *)
 
+(** {1:looks The looks at a child} *)
+
+val next_look : left:float -> waited:(unit -> float) -> float * float
+(** [next_look ~left ~waited] is the seconds until the deadline of a child, and
+    the most seconds until the loop looks at the child again. [left] is the
+    seconds from the clock to the deadline that the dry run gives the child.
+
+    If [left] is more than [0.], the two numbers are [left], and [next_look]
+    does not call [waited]. If not, the child is past this deadline. Then
+    [waited ()] is the seconds that the group of the child waited for a CPU,
+    which move the deadline later. The first number is [left +. waited ()], and
+    the second number is at most 0.1 seconds ([reread]). Thus the loop reads the
+    wait again at least every 0.1 seconds ({{!section-loop}Limits}). The loop
+    kills the child when the first number is [0.] or less.
+
+    The function is in this interface for the unit suite. A test of the loop
+    cannot make sure that a process of a child ends between two looks. *)
+
 (** {1:effects Effects}
 
     Beyond the effects of {!Report.run}, the loop calls [fork], [waitpid],

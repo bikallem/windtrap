@@ -8,7 +8,8 @@
    environment and reads what the loop decided from the dry run's summary,
    the outcome line, the survivors it named and the verdict file. How a
    report lays these out is Report_sections'. Only [drain], which reads the
-   pipes of the children, is called in this process ([never_empty]). *)
+   pipes of the children, and [next_look], which times the looks at a
+   child, are called in this process ([never_empty], [looks]). *)
 
 open Windtrap
 module Mutate = Windtrap_runtime.Mutate
@@ -1269,11 +1270,27 @@ let spawning () =
    least every 0.1 seconds, so it loses little of the wait. A loop that
    read again only when the wait of its last read was used up read at 2.2
    seconds and next at about 4 seconds. It lost about 1 second of wait and
-   killed the child in its sleep. *)
+   killed the child in its sleep. But the load of the machine moves these
+   reads and the end of the subprocess, and that loop also passed this test
+   in 1 of 4 runs. [looks] is the test that always finds that loop. *)
 let burnt_then_slept () =
   starve "burn_then_sleep"
     "waits for a process that uses the CPU, then sleeps, and pins nothing \
      about sub"
+
+(* [next_look] is the decision of the loop at each look at a child. Past
+   the deadline, the next look comes after 0.1 seconds at the latest, also
+   when the wait moves the deadline more. A loop that looked again only at
+   the new deadline gives [(1.5, 1.5)] for the second case. *)
+let looks () =
+  let look = Private.Mutate_loop.next_look in
+  let seconds = pair float_exact float_exact in
+  let no_read () = failwith "the wait was read before the deadline" in
+  equal seconds (1.5, 1.5) (look ~left:1.5 ~waited:no_read);
+  equal seconds (0.0625, 0.0625) (look ~left:0. ~waited:(fun () -> 0.0625));
+  equal seconds (1.5, 0.1) (look ~left:(-0.5) ~waited:(fun () -> 2.0));
+  equal seconds (0.0625, 0.0625) (look ~left:(-0.5) ~waited:(fun () -> 0.5625));
+  equal seconds (-0.25, -0.25) (look ~left:(-0.5) ~waited:(fun () -> 0.25))
 
 let limits =
   group "Limits"
@@ -1335,6 +1352,10 @@ let limits =
         "the wait of a subprocess that ends between two reads of its wait does \
          not count toward the deadline of the child"
         burnt_then_slept;
+      test
+        "past its deadline, the loop looks at a child again after 0.1 seconds \
+         at the latest"
+        looks;
     ]
 
 (* The verdict file *)
