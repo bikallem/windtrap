@@ -2022,6 +2022,186 @@ let loud_scope () =
     r.err;
   not_contains ~sub:"links no instrumented module" r.err
 
+(* Requests *)
+
+(* A request that a process of the suite executable writes, as the loop will
+   do in exec mode. Thus the identity of the executable and the catalogue in
+   the request are those of suite_main.exe. [paths] has "/" between the names
+   of a path. *)
+let request ?(suite_name = "calc") ~kind paths =
+  let path = Filename.concat (temp_dir ()) "request" in
+  let r =
+    spawn
+      ~env:
+        [
+          suite "request";
+          ("MUTATE_REQUEST", path);
+          ("MUTATE_REQUEST_KIND", kind);
+          ("MUTATE_REQUEST_PATHS", String.concat "\n" paths);
+          ("MUTATE_REQUEST_SUITE", suite_name);
+        ]
+      []
+  in
+  equal (pair string string) ("exited 0", "") (r.status, r.err);
+  path
+
+(* Serves the request at [path] in a new process of the suite executable, as
+   the loop will start a child in exec mode: the path in
+   WINDTRAP_MUTATE_CHILD, and the write end of the verdict pipe as the
+   standard input. The result is the status, what the child wrote to the
+   pipe, and the name of the pipe in /proc. *)
+let serve ?(fixture = "green") ?(env = []) path =
+  let reader, writer = Unix.pipe ~cloexec:true () in
+  let pipe = strf "pipe:[%d]" (Unix.fstat reader).st_ino in
+  let null = Unix.openfile Filename.null [ Unix.O_WRONLY; Unix.O_CLOEXEC ] 0 in
+  let pid =
+    Fun.protect
+      ~finally:(fun () -> List.iter Unix.close [ writer; null ])
+      (fun () ->
+        Unix.create_process_env suite_exe [| suite_exe |]
+          (Child.environment
+             (suite fixture :: ("WINDTRAP_MUTATE_CHILD", path) :: env))
+          writer null null)
+  in
+  let line =
+    Fun.protect
+      ~finally:(fun () -> Unix.close reader)
+      (fun () -> read_to_end reader)
+  in
+  let _, status = Unix.waitpid [] pid in
+  (ended status, line, pipe)
+
+let served ?fixture ?env path =
+  let status, line, _ = serve ?fixture ?env path in
+  (status, line)
+
+(* Writes [text] in place of line [n] (from 1) of the header of a request. *)
+let replace_line path n text =
+  let contents = read path in
+  let rec header n start =
+    if n = 1 then start
+    else header (n - 1) (String.index_from contents start '\n' + 1)
+  in
+  let start = header n 0 in
+  let stop = String.index_from contents start '\n' in
+  write path
+    (String.sub contents 0 start
+    ^ text
+    ^ String.sub contents stop (String.length contents - stop))
+
+let green_paths =
+  [
+    "calc/sub of two positives";
+    "calc/sub to zero";
+    "calc/sub of two negatives";
+    "widen/widen is nonzero";
+    "widen/widen is not 99";
+    "dismissed/the dismissed site is run and not pinned";
+    "dismissed/the filtered site is run and not pinned";
+  ]
+
+let changed = ("exited 0", "error the executable changed after the dry run\n")
+
+let requests =
+  group "Requests"
+    [
+      test "a probe request runs its tests with no mutant and gives the counts"
+        (fun () ->
+          equal (pair string string)
+            ("exited 0", "probe 7 0 0\n")
+            (served (request ~kind:"probe" green_paths)));
+      test "a mutant request arms its mutant, and a test that pins it kills it"
+        (fun () ->
+          equal (pair string string) ("exited 0", "killed 0\n")
+            (served (request ~kind:(site 15) [ "calc/sub of two positives" ])));
+      test "a mutant request gives a survivor when no test pins the mutant"
+        (fun () ->
+          equal (pair string string) ("exited 0", "survived\n")
+            (served
+               (request ~kind:(site 18)
+                  [ "widen/widen is nonzero"; "widen/widen is not 99" ])));
+      test "an alone request gives passes for a test that passes" (fun () ->
+          equal (pair string string) ("exited 0", "passes\n")
+            (served (request ~kind:"alone" [ "calc/sub to zero" ])));
+      test "a request with a test that the process does not have is refused"
+        (fun () ->
+          equal (pair string string)
+            ( "exited 0",
+              "error the tests changed after the dry run: this process has no \
+               test \"calc \u{203A} no such test\"\n" )
+            (served (request ~kind:"alone" [ "calc/no such test" ])));
+      test "a request for another suite is refused, and no test runs" (fun () ->
+          let seen = Filename.concat (temp_dir ()) "seen" in
+          equal (pair string string)
+            ( "exited 0",
+              "error the request is for the suite \"other\", and this process \
+               runs the suite \"calc\"\n" )
+            (served ~fixture:"child"
+               ~env:[ ("MUTATE_SEEN", seen) ]
+               (request ~suite_name:"other" ~kind:"alone"
+                  [ "child/reads the request variable" ]));
+          is_false (Sys.file_exists seen));
+      test "a request from another executable file is refused" (fun () ->
+          let path = request ~kind:"alone" [ "calc/sub to zero" ] in
+          replace_line path 2 "0 0 0 0";
+          equal (pair string string) changed (served path));
+      test "a request from another catalogue is refused" (fun () ->
+          let path = request ~kind:"alone" [ "calc/sub to zero" ] in
+          replace_line path 3 (String.make 32 '0');
+          equal (pair string string) changed (served path));
+      test "a request that ends early is refused" (fun () ->
+          let path = request ~kind:"alone" [ "calc/sub to zero" ] in
+          let contents = read path in
+          write path (String.sub contents 0 (String.length contents - 8));
+          equal (pair string string)
+            ("exited 0", "error the request file is not complete\n")
+            (served path));
+      test "a request that ends in its header is refused" (fun () ->
+          let path = request ~kind:"alone" [ "calc/sub to zero" ] in
+          write path "windtrap-mutate-request 1\n";
+          equal (pair string string)
+            ("exited 0", "error the request file is not complete\n")
+            (served path));
+      test "a request file that does not open is refused" (fun () ->
+          let status, line =
+            served (Filename.concat (temp_dir ()) "no-such-request")
+          in
+          equal string "exited 0" status;
+          is_true
+            (String.starts_with ~prefix:"error cannot read the request: " line));
+      test "a child is the leader of a session of its own" (fun () ->
+          equal (pair string string) ("exited 0", "passes\n")
+            (served ~fixture:"child"
+               (request ~kind:"alone" [ "child/is the leader of its session" ])));
+      test "an empty request variable gives an ordinary run" (fun () ->
+          let r = spawn ~env:[ ("WINDTRAP_MUTATE_CHILD", "") ] [] in
+          equal (pair string string)
+            ("exited 0", "calc: 7 passed in <time>.\n")
+            (r.status, masked r.out));
+      test "a test in the child does not find the request variable" (fun () ->
+          let seen = Filename.concat (temp_dir ()) "seen" in
+          let path =
+            request ~kind:"alone" [ "child/reads the request variable" ]
+          in
+          equal (pair string string) ("exited 0", "passes\n")
+            (served ~fixture:"child" ~env:[ ("MUTATE_SEEN", seen) ] path);
+          equal string "unset" (read seen));
+      test
+        "a subprocess of a test does not get the verdict pipe, and reads \
+         /dev/null" (fun () ->
+          let seen = Filename.concat (temp_dir ()) "seen" in
+          let path =
+            request ~kind:"alone"
+              [ "child/lists the descriptors of a subprocess" ]
+          in
+          let status, line, pipe =
+            serve ~fixture:"child" ~env:[ ("MUTATE_SEEN", seen) ] path
+          in
+          equal (pair string string) ("exited 0", "passes\n") (status, line);
+          not_contains ~sub:pipe (read seen);
+          contains ~sub:" 0 -> /dev/null\n" (read seen));
+    ]
+
 let refusals =
   group "Refusals"
     [
@@ -3338,6 +3518,7 @@ let () =
          dry_run;
          probe;
          children;
+         requests;
          verdicts;
          xfail;
          limits;

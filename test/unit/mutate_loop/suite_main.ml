@@ -13,8 +13,11 @@
    [catalogue] prints the mutant identifiers instead of running: the
    driver needs them to spell --arm, and reading them from the binary is
    the only spelling that cannot go stale when a line moves in
-   subject.ml. [spawned] also prints instead of running: the result of
-   [domain_spawned ()] before and after a domain. *)
+   subject.ml. [spawned] also prints and runs no test: the result of
+   [domain_spawned ()] before and after a domain. [request] writes the
+   request of a child and runs no test. Thus the identity of the executable
+   and the fingerprint of the catalogue in the request are those of this
+   binary. *)
 
 open Windtrap
 module Subject = Mutate_loop_subject.Subject
@@ -823,8 +826,72 @@ let flagged =
             | Some _ -> is_true (Subject.sub 10 4 < 100)));
   ]
 
+(* The tests of a child that is a new process. Each test writes what it
+   finds to the file of MUTATE_SEEN. *)
+let seen () = Sys.getenv "MUTATE_SEEN"
+
+let child =
+  [
+    test "reads the request variable" (fun () ->
+        Out_channel.with_open_bin (seen ()) (fun oc ->
+            output_string oc
+              (Option.value ~default:"unset"
+                 (Sys.getenv_opt "WINDTRAP_MUTATE_CHILD"))));
+    test "is the leader of its session" (fun () ->
+        (* Field 6 of /proc/self/stat, after the name in parentheses. *)
+        let stat =
+          In_channel.with_open_bin "/proc/self/stat" In_channel.input_all
+        in
+        let after = String.rindex stat ')' + 2 in
+        let fields =
+          String.split_on_char ' '
+            (String.sub stat after (String.length stat - after))
+        in
+        equal string (string_of_int (Unix.getpid ())) (List.nth fields 3));
+    test "lists the descriptors of a subprocess" (fun () ->
+        equal int 0
+          (Sys.command
+             (Filename.quote_command "sh"
+                [ "-c"; "ls -l /proc/$$/fd" ]
+                ~stdout:(seen ()))));
+  ]
+
+(* Writes the request of a child to the file of MUTATE_REQUEST, as the loop
+   will do in exec mode. MUTATE_REQUEST_KIND is probe, alone or the
+   identifier of a mutant. MUTATE_REQUEST_PATHS has one test on each line,
+   with "/" between the names of its path. *)
+let write_request () =
+  let env name = Option.value ~default:"" (Sys.getenv_opt name) in
+  let paths =
+    List.filter_map
+      (function "" -> None | line -> Some (String.split_on_char '/' line))
+      (String.split_on_char '\n' (env "MUTATE_REQUEST_PATHS"))
+  in
+  let kind : Private.Mutate_loop.kind =
+    match env "MUTATE_REQUEST_KIND" with
+    | "probe" -> Probe
+    | "alone" -> Alone
+    | id -> (
+        match Windtrap_runtime.Mutate.id_of_string id with
+        | Ok id -> Mutant { id; budget = 1_000_000 }
+        | Error _ -> failwith ("not a mutant identifier: " ^ id))
+  in
+  let config =
+    Private.Run.for_subset
+      {
+        (Private.Run.default_config ()) with
+        mutation = Private.Run.Loop { scope = []; jobs = 1; since = None };
+      }
+      ~log_dir:(env "MUTATE_REQUEST" ^ ".log")
+      ~bail:(kind <> Probe)
+  in
+  Private.Mutate_loop.write_request (env "MUTATE_REQUEST")
+    { suite = env "MUTATE_REQUEST_SUITE"; config; paths; kind }
+
 let () =
   match Option.value ~default:"green" (Sys.getenv_opt "MUTATE_FIXTURE") with
+  | "request" -> write_request ()
+  | "child" -> exit @@ run "calc" [ group "child" child ]
   | "catalogue" ->
       List.iter
         (fun (m : Windtrap_runtime.Mutate.mutant) ->
