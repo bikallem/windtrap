@@ -2271,9 +2271,16 @@ let refusals =
       test
         "a suite that spawned a domain is refused in fork mode, because the \
          loop cannot fork" (fun () ->
+          (* A file as TMPDIR: a check after the scratch directory gives
+             another refusal. *)
           let r =
             spawn
-              ~env:[ suite "domain"; ("WINDTRAP_MUTATE_CHILDREN", "fork") ]
+              ~env:
+                [
+                  suite "domain";
+                  ("WINDTRAP_MUTATE_CHILDREN", "fork");
+                  ("TMPDIR", temp_file ());
+                ]
               [ mutate ]
           in
           equal (pair string text)
@@ -2281,9 +2288,8 @@ let refusals =
             (r.status, masked r.out);
           equal text
             "windtrap: this process has spawned a domain, and OCaml refuses \
-             Unix.fork in a process that has: mutation testing runs every \
-             mutant in a forked child, so it cannot run in this one. Exclude \
-             the tests that spawn a domain (-e) to test the rest\n"
+             Unix.fork in a process that has: run with --mutate-children=auto \
+             or exec to start each child as a new process\n"
             r.err);
       test "a scratch directory that cannot be made is refused before the probe"
         (fun () ->
@@ -3529,6 +3535,20 @@ let effects =
 (* Exec mode *)
 
 let exec_children = ("WINDTRAP_MUTATE_CHILDREN", "exec")
+let exec_line = "children: new processes (--mutate-children=exec)"
+
+(* A run in exec mode with no mode line, to compare with a fork. *)
+let without_exec_line r =
+  {
+    r with
+    out = String.concat "\n" (List.filter (( <> ) exec_line) (lines r.out));
+  }
+
+(* The line before the outcome line. *)
+let before_outcome out =
+  match List.rev (List.filter (fun l -> l <> "") (lines out)) with
+  | _ :: line :: _ -> line
+  | [] | [ _ ] -> ""
 
 (* A suite that spawns no domain gives the report and the verdict file of a
    fork when each child is a new process. These tests do not show that the
@@ -3536,7 +3556,8 @@ let exec_children = ("WINDTRAP_MUTATE_CHILDREN", "exec")
 let same_in_exec (_, env, args) =
   equal seen_witness
     (seen (spawn ~env (mutate :: args)))
-    (seen (spawn ~env:(exec_children :: env) (mutate :: args)))
+    (seen
+       (without_exec_line (spawn ~env:(exec_children :: env) (mutate :: args))))
 
 let exec_fixtures =
   [
@@ -3575,7 +3596,9 @@ let slow_init () =
   let slow = ("MUTATE_SLOW_INIT", "2") in
   equal seen_witness
     (seen (spawn [ mutate; jobs 4 ]))
-    (seen (spawn ~env:[ exec_children; slow ] [ mutate; jobs 4 ]))
+    (seen
+       (without_exec_line
+          (spawn ~env:[ exec_children; slow ] [ mutate; jobs 4 ])))
 
 let child_fault fault =
   spawn ~env:[ exec_children; ("MUTATE_CHILD_FAULT", fault) ] [ mutate ]
@@ -3583,6 +3606,8 @@ let child_fault fault =
 let domain_in_auto () =
   let r = spawn ~env:[ suite "domain" ] [ mutate ] in
   equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal string "children: new processes, because the suite spawned a domain"
+    (before_outcome r.out);
   equal string
     "mutants: 1 reached by this suite, 1 killed, 3 never reached, 1 filtered, \
      score 100.0%"
@@ -3666,6 +3691,25 @@ let exec_group =
           equal (list string) [] (entries tmpdir));
       test "a suite that spawned a domain gets a full run in auto mode"
         domain_in_auto;
+      test
+        "the report of exec mode tells the mode above the outcome line and its \
+         reproduce line" (fun () ->
+          let r = spawn ~env:[ exec_children ] [ mutate ] in
+          let last =
+            match List.rev (List.filter (fun l -> l <> "") (lines r.out)) with
+            | outcome :: reproduce :: mode :: _ -> [ mode; reproduce; outcome ]
+            | _ -> []
+          in
+          equal (list string)
+            [
+              exec_line;
+              strf "reproduce: %s --arm %s" suite_exe (site 18);
+              green_outcome;
+            ]
+            last);
+      test "the report of fork mode does not tell the mode" (fun () ->
+          let r = spawn [ mutate ] in
+          not_contains ~sub:"children:" r.out);
       test "an inline suite serves its requests in new processes"
         (inline_loop_with [ exec_children ]);
       test "no at_exit function runs in a new process"

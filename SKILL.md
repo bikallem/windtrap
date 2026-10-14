@@ -465,7 +465,7 @@ gate. For a pull request, give the commit where its branch started,
 `$(git merge-base origin/main HEAD)`: git compares REV with the work
 tree, so the later changes of the base branch count too.
 
-Mutation testing forks a child per mutant and is refused on Windows.
+Mutation testing starts a child process per mutant and is refused on Windows.
 `windtrap coverage --help`, `windtrap mutants --help` and a suite's
 `--help` (`--mutate`, `--arm`) state the flags.
 

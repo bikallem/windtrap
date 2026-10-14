@@ -912,8 +912,18 @@ let mutation_survivor t survivor =
     @ Sections.survivor_block ~exe_width:None survivor);
   t.survivors <- t.survivors + 1
 
-let mutation_finish ?note t m =
+let mutation_finish ?note ?children t m =
   let closing = Sections.mutation_closing ~config:t.config m in
+  (* The line goes above the outcome group, so that [reproduce:] stays
+     directly above its outcome line. *)
+  let closing =
+    let mode line = Sections.Line [ Sections.plain line ] in
+    match (children, List.rev closing) with
+    | Some line, outcome :: (Sections.Hint _ as reproduce) :: rest ->
+        List.rev (outcome :: reproduce :: mode line :: rest)
+    | Some line, outcome :: rest -> List.rev (outcome :: mode line :: rest)
+    | None, _ | Some _, [] -> closing
+  in
   match (note, List.rev closing) with
   | Some note, outcome :: rest ->
       print t (List.rev rest);
