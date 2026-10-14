@@ -827,6 +827,15 @@ let mirrored_usage =
 
 let mirrored_empty = facade ~env:filter_mirror "emptied" []
 
+(* A revision that no mutation loop reads, by its source. *)
+let unused_since =
+  [
+    ( "--mutate-since",
+      facade ~flags:[ "--mutate-since=HEAD" ] "since" [ passes ] );
+    ( "WINDTRAP_MUTATE_SINCE",
+      facade ~env:[ ("WINDTRAP_MUTATE_SINCE", "HEAD") ] "since" [ passes ] );
+  ]
+
 (* A run whose argv.(0) is empty, and one without argv. *)
 let fixed_flags logs = [ "-o"; logs; "--color"; "never" ]
 
@@ -983,6 +992,18 @@ list: emptysuite -l
           equal text "corrects\n" kept_entered.out);
       test "a test that -x left unexecuted keeps its entry" (fun () ->
           equal text "a\nb\n" bailed_entries.out);
+      cases
+        "a revision without a mutation loop runs the suite and says so on \
+         stderr"
+        ~name:fst unused_since (fun (source, r) ->
+          equal int 0 r.code;
+          starts_with ~affix:"since: 1 passed in " r.out;
+          equal text
+            (strf
+               "windtrap: %s gives a revision, but neither --mutate nor \
+                WINDTRAP_MUTATE is given, so the suite runs without mutation\n"
+               source)
+            r.err);
     ]
 
 let () =

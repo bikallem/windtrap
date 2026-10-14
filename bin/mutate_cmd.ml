@@ -8,6 +8,7 @@ module Mutate = Windtrap_runtime.Mutate
 module Verdicts = Windtrap_runtime.Verdicts
 module Sections = Windtrap.Private.Report_sections
 module Os = Windtrap.Private.Os
+module Changed_lines = Windtrap.Private.Changed_lines
 module Cli = Windtrap.Private.Cli
 module Pp = Windtrap.Private.Pp
 module Run = Windtrap.Private.Run
@@ -26,6 +27,7 @@ let fail ~code message =
 (* Files *)
 
 type file = {
+  path : string; (* the verdict file *)
   label : string; (* the executable, as the witness column names it *)
   exe : string option; (* the executable, as the file records it *)
   invocation : Run.invocation; (* how that executable is run again *)
@@ -100,6 +102,7 @@ let fresh files =
     | Ok (verdicts, identity) ->
         Ok
           {
+            path;
             label = label ~path identity;
             exe = Option.map (fun (i : Verdicts.identity) -> i.exe) identity;
             invocation = invocation identity;
@@ -135,6 +138,82 @@ let source ~roots =
         Hashtbl.add sources file source;
         source
 
+(* Changed lines *)
+
+(* The files of the mutants of a verdict file are relative to the root of
+   the project that wrote it. That root is the parent of the build directory
+   of the verdict file, or of the [_windtrap] directory of an executable
+   outside any build. A verdict file under neither has the first root of the
+   discovery. *)
+let project_root ~roots path =
+  match Instr.build_root ~path with
+  | Some root -> root
+  | None -> (
+      let data_dir = Filename.dirname path in
+      let windtrap = Filename.dirname data_dir in
+      if
+        Filename.basename data_dir = Verdicts.format.dir
+        && Filename.basename windtrap = "_windtrap"
+      then Filename.dirname windtrap
+      else match roots with root :: _ -> root | [] -> ".")
+
+(* Git gives the changed lines relative to the directory that it runs in.
+   When that directory holds no file of the mutants of a verdict file, it is
+   not the root of their project, and no mutant can match a changed line.
+   The command then stops, because an empty report would pass the gate. *)
+let foreign ~root f =
+  let files =
+    List.sort_uniq String.compare
+      (List.map
+         (fun (r : Verdicts.record) -> r.id.file)
+         (Verdicts.records f.verdicts))
+  in
+  files <> []
+  && not
+       (List.exists
+          (fun file -> Sys.file_exists (Filename.concat root file))
+          files)
+
+(* Each file keeps the records of the mutants on a changed line, so that a
+   survivor, its reaching tests and the launcher of its command are those of
+   the scope. Git runs once for each root. *)
+let since ~roots rev files =
+  let read = Hashtbl.create 1 in
+  let lines root =
+    match Hashtbl.find_opt read root with
+    | Some lines -> lines
+    | None ->
+        let lines = Changed_lines.of_git ~root rev in
+        Hashtbl.add read root lines;
+        lines
+  in
+  let scoped f =
+    let root = project_root ~roots f.path in
+    if foreign ~root f then
+      fail ~code:1
+        (strf
+           "--since %s: no file of the mutants of %s is under %S, where git \
+            runs; run windtrap mutants in the project root, or give the \
+            verdict files in its build directory"
+           rev f.path root)
+    else
+      match lines root with
+      | Error reason -> fail ~code:1 (strf "--since %s: %s" rev reason)
+      | Ok lines ->
+          let changed (r : Verdicts.record) =
+            Changed_lines.mem lines ~file:r.id.file ~line:r.id.line
+          in
+          Ok { f with verdicts = Verdicts.filter changed f.verdicts }
+  in
+  let rec scope_all = function
+    | [] -> Ok []
+    | f :: files ->
+        let* f = scoped f in
+        let* files = scope_all files in
+        Ok (f :: files)
+  in
+  scope_all files
+
 (* The merge *)
 
 module Ids = Map.Make (String)
@@ -147,7 +226,7 @@ let survived_in verdicts =
       match r.verdict with
       | Survived { first; others } ->
           Ids.add (Mutate.id_to_string r.id) (first :: others) acc
-      | Killed | Not_evaluated | Outside_tests | Filtered _ | Unreached -> acc)
+      | Killed _ | Not_evaluated | Outside_tests | Filtered _ | Unreached -> acc)
     Ids.empty
     (Verdicts.records verdicts)
 
@@ -201,7 +280,7 @@ let merge ~source files merged =
           &&
           match fr.verdict with
           | Not_evaluated -> true
-          | Killed | Survived _ | Outside_tests | Filtered _ | Unreached ->
+          | Killed _ | Survived _ | Outside_tests | Filtered _ | Unreached ->
               false)
         (Verdicts.records f.verdicts)
     in
@@ -226,7 +305,7 @@ let merge ~source files merged =
         | Outside_tests ->
             (survivors, missed, unreached, site :: outside, killed)
         | Filtered _ -> (survivors, missed, unreached, outside, killed)
-        | Killed -> (survivors, missed, unreached, outside, killed + 1))
+        | Killed _ -> (survivors, missed, unreached, outside, killed + 1))
       (Verdicts.records merged) ([], [], [], [], 0)
   in
   let filtered =
@@ -234,7 +313,7 @@ let merge ~source files merged =
       (fun (r : Verdicts.record) ->
         match r.verdict with
         | Filtered reason -> Some reason
-        | Killed | Survived _ | Not_evaluated | Outside_tests | Unreached ->
+        | Killed _ | Survived _ | Not_evaluated | Outside_tests | Unreached ->
             None)
       (Verdicts.records merged)
   in
@@ -283,7 +362,7 @@ let merge ~source files merged =
 (* The document *)
 
 let verdict_name : Verdicts.verdict -> string = function
-  | Killed -> "killed"
+  | Killed _ -> "killed"
   | Survived _ -> "survived"
   | Not_evaluated -> "not_evaluated"
   | Outside_tests -> "outside_tests"
@@ -320,7 +399,7 @@ let json files merged (m : Sections.mutation) =
         in
         strf ",\n      \"tests\": [%s ]"
           (String.concat "," (List.map test tests))
-    | Killed | Not_evaluated | Outside_tests | Filtered _ | Unreached -> ""
+    | Killed _ | Not_evaluated | Outside_tests | Filtered _ | Unreached -> ""
   in
   let mutant ~key ~value (r : Verdicts.record) =
     strf
@@ -340,7 +419,7 @@ let json files merged (m : Sections.mutation) =
       (fun (r : Verdicts.record) ->
         match r.verdict with
         | Filtered reason -> Either.Left (mutant ~key:"reason" ~value:reason r)
-        | Killed | Survived _ | Not_evaluated | Outside_tests | Unreached ->
+        | Killed _ | Survived _ | Not_evaluated | Outside_tests | Unreached ->
             Either.Right
               (mutant ~key:"verdict" ~value:(verdict_name r.verdict) r))
       (Verdicts.records merged)
@@ -389,6 +468,9 @@ OPTIONS:
   --min-score=PCT
       Exit 1 when the score is below PCT, and not for a survivor alone.
 
+  --since=REV
+      Report only the mutants on lines changed since git revision REV.
+
   --json
       Machine-readable report on standard output.
 
@@ -404,6 +486,7 @@ ENVIRONMENT (no flag):
 
 type options = {
   min_score : float option;
+  since : string option;
   json : bool;
   color : Os.color_mode option;
   paths : string list;
@@ -432,12 +515,21 @@ let options args =
                  "invalid value '%s' for --min-score: expected a percentage \
                   (0-100)"
                  value))
+    | "--since" :: value :: args ->
+        (* Git reads a revision that starts with [-] as an option. *)
+        if value = "" || String.starts_with ~prefix:"-" value then
+          usage_error
+            (strf
+               "invalid value '%s' for --since: expected a git revision, which \
+                does not start with -"
+               value)
+        else parse { o with since = Some value } args
     | "--json" :: args -> parse { o with json = true } args
     | "--color" :: value :: args -> (
         match Cli.parse_color value with
         | Ok color -> parse { o with color = Some color } args
         | Error error -> usage_error (Cli.error_message error))
-    | [ (("--min-score" | "--color") as flag) ] ->
+    | [ (("--min-score" | "--since" | "--color") as flag) ] ->
         usage_error (strf "option '%s' requires an argument" flag)
     | arg :: _ when String.starts_with ~prefix:"-" arg ->
         usage_error (strf "unknown option '%s'" arg)
@@ -446,14 +538,16 @@ let options args =
   (* [--flag=value] is [--flag value] for a flag that takes a value. *)
   let split arg =
     match String.index_opt arg '=' with
-    | Some i when List.mem (String.sub arg 0 i) [ "--min-score"; "--color" ] ->
+    | Some i
+      when List.mem (String.sub arg 0 i) [ "--min-score"; "--since"; "--color" ]
+      ->
         [
           String.sub arg 0 i; String.sub arg (i + 1) (String.length arg - i - 1);
         ]
     | Some _ | None -> [ arg ]
   in
   parse
-    { min_score = None; json = false; color = None; paths = [] }
+    { min_score = None; since = None; json = false; color = None; paths = [] }
     (List.concat_map split args)
 
 (* [WINDTRAP_COLOR] is read when [--color] is absent, refused on the runner's
@@ -509,6 +603,9 @@ let run args =
       | Error message -> fail ~code:1 message
     in
     let* files = fresh files in
+    let* files =
+      match o.since with None -> Ok files | Some rev -> since ~roots rev files
+    in
     let merged = merged files in
     let mutation, invocation = merge ~source:(source ~roots) files merged in
     let* () =

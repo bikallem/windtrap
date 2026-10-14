@@ -37,20 +37,21 @@ The merge
 
 Three executables over one library. A kills add, which B only reaches;
 sub survives in B and in C, with different reaching tests; lt survives in
-A, and a crash in B kills it; no test reaches or and and:
+A, and a crash in B kills it; no test reaches or and and. A names the test
+that killed add, and the crash names none:
 
   $ plant "$scratch/three" && cd "$scratch/three"
-  $ mkdata mutants _build/_mutants/windtrap-a.mutants "$add=killed" "$sub=unreached" \
-  >   "$lt=survived:calc/compares" "$or=unreached" "$and=unreached"
+  $ mkdata mutants _build/_mutants/windtrap-a.mutants "$add=killed:calc/adds" \
+  >   "$sub=unreached" "$lt=survived:calc/compares" "$or=unreached" "$and=unreached"
   $ mkdata mutants _build/_mutants/windtrap-b.mutants "$add=survived:cli/runs" \
   >   "$sub=survived:cli/subtracts" "$lt=killed" "$or=unreached" "$and=unreached"
   $ mkdata mutants _build/_mutants/windtrap-c.mutants "$add=unreached" \
   >   "$sub=survived:prop/sub law" "$lt=unreached" "$or=unreached" "$and=unreached"
 
-A mutant killed anywhere is killed. The one survivor is drawn from its
-record, its reaching tests are those of every executable that reached it,
-each named by its file, and the mutants no test reached are counted by
-file:
+A mutant killed anywhere is killed, and the report does not name the test
+that killed it. The one survivor is drawn from its record, its reaching
+tests are those of every executable that reached it, each named by its
+file, and the mutants no test reached are counted by file:
 
   $ run windtrap mutants
   ───────────────────── survivors (1) ──────────────────────
@@ -545,8 +546,9 @@ The document
 
 --json writes the merge as one document on standard output. Each mutant
 has its verdict, in the order of identifiers, and a survivor has the tests
-that ran it in each executable in which it survived. A test names its
-executable by its index in "executables":
+that ran it in each executable in which it survived. A killed mutant has
+no tests, also when its file names the test that killed it. A test names
+its executable by its index in "executables":
 
   $ cd "$scratch/three"
   $ run windtrap mutants --json
@@ -769,13 +771,13 @@ is to delete it, which a coverage dump in the directory shares:
   $ printf 'windtrap-mutants-v0\n1\nsome older payload\n' > _build/_mutants/old.mutants
   $ run windtrap mutants
   --- stderr
-  windtrap: .../old.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v4", found "windtrap-mutants-v0"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
+  windtrap: .../old.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v5", found "windtrap-mutants-v0"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
   [1]
   $ rm _build/_mutants/old.mutants
   $ printf 'windtrap-coverage-v3\n0\n' > _build/_mutants/cov.mutants
   $ run windtrap mutants
   --- stderr
-  windtrap: .../cov.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v4", found "windtrap-coverage-v3"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
+  windtrap: .../cov.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v5", found "windtrap-coverage-v3"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
   [1]
 
 A PATH that cannot be used fails the command, and the files named beside
@@ -813,6 +815,9 @@ The command line
   OPTIONS:
     --min-score=PCT
         Exit 1 when the score is below PCT, and not for a survivor alone.
+  
+    --since=REV
+        Report only the mutants on lines changed since git revision REV.
   
     --json
         Machine-readable report on standard output.

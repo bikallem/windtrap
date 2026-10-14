@@ -25,9 +25,11 @@ type reaching_test = string list
 (** The type for verdicts. A survivor always names a reaching test, because a
     mutant that no test reached is {!Outside_tests} or {!Unreached}. *)
 type verdict =
-  | Killed
+  | Killed of { by : reaching_test option }
       (** A reaching test failed, or the child that armed the mutant crashed or
-          hung. *)
+          hung. [by] is the reaching test that failed first, and [None] when no
+          one test is known: the child crashed, hung or recorded no test, or a
+          fixture release failed. *)
   | Survived of { first : reaching_test; others : reaching_test list }
       (** Every reaching test passed, and the armed site was evaluated. [first]
           and [others] are the reaching tests, sorted and without duplicates,
@@ -61,15 +63,22 @@ type record = {
       (** The text of the original site, as {!Mutate.type-mutant} gives it. *)
   after : string;
       (** The text of the mutant, as {!Mutate.type-mutant} gives it. *)
+  source_digest : string option;
+      (** The lowercase hexadecimal MD5 of the source file of the mutant when
+          the run read it, and [None] when the run could not read the file. A
+          later run compares it with the file that it reads, to find out if the
+          file changed. *)
   verdict : verdict;  (** What the run made of the mutant. *)
 }
 (** The type for the record of one mutant. A record is self-describing: it
     carries the two renderings that a report draws the mutant with, so a report
     needs no catalogue and outlives the executable that produced it. *)
 
-val record_of_mutant : Mutate.mutant -> verdict -> record
-(** [record_of_mutant m v] is the record of [m] with the verdict [v].
-    [m.dismissed] is dropped. *)
+val record_of_mutant :
+  ?source_digest:string -> Mutate.mutant -> verdict -> record
+(** [record_of_mutant ?source_digest m v] is the record of [m] with the verdict
+    [v] and the digest [source_digest], [None] by default. [m.dismissed] is
+    dropped. *)
 
 type t
 (** The type for verdict collections: finite maps from {!Mutate.type-id} to
@@ -81,19 +90,24 @@ val empty : t
 val add : t -> record -> t
 (** [add t r] is [t] with [r] recorded. A {!Survived} verdict is sorted on its
     way in. When [t] already holds a record under [r.id], the smaller
-    [(before, after)] pair in lexicographic order is kept, and the two verdicts
-    combine into the verdict of a mutant that one executable saw one way and
-    another the other way. It is {!Killed} if either is. Otherwise it is
-    {!Not_evaluated} if either is, then {!Survived} with the reaching tests of
-    both if either is, then {!Outside_tests} if either is, then {!Filtered} with
-    the smaller reason if either is, and {!Unreached} if both are.
+    [(before, after, source_digest)] triple in lexicographic order is kept, and
+    the two verdicts combine into the verdict of a mutant that one executable
+    saw one way and another the other way. It is {!Killed} if either is, and its
+    killing test is the smaller of the two that are known, if any. Otherwise it
+    is {!Not_evaluated} if either is, then {!Survived} with the reaching tests
+    of both if either is, then {!Outside_tests} if either is, then {!Filtered}
+    with the smaller reason if either is, and {!Unreached} if both are.
 
-    [add] checks nothing of [r.id]. It accepts an empty [file], a [line] below
-    [1], a negative [col] and a [rewrite] outside {!Mutate.rewrites}, and
-    {!load} then refuses the file that {!save} writes for the collection. *)
+    [add] checks nothing of [r.id] and [r.source_digest]. It accepts an empty
+    [file], a [line] below [1], a negative [col], a [rewrite] outside
+    {!Mutate.rewrites} and a digest that is not 32 lowercase hexadecimal digits,
+    and {!load} then refuses the file that {!save} writes for the collection. *)
 
 val records : t -> record list
 (** [records t] is the records of [t], ordered by {!Mutate.compare_id}. *)
+
+val filter : (record -> bool) -> t -> t
+(** [filter keep t] is the records of [t] for which [keep] is [true]. *)
 
 val merge : t -> t -> t
 (** [merge a b] is the union of [a] and [b], where two records that share an
@@ -106,7 +120,7 @@ val merge : t -> t -> t
 
     An executable has one verdict file, at {!output_file}.
 
-    The first line of a file is the magic line [windtrap-mutants-v4], which
+    The first line of a file is the magic line [windtrap-mutants-v5], which
     carries the version of the format. A file with another first line is
     refused, never converted, and nothing is promised from one version to the
     next. *)
@@ -149,7 +163,9 @@ val load : string -> (t * identity option, error) result
     - a negative count, or a count larger than the input,
     - an empty file name, a line below [1] or a negative column,
     - a rewrite outside {!Mutate.rewrites}, or an unknown verdict,
-    - a survivor with no reaching test, or a second record for one identifier,
+    - a source digest that is not empty and not 32 lowercase hexadecimal digits,
+    - a survivor with no reaching test, a killed mutant with more than one
+      killing test, or a second record for one identifier,
     - a malformed identity line, or bytes after the last record.
 
     Nothing is repaired, and a file with one malformed record is not read at

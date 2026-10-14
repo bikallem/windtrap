@@ -24,6 +24,20 @@
  (modules pins_add pins_sub)
  (libraries windtrap bin_calc))
 
+; A second library for since.t, whose only mutants are drop mutants, and
+; the suite over it.
+
+(library
+ (name bin_cases)
+ (modules cases)
+ (preprocess
+  (pps ppx_windtrap.mutate)))
+
+(executable
+ (name pins_cases)
+ (modules pins_cases)
+ (libraries windtrap bin_cases))
+
 (cram
  (package ppx_windtrap)
  (applies_to data)
@@ -53,3 +67,16 @@
  (applies_to full)
  (enabled_if
   (= %{system} linux)))
+
+; since.t runs the mutation loop, which Windows refuses for want of fork,
+; and git in a repository of its own. A host with no git on PATH, such as a
+; minimal package sandbox, skips it.
+
+(cram
+ (package ppx_windtrap)
+ (applies_to since)
+ (enabled_if
+  (and
+   (<> %{os_type} Win32)
+   %{bin-available:git}))
+ (deps pins_add.exe calc.ml pins_cases.exe cases.ml))

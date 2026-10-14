@@ -58,7 +58,7 @@ mutants: «r|2 survived» of 5 reached by this suite, «g|3 killed», «y|2 neve
 
 === the live line names the mutant, and is erased before a block
 --- mutation_testing 1
-«erase»«d|  [1/4] lib/calc.ml:13:11:add…» [no newline]
+«erase»«d|  [0/4] lib/calc.ml:13:11:add…» [no newline]
 --- mutation_survivor
 «erase»
 «d|─────────────────────── survivors ────────────────────────»
@@ -75,9 +75,16 @@ mutants: «r|1 survived» of 4 reached by this suite, «g|3 killed», score 75.0
 
 === a killed mutant leaves nothing, the next line draws over it
 --- mutation_testing 1
-«erase»«d|  [1/2] lib/calc.ml:9:3:sub…» [no newline]
+«erase»«d|  [0/2] lib/calc.ml:9:3:sub…» [no newline]
 --- mutation_testing 2
-«erase»«erase»«d|  [2/2] lib/calc.ml:13:11:add…» [no newline]
+«erase»«erase»«d|  [1/2] lib/calc.ml:13:11:add…» [no newline]
+
+=== the live line names the first running mutant and counts the others
+--- mutation_testing 3
+«erase»«d|  [2/9] lib/calc.ml:9:3:sub and 2 more…» [no newline]
+--- a cut keeps the count
+«erase»«erase»«d|  [2/9] lib/a/very/long/path/that/no/terminal/line/holds/whole/... and 1 more…» [no newline]
+--- no child runs
 
 === every mutant killed: the outcome alone
 --- mutation_finish

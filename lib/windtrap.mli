@@ -1872,6 +1872,7 @@ val run : ?argv:string array -> string -> test list -> int
 module Private : sig
   module Baseline = Baseline
   module Capture = Capture
+  module Changed_lines = Changed_lines
   module Check = Check
   module Cli = Cli
   module Diff = Diff

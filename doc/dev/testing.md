@@ -40,11 +40,16 @@ what is non-obvious.
   build paths, the atomic write); and `test_verdicts`, the verdict
   lattice and the verdict file. `mutate_loop/` drives the fork loop
   through a real spawned process (a loop that forks cannot be observed
-  from inside its own image), with `plain_main.exe` as the zero-mutant
-  control that must be declined by name, `runaway/` for the hit-count
-  budget, `inline/` for an armed inline partition and `scoped/` for a
-  second file whose one site is filtered, which a scope of the other
-  file must not record.
+  from inside its own image). Only `Mutate_loop.drain`, which reads the
+  pipes of the children, is called in the suite's own process: a test
+  gives it `/dev/zero`, which never empties, and a child cannot keep a
+  pipe full with certainty. The suite runs `plain_main.exe` as the
+  zero-mutant control that must be declined by name, `runaway/` for the
+  hit-count budget, `inline/` for an armed inline partition and
+  `scoped/` for a second file whose one site is filtered, which a scope
+  of the other file must not record. `pty_stubs.c` opens a
+  pseudo-terminal, which `Unix` does not do: the loop draws its live
+  line only when its standard output is a terminal.
   Under `semantics/`, `coverage/` and `mutate/` are the
   semantics-preservation suites: a fixture library instrumented
   unconditionally through `(pps)`, run and compared with the
@@ -108,11 +113,24 @@ what is non-obvious.
   the two merges find their files and which they merge (`data.t`), the
   coverage and mutants reports (`coverage.t`, `mutants.t`), what they
   cannot read (`unreadable.t`), a standard output that refuses the
-  mutants report (`full.t`, on Linux, which alone has `/dev/full`), and
-  two executables that disagree about one library (`two_executables.t`).
+  mutants report (`full.t`, on Linux, which alone has `/dev/full`), two
+  executables that disagree about one library (`two_executables.t`), and
+  the loop and the merge under `--mutate-since` and `--since` in a git
+  repository of the session's own (`since.t`), also from a subdirectory,
+  for filtered mutants, for an executable outside any build directory,
+  for verdict files under one root and under two roots, for a project
+  below the root of the repository, under a configuration that changes
+  what `git diff` prints, and for a project in no repository.
+  `test_changed_lines` in `unit/` reads the diffs that it states, and
+  runs a script in place of git for the arguments and the errors of git.
+  `since.t` pins what git gives.
   `mkdata.exe` writes the synthetic dumps and verdict files the sessions
   merge; `pins_add.exe` and `pins_sub.exe` are instrumented suites over
   `calc.ml`, a library under both backends in every build.
+  `pins_cases.exe` is the suite over `cases.ml`, a library under the
+  mutation backend whose only mutants are drop mutants. `since.t` uses
+  them to pin the line of a drop mutant: the line of the pattern of its
+  case, not the line of its body.
   `ppx/` holds the rewriters' sessions: their expansions and refusals,
   one main session per rewriter (`coverage.t`, `mutate.t`,
   `expect.t`), over fixtures that are never compiled. Each block runs
@@ -255,6 +273,18 @@ spelling that reaches every stanza), and `--force` because a mutation
 run is not a cached artifact. Driven without `--instrument-with`, either
 alias rebuilds the executables uninstrumented: the coverage merge then
 reads stale dumps and the mutation merge refuses loudly.
+`WINDTRAP_MUTATE_JOBS=auto` in front of the mutation command lets each
+suite run one child for each CPU. On 2026-10-13, on 16 CPUs that other
+processes also used, the command above under `SKIP_PACKAGE_SESSIONS=true`
+took 164 s with one job and 81 s to 96 s with `auto`. Each time is the
+wall time of one run, after a first run built the instrumented
+executables. In each run, every suite ran, but the merge did not run: the
+probe of `test_property` refused the suite as not deterministic. The
+counts of 9 suites were not the same with `auto`, and two runs with one
+job also gave different counts in 3 suites. The command above and the
+`self-mutate` rule do not set the variable, because the scenarios of
+`test_mutate_loop` share the verdict file of `suite_main.exe`. Thus their
+children can disturb each other and kill a mutant that no test kills.
 The `nodune.t` session compiles a scratch project against the installed
 core, which under the coverage backend is instrumented too and adds its
 own rows to the scratch project's report; the session therefore pins the
@@ -314,9 +344,15 @@ arming it against the whole suite, with `--arm <id>` from the footer or
 `WINDTRAP_MUTATE_ARM=<id>` in front of the tree-wide command. Every
 forked child runs under a deadline derived from the dry run (its wall
 clock, plus ten times the measured timings of the tests that child runs,
-floored at one second) and under the runtime's per-site hit-count
+floored at one second, and longer by the ratio of children to CPUs when
+`--mutate-jobs` gives more children than CPUs) and under the runtime's
+per-site hit-count
 budget; a child that overruns or spins is killed with its process group
 and scored killed, because a suite that hangs has noticed the change.
+On Linux, the time that the threads of that group wait for a CPU does
+not count toward the deadline, up to the time that they do not use a
+CPU. Of that time, the wait for the other children of the loop does not
+count, because the longer deadline already gives it.
 Mutation needs `Unix.fork` and declines by name on Windows.
 
 ## The conformance corpus

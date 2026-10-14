@@ -199,6 +199,101 @@ windtrap: verdicts not saved: this run's selection narrows the suite, and a part
 mutants: 1 survived of 2 reached by the 1 selected test, 1 killed, 7 never reached, score 50.0%
 ```
 
+## Testing the changed lines
+
+A run over the whole suite tests each mutant again. To test only what a
+change touched, give `--mutate-since=REV` with `--mutate`. The run asks
+git for the lines that changed in the work tree since the commit `REV`,
+and tests only the mutants on these lines. Uncommitted changes count. A
+line that a change only removes does not count. Each line of a file that
+git does not track counts, but not a file that git ignores, for example
+by a `.gitignore` rule. The project root must be in a git work tree.
+
+A mutant is on one line: the line where its expression starts, or for a
+`drop` mutant the line where the pattern of its case starts. When an
+expression has more than one line, a change to a later line does not
+put the mutant of the expression in scope. For example, when `total`
+is on one line and `+ tax` is on the next line, a change to the second
+line does not put the mutant of `+` in scope. To test such a mutant,
+run without `--mutate-since`.
+
+This change adds a comment to line 10 of `calc.ml`, and the run tests
+only the two mutants of that line:
+
+```
+$ git diff --stat
+ calc.ml | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+$ dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --mutate --mutate-since=HEAD
+calc: 10 passed in 0.5ms.
+
+─────────────────────── survivors ────────────────────────
+  SURVIVED  calc.ml:10:16:ge  n > 0 → n >= 0
+      10 │ let sign n = if n > 0 then 1 else if n < 0 then -1 else 0 (* -1, 0 or 1 *)
+
+    2 tests ran this line and none failed:
+      sign › is -1 for a negative  test_calc.ml:32
+      sign › is 1 for a positive   test_calc.ml:31
+
+  SURVIVED  calc.ml:10:37:le  n < 0 → n <= 0
+      10 │ let sign n = if n > 0 then 1 else if n < 0 then -1 else 0 (* -1, 0 or 1 *)
+
+    1 test ran this line and did not fail:
+      sign › is -1 for a negative  test_calc.ml:32
+──────────────────────────────────────────────────────────
+
+reproduce: dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --arm calc.ml:10:16:ge
+mutants: 2 survived of 2 reached by this suite, score 0.0%
+```
+
+`windtrap mutants --since REV` reports only the mutants on the lines
+that changed since `REV`, and its exit code and `--min-score` look only
+at them. Thus a pull request can gate on the mutants of its own lines.
+
+Git compares the work tree with the commit `REV`. When the base branch
+changed after the pull request branched from it, the lines of these
+changes also count. Thus give the commit where the branch started, which
+`git merge-base` finds:
+
+```
+$ base=$(git merge-base origin/main HEAD)
+$ WINDTRAP_MUTATE=1 WINDTRAP_MUTATE_SINCE=$base dune runtest --force --instrument-with ppx_windtrap.mutate
+$ dune exec windtrap -- mutants --since $base
+```
+
+Git runs in the root of the project that wrote each verdict file, once
+for each root. For a verdict file in a build directory, the root is the
+parent of that build directory, also when a `PATH` argument gives the
+file. For a verdict file in `_windtrap/mutants`, the root is the parent
+of `_windtrap`. Another verdict file has the current directory as its
+root. When that root holds no source file of its mutants, the command
+stops with exit code 1, because no mutant can be on a changed line.
+
+`WINDTRAP_MUTATE_SINCE` is the mirror of `--mutate-since`. Under
+`WINDTRAP_MUTATE`, a suite with no mutant to test on a changed line
+runs as usual and says why on standard error. It also writes its
+verdict file. That file has no verdict of a child for a changed line,
+but it has the [filtered mutants](#filtered-mutants) of these lines.
+Thus `windtrap mutants --since` finds a file, and a pull request with
+no mutant to test on its lines passes the gate, also after a new build.
+Under `--mutate`, the same run stops with exit code 1. Without
+`--mutate` and `WINDTRAP_MUTATE`, the revision changes nothing. A run
+that arms a mutant (`--arm`) tests only that mutant, and says nothing
+about the revision. Any other run says on standard error that it tests
+no mutant, and runs as usual. A `REV` that names no commit stops the
+run before the dry run, with exit code 1.
+
+Dune does not track `WINDTRAP_MUTATE_SINCE` or the commit that `REV`
+names. When only these change, dune does not run a suite again, so the
+example above uses `--force` (see
+[Mutation testing a project](#mutation-testing-a-project)).
+
+The scope does not narrow the suite, so the run saves its verdicts. But
+the file keeps the verdicts of the other lines only when the same build
+wrote it. After a change, the build is new, and the merge without
+`--since` reports only the changed lines (see
+[Where the verdicts are](#where-the-verdicts-are)).
+
 ## What a mutation run runs
 
 A mutation run runs in passes, and prints neither the focus warning nor
@@ -209,9 +304,15 @@ the withheld-correction warning:
 - The determinism probe, in a child process, checks that the suite
   passes again.
 - Each reached mutant runs in a child with its reaching tests, up to the
-  first failure. A child that outruns a deadline taken from the dry run,
-  or evaluates its site more than `hits * 8 + 1000` times, `hits` being
-  the dry run's count, is killed, and its mutant counts as killed.
+  first failure. When the verdict file gives the test that killed the
+  mutant before, the source file of the mutant did not change, and the
+  test passes alone with no mutant, a first child runs that test alone.
+  A second child then runs every reaching test only when the first child
+  does not kill the mutant (see
+  [Where the verdicts are](#where-the-verdicts-are)). A child that
+  outruns a deadline taken from the dry run, or evaluates its site more
+  than `hits * 8 + 1000` times, `hits` being the dry run's count, is
+  killed, and its mutant counts as killed.
 
 A child starts from the state the dry run left. When a child passes
 without evaluating its mutant's site, as when the dry run cached the
@@ -231,6 +332,72 @@ reached, and an `--arm` run of its mutant ends on `mutant not reached`.
 
 The mutation run exits 0 whatever it finds. It exits 1, with a sentence
 on standard error, when a pass fails or no mutant is left to test.
+
+## Testing mutants in parallel
+
+A mutation run tests one mutant at a time. `--mutate-jobs N` lets up to
+`N` children run at the same time, and `--mutate-jobs auto` lets one
+child run for each CPU. The maximum is 256 children. The report and
+the verdict file are the same for each value of `N`. The run keeps the
+verdict of a mutant until each mutant before it in the file has a
+verdict, and only then prints the mutant if it survived. This run
+gives the report of the run with one job in
+[Testing a suite's mutants](#testing-a-suites-mutants):
+
+```
+$ dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --mutate --mutate-jobs auto
+calc: 10 passed in 0.3ms.
+
+─────────────────────── survivors ────────────────────────
+  SURVIVED  calc.ml:10:16:ge  n > 0 → n >= 0
+      10 │ let sign n = if n > 0 then 1 else if n < 0 then -1 else 0
+
+    2 tests ran this line and none failed:
+      sign › is -1 for a negative  test_calc.ml:32
+      sign › is 1 for a positive   test_calc.ml:31
+
+  SURVIVED  calc.ml:10:37:le  n < 0 → n <= 0
+      10 │ let sign n = if n > 0 then 1 else if n < 0 then -1 else 0
+
+    1 test ran this line and did not fail:
+      sign › is -1 for a negative  test_calc.ml:32
+──────────────────────────────────────────────────────────
+
+reproduce: dune exec --instrument-with ppx_windtrap.mutate ./test_calc.exe -- --arm calc.ml:10:16:ge
+mutants: 2 survived of 9 reached by this suite, 7 killed, score 77.8%
+```
+
+Under `dune runtest`, the mirror `WINDTRAP_MUTATE_JOBS` sets the jobs of
+each suite, as in
+`WINDTRAP_MUTATE=1 WINDTRAP_MUTATE_JOBS=auto dune runtest --force --instrument-with ppx_windtrap.mutate`
+(see [Mutation testing a project](#mutation-testing-a-project) for
+`--force`).
+
+The default is 1, because the children of one suite run the same
+tests. Two children that use the same port or write the same file can
+make each other fail, and the mutant of a child that fails counts as
+killed. Use more than one job only when the tests can run at the same
+time. When the children are more than the CPUs, the deadline of each
+child is multiplied by the number of children for each CPU. For
+example, 8 children on 4 CPUs double each deadline. The probe runs
+alone before these children, and its deadline does not change.
+
+On Linux, the time that a child waits for a CPU does not count toward
+its deadline. This time includes the waits of the processes that the
+tests of the child start, and of all of their threads. Thus under a
+parallel `dune runtest`, the children of the other suites do not push a
+child past its deadline. But the loop reads this time only when a child
+is past its deadline. The wait of a process that ended before that read
+counts, for example of a short command that a test ran earlier.
+
+When the children are more than the CPUs, they also wait for each
+other. Their longer deadlines are for this wait, and the wait does not
+move them again. Thus a child that uses the CPU and never stops is
+killed when it used the CPU time of its deadline in a run with one job.
+
+Other systems do not give the time that a child waits for a CPU.
+There, if you set `WINDTRAP_MUTATE_JOBS` for `dune runtest`, also give
+dune `-j 1`, so that it runs one suite at a time.
 
 ## Dismissing an equivalent mutant
 
@@ -326,7 +493,9 @@ When each mutant that a run can test is dismissed or filtered, there
 is nothing to test. `--mutate` then refuses the run and exits 1, and
 `WINDTRAP_MUTATE` runs the suite without mutation. The two write no
 verdict file, so `windtrap mutants` does not count these filtered
-mutants.
+mutants. Under `WINDTRAP_MUTATE_SINCE`, `WINDTRAP_MUTATE` writes the
+verdict file with the filtered mutants of the changed lines (see
+[Testing the changed lines](#testing-the-changed-lines)).
 
 ## Mutation testing a project
 
@@ -611,12 +780,29 @@ not constants, as `none` does in a generated table
 A suite's `--mutate` run over the whole suite writes one verdict file
 under `_build/_mutants`, and its next such run replaces it. An
 executable outside any build directory writes under `_windtrap/mutants`
-in its working directory. A run under `--mutate=PREFIX` replaces the
-verdicts under its prefixes and keeps the others, when the same build
-wrote the file. A verdict file records its executable and a digest of
-its bytes, and `windtrap mutants` leaves out one whose executable was
-deleted or rebuilt since, with a warning, as
+in its working directory. A run under `--mutate=PREFIX` or
+`--mutate-since=REV` replaces the verdicts in its scope and keeps the
+others, when the same build wrote the file. A verdict file records its
+executable and a digest of its bytes, and `windtrap mutants` leaves out
+one whose executable was deleted or rebuilt since, with a warning, as
 [`windtrap coverage`](coverage.md#when-a-dump-is-excluded) does a dump.
+
+The verdict file also keeps the test that killed each mutant, and a
+digest of the source file of the mutant. The next run reads them, also
+after a new build. When the digest did not change and the test still
+reaches the mutant, the run first runs the test alone, with no mutant.
+If the test passes, a child then runs the test alone with the mutant.
+If the test kills the mutant again, no other test runs. If it does not,
+a second child runs each reaching test, as without the file. Thus the
+file never gives a verdict without a test that fails, and a changed or
+renamed test cannot keep an old verdict. The file only lets a killed
+mutant run fewer tests.
+
+A test that runs alone does not run after the tests before it. When a
+test passes alone, fails alone with the mutant, but passes with the
+mutant after an earlier test, the verdict file can make a survivor a
+killed mutant. To get the verdicts without the file, delete the verdict
+file before the run.
 
 ## Mutation testing without dune
 
@@ -627,12 +813,18 @@ the suite then runs with `--mutate`.
 ## When a run cannot mutate
 
 A mutation run forks a child process for each mutant. It is refused on
-Windows, and in a process that has started a domain. `--mutate` and
+Windows, and in a process that has started a domain. Under
+`--mutate-since`, it is refused when git cannot give the changed lines,
+for example when `REV` names no commit. `--mutate` and
 `--arm` together are a usage error. `--arm` refuses a mutant that
 `[@mutate off]` dismisses or that the rewriter filtered, and exits 1:
 its site has no guard, so no run can arm it. An interrupt ends the
-run: the running child is killed, the mutant under test is named on
-standard error, and no verdict file is written.
+run: the running children are killed, the mutants under test are named
+on standard error, and no verdict file is written. When no child runs
+at the interrupt and mutants remain, standard error names the next
+mutant, which no child tested. An interrupt after the last child exits
+stops nothing: the run writes the verdict file and the report as
+usual, and then dies by the signal.
 
 ## The command's options
 
@@ -660,6 +852,9 @@ score is below PCT.
 OPTIONS:
   --min-score=PCT
       Exit 1 when the score is below PCT, and not for a survivor alone.
+
+  --since=REV
+      Report only the mutants on lines changed since git revision REV.
 
   --json
       Machine-readable report on standard output.

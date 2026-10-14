@@ -454,6 +454,17 @@ dune exec windtrap -- mutants
 mutants. Set PCT a little under the measured score, as for `--min`.
 `--json` gives each verdict to other tools.
 
+`--mutate-jobs auto` (`WINDTRAP_MUTATE_JOBS=auto`) tests mutants on
+every CPU at once. Use it only when the suite's tests share no port or
+file, because a test that another child disturbs kills its mutant.
+
+`--mutate-since=REV` (`WINDTRAP_MUTATE_SINCE=REV`) tests only the
+mutants on lines that changed since the git revision REV, and
+`windtrap mutants --since REV` reports only them, as a pull request's
+gate. For a pull request, give the commit where its branch started,
+`$(git merge-base origin/main HEAD)`: git compares REV with the work
+tree, so the later changes of the base branch count too.
+
 Mutation testing forks a child per mutant and is refused on Windows.
 `windtrap coverage --help`, `windtrap mutants --help` and a suite's
 `--help` (`--mutate`, `--arm`) state the flags.
