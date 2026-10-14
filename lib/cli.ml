@@ -28,6 +28,7 @@ type parsed = {
   mutate : string list option;
   mutate_jobs : int option;
   mutate_since : string option;
+  mutate_children : Run.children option;
   arm : string option;
   help : bool;
   version : bool;
@@ -57,6 +58,7 @@ let empty =
     mutate = None;
     mutate_jobs = None;
     mutate_since = None;
+    mutate_children = None;
     arm = None;
     help = false;
     version = false;
@@ -141,6 +143,13 @@ let jobs value =
     | Ok n when n <= max_jobs -> Ok n
     | Ok _ | Error _ ->
         Error (Printf.sprintf "a positive integer up to %d, or auto" max_jobs)
+
+let children value =
+  match String.lowercase_ascii value with
+  | "auto" -> Ok Run.Auto
+  | "fork" -> Ok Run.Fork
+  | "exec" -> Ok Run.Exec
+  | _ -> Error "auto, fork or exec"
 
 (* Git reads a revision that starts with [-] as an option. *)
 let revision value =
@@ -290,6 +299,12 @@ let entries =
       ~mirror:
         (mirrored "WINDTRAP_MUTATE_SINCE" (fun p -> p.mutate_since = None))
       "Test only the mutants on lines changed since git revision REV.";
+    row "--mutate-children"
+      (value "MODE" children (fun p mode ->
+           { p with mutate_children = Some mode }))
+      ~mirror:
+        (mirrored "WINDTRAP_MUTATE_CHILDREN" (fun p -> p.mutate_children = None))
+      "Test each mutant in a fork, a new process (exec), or auto (default).";
     row "--arm"
       (value "ID" any (fun p id -> { p with arm = Some id }))
       ~mirror:(mirrored "WINDTRAP_MUTATE_ARM" (fun p -> p.arm = None))
@@ -497,6 +512,7 @@ let settings cli =
                scope;
                jobs = Option.value layered.mutate_jobs ~default:1;
                since = layered.mutate_since;
+               children = Option.value layered.mutate_children ~default:Run.Auto;
              })
     | None, Some id -> Ok (Run.Armed id)
     | Some _, Some _ -> Error (Incompatible_flags ("--mutate", "--arm"))

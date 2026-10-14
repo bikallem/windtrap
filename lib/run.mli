@@ -31,18 +31,33 @@ type invocation = [ `Exe of string | `Mirrors ]
       [--corrected] run, the inline runner's included, and of a run without
       [argv.(0)]. *)
 
+(** The type for how the mutation loop starts a child. *)
+type children =
+  | Auto
+      (** The loop forks each child. If the process spawned a domain, the loop
+          starts each child as a new process of the executable, because OCaml
+          refuses [Unix.fork] in that process. *)
+  | Fork  (** The loop forks each child. *)
+  | Exec  (** The loop starts each child as a new process of the executable. *)
+
 (** The type for what a run does with the mutants of an executable built for
     mutation testing. *)
 type mutation =
   | No_mutation  (** An ordinary run. The mutants are inert. *)
-  | Loop of { scope : string list; jobs : int; since : string option }
+  | Loop of {
+      scope : string list;
+      jobs : int;
+      since : string option;
+      children : children;
+    }
       (** [--mutate[=PREFIX,…]]: the mutation loop, over the mutants whose
           recorded source path starts with one of the prefixes of [scope]. The
           bare flag gives the empty list, which keeps every mutant. [jobs] is
           [--mutate-jobs]: the most children that the loop runs at once. It is
           from [1] to [256]. [since] is [--mutate-since]: a git revision, and
           the loop then keeps only the mutants on a line that changed since that
-          revision ({!Changed_lines.of_git}). *)
+          revision ({!Changed_lines.of_git}). [children] is [--mutate-children].
+      *)
   | Armed of string
       (** [--arm ID]: one ordinary run with the mutant [ID] armed. The
           identifier is kept as typed, and its grammar is that of

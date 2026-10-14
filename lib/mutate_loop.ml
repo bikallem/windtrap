@@ -315,7 +315,10 @@ type running = {
   started : Os.counter;
   deadline : float; (* seconds after [started] *)
   share : float; (* the children for each CPU that [deadline] pays for *)
-  log_dir : string; (* removed once the child is reaped *)
+  removed : string list;
+      (* the log directory of the child, and the request file and the
+         temporary directory of a new process: removed once the child is
+         reaped *)
   threads : (int, float * float) Hashtbl.t;
       (* the last CPU time and wait for a CPU that the parent read of each
          thread of the group of the child, by thread id ([read_threads]) *)
@@ -338,7 +341,20 @@ type child = {
 
    XXX a second signal between [fork] returning and the pid being recorded
    kills the parent with the child alive. *)
-let start ~deadline ~share ~log_dir ~siblings body =
+let supervise ~deadline ~share ~removed pid pipe =
+  interrupt.children <- pid :: interrupt.children;
+  {
+    pid;
+    pipe;
+    output = Buffer.create 128;
+    started = Os.counter ();
+    deadline;
+    share;
+    removed;
+    threads = Hashtbl.create 8;
+  }
+
+let start ~deadline ~share ~removed ~siblings body =
   flush_descriptors ();
   let read_fd, write_fd =
     try Unix.pipe ~cloexec:true ()
@@ -363,18 +379,8 @@ let start ~deadline ~share ~log_dir ~siblings body =
       (try ignore (Unix.setsid ()) with _ -> ());
       in_child write_fd body
   | pid ->
-      interrupt.children <- pid :: interrupt.children;
       Unix.close write_fd;
-      {
-        pid;
-        pipe = read_fd;
-        output = Buffer.create 128;
-        started = Os.counter ();
-        deadline;
-        share;
-        log_dir;
-        threads = Hashtbl.create 8;
-      }
+      supervise ~deadline ~share ~removed pid read_fd
 
 (* XXX a signal between [waitpid] and the removal of the pid from
    [interrupt.children] goes to a reaped pid. *)
@@ -393,7 +399,7 @@ let reap running ending =
           List.filter (fun pid -> pid <> running.pid) interrupt.children)
       wait
   in
-  Run.remove_tree running.log_dir;
+  List.iter Run.remove_tree running.removed;
   let output = Buffer.contents running.output in
   (* Bytes without their newline are a torn write, which must not read as a
      survivor. *)
@@ -753,6 +759,10 @@ type loop = {
   tests : Test_tree.t list;
   reach : reach;
   dry_run_wall : float;
+  exec : bool; (* each child is a new process, not a fork *)
+  startup_wall : float;
+      (* the seconds that a new process takes before its first test, and [0.]
+         for a fork *)
   scratch : string; (* a child killed at its deadline removes nothing *)
   jobs : int; (* the most children at once, [1] or more *)
   share : float; (* the children for each CPU, [1.] or more *)
@@ -776,7 +786,10 @@ let child_deadline loop ~share paths =
       (fun acc path -> acc +. Option.value ~default:0. (took path))
       0. paths
   in
-  share *. (loop.dry_run_wall +. Float.max 1. (deadline_multiplier *. scheduled))
+  share
+  *. (loop.dry_run_wall
+     +. (deadline_multiplier *. loop.startup_wall)
+     +. Float.max 1. (deadline_multiplier *. scheduled))
 
 (* The lines of a child *)
 
@@ -854,7 +867,11 @@ let alone_line (outcome : Run.outcome) =
 
 (* What a child does with the tests of its request. The line that it
    gives comes from [probe_line], [alone_line] or [verdict_line]. *)
-type kind = Probe | Alone | Mutant of { id : Mutate.id; budget : int }
+type kind =
+  | Probe
+  | Alone
+  | Mutant of { id : Mutate.id; budget : int }
+  | Startup (* gives [ready] and runs no test *)
 
 (* What the parent asks of a child. It holds only data, and not closures. *)
 type request = {
@@ -866,7 +883,7 @@ type request = {
 }
 
 let arm = function
-  | Probe | Alone -> Ok ()
+  | Probe | Alone | Startup -> Ok ()
   | Mutant { id; budget } -> (
       match Mutate.arm ~budget id with
       | Error error -> Error (Pp.to_string Mutate.pp_arm_error error)
@@ -889,22 +906,10 @@ let serve tests request =
         | Ok outcome -> line outcome)
   in
   match request.kind with
+  | Startup -> "ready"
   | Probe -> run (probe_line ~paths:request.paths)
   | Alone -> run alone_line
   | Mutant _ -> run (verdict_line ~paths:request.paths)
-
-let start_child loop ~share ~log ~bail ~kind ~paths ~siblings =
-  let log_dir = Filename.concat loop.scratch log in
-  let request =
-    {
-      suite = loop.suite;
-      config = Run.for_subset loop.config ~log_dir ~bail;
-      paths;
-      kind;
-    }
-  in
-  start ~deadline:(child_deadline loop ~share paths) ~share ~log_dir ~siblings
-    (fun () -> serve loop.tests request)
 
 (* A child that is a new process of the suite executable reads its request
    from a file: a header line, the identity of the executable, the
@@ -1010,23 +1015,179 @@ let take_pipe () =
   | exception Unix.Unix_error _ -> Unix.close Unix.stdin);
   pipe
 
-let serve_child ~suite tests =
+(* A child that is a new process takes its request at the module
+   initialization of this module. The modules of the suite initialize
+   after it, so a process that they start gets neither the variable nor the
+   pipe, and the group of the child holds that process. *)
+let pending =
   match Sys.getenv_opt request_variable with
-  | None | Some "" -> ()
+  | None | Some "" -> None
   | Some path -> (
-      (* A suite that a test starts must not serve the request again. *)
       Os.setenv request_variable None;
       (try ignore (Unix.setsid ())
        with Unix.Unix_error _ | Invalid_argument _ -> ());
       match take_pipe () with
       | exception Unix.Unix_error _ -> Unix._exit 2
-      | pipe ->
+      | pipe -> Some (path, pipe))
+
+let serving () = Option.is_some pending
+
+(* A request for another suite is for a later call of [Windtrap.run] in the
+   same main. *)
+let serve_child ~suite tests =
+  match pending with
+  | None -> false
+  | Some (path, pipe) -> (
+      let request =
+        try read_request path
+        with exn ->
+          Error ("cannot read the request: " ^ Printexc.to_string exn)
+      in
+      match request with
+      | Ok request when not (String.equal request.suite suite) -> true
+      | request ->
           in_child pipe (fun () ->
-              match
-                Result.bind (read_request path) (check_request ~suite tests)
-              with
+              match Result.bind request (check_request ~suite tests) with
               | Error message -> error_line message
               | Ok request -> serve tests request))
+
+(* For native code on Linux, [/proc/self/exe] is the file that the parent
+   runs, also after a rebuild replaced the file at its path. *)
+let child_executable =
+  if Sys.backend_type = Sys.Native && Sys.file_exists "/proc/self/exe" then
+    "/proc/self/exe"
+  else Windtrap_runtime.Instr.executable
+
+(* The environment of the parent, with the request of the child and its
+   temporary directory. *)
+let child_environment ~request ~tmp =
+  let given = [ (request_variable, request); ("TMPDIR", tmp) ] in
+  let replaced binding =
+    List.exists
+      (fun (name, _) -> String.starts_with ~prefix:(name ^ "=") binding)
+      given
+  in
+  Array.of_list
+    (List.map (fun (name, value) -> name ^ "=" ^ value) given
+    @ List.filter (Fun.negate replaced) (Array.to_list (Unix.environment ())))
+
+(* The temporary directories of the new processes have names of one length,
+   so that a path that a test makes in one child has the length that it has
+   in another child. No log name starts with [tmp]. *)
+let tmp_count = ref 0
+
+let next_tmp () =
+  incr tmp_count;
+  strf "tmp%06d" !tmp_count
+
+(* A child that is a new process of the suite executable ([serve_child]).
+   Its standard input is the write end of the verdict pipe, and its
+   standard output and error are [/dev/null]. The pipe stays close-on-exec
+   in the parent, so no other child gets it. The child gets a temporary
+   directory of its own in the scratch directory: a test can put a Unix
+   socket in it, so the path is short and its length does not change from
+   one child to the next. [reap] removes the request file and the
+   directory, because the child leaves through [Unix._exit] and runs no
+   [at_exit] function.
+
+   XXX if a second signal comes after [create_process_env] gives the pid and
+   before the loop records the pid, the parent dies and the child stays
+   alive. *)
+let start_process ~deadline ~share ~log_dir request =
+  flush_descriptors ();
+  let request_file = log_dir ^ ".request" in
+  let tmp = Filename.concat (Filename.dirname log_dir) (next_tmp ()) in
+  let removed = [ log_dir; request_file; tmp ] in
+  (try
+     write_request request_file request;
+     Unix.mkdir tmp 0o700
+   with
+  | Sys_error message ->
+      raise (Supervision ("could not write the request of a child: " ^ message))
+  | Unix.Unix_error (e, _, _) -> raise (failed "mkdir" e));
+  let read_fd, write_fd =
+    try Unix.pipe ~cloexec:true ()
+    with Unix.Unix_error (e, _, _) -> raise (failed "pipe" e)
+  in
+  let close () =
+    List.iter (fun fd -> try Unix.close fd with _ -> ()) [ read_fd; write_fd ]
+  in
+  let null =
+    try Unix.openfile "/dev/null" [ Unix.O_WRONLY; Unix.O_CLOEXEC ] 0
+    with Unix.Unix_error (e, _, _) ->
+      close ();
+      raise (failed "open /dev/null" e)
+  in
+  match
+    Unix.create_process_env child_executable Sys.argv
+      (child_environment ~request:request_file ~tmp)
+      write_fd null null
+  with
+  | exception Unix.Unix_error (e, _, _) ->
+      close ();
+      Unix.close null;
+      List.iter Run.remove_tree removed;
+      raise (failed "create_process" e)
+  | pid ->
+      Unix.close write_fd;
+      Unix.close null;
+      supervise ~deadline ~share ~removed pid read_fd
+
+let start_child loop ~share ~log ~bail ~kind ~paths ~siblings =
+  let log_dir = Filename.concat loop.scratch log in
+  let request =
+    {
+      suite = loop.suite;
+      config = Run.for_subset loop.config ~log_dir ~bail;
+      paths;
+      kind;
+    }
+  in
+  let deadline = child_deadline loop ~share paths in
+  if loop.exec then start_process ~deadline ~share ~log_dir request
+  else
+    start ~deadline ~share ~removed:[ log_dir ] ~siblings (fun () ->
+        serve loop.tests request)
+
+(* The startup of a new process *)
+
+(* A new process does module initialization before its first test, and the
+   dry run does not measure that time. Thus, in exec mode, a first child
+   runs no test, and its time is [startup_wall]. Nothing measures this child
+   before it, so its deadline is long. *)
+let startup_limit loop = 60. +. (deadline_multiplier *. loop.dry_run_wall)
+
+let startup loop =
+  let started = Os.counter () in
+  let deadline = startup_limit loop in
+  let log_dir = Filename.concat loop.scratch "startup" in
+  let request =
+    {
+      suite = loop.suite;
+      config = Run.for_subset loop.config ~log_dir ~bail:false;
+      paths = [];
+      kind = Startup;
+    }
+  in
+  let child =
+    match
+      await [ ((), start_process ~deadline ~share:1. ~log_dir request) ]
+    with
+    | ((), child) :: _, _ -> child
+    | [], _ -> (* [await] ends once a child ends. *) assert false
+  in
+  let wall = Os.count_s started in
+  match (child.ending, words child.line, child.status) with
+  | Closed, Ok [ "ready" ], Unix.WEXITED 0 ->
+      Ok { loop with startup_wall = wall }
+  | Expired, _, _ ->
+      Error
+        (strf
+           "a new process of the suite did not get to its tests in %.0f seconds"
+           deadline)
+  | _, Error diagnostic, _ ->
+      Error ("a new process of the suite refused its request: " ^ diagnostic)
+  | _, Ok _, _ -> Error "a new process of the suite ended without a ready line"
 
 (* The determinism probe *)
 
@@ -1436,21 +1597,29 @@ let test_mutants renderer loop reached =
   in
   Fun.protect ~finally:(fun () -> abandon pool.running) @@ fun () -> next 0
 
-(* The scratch directory is removed however the forks end. A signal
-   outranks the disagreement of a probe it killed. *)
+(* The scratch directory is removed however the children end. A signal
+   outranks the disagreement of a probe or a startup that it killed. In exec
+   mode, the startup child runs before the probe. *)
 let fork renderer loop reached =
   Fun.protect ~finally:(fun () -> Run.remove_tree loop.scratch) @@ fun () ->
-  match (probe loop, interrupt.signal) with
-  | Ok (), _ -> Ok (test_mutants renderer (passing_alone loop reached) reached)
-  | Error _, Some signal ->
-      Ok
-        {
-          verdicts = Verdicts.empty;
-          survivors = [];
-          not_evaluated = [];
-          stopped = Some (signal, Report.Probe);
-        }
-  | (Error _ as refused), None -> refused
+  let stopped stage signal =
+    Ok
+      {
+        verdicts = Verdicts.empty;
+        survivors = [];
+        not_evaluated = [];
+        stopped = Some (signal, stage);
+      }
+  in
+  match ((if loop.exec then startup loop else Ok loop), interrupt.signal) with
+  | Error _, Some signal -> stopped Report.Startup signal
+  | Error refusal, None -> Error refusal
+  | Ok loop, _ -> (
+      match (probe loop, interrupt.signal) with
+      | Ok (), _ ->
+          Ok (test_mutants renderer (passing_alone loop reached) reached)
+      | Error _, Some signal -> stopped Report.Probe signal
+      | Error refusal, None -> Error refusal)
 
 (* The loop *)
 
@@ -1581,7 +1750,7 @@ let history reached =
            (Verdicts.records prior));
   killers
 
-let loop renderer ~scope ~jobs ~suite (config : Run.config) tests =
+let loop renderer ~scope ~jobs ~children ~suite (config : Run.config) tests =
   let population = population ~scope in
   let filtered = filtered ~scope in
   let reach =
@@ -1648,6 +1817,12 @@ let loop renderer ~scope ~jobs ~suite (config : Run.config) tests =
                     tests;
                     reach;
                     dry_run_wall;
+                    exec =
+                      (match children with
+                      | Run.Exec -> true
+                      | Run.Fork -> false
+                      | Run.Auto -> domain_spawned ());
+                    startup_wall = 0.;
                     scratch;
                     jobs;
                     share;
@@ -1768,11 +1943,12 @@ let execute_and_report ~suite (config : Run.config) tests =
   | Run.Armed spec -> armed (Report.terminal config) ~spec ~suite config tests
   | Run.Loop _ when Sys.win32 ->
       refuse "mutation testing needs Unix.fork, which Windows does not have"
-  | Run.Loop { scope = prefixes; jobs; since } -> (
+  | Run.Loop { scope = prefixes; jobs; since; children } -> (
       match resolve_scope ~prefixes ~since with
       | Error message -> refuse message
       | Ok scope when not config.broadcast.mutate ->
-          loop (Report.terminal config) ~scope ~jobs ~suite config tests
+          loop (Report.terminal config) ~scope ~jobs ~children ~suite config
+            tests
       | Ok scope -> (
           match (population ~scope, Run.list_selection config ~suite tests) with
           | Error reason, _ ->
@@ -1781,4 +1957,5 @@ let execute_and_report ~suite (config : Run.config) tests =
               ordinary ~suite config tests
           | Ok _, Ok [] -> ordinary ~suite config tests
           | Ok _, (Ok (_ :: _) | Error _) ->
-              loop (Report.terminal config) ~scope ~jobs ~suite config tests))
+              loop (Report.terminal config) ~scope ~jobs ~children ~suite config
+                tests))

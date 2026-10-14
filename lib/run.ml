@@ -12,10 +12,16 @@ let ( let* ) = Result.bind
 (* Configuration *)
 
 type invocation = [ `Exe of string | `Mirrors ]
+type children = Auto | Fork | Exec
 
 type mutation =
   | No_mutation
-  | Loop of { scope : string list; jobs : int; since : string option }
+  | Loop of {
+      scope : string list;
+      jobs : int;
+      since : string option;
+      children : children;
+    }
   | Armed of string
 
 type broadcast = { selection : bool; mutate : bool }

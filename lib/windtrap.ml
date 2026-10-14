@@ -234,45 +234,47 @@ let run ?(argv = Sys.argv) suite tests =
   (* [--help], [--version] and a usage error return before [Run.execute]
      would refuse a nested run. *)
   if Run.active () then invalid_arg Run.active_run_error;
-  (* A mutation child that is a new process runs its request and exits. *)
-  Mutate_loop.serve_child ~suite tests;
-  let argv0 = if Array.length argv > 0 then argv.(0) else "" in
-  let prog = if argv0 = "" then suite else argv0 in
-  let usage_error error =
-    Os.say (Cli.error_message error);
-    prerr_endline (Cli.usage ~prog);
-    2
-  in
-  (* The pages are flushed, for a caller that does not [exit]. *)
-  match Cli.parse argv with
-  | Error error -> usage_error error
-  | Ok { Cli.help = true; _ } ->
-      Printf.printf "%s%!" (Cli.help ~prog);
-      0
-  | Ok { Cli.version = true; _ } ->
-      Printf.printf "windtrap %s\n%!" version;
-      0
-  | Ok parsed -> (
-      match Cli.settings parsed with
-      | Error error -> usage_error error
-      (* [-l] has no mirror, so the command line alone resolves it. *)
-      | Ok config when parsed.list_only = Some true ->
-          list_selection ~suite config tests
-      | Ok config ->
-          (* A gate on a run that tests no mutant passes, so the run says
+  (* A mutation child that is a new process runs its request and exits. A
+     request for another suite is for a later call. *)
+  if Mutate_loop.serve_child ~suite tests then 0
+  else
+    let argv0 = if Array.length argv > 0 then argv.(0) else "" in
+    let prog = if argv0 = "" then suite else argv0 in
+    let usage_error error =
+      Os.say (Cli.error_message error);
+      prerr_endline (Cli.usage ~prog);
+      2
+    in
+    (* The pages are flushed, for a caller that does not [exit]. *)
+    match Cli.parse argv with
+    | Error error -> usage_error error
+    | Ok { Cli.help = true; _ } ->
+        Printf.printf "%s%!" (Cli.help ~prog);
+        0
+    | Ok { Cli.version = true; _ } ->
+        Printf.printf "windtrap %s\n%!" version;
+        0
+    | Ok parsed -> (
+        match Cli.settings parsed with
+        | Error error -> usage_error error
+        (* [-l] has no mirror, so the command line alone resolves it. *)
+        | Ok config when parsed.list_only = Some true ->
+            list_selection ~suite config tests
+        | Ok config ->
+            (* A gate on a run that tests no mutant passes, so the run says
              that it ignores the revision. *)
-          Option.iter
-            (fun source ->
-              Os.say
-                (Pp.str
-                   "%s gives a revision, but neither --mutate nor \
-                    WINDTRAP_MUTATE is given, so the suite runs without \
-                    mutation"
-                   source))
-            config.unused_since;
-          let corrected = config.baseline = Baseline.Corrected in
-          let invocation = invocation ~corrected argv0 in
-          execute ~suite { config with invocation } tests)
+            Option.iter
+              (fun source ->
+                Os.say
+                  (Pp.str
+                     "%s gives a revision, but neither --mutate nor \
+                      WINDTRAP_MUTATE is given, so the suite runs without \
+                      mutation"
+                     source))
+              config.unused_since;
+            let corrected = config.baseline = Baseline.Corrected in
+            let invocation = invocation ~corrected argv0 in
+            execute ~suite { config with invocation } tests)
 
 (* Private *)
 

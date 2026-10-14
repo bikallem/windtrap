@@ -535,13 +535,13 @@ type baseline_run = {
   beside : string list; (* What else the run left in the root. *)
 }
 
-let baseline_run args ~stale =
+let baseline_run ?(env = []) args ~stale =
   let root = temp_dir () in
   let file = Filename.concat root "sub.expected" in
   write file stale;
   let ran =
     spawn
-      ~env:[ suite "baseline"; ("WINDTRAP_PROJECT_ROOT", root) ]
+      ~env:(suite "baseline" :: ("WINDTRAP_PROJECT_ROOT", root) :: env)
       (args @ [ "--junit"; Filename.concat root "junit.xml" ])
   in
   {
@@ -659,9 +659,11 @@ let probe =
    log; [fatal]'s armed child raises Out_of_memory, which only the child's
    own wrapper keeps from the uncaught-exception handler that runs
    [at_exit]. *)
-let no_at_exit () =
+let no_at_exit_with env () =
   let log = Filename.concat (temp_dir ()) "atexit" in
-  let r = spawn ~env:[ suite "fatal"; ("MUTATE_ATEXIT_LOG", log) ] [ mutate ] in
+  let r =
+    spawn ~env:(suite "fatal" :: ("MUTATE_ATEXIT_LOG", log) :: env) [ mutate ]
+  in
   equal string "exited 0" r.status;
   equal text "" r.err;
   equal string
@@ -670,6 +672,7 @@ let no_at_exit () =
     (outcome r.out);
   equal int 1 (List.length (pids (read log)))
 
+let no_at_exit = no_at_exit_with []
 let release = lazy (spawn ~env:[ suite "release" ] [ mutate ])
 
 (* The inline runtime keeps its correction directory as its working
@@ -690,8 +693,8 @@ let inline_run env =
   in
   (r, entries cwd)
 
-let inline_loop () =
-  let r, left = inline_run [ mutate_mirror ] in
+let inline_loop_with env () =
+  let r, left = inline_run (mutate_mirror :: env) in
   equal string "exited 0" r.status;
   equal text "" r.err;
   contains ~sub:"inline_armed: 1 passed" r.out;
@@ -700,6 +703,8 @@ let inline_loop () =
      score 100.0%"
     (outcome r.out);
   equal (list string) [ "inline_armed.ml" ] left
+
+let inline_loop = inline_loop_with []
 
 let children =
   group "Children"
@@ -1541,19 +1546,21 @@ let ordered_outcome =
 
 let pinned_by = "subject.ml:15 ordered \u{203a} pins sub"
 
-let first_tests () =
+let first_tests_with env () =
   let path = Verdicts.output_file ~exe:suite_exe in
   remove path;
   equal
     (pair string (list string))
     (ordered_outcome, [ "watches"; "pins" ])
-    (ordered_run ());
+    (ordered_run ~env ());
   equal (list string) [ pinned_by ] (killers path);
   equal
     (pair string (list string))
     (ordered_outcome, [ "pins" ])
-    (ordered_run ());
+    (ordered_run ~env ());
   equal (list string) [ pinned_by ] (killers path)
+
+let first_tests = first_tests_with []
 
 let changed_source () =
   let path = Verdicts.output_file ~exe:suite_exe in
@@ -2130,12 +2137,11 @@ let requests =
               "error the tests changed after the dry run: this process has no \
                test \"calc \u{203A} no such test\"\n" )
             (served (request ~kind:"alone" [ "calc/no such test" ])));
-      test "a request for another suite is refused, and no test runs" (fun () ->
+      test
+        "a request for another suite runs no test, and the call returns for a \
+         later call" (fun () ->
           let seen = Filename.concat (temp_dir ()) "seen" in
-          equal (pair string string)
-            ( "exited 0",
-              "error the request is for the suite \"other\", and this process \
-               runs the suite \"calc\"\n" )
+          equal (pair string string) ("exited 0", "")
             (served ~fixture:"child"
                ~env:[ ("MUTATE_SEEN", seen) ]
                (request ~suite_name:"other" ~kind:"alone"
@@ -2178,6 +2184,18 @@ let requests =
           equal (pair string string)
             ("exited 0", "calc: 7 passed in <time>.\n")
             (r.status, masked r.out));
+      test
+        "a subprocess of module initialization gets neither the verdict pipe \
+         nor the request variable" (fun () ->
+          let seen = Filename.concat (temp_dir ()) "seen" in
+          let path = request ~kind:"alone" [ "calc/sub to zero" ] in
+          let status, line, pipe =
+            serve ~env:[ ("MUTATE_INIT_FDS", seen) ] path
+          in
+          equal (pair string string) ("exited 0", "passes\n") (status, line);
+          not_contains ~sub:pipe (read seen);
+          contains ~sub:" 0 -> /dev/null\n" (read seen);
+          contains ~sub:"variable=unset\n" (read seen));
       test "a test in the child does not find the request variable" (fun () ->
           let seen = Filename.concat (temp_dir ()) "seen" in
           let path =
@@ -2251,9 +2269,13 @@ let refusals =
             ("exited 0", "false\ntrue\n")
             (r.status, r.out));
       test
-        "a suite that spawned a domain is refused, since the loop cannot fork"
-        (fun () ->
-          let r = spawn ~env:[ suite "domain" ] [ mutate ] in
+        "a suite that spawned a domain is refused in fork mode, because the \
+         loop cannot fork" (fun () ->
+          let r =
+            spawn
+              ~env:[ suite "domain"; ("WINDTRAP_MUTATE_CHILDREN", "fork") ]
+              [ mutate ]
+          in
           equal (pair string text)
             ("exited 1", "calc: 1 passed in <time>.\n")
             (r.status, masked r.out);
@@ -2727,12 +2749,15 @@ let gate ~gates run name =
 (* The two children of [stalled] wait at their gates at the same time, each
    with a log directory of its own in the scratch directory of the loop,
    the one entry of TMPDIR. The loop removes the directory of a child when
-   it reaps the child, while the other child continues to run. *)
-let nothing_left () =
+   it reaps the child, while the other child continues to run. In exec
+   mode, each child also has a request file and a temporary directory, and
+   [per_child] is the number of entries of one child. *)
+let nothing_left_with ?(env = []) ~per_child () =
   let gates = temp_dir () and tmpdir = temp_dir () in
   let run =
     start
-      ~env:[ suite "stalled"; ("MUTATE_GATES", gates); ("TMPDIR", tmpdir) ]
+      ~env:
+        (suite "stalled" :: ("MUTATE_GATES", gates) :: ("TMPDIR", tmpdir) :: env)
       [ mutate; jobs 2 ]
   in
   let first, open_first = gate ~gates run "sub" in
@@ -2743,17 +2768,19 @@ let nothing_left () =
     | found -> failf "TMPDIR holds %d entries" (List.length found)
   in
   let both = logs () in
-  equal int 2 (List.length both);
+  equal int (2 * per_child) (List.length both);
   open_first ();
   reaped ~what:"the reaping of the first child" run first;
   until ~what:"the removal of the first child's log directory" run (fun () ->
-      List.length (logs ()) = 1);
+      List.length (logs ()) = per_child);
   let left = logs () in
   is_true (List.for_all (fun entry -> List.mem entry both) left);
   open_second ();
   let r = finish_within ~what:"the end of the second child" run in
   equal string "exited 0" r.status;
   equal (list string) [] (entries tmpdir)
+
+let nothing_left () = nothing_left_with ~per_child:1 ()
 
 (* The two children of [fixture], [stalled] or [queued], wait at their
    gates, and standard output is a pipe that this test fills. The child of
@@ -3091,18 +3118,16 @@ let late_interrupt () =
 
 (* [interrupted]'s second child hangs in a session of its own, with a
    grandchild that ignores SIGTERM. *)
-let interrupted_by signal =
+let interrupted_by ?(env = []) signal =
   let pidfile = Filename.concat (temp_dir ()) "hanging"
   and tmpdir = temp_dir () in
   remove (Verdicts.output_file ~exe:suite_exe);
   let run =
     start
       ~env:
-        [
-          suite "interrupted";
-          ("MUTATE_GRANDCHILD_PIDFILE", pidfile);
-          ("TMPDIR", tmpdir);
-        ]
+        (suite "interrupted"
+        :: ("MUTATE_GRANDCHILD_PIDFILE", pidfile)
+        :: ("TMPDIR", tmpdir) :: env)
       [ mutate ]
   in
   await ~what:"the hanging child" run pidfile;
@@ -3114,8 +3139,8 @@ let interrupted_outcome =
   "mutants: 1 survived of 3 reached by this suite, 1 never reached, 1 \
    filtered, 2 not tested, score 0.0%"
 
-let stopped () =
-  let r, grandchildren, left = interrupted_by Sys.sigint in
+let stopped_with env () =
+  let r, grandchildren, left = interrupted_by ~env Sys.sigint in
   equal string "killed by SIGINT" r.status;
   equal text (strf "windtrap: interrupted while testing %s\n" (site 18)) r.err;
   equal (list string) [ site 15 ] (survivors r.out);
@@ -3126,6 +3151,8 @@ let stopped () =
   equal (option (list string)) None (rows r);
   equal (list string) [] left;
   equal (list string) [ "gone" ] grandchildren
+
+let stopped = stopped_with []
 
 let sigpipe () =
   let r, grandchildren, left = interrupted_by Sys.sigpipe in
@@ -3499,6 +3526,198 @@ let effects =
         source_lines;
     ]
 
+(* Exec mode *)
+
+let exec_children = ("WINDTRAP_MUTATE_CHILDREN", "exec")
+
+(* A suite that spawns no domain gives the report and the verdict file of a
+   fork when each child is a new process. These tests do not show that the
+   children are new processes. [memo_in_exec] shows it. *)
+let same_in_exec (_, env, args) =
+  equal seen_witness
+    (seen (spawn ~env (mutate :: args)))
+    (seen (spawn ~env:(exec_children :: env) (mutate :: args)))
+
+let exec_fixtures =
+  [
+    ("green", [], []);
+    ("green, 4 jobs", [], [ jobs 4 ]);
+    ("crash", [ suite "crash" ], []);
+    ("fatal", [ suite "fatal" ], []);
+    ("capped, 4 jobs", [ suite "capped" ], [ jobs 4 ]);
+    ("known", [ suite "known" ], []);
+    ("boundary", [ suite "boundary" ], []);
+    ("pinned", [ suite "pinned" ], []);
+    ("release", [ suite "release" ], []);
+    ("tagged", [ suite "tagged"; ("WINDTRAP_TAG", "gated") ], []);
+    ("red", [ suite "red" ], []);
+    ("flaky", [ suite "flaky" ], []);
+    ("skippy", [ suite "skippy" ], []);
+    ("budget", [ suite "budget" ], []);
+  ]
+
+(* The dry run left the answer of [widen] in a table. A fork reads it and
+   does not evaluate the site. A new process has an empty table, evaluates
+   the site and fails. *)
+let memo_in_exec () =
+  let r = spawn ~env:[ exec_children; suite "memo" ] [ mutate ] in
+  equal string "exited 0" r.status;
+  equal string
+    "mutants: 2 reached by this suite, 2 killed, 2 never reached, 1 filtered, \
+     score 100.0%"
+    (outcome r.out);
+  not_contains ~sub:"arm: " r.out
+
+(* Each process sleeps at its module initialization. If the deadline of a
+   child does not include that time, the child expires and the loop kills
+   its mutant. *)
+let slow_init () =
+  let slow = ("MUTATE_SLOW_INIT", "2") in
+  equal seen_witness
+    (seen (spawn [ mutate; jobs 4 ]))
+    (seen (spawn ~env:[ exec_children; slow ] [ mutate; jobs 4 ]))
+
+let child_fault fault =
+  spawn ~env:[ exec_children; ("MUTATE_CHILD_FAULT", fault) ] [ mutate ]
+
+let domain_in_auto () =
+  let r = spawn ~env:[ suite "domain" ] [ mutate ] in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal string
+    "mutants: 1 reached by this suite, 1 killed, 3 never reached, 1 filtered, \
+     score 100.0%"
+    (outcome r.out);
+  equal
+    (option (list string))
+    (Some
+       [
+         "subject.ml:15 killed";
+         "subject.ml:18 unreached";
+         "subject.ml:21 unreached";
+         "subject.ml:27 unreached";
+         "subject.ml:38 filtered: zero operand";
+       ])
+    (rows r)
+
+let exec_group =
+  group "Exec mode"
+    [
+      cases "a suite with no domain gives the report of a fork"
+        ~name:(fun (name, _, _) -> name)
+        exec_fixtures same_in_exec;
+      test
+        "a result that the dry run left in memory does not reach a new process"
+        memo_in_exec;
+      test "the deadline of a new process includes its module initialization"
+        slow_init;
+      test
+        "the loop refuses to run when a new process ends before it serves its \
+         request" (fun () ->
+          let r = child_fault "exit" in
+          equal (pair string text)
+            ( "exited 1",
+              "windtrap: a new process of the suite ended without a ready line\n"
+            )
+            (r.status, r.err));
+      test
+        "the loop refuses to run when no call of a new process is for its suite"
+        (fun () ->
+          let r = child_fault "rename" in
+          equal (pair string text)
+            ( "exited 1",
+              "windtrap: a new process of the suite ended without a ready line\n"
+            )
+            (r.status, r.err));
+      test "a main with two suites serves each request in the call of its suite"
+        (fun () ->
+          let r = spawn ~env:[ exec_children; suite "two_suites" ] [ mutate ] in
+          equal (pair string text) ("exited 0", "") (r.status, r.err);
+          equal string green_outcome (outcome r.out));
+      test "a signal stops the startup child" (fun () ->
+          let tmpdir = temp_dir () in
+          remove (Verdicts.output_file ~exe:suite_exe);
+          let run =
+            start
+              ~env:
+                [
+                  exec_children;
+                  ("MUTATE_CHILD_FAULT", "hang");
+                  ("TMPDIR", tmpdir);
+                ]
+              [ mutate ]
+          in
+          until ~what:"the start of the startup child" run (fun () ->
+              List.exists
+                (fun scratch ->
+                  Sys.file_exists
+                    (Filename.concat
+                       (Filename.concat tmpdir scratch)
+                       "startup.request"))
+                (entries tmpdir));
+          Unix.sleepf 0.2;
+          Unix.kill run.pid Sys.sigint;
+          let r = finish run in
+          equal (pair string text)
+            ( "killed by SIGINT",
+              "windtrap: interrupted while a new process of the suite started\n"
+            )
+            (r.status, r.err);
+          equal (option (list string)) None (rows r);
+          equal (list string) [] (entries tmpdir));
+      test "a suite that spawned a domain gets a full run in auto mode"
+        domain_in_auto;
+      test "an inline suite serves its requests in new processes"
+        (inline_loop_with [ exec_children ]);
+      test "no at_exit function runs in a new process"
+        (no_at_exit_with [ exec_children ]);
+      test "a new process checks baselines read-only" (fun () ->
+          let b =
+            baseline_run ~env:[ exec_children ] [ mutate; "-u" ] ~stale:"5\n"
+          in
+          equal string
+            "mutants: 1 reached by this suite, 1 killed, 3 never reached, 1 \
+             filtered, score 100.0%"
+            (outcome b.ran.out);
+          equal text "6\n" b.baseline);
+      test "a first child is a new process too"
+        (first_tests_with [ exec_children ]);
+      test
+        "the loop removes the request file and the temporary directory of a \
+         new process when it reaps the process" (fun () ->
+          nothing_left_with ~env:[ exec_children ] ~per_child:3 ());
+      test "new processes of several jobs run at once" (fun () ->
+          let r = rendezvous [ exec_children ] [ jobs 2 ] in
+          equal (pair string text) ("exited 0", "") (r.status, r.err);
+          equal string
+            "mutants: 2 survived of 2 reached by this suite, 2 never reached, \
+             1 filtered, score 0.0%"
+            (outcome r.out));
+      test "a new process that blocks is killed at its deadline, with its group"
+        (fun () ->
+          let pidfile = Filename.concat (temp_dir ()) "grandchild" in
+          let r =
+            finish_within ~what:"the deadline of the blocked new process"
+              (start
+                 ~env:
+                   [
+                     exec_children;
+                     suite "block";
+                     ("MUTATE_GRANDCHILD_PIDFILE", pidfile);
+                   ]
+                 [ mutate ])
+          in
+          equal (pair string text) ("exited 0", "") (r.status, r.err);
+          equal string
+            "mutants: 1 reached by this suite, 1 killed, 3 never reached, 1 \
+             filtered, score 100.0%"
+            (outcome r.out);
+          equal (list string) [ "gone" ] (List.map fate (pids (read pidfile))));
+      (* The startup child has a deadline of 60 seconds or more, so no test
+         lets it expire. *)
+      test "a signal stops the new processes as it stops forks"
+        (stopped_with [ exec_children ]);
+    ]
+
 (* The fixtures' verdict files land in the real _build/_mutants, where
    [windtrap mutants] would merge them into the tree's answer, and no rule
    runs these executables but this suite. A forked child ends past
@@ -3530,6 +3749,7 @@ let () =
          reproducing;
          forks;
          jobs_group;
+         exec_group;
          signals;
          effects;
        ])

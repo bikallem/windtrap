@@ -2013,6 +2013,9 @@ let interrupted_rows =
         "windtrap: interrupted before testing lib/calc.ml:13:11:add\n" ) );
     ( "the determinism probe",
       (Report.Probe, "windtrap: interrupted during the determinism probe\n") );
+    ( "the start of a new process",
+      ( Report.Startup,
+        "windtrap: interrupted while a new process of the suite started\n" ) );
   ]
 
 let interrupted_loop (_, (stopped, expected)) =

@@ -25,6 +25,11 @@ let color_name = function
   | Os.Never -> "never"
   | Os.Auto -> "auto"
 
+let children_name = function
+  | Run.Auto -> "auto"
+  | Run.Fork -> "fork"
+  | Run.Exec -> "exec"
+
 let error_row = function
   | Cli.Unknown_flag flag -> "unknown " ^ flag
   | Cli.Missing_value flag -> "missing value " ^ flag
@@ -77,6 +82,7 @@ let flags (p : Cli.parsed) =
         some "mutate" words p.mutate;
         some "mutate_jobs" string_of_int p.mutate_jobs;
         some "mutate_since" Fun.id p.mutate_since;
+        some "mutate_children" children_name p.mutate_children;
         some "arm" Fun.id p.arm;
         bool "help" p.help;
         bool "version" p.version;
@@ -93,13 +99,15 @@ let parsed args = parsed_argv (Array.of_list ("windtrap-test" :: args))
 
 let mutation_name = function
   | Run.No_mutation -> "none"
-  | Run.Loop { scope; jobs; since } ->
+  | Run.Loop { scope; jobs; since; children } ->
       String.concat ""
         [
           "loop ";
           words scope;
           (if jobs = 1 then "" else strf " jobs %d" jobs);
           Option.fold ~none:"" ~some:(strf " since %s") since;
+          (if children = Run.Auto then ""
+           else " children " ^ children_name children);
         ]
   | Run.Armed id -> "armed " ^ id
 
@@ -255,6 +263,7 @@ let mirrors =
           ("WINDTRAP_MUTATE_JOBS", "--mutate-jobs", "all");
           ("WINDTRAP_MUTATE_JOBS", "--mutate-jobs", "257");
           ("WINDTRAP_MUTATE_SINCE", "--mutate-since", "-HEAD");
+          ("WINDTRAP_MUTATE_CHILDREN", "--mutate-children", "spawn");
           ("WINDTRAP_COLOR", "--color", "sometimes");
         ]
         refused_alike;
@@ -445,14 +454,14 @@ let every_flag () =
      failed_only, list_only, bail, stream, update, seed s1:00000000000000ff, \
      timeout 2.5, slow_threshold 3, prop_count 50, verbose, junit out.xml, \
      color never, log_dir logs, mutate [lib/a.ml; lib/b.ml], mutate_jobs 3, \
-     mutate_since main, arm lib/a.ml:1:0:add"
+     mutate_since main, mutate_children exec, arm lib/a.ml:1:0:add"
     (parsed
        (String.split_on_char ' '
           "-f pat -e ex --tag a --tag b --exclude-tag c --shard 2/4 --failed \
            -l -x -s -u --seed s1:00000000000000ff --timeout 2.5 \
            --slow-threshold 3 --prop-count 50 -v --junit out.xml --color never \
            -o logs --mutate=lib/a.ml,lib/b.ml --mutate-jobs 3 --mutate-since \
-           main --arm lib/a.ml:1:0:add"))
+           main --mutate-children exec --arm lib/a.ml:1:0:add"))
 
 (* Whole arguments: each valueless flag in both spellings, value flags with a
    good value, and misspellings and separators, so that most vectors parse
@@ -551,6 +560,9 @@ let parsing =
           ([ "--mutate-jobs=256" ], "mutate_jobs 256");
           ([ "--mutate-since"; "origin/main" ], "mutate_since origin/main");
           ([ "--mutate-since=HEAD~2" ], "mutate_since HEAD~2");
+          ([ "--mutate-children"; "fork" ], "mutate_children fork");
+          ([ "--mutate-children=EXEC" ], "mutate_children exec");
+          ([ "--mutate-children=Auto" ], "mutate_children auto");
           ([ "--arm"; "lib/a.ml:1:0:add" ], "arm lib/a.ml:1:0:add");
           ([ "--arm=x" ], "arm x");
           ([ "-h" ], "help");
@@ -651,6 +663,8 @@ let parsing =
           ("--mutate-jobs", "257");
           ("--mutate-since", "");
           ("--mutate-since", "-p");
+          ("--mutate-children", "");
+          ("--mutate-children", "forks");
           ("--seed", "42");
           ("--color", "sometimes");
         ]
@@ -861,6 +875,25 @@ let resolution =
           ([ ("WINDTRAP_MUTATE_JOBS", "3") ], [], "defaults");
           ( [],
             [ "--arm"; "lib/a.ml:9:12:add"; "--mutate-jobs"; "4" ],
+            "mutation armed lib/a.ml:9:12:add" );
+        ];
+      resolve_rows
+        "the children of a loop are --mutate-children, else its mirror, else \
+         auto, and nothing else reads them"
+        [
+          ( [],
+            [ "--mutate"; "--mutate-children"; "exec" ],
+            "mutation loop [] children exec" );
+          ( [ ("WINDTRAP_MUTATE_CHILDREN", "fork") ],
+            [ "--mutate=lib/" ],
+            "mutation loop [lib/] children fork" );
+          ( [ ("WINDTRAP_MUTATE_CHILDREN", "fork") ],
+            [ "--mutate"; "--mutate-children=exec" ],
+            "mutation loop [] children exec" );
+          ([], [ "--mutate" ], "mutation loop []");
+          ([ ("WINDTRAP_MUTATE_CHILDREN", "exec") ], [], "defaults");
+          ( [],
+            [ "--arm"; "lib/a.ml:9:12:add"; "--mutate-children"; "exec" ],
             "mutation armed lib/a.ml:9:12:add" );
         ];
       resolve_rows

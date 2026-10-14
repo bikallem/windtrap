@@ -301,6 +301,8 @@ the withheld-correction warning:
 
 - The dry run is the suite's ordinary run. Under `-u` it accepts
   corrections before any mutant is armed.
+- In exec mode, a child process that runs no test measures the startup
+  time of the suite.
 - The determinism probe, in a child process, checks that the suite
   passes again.
 - Each reached mutant runs in a child with its reaching tests, up to the
@@ -314,12 +316,15 @@ the withheld-correction warning:
   than `hits * 8 + 1000` times, `hits` being the dry run's count, is
   killed, and its mutant counts as killed.
 
-A child starts from the state the dry run left. When a child passes
+A forked child starts from the state the dry run left. When a child passes
 without evaluating its mutant's site, as when the dry run cached the
 site's result in a table or a forced lazy value, the mutant is not
 evaluated and is no survivor. The report lists it under `not evaluated`
 with an `arm:` command, which runs the suite in a new process and ends
-on the mutant's verdict.
+on the mutant's verdict. Under `--mutate-children=exec`, or in auto mode
+(the default) in a process that started a domain, each child is a new
+process of the suite executable. Such a child has no cache from the dry
+run.
 
 A site that no test runs, and that module initialization or a
 fixture release runs, is evaluated outside tests. No child tests its
@@ -823,8 +828,11 @@ the suite then runs with `--mutate`.
 
 ## When a run cannot mutate
 
-A mutation run forks a child process for each mutant. It is refused on
-Windows, and in a process that has started a domain. Under
+A mutation run starts a child process for each mutant. It is refused on
+Windows. OCaml refuses `fork` in a process that has started a domain, so
+in such a process each child is a new process of the suite executable
+(`--mutate-children`). With `--mutate-children=fork`, the run is refused
+in that process. Under
 `--mutate-since`, it is refused when git cannot give the changed lines,
 for example when `REV` names no commit. `--mutate` and
 `--arm` together are a usage error. `--arm` refuses a mutant that

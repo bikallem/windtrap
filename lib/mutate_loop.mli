@@ -62,11 +62,13 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
       module initialization or in a fixture release, is evaluated outside tests
       ({!Windtrap_runtime.Verdicts.Outside_tests}). A site that only tests
       marked xfail evaluated is unreached.
+    + In exec mode ({b Exec mode} below), it runs one child that runs no test.
+      Its time is the time that a new process takes before its first test.
     + It runs the determinism probe, which is one unarmed child over the tests
       that the dry run executed. The probe agrees iff it executed as many tests,
       skipped as many and counted no failure.
-    + It forks one child per reached mutant, in the order of the catalogue, and
-      never forks one that is unreached or evaluated outside tests. A mutant
+    + It starts one child per reached mutant, in the order of the catalogue, and
+      never starts one that is unreached or evaluated outside tests. A mutant
       with a history can have two children ({b History} below). Up to [jobs]
       children of {!Run.Loop} run at once, and one more starts when one ends.
       The verdict of a mutant is kept until each mutant before it in the
@@ -90,6 +92,21 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     scratch directory of the loop, so children that run at once share no file of
     the loop. Their tests can share a file or a port of their own, which is why
     [jobs] is [1] unless a run sets it.
+
+    {b Exec mode.} The [children] of {!Run.Loop} tells how the loop starts a
+    child. {!Run.Fork} forks each child from the state after the dry run.
+    {!Run.Exec} starts each child as a new process of the executable:
+    [/proc/self/exe] for native code on Linux, and
+    {!Windtrap_runtime.Instr.executable} if not. The child gets the [argv] of
+    the loop. {!Run.Auto}, the default, is exec mode when the process spawned a
+    domain ({!domain_spawned}), before or in the dry run, and fork mode if not.
+    A new process reads its request from a file ({!write_request},
+    {!serve_child}). It starts from the state after module initialization, not
+    from the state after the dry run. Its environment is that of the loop, with
+    [TMPDIR] set to a directory of its own in the scratch directory. The names
+    of these directories have one length. A suite that a deep [TMPDIR] breaks,
+    for example with the path of a Unix socket, gets a longer path in a new
+    process than in the dry run.
 
     {b History.} Before the first child, the loop reads the verdict file of the
     executable, which an earlier build can have written. A mutant that it
@@ -117,10 +134,11 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     deadline, did not exit with [0], or left no complete line. Otherwise it is
     {!Windtrap_runtime.Verdicts.Not_evaluated} when its child did not evaluate
     the armed site ({!Windtrap_runtime.Mutate.armed_hits} is [0]), and survived
-    when it did. A child starts from the state that the dry run left, so a site
+    when it did. A fork starts from the state that the dry run left, so a site
     whose result the dry run cached, in a table or a forced lazy value, can pass
     unevaluated. The report lists such a mutant with the [--arm] command that
-    tests it in a new process, and names it no survivor.
+    tests it in a new process, and names it no survivor. In exec mode, a new
+    process has no such cache, and its tests evaluate the site.
 
     {b Tests marked xfail.} A test marked xfail ({!Test_tree.val-xfail}) reaches
     no mutant and kills none. The dry run and the probe run it, no child runs
@@ -131,34 +149,36 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     that the dry run took, read on the monotonic clock ({!Os.val-counter}), plus
     a share for the tests of the child. The share is ten times
     ([deadline_multiplier]) what the dry run measured for those tests, and at
-    least one second. The probe has the same deadline, over every executed test.
-    The loop reads each pipe that is ready before it looks at a deadline. Thus a
-    child that exited keeps its verdict, also when a write of the report held
-    the loop for longer than the deadline of the child. The loop reads a pipe at
-    most 17 times ([drain_rounds]) before it looks at the deadlines and the
-    signal, and keeps the first 64 KiB ([output_limit]) of what a child writes.
-    Thus a child that writes and never stops cannot keep the loop past its
-    deadline, or fill the memory of the loop. When the children at once
-    outnumber the CPUs ([Domain.recommended_domain_count]), each deadline is
-    multiplied by the children for each CPU. The children at once are [jobs],
-    but at most the reached mutants. The probe runs alone, before the children
-    of the mutants, and its deadline is not multiplied. On Linux, the time that
-    a child or the probe waited for a CPU does not count toward its deadline
-    ([waited_for_cpu]). This time is the sum of the waits of the threads of the
-    processes in the group of the child, which include the processes that its
-    tests start ([read_threads]). Thus other processes that hold the CPUs, for
-    example the children of the other suites of a parallel [dune runtest], do
-    not kill a mutant by its deadline. The sum is at most the time since the
-    start of the child less [share] times the CPU time of these threads. [share]
-    is the factor of the deadline of the child, and [1.] for the probe. Thus the
-    deadline comes at the latest when the group used as much CPU time as the
-    deadline of one job, also when its threads wait at the same time, or wait
-    for the other children. The loop reads these times only when a child is past
-    its deadline, and then at least every 0.1 seconds ([reread]). The wait of a
-    process that ended before the first read counts toward the deadline. So does
-    the wait of a process after its last read. While nothing else holds the
-    loop, this wait is at most 0.1 seconds for each thread of the process. Other
-    systems do not give these times.
+    least one second. In exec mode, each deadline also has ten times the time
+    that the startup child measured. The probe has the same deadline, over every
+    executed test. The startup child has a deadline of 60 seconds plus ten times
+    the dry run. The loop reads each pipe that is ready before it looks at a
+    deadline. Thus a child that exited keeps its verdict, also when a write of
+    the report held the loop for longer than the deadline of the child. The loop
+    reads a pipe at most 17 times ([drain_rounds]) before it looks at the
+    deadlines and the signal, and keeps the first 64 KiB ([output_limit]) of
+    what a child writes. Thus a child that writes and never stops cannot keep
+    the loop past its deadline, or fill the memory of the loop. When the
+    children at once outnumber the CPUs ([Domain.recommended_domain_count]),
+    each deadline is multiplied by the children for each CPU. The children at
+    once are [jobs], but at most the reached mutants. The probe runs alone,
+    before the children of the mutants, and its deadline is not multiplied. On
+    Linux, the time that a child or the probe waited for a CPU does not count
+    toward its deadline ([waited_for_cpu]). This time is the sum of the waits of
+    the threads of the processes in the group of the child, which include the
+    processes that its tests start ([read_threads]). Thus other processes that
+    hold the CPUs, for example the children of the other suites of a parallel
+    [dune runtest], do not kill a mutant by its deadline. The sum is at most the
+    time since the start of the child less [share] times the CPU time of these
+    threads. [share] is the factor of the deadline of the child, and [1.] for
+    the probe. Thus the deadline comes at the latest when the group used as much
+    CPU time as the deadline of one job, also when its threads wait at the same
+    time, or wait for the other children. The loop reads these times only when a
+    child is past its deadline, and then at least every 0.1 seconds ([reread]).
+    The wait of a process that ended before the first read counts toward the
+    deadline. So does the wait of a process after its last read. While nothing
+    else holds the loop, this wait is at most 0.1 seconds for each thread of the
+    process. Other systems do not give these times.
 
     The runaway budget of a child ({!Windtrap_runtime.Mutate.arm}) is
     [(hits * 8) + 1000] ([budget_of]) for a site that the dry run evaluated
@@ -199,7 +219,7 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     file of the executable when no mutant to test is on a changed line.
 
     {b Refusals.} Each of these is [Reported 1] with one sentence on standard
-    error ({!Os.say}). The first seven are tried in this order, and the last has
+    error ({!Os.say}). The first eight are tried in this order, and the last has
     no one place in it:
     - The platform is Windows, which has no [Unix.fork].
     - Under [--mutate-since], the changed lines cannot be read: the revision
@@ -210,6 +230,8 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     - The exit code of the dry run is not [0], because no test ran ([2]) or
       because the run is red.
     - The population is empty.
+    - In exec mode, the startup child passes its deadline, gives an [error]
+      line, or ends with no [ready] line or with an exit code that is not [0].
     - The probe disagrees with the dry run, and the sentence names the tests
       that failed in it, or it passes its deadline, is refused at startup, or
       reports nothing readable.
@@ -217,9 +239,11 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
       when the verdict of the mutant would be committed, and the children that
       run then are killed.
     - The supervision fails. The scratch directory cannot be created, which is
-      tried before the probe, or [pipe], [fork], [select] or [waitpid] fails for
-      the probe or for a child. [fork] fails in a process that has spawned a
-      domain, in the dry run or before it, and the sentence then says so. *)
+      tried before the probe, or [pipe], [fork], [create_process_env], [select]
+      or [waitpid] fails for the probe or for a child, or the request file of a
+      new process cannot be written. Under {!Run.Fork}, [fork] fails in a
+      process that has spawned a domain, in the dry run or before it, and the
+      sentence then says so. *)
 
 (** {1:armed The armed run}
 
@@ -309,6 +333,9 @@ type kind =
           tests. It gives the verdict: [survived], [not_evaluated],
           [killed <index>] or [killed]. If the mutant does not arm, it gives
           [error <diagnostic>]. *)
+  | Startup
+      (** The child runs no test and gives [ready]. The loop measures the time
+          that a new process takes before its first test. *)
 
 type request = {
   suite : string;  (** The name of the suite of the dry run. *)
@@ -330,28 +357,40 @@ val write_request : string -> request -> unit
 
     The function is in this interface for the unit suite. *)
 
-val serve_child : suite:string -> Test_tree.t list -> unit
-(** [serve_child ~suite tests] does nothing if the environment variable
-    [WINDTRAP_MUTATE_CHILD] is not set or is empty. If it is set, the process is
-    a child of the loop, and the variable gives the path of its request file.
-    Then [serve_child] does these steps and does not return:
-    - It removes the variable from the environment, so that a suite that a test
-      starts does not serve the request again.
+val serving : unit -> bool
+(** [serving ()] is [true] in a child that is a new process of the loop: the
+    environment variable [WINDTRAP_MUTATE_CHILD] was set and not empty at the
+    initialization of this module.
+
+    The function is in this interface for the unit suite. *)
+
+val serve_child : suite:string -> Test_tree.t list -> bool
+(** [serve_child ~suite tests] is [false] if the process is not a child of the
+    loop ({!serving} is [false]). It is [true] if the request is for another
+    suite: the caller must run nothing and return, because a later call of
+    {!Windtrap.run} in the same main is for that suite. If not, [serve_child]
+    does these steps and does not return:
+    - It runs the request. These requests give the line [error <diagnostic>]: a
+      request file that it cannot read, a request file that is not complete, a
+      request from another executable or another catalogue, and a request with a
+      test that [tests] does not have.
+    - It writes one line to the pipe and calls [Unix._exit 0], as a forked child
+      does.
+
+    The environment variable [WINDTRAP_MUTATE_CHILD] gives the path of the
+    request file. At the initialization of this module, before the modules of
+    the suite initialize, a child does these steps:
+    - It removes the variable from the environment, so that a process that the
+      suite starts does not serve the request again.
     - It calls [setsid].
     - It moves its standard input, the write end of the verdict pipe, to a new
       descriptor with close-on-exec. Then its standard input is [/dev/null]. If
       it cannot move the pipe, it calls [Unix._exit 2] and writes no line.
-    - It reads the request and runs it. These requests give the line
-      [error <diagnostic>]: a request file that it cannot read, a request file
-      that is not complete, a request from another executable or another
-      catalogue, a request for another [suite], and a request with a test that
-      [tests] does not have.
-    - It writes one line to the pipe and calls [Unix._exit 0], as a forked child
-      does.
 
-    {!Windtrap.run} calls it before it parses the command line. Thus a main that
-    calls {!Windtrap.run} two times, with two suites, serves the requests of the
-    second suite with an [error] line from the first call. *)
+    {!Windtrap.run} calls [serve_child] before it parses the command line. If a
+    main has no call of {!Windtrap.run} for the suite of the request, the
+    process ends with no line, and the loop counts that as a failure of the
+    child. *)
 
 (** {1:pipes The pipes of the children} *)
 
@@ -398,18 +437,23 @@ val next_look : left:float -> waited:(unit -> float) -> float * float
 
     Beyond the effects of {!Report.run}, the loop calls [fork], [waitpid],
     [pipe] and [select], and each child calls [setsid] and closes the pipes of
-    the other children. Under [--mutate-since] it runs [git] four times, before
-    the dry run ({!Changed_lines.of_git}). The loop calls [kill] on the process
-    group of a child that expired or was interrupted. It creates one scratch
-    directory per run under [Filename.get_temp_dir_name ()], and removes it
-    however the loop ends, a second signal excepted. For the source line of a
-    survivor and the digest of each record it reads the recorded file of the
-    mutant, under {!Os.project_root} first and then as given. It reads the
-    verdict file of the executable before the first child.
+    the other children. In exec mode ({!Run.children}), the loop calls
+    [create_process_env] in place of [fork]. The pipes are close-on-exec, so a
+    new process gets no pipe of another child. For each child, the loop writes a
+    request file and makes a temporary directory in its scratch directory. It
+    gives the directory to the child in [TMPDIR], and it removes the file and
+    the directory when it reaps the child. Under [--mutate-since] it runs [git]
+    four times, before the dry run ({!Changed_lines.of_git}). The loop calls
+    [kill] on the process group of a child that expired or was interrupted. It
+    creates one scratch directory per run under [Filename.get_temp_dir_name ()],
+    and removes it however the loop ends, a second signal excepted. For the
+    source line of a survivor and the digest of each record it reads the
+    recorded file of the mutant, under {!Os.project_root} first and then as
+    given. It reads the verdict file of the executable before the first child.
 
     At module initialization, the module reads the status of its executable file
-    ([stat]). {!serve_child} reads the environment variable
-    [WINDTRAP_MUTATE_CHILD]. If the variable is set and not empty,
-    {!serve_child} removes it and calls [setsid]. It copies the standard input
-    to a new descriptor and opens [/dev/null] as the standard input. Then it
-    reads the request file and exits the process with [Unix._exit]. *)
+    ([stat]) and the environment variable [WINDTRAP_MUTATE_CHILD]. If the
+    variable is set and not empty, the module removes it and calls [setsid]. It
+    copies the standard input to a new descriptor and opens [/dev/null] as the
+    standard input. Then {!serve_child} reads the request file and exits the
+    process with [Unix._exit]. *)
