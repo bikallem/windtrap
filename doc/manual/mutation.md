@@ -392,6 +392,14 @@ a process that ended before the first read counts, for example of a
 short command that a test ran earlier. So does the wait of a process
 after its last read, which is at most 0.1 seconds.
 
+The time that a child waits for the file system counts toward its
+deadline. A child writes no last-failed store, but it writes the
+captured output of each test to a log file, because a test can read
+its captured output. On a busy file system, the creation of a log file
+can take more than 0.5 seconds. Then a child can pass its deadline, and
+its mutant counts as killed. The loop does not get this time from the
+system.
+
 When the children are more than the CPUs, they also wait for each
 other. Their longer deadlines are for this wait, and the wait does not
 move them again. Thus a child that uses the CPU and never stops is

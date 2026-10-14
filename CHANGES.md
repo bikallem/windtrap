@@ -198,7 +198,10 @@
 - A mutation child writes no last-failed store. The run removes the
   store with the child, and on a busy file system the write can take
   seconds. This time counted toward the deadline of the child, and a
-  mutant that survived could count as killed.
+  mutant that survived could count as killed. A child still writes the
+  capture logs of its tests, because a test can read its captured
+  output, and a stall of the file system there can also expire a
+  deadline.
 - A mutation run that a signal stops when no child runs starts no
   other child, and names the next mutant as `interrupted before
   testing`.

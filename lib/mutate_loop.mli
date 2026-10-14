@@ -81,7 +81,10 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     read-only, records no correction and writes no last-failed store
     ({!Run.config.store}). The loop removes the log directory of the child, and
     on a busy file system a write of the store can take seconds, which count
-    toward the deadline of the child. Nothing that a child prints is visible,
+    toward the deadline of the child. But a child writes the capture log of each
+    test, because a test can read its captured output ({!Capture.val-output}).
+    The time of these writes also counts toward the deadline, and a stall of the
+    file system there can expire it. Nothing that a child prints is visible,
     because both of its standard descriptors are [/dev/null]. No [at_exit]
     function runs in a child. Each child has a log directory of its own in the
     scratch directory of the loop, so children that run at once share no file of
