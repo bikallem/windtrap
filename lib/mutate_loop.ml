@@ -906,6 +906,128 @@ let start_child loop ~share ~log ~bail ~kind ~paths ~siblings =
   start ~deadline:(child_deadline loop ~share paths) ~share ~log_dir ~siblings
     (fun () -> serve loop.tests request)
 
+(* A child that is a new process of the suite executable reads its request
+   from a file: a header line, the identity of the executable, the
+   fingerprint of the catalogue, then the request in [Marshal] format.
+   [Marshal] is safe only between two processes of the same executable.
+   Thus a change of the executable after the dry run gives a diagnostic. *)
+let request_header = "windtrap-mutate-request 1"
+
+(* The identity of the file that the process runs, read one time at module
+   initialization: a rebuild later in the run does not change it. On Linux,
+   [/proc/self/exe] of native code is that file, also after a rebuild
+   replaced the file at its path. In bytecode, it is [ocamlrun]. *)
+let executable_identity =
+  let path =
+    if Sys.backend_type = Sys.Native && Sys.file_exists "/proc/self/exe" then
+      "/proc/self/exe"
+    else Windtrap_runtime.Instr.executable
+  in
+  match Unix.stat path with
+  | st -> Some (strf "%d %d %d %.0f" st.st_dev st.st_ino st.st_size st.st_mtime)
+  | exception Unix.Unix_error _ -> None
+
+let catalogue_fingerprint () =
+  Digest.to_hex
+    (Digest.string
+       (String.concat "\n"
+          (List.map
+             (fun (m : Mutate.mutant) -> Mutate.id_to_string m.id)
+             (Mutate.catalogue ()))))
+
+let write_request path (request : request) =
+  let identity = Option.value executable_identity ~default:"unknown" in
+  Out_channel.with_open_gen [ Open_wronly; Open_creat; Open_trunc; Open_binary ]
+    0o600 path (fun oc ->
+      List.iter
+        (fun line -> output_string oc (line ^ "\n"))
+        [ request_header; identity; catalogue_fingerprint () ];
+      Marshal.to_channel oc request [])
+
+let changed_executable = "the executable changed after the dry run"
+let incomplete_request = "the request file is not complete"
+
+let read_request path =
+  match
+    In_channel.with_open_bin path (fun ic ->
+        let line () = In_channel.input_line ic in
+        let header = line () in
+        let identity = line () in
+        let fingerprint = line () in
+        match (header, identity, fingerprint) with
+        | Some header, Some identity, Some fingerprint ->
+            if
+              header = request_header
+              && executable_identity = Some identity
+              && fingerprint = catalogue_fingerprint ()
+            then Ok (Marshal.from_channel ic : request)
+            else Error changed_executable
+        | _ -> Error incomplete_request)
+  with
+  | result -> result
+  | exception Sys_error message -> Error ("cannot read the request: " ^ message)
+  | exception (End_of_file | Failure _) -> Error incomplete_request
+
+(* A request for another suite, or for a test that this process does not
+   have, gives a diagnostic. Without this check, a child that runs no test
+   gives an incorrect line: [killed] for a mutant, [fails] for a test
+   alone. *)
+let check_request ~suite tests (request : request) =
+  let known = Hashtbl.create 64 in
+  List.iter
+    (fun (case : Test_tree.case) -> Hashtbl.replace known case.path ())
+    (Test_tree.flatten tests);
+  if not (String.equal request.suite suite) then
+    Error
+      (strf
+         "the request is for the suite \"%s\", and this process runs the suite \
+          \"%s\""
+         request.suite suite)
+  else
+    match
+      List.find_opt (fun path -> not (Hashtbl.mem known path)) request.paths
+    with
+    | Some path ->
+        Error
+          (strf
+             "the tests changed after the dry run: this process has no test \
+              \"%s\""
+             (Test_tree.path_to_string path))
+    | None -> Ok request
+
+let request_variable = "WINDTRAP_MUTATE_CHILD"
+
+(* The parent gives the write end of the verdict pipe as the standard input
+   of the child. The child moves the pipe to a descriptor with close-on-exec,
+   so that no process that a test starts gets it. Then the standard input of
+   the child is [/dev/null], or closed if [/dev/null] does not open. *)
+let take_pipe () =
+  let pipe = Unix.dup ~cloexec:true Unix.stdin in
+  (match Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0 with
+  | null ->
+      Unix.dup2 null Unix.stdin;
+      Unix.close null
+  | exception Unix.Unix_error _ -> Unix.close Unix.stdin);
+  pipe
+
+let serve_child ~suite tests =
+  match Sys.getenv_opt request_variable with
+  | None | Some "" -> ()
+  | Some path -> (
+      (* A suite that a test starts must not serve the request again. *)
+      Os.setenv request_variable None;
+      (try ignore (Unix.setsid ())
+       with Unix.Unix_error _ | Invalid_argument _ -> ());
+      match take_pipe () with
+      | exception Unix.Unix_error _ -> Unix._exit 2
+      | pipe ->
+          in_child pipe (fun () ->
+              match
+                Result.bind (read_request path) (check_request ~suite tests)
+              with
+              | Error message -> error_line message
+              | Ok request -> serve tests request))
+
 (* The determinism probe *)
 
 let not_a_number =

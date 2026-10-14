@@ -234,6 +234,8 @@ let run ?(argv = Sys.argv) suite tests =
   (* [--help], [--version] and a usage error return before [Run.execute]
      would refuse a nested run. *)
   if Run.active () then invalid_arg Run.active_run_error;
+  (* A mutation child that is a new process runs its request and exits. *)
+  Mutate_loop.serve_child ~suite tests;
   let argv0 = if Array.length argv > 0 then argv.(0) else "" in
   let prog = if argv0 = "" then suite else argv0 in
   let usage_error error =

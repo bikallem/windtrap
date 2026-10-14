@@ -291,6 +291,68 @@ val domain_spawned : unit -> bool
     The function is in this interface for the unit suite. A fixture calls it in
     a process of its own, because after a spawn the process cannot fork. *)
 
+(** {1:requests Requests}
+
+    A child that is a new process of the suite executable gets a request in
+    place of the state of the parent. *)
+
+(** The type for what a child does with the tests of its request. *)
+type kind =
+  | Probe
+      (** The child runs the tests with no mutant armed. It gives the counts of
+          the run: [probe <executed> <skipped> <failed> <indices>...]. *)
+  | Alone
+      (** The child runs the tests with no mutant armed. It gives [passes] or
+          [fails]. *)
+  | Mutant of { id : Windtrap_runtime.Mutate.id; budget : int }
+      (** The child arms the mutant [id] with the runaway [budget] and runs the
+          tests. It gives the verdict: [survived], [not_evaluated],
+          [killed <index>] or [killed]. If the mutant does not arm, it gives
+          [error <diagnostic>]. *)
+
+type request = {
+  suite : string;  (** The name of the suite of the dry run. *)
+  config : Run.config;
+      (** The configuration of the child, from {!Run.for_subset}. *)
+  paths : string list list;
+      (** The tests of the child, in the order of the dry run. *)
+  kind : kind;
+}
+(** The type for the request of a child. It holds only data. *)
+
+val write_request : string -> request -> unit
+(** [write_request path request] writes [request] to the file [path]. The file
+    has a header line, the identity of the executable file, the fingerprint of
+    the catalogue of mutants and the request in [Marshal] format. The module
+    reads the identity one time, at its initialization. For native code on
+    Linux, it is the identity of [/proc/self/exe]. If not, it is the identity of
+    {!Windtrap_runtime.Instr.executable}.
+
+    The function is in this interface for the unit suite. *)
+
+val serve_child : suite:string -> Test_tree.t list -> unit
+(** [serve_child ~suite tests] does nothing if the environment variable
+    [WINDTRAP_MUTATE_CHILD] is not set or is empty. If it is set, the process is
+    a child of the loop, and the variable gives the path of its request file.
+    Then [serve_child] does these steps and does not return:
+    - It removes the variable from the environment, so that a suite that a test
+      starts does not serve the request again.
+    - It calls [setsid].
+    - It moves its standard input, the write end of the verdict pipe, to a new
+      descriptor with close-on-exec. Then its standard input is [/dev/null]. If
+      it cannot move the pipe, it calls [Unix._exit 2] and writes no line.
+    - It reads the request and runs it. These requests give the line
+      [error <diagnostic>]: a request file that it cannot read, a request file
+      that is not complete, a request from another executable or another
+      catalogue, a request for another [suite], and a request with a test that
+      [tests] does not have.
+    - It writes one line to the pipe and calls [Unix._exit 0], as a forked child
+      does.
+
+    {!Windtrap.run} calls it before it parses the command line. Thus a main that
+    calls {!Windtrap.run} two times, with two suites, serves the requests of the
+    second suite with an [error] line from the first call. *)
+
 (** {1:pipes The pipes of the children} *)
 
 val drain : (Unix.file_descr * Buffer.t) list -> Unix.file_descr list
@@ -343,4 +405,11 @@ val next_look : left:float -> waited:(unit -> float) -> float * float
     however the loop ends, a second signal excepted. For the source line of a
     survivor and the digest of each record it reads the recorded file of the
     mutant, under {!Os.project_root} first and then as given. It reads the
-    verdict file of the executable before the first child. *)
+    verdict file of the executable before the first child.
+
+    At module initialization, the module reads the status of its executable file
+    ([stat]). {!serve_child} reads the environment variable
+    [WINDTRAP_MUTATE_CHILD]. If the variable is set and not empty,
+    {!serve_child} removes it and calls [setsid]. It copies the standard input
+    to a new descriptor and opens [/dev/null] as the standard input. Then it
+    reads the request file and exits the process with [Unix._exit]. *)

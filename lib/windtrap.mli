@@ -1861,7 +1861,11 @@ val run : ?argv:string array -> string -> test list -> int
     While it executes, and not on Windows, {!run} handles [SIGINT], [SIGTERM]
     and [SIGHUP]. It removes the attempt's temporary files and releases the
     fixtures still held. It does not run the teardown of the interrupted test,
-    writes no correction and dies by the same signal. *)
+    writes no correction and dies by the same signal.
+
+    When the private environment variable [WINDTRAP_MUTATE_CHILD] is set and not
+    empty, {!run} is a child of the mutation loop. It runs the request of the
+    loop and exits the process. Do not set the variable. *)
 
 (** {1:private Private} *)
 
