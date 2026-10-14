@@ -583,9 +583,10 @@ val startup_message : startup_error -> string
 
     {!execute} makes the {{!section-startup}startup checks}, selects the tests
     and runs them one at a time, in declaration order. It then
-    {{!section-release}releases the fixtures}, updates the last-failed store,
-    writes the kept corrections and computes the exit code. The subsections
-    after {!list_selection} say what each step guarantees. *)
+    {{!section-release}releases the fixtures}, updates the last-failed store
+    when [config.store] is [true], writes the kept corrections and computes the
+    exit code. The subsections after {!list_selection} say what each step
+    guarantees. *)
 
 (* What a test's author is told about limits, retries, scopes, expected
    failures, corrections, exits and signals is stated in windtrap.mli. The
