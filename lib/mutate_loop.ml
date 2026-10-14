@@ -248,6 +248,20 @@ exception Supervision of string
 let failed call error =
   Supervision (strf "%s failed: %s" call (Unix.error_message error))
 
+(* No version of OCaml has a call that tells if the process ever spawned a
+   domain. [Domain.count] is in OCaml 5.5 and later, and it counts only the
+   live domains.
+   Thus the module registers one hook at its initialization. The hook runs
+   before the first spawn. If a domain spawned before the module
+   initialization, the registration raises. *)
+let spawned = Atomic.make false
+
+let () =
+  try Domain.before_first_spawn (fun () -> Atomic.set spawned true)
+  with Invalid_argument _ -> Atomic.set spawned true
+
+let domain_spawned () = Atomic.get spawned
+
 let domain_refusal =
   "this process has spawned a domain, and OCaml refuses Unix.fork in a process \
    that has: mutation testing runs every mutant in a forked child, so it \
