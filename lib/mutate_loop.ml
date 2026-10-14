@@ -482,9 +482,10 @@ let thread_times pid tid =
    [kill_group] kills. One read of /proc serves all of [children].
 
    The child keeps the last times of each thread in [threads]. Thus the
-   times of a process that ends after a read stay in [threads]. The times of
-   a process that ended before the first read are not in [threads]. Other
-   systems do not give these times, and [threads] stays empty there. *)
+   times of a process that ends after a read stay in [threads], but its wait
+   after its last read is not there. The times of a process that ended
+   before the first read are not in [threads]. Other systems do not give
+   these times, and [threads] stays empty there. *)
 let read_threads children =
   let member pid =
     match List.find_opt (fun child -> child.pid = pid) children with
@@ -527,6 +528,17 @@ let waited_for_cpu child ~elapsed =
   in
   Float.max 0. (Float.min waited (elapsed -. (child.share *. used)))
 
+(* The most seconds between two reads of the group of a child past its
+   deadline ([read_threads]). When a process of the group ends, the loop
+   does not get its wait after its last read. Without this limit, the next
+   read comes only when the wait of the last read is used up. A test that
+   waits for a subprocess and continues after the subprocess ends then gets
+   its deadline at that read. With the limit, a process loses at most the
+   wait of [reread] seconds. Something else that holds the loop, for
+   example a write of the report, can make the time between two reads
+   longer. *)
+let reread = 0.1
+
 (* [await running] is the children of [running] that ended, reaped, and
    those that continue to run, each in the order of [running], when one or
    more children end. A child ends when the parent reads its pipe to the
@@ -549,8 +561,9 @@ let waited_for_cpu child ~elapsed =
    of a parallel [dune runtest], can hold the CPUs for longer than the dry
    run measured, and a wait for them tells nothing about the mutant. The
    time is read only for a child past its deadline: it only moves a
-   deadline later. It is the wait of the threads of all of the processes of
-   the group of the child ([waited_for_cpu]). *)
+   deadline later. Then it is read at least every [reread] seconds. It is
+   the wait of the threads of all of the processes of the group of the
+   child ([waited_for_cpu]). *)
 let await running =
   let remaining running =
     let elapsed =
@@ -563,11 +576,15 @@ let await running =
          (fun ((_, child), elapsed) ->
            if elapsed < child.deadline then None else Some child)
          elapsed);
+    (* Each child, the seconds until its deadline, and the seconds until
+       the loop looks at it again. *)
     List.map
       (fun (((_, child) as running), elapsed) ->
         let left = child.deadline -. elapsed in
-        ( running,
-          if left > 0. then left else left +. waited_for_cpu child ~elapsed ))
+        if left > 0. then (running, left, left)
+        else
+          let left = left +. waited_for_cpu child ~elapsed in
+          (running, left, Float.min left reread))
       elapsed
   in
   let kill ending ((_, child) as running) =
@@ -596,15 +613,15 @@ let await running =
              the first, and [select] reads a negative timeout as no
              timeout. *)
           let timed = remaining running in
-          match List.partition (fun (_, left) -> left <= 0.) timed with
+          match List.partition (fun (_, left, _) -> left <= 0.) timed with
           | (_ :: _ as expired), live ->
-              ( List.map (fun (child, _) -> kill Expired child) expired,
-                List.map fst live )
+              ( List.map (fun (child, _, _) -> kill Expired child) expired,
+                List.map (fun (child, _, _) -> child) live )
           | [], _ -> (
               let pipes = List.map (fun (_, child) -> child.pipe) running in
               let timeout =
                 List.fold_left
-                  (fun nearest (_, left) -> Float.min nearest left)
+                  (fun nearest (_, _, next) -> Float.min nearest next)
                   Float.infinity timed
               in
               match Unix.select pipes [] [] timeout with

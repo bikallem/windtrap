@@ -1261,6 +1261,20 @@ let spawning () =
   starve "spawning"
     "waits for a process that uses the CPU and pins nothing about sub"
 
+(* In [burn_then_sleep], the deadline is about 2.2 seconds. The subprocess
+   of the child waits for the CPU 4 times as long as it uses it, and ends
+   after about 3.5 seconds. Then the child sleeps 0.9 seconds, and ends
+   after about 4.4 seconds. The loop keeps the wait of the subprocess from
+   its last read, and loses the wait after that read. The loop reads at
+   least every 0.1 seconds, so it loses little of the wait. A loop that
+   read again only when the wait of its last read was used up read at 2.2
+   seconds and next at about 4 seconds. It lost about 1 second of wait and
+   killed the child in its sleep. *)
+let burnt_then_slept () =
+  starve "burn_then_sleep"
+    "waits for a process that uses the CPU, then sleeps, and pins nothing \
+     about sub"
+
 let limits =
   group "Limits"
     [
@@ -1317,6 +1331,10 @@ let limits =
         "the time that a subprocess of a child waits for a CPU does not count \
          toward the deadline of the child"
         spawning;
+      test
+        "the wait of a subprocess that ends between two reads of its wait does \
+         not count toward the deadline of the child"
+        burnt_then_slept;
     ]
 
 (* The verdict file *)
