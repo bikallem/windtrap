@@ -476,6 +476,25 @@ let thread_times pid tid =
           | _ -> None)
       | [] | [ _ ] -> None)
 
+(* The pids that the last read of /proc found outside the group of every
+   running child ([interrupt.children]), and when that read was
+   ([read_threads]). A process outside cannot join the group of a child:
+   each child is a session of its own, and a process can join only a group
+   of its own session. A new child gets a new pid, which is its group. *)
+type outside = {
+  mutable pids : (int, unit) Hashtbl.t;
+  mutable read : Os.counter option;
+}
+
+let outside = { pids = Hashtbl.create 0; read = None }
+
+(* The most seconds between two reads of /proc for which the second read
+   keeps the pids that the first found outside. Only a pid that ended and
+   came back to a new process between the two reads makes a pid outside
+   incorrect. The system gives pids in sequence, and gives a pid again only
+   after it gave all of the others. *)
+let forget = 1.
+
 (* [read_threads children] reads the times of each thread of each process
    in the group of each child of [children] ([thread_times]). The group is
    the child and the processes that its tests start ([start]), which
@@ -485,24 +504,47 @@ let thread_times pid tid =
    times of a process that ends after a read stay in [threads], but its wait
    after its last read is not there. The times of a process that ended
    before the first read are not in [threads]. Other systems do not give
-   these times, and [threads] stays empty there. *)
+   these times, and [threads] stays empty there.
+
+   A read of /proc reads the group of each pid only when the last read is
+   more than [forget] seconds old. A later read reads the group only of the
+   new pids and of the pids in the groups of the children ([outside]). Thus
+   a child past its deadline, which the loop reads every [reread] seconds,
+   does not make the loop read the group of each process on the host each
+   time. *)
 let read_threads children =
-  let member pid =
-    match List.find_opt (fun child -> child.pid = pid) children with
-    | Some child -> Some child
-    | None -> (
-        match group_of pid with
-        | None -> None
-        | Some group -> List.find_opt (fun child -> child.pid = group) children)
-  in
   let read pid child =
     List.iter
       (fun tid ->
         Option.iter (Hashtbl.replace child.threads tid) (thread_times pid tid))
       (ids (strf "/proc/%d/task" pid))
   in
-  if children <> [] then
-    List.iter (fun pid -> Option.iter (read pid) (member pid)) (ids "/proc")
+  if children <> [] then begin
+    let known =
+      match outside.read with
+      | Some read when Os.count_s read <= forget -> outside.pids
+      | Some _ | None -> Hashtbl.create 0
+    in
+    let pids = ids "/proc" in
+    let found = Hashtbl.create (List.length pids) in
+    let member pid =
+      match List.find_opt (fun child -> child.pid = pid) children with
+      | Some child -> Some child
+      | None when Hashtbl.mem known pid ->
+          Hashtbl.replace found pid ();
+          None
+      | None -> (
+          match group_of pid with
+          | None -> None
+          | Some group ->
+              if not (List.mem group interrupt.children) then
+                Hashtbl.replace found pid ();
+              List.find_opt (fun child -> child.pid = group) children)
+    in
+    List.iter (fun pid -> Option.iter (read pid) (member pid)) pids;
+    outside.pids <- found;
+    outside.read <- Some (Os.counter ())
+  end
 
 (* The seconds that the group of [child] waited for a CPU, [elapsed] seconds
    after its start, at the last [read_threads]. It is the sum of the waits of

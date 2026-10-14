@@ -541,6 +541,22 @@ let burn_then_sleep =
         is_true (Subject.sub 10 4 < 100));
   ]
 
+(* [late_burn] is [starved], but then the test waits for a subprocess that
+   uses the CPU ([burn]). The subprocess starts after about 2 seconds, past
+   the deadline of about 1 second. Thus it starts after the first read of
+   the group of the child, and gets a new pid. *)
+let late_burn =
+  [
+    test
+      "uses the CPU, then waits for a process that uses the CPU, and pins \
+       nothing about sub" (fun () ->
+        if Unix.getpid () <> dry_run_pid then begin
+          use_cpu 0.4;
+          burn ()
+        end;
+        is_true (Subject.sub 10 4 < 100));
+  ]
+
 (* [spinners] is [hung], but the test of a changed answer uses the CPU until
    its deadline. It evaluates no site in this time, so the hit budget does
    not stop it. *)
@@ -835,6 +851,7 @@ let () =
   | "starved" -> exit @@ run "calc" [ group "starved" starved ]
   | "spawning" -> exit @@ run "calc" [ group "starved" spawning ]
   | "burn_then_sleep" -> exit @@ run "calc" [ group "starved" burn_then_sleep ]
+  | "late_burn" -> exit @@ run "calc" [ group "starved" late_burn ]
   | "spinners" -> exit @@ run "calc" [ group "jobs" spinners ]
   | "burn" -> use_cpu (float_of_string Sys.argv.(1))
   | "hog" ->

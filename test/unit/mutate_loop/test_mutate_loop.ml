@@ -1278,6 +1278,14 @@ let burnt_then_slept () =
     "waits for a process that uses the CPU, then sleeps, and pins nothing \
      about sub"
 
+(* In [late_burn], the subprocess starts after the loop read the group of
+   the child. The loop keeps the pids that it found outside the group of
+   each child, and it must not take a new pid for one of them. *)
+let burnt_late () =
+  starve "late_burn"
+    "uses the CPU, then waits for a process that uses the CPU, and pins \
+     nothing about sub"
+
 (* [next_look] is the decision of the loop at each look at a child. Past
    the deadline, the next look comes after 0.1 seconds at the latest, also
    when the wait moves the deadline more. A loop that looked again only at
@@ -1352,6 +1360,10 @@ let limits =
         "the wait of a subprocess that ends between two reads of its wait does \
          not count toward the deadline of the child"
         burnt_then_slept;
+      test
+        "the time that a subprocess that starts after the first read of the \
+         group waits for a CPU does not count toward the deadline of the child"
+        burnt_late;
       test
         "past its deadline, the loop looks at a child again after 0.1 seconds \
          at the latest"
