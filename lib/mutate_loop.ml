@@ -248,6 +248,20 @@ exception Supervision of string
 let failed call error =
   Supervision (strf "%s failed: %s" call (Unix.error_message error))
 
+(* No version of OCaml has a call that tells if the process ever spawned a
+   domain. [Domain.count] is in OCaml 5.5 and later, and it counts only the
+   live domains.
+   Thus the module registers one hook at its initialization. The hook runs
+   before the first spawn. If a domain spawned before the module
+   initialization, the registration raises. *)
+let spawned = Atomic.make false
+
+let () =
+  try Domain.before_first_spawn (fun () -> Atomic.set spawned true)
+  with Invalid_argument _ -> Atomic.set spawned true
+
+let domain_spawned () = Atomic.get spawned
+
 let domain_refusal =
   "this process has spawned a domain, and OCaml refuses Unix.fork in a process \
    that has: mutation testing runs every mutant in a forked child, so it \
@@ -764,6 +778,8 @@ let child_deadline loop ~share paths =
   in
   share *. (loop.dry_run_wall +. Float.max 1. (deadline_multiplier *. scheduled))
 
+(* The lines of a child *)
+
 (* A child reports on one line of fixed ASCII shape: a failed test is named
    by its index in the paths the parent handed it, and a diagnostic's line
    breaks become spaces. *)
@@ -774,24 +790,6 @@ let words line =
   match String.split_on_char ' ' (String.trim line) with
   | "error" :: diagnostic -> Error (String.concat " " diagnostic)
   | words -> Ok words
-
-let start_child loop ~share ~log ~bail ~arm ~paths ~siblings line =
-  let log_dir = Filename.concat loop.scratch log in
-  let config = Run.for_subset loop.config ~log_dir ~bail in
-  let body () =
-    match arm () with
-    | Error message -> error_line message
-    | Ok () -> (
-        let allowlist = List.map Test_tree.path_to_string paths in
-        match Run.execute ~allowlist config ~suite:loop.suite loop.tests with
-        | Error error -> error_line (Run.startup_message error)
-        | Ok outcome -> line outcome)
-  in
-  start
-    ~deadline:(child_deadline loop ~share paths)
-    ~share ~log_dir ~siblings body
-
-(* The determinism probe *)
 
 let counted_failure (r : Run.result) =
   r.counted
@@ -825,6 +823,91 @@ let probe_line ~paths (outcome : Run.outcome) =
        (List.length failures)
     :: List.map (fun r -> string_of_int (index_in paths r)) failures)
 
+(* A failure that kills a mutant: that of a test not marked xfail. *)
+let kills (r : Run.result) = Option.is_none r.xfail && counted_failure r
+
+(* Read off the outcome and never off its exit code, which is [2] for a
+   selection that ran nothing: a fact about a filter, not about a mutant.
+   The unexpected pass of a test marked xfail counts as a failure of the run
+   and kills no mutant. *)
+let killed_by (outcome : Run.outcome) =
+  outcome.release_failures <> [] || List.exists kills (Run.results outcome.run)
+
+(* A child that recorded no test did not test its mutant: a survivor would
+   send the reader to strengthen tests that never ran. A child keeps the
+   dry run's state, so a site whose result the dry run cached can pass
+   unevaluated. A killed mutant names the test that failed first, by its
+   index in [paths], when a test failed. *)
+let verdict_line ~paths (outcome : Run.outcome) =
+  if killed_by outcome || Run.results outcome.run = [] then
+    match List.find_opt kills (Run.results outcome.run) with
+    | Some r -> strf "killed %d" (index_in paths r)
+    | None -> "killed"
+  else if Mutate.armed_hits () = 0 then "not_evaluated"
+  else "survived"
+
+let alone_line (outcome : Run.outcome) =
+  if killed_by outcome || Run.results outcome.run = [] then "fails"
+  else "passes"
+
+(* Requests *)
+
+(* What a child does with the tests of its request. The line that it
+   gives comes from [probe_line], [alone_line] or [verdict_line]. *)
+type kind = Probe | Alone | Mutant of { id : Mutate.id; budget : int }
+
+(* What the parent asks of a child. It holds only data, and not closures. *)
+type request = {
+  suite : string;
+  config : Run.config; (* [Run.for_subset] of the configuration of the loop *)
+  paths : string list list;
+      (* the tests of the child, in the order of the run *)
+  kind : kind;
+}
+
+let arm = function
+  | Probe | Alone -> Ok ()
+  | Mutant { id; budget } -> (
+      match Mutate.arm ~budget id with
+      | Error error -> Error (Pp.to_string Mutate.pp_arm_error error)
+      | Ok _ ->
+          (* The budget counts the child's evaluations, not the dry run's. *)
+          Mutate.reset_reach ();
+          Ok ())
+
+(* The body of a child: the line that it writes to the parent. *)
+let serve tests request =
+  let run line =
+    match arm request.kind with
+    | Error message -> error_line message
+    | Ok () -> (
+        let allowlist = List.map Test_tree.path_to_string request.paths in
+        match
+          Run.execute ~allowlist request.config ~suite:request.suite tests
+        with
+        | Error error -> error_line (Run.startup_message error)
+        | Ok outcome -> line outcome)
+  in
+  match request.kind with
+  | Probe -> run (probe_line ~paths:request.paths)
+  | Alone -> run alone_line
+  | Mutant _ -> run (verdict_line ~paths:request.paths)
+
+let start_child loop ~share ~log ~bail ~kind ~paths ~siblings =
+  let log_dir = Filename.concat loop.scratch log in
+  let request =
+    {
+      suite = loop.suite;
+      config = Run.for_subset loop.config ~log_dir ~bail;
+      paths;
+      kind;
+    }
+  in
+  start ~deadline:(child_deadline loop ~share paths) ~share ~log_dir ~siblings
+    (fun () -> serve loop.tests request)
+
+(* The determinism probe *)
+
 let not_a_number =
   "Mutation results over a non-deterministic suite are not a weaker number, \
    they are not a number"
@@ -836,9 +919,8 @@ let probe loop =
       await
         [
           ( (),
-            start_child loop ~share:1. ~log:"probe" ~bail:false
-              ~arm:(fun () -> Ok ())
-              ~paths ~siblings:[] (probe_line ~paths) );
+            start_child loop ~share:1. ~log:"probe" ~bail:false ~kind:Probe
+              ~paths ~siblings:[] );
         ]
     with
     | ((), child) :: _, _ -> child
@@ -888,44 +970,14 @@ let probe loop =
 
 (* Verdicts *)
 
-(* A failure that kills a mutant: that of a test not marked xfail. *)
-let kills (r : Run.result) = Option.is_none r.xfail && counted_failure r
-
-(* Read off the outcome and never off its exit code, which is [2] for a
-   selection that ran nothing: a fact about a filter, not about a mutant.
-   The unexpected pass of a test marked xfail counts as a failure of the run
-   and kills no mutant. *)
-let killed_by (outcome : Run.outcome) =
-  outcome.release_failures <> [] || List.exists kills (Run.results outcome.run)
-
-(* A child that recorded no test did not test its mutant: a survivor would
-   send the reader to strengthen tests that never ran. A child keeps the
-   dry run's state, so a site whose result the dry run cached can pass
-   unevaluated. A killed mutant names the test that failed first, by its
-   index in [paths], when a test failed. *)
-let verdict_line ~paths (outcome : Run.outcome) =
-  if killed_by outcome || Run.results outcome.run = [] then
-    match List.find_opt kills (Run.results outcome.run) with
-    | Some r -> strf "killed %d" (index_in paths r)
-    | None -> "killed"
-  else if Mutate.armed_hits () = 0 then "not_evaluated"
-  else "survived"
-
 let budget_of hits =
   if hits > (max_int - 1000) / 8 then max_int else (hits * 8) + 1000
 
 let start_mutant loop ~index ~siblings ~paths
     ((mutant : Mutate.mutant), (site : site)) =
-  let arm () =
-    match Mutate.arm ~budget:(budget_of site.hits) mutant.id with
-    | Error error -> Error (Pp.to_string Mutate.pp_arm_error error)
-    | Ok _ ->
-        (* The budget counts the child's evaluations, not the dry run's. *)
-        Mutate.reset_reach ();
-        Ok ()
-  in
-  start_child loop ~share:loop.share ~log:(strf "m%d" index) ~bail:true ~arm
-    ~paths ~siblings (verdict_line ~paths)
+  start_child loop ~share:loop.share ~log:(strf "m%d" index) ~bail:true
+    ~kind:(Mutant { id = mutant.id; budget = budget_of site.hits })
+    ~paths ~siblings
 
 (* A diagnostic is a child that could not arm its mutant or was refused at
    startup. [paths] are the tests that the parent handed the child. *)
@@ -1050,10 +1102,6 @@ let first_test loop ((mutant : Mutate.mutant), (site : site)) =
       Some killer
   | Some _, _ | None, _ -> None
 
-let alone_line (outcome : Run.outcome) =
-  if killed_by outcome || Run.results outcome.run = [] then "fails"
-  else "passes"
-
 (* A first child runs its test alone, from the state that the dry run left.
    A test that needs the state that an earlier test sets can fail alone with
    no mutant. Its first child would then kill a mutant that a full child
@@ -1077,8 +1125,7 @@ let passing_alone loop reached =
       ->
         let child =
           start_child loop ~share:loop.share ~log:(strf "t%d" index) ~bail:true
-            ~arm:(fun () -> Ok ())
-            ~paths:[ test ] ~siblings:(List.map snd !running) alone_line
+            ~kind:Alone ~paths:[ test ] ~siblings:(List.map snd !running)
         in
         running := !running @ [ (test, child) ];
         next (index + 1) rest

@@ -279,6 +279,18 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     [SIGPIPE] ignored, the [Sys_error] of the failed write escapes
     {!execute_and_report} instead, after the scratch directory is removed. *)
 
+(** {1:domains Domains} *)
+
+val domain_spawned : unit -> bool
+(** [domain_spawned ()] is [true] if the process spawned a domain at any time
+    before the call, also if that domain ended. OCaml refuses [Unix.fork] in
+    such a process. The process can spawn the domain at module initialization or
+    in a test. The module registers one hook with [Domain.before_first_spawn] at
+    its initialization, and [domain_spawned] reads what the hook recorded.
+
+    The function is in this interface for the unit suite. A fixture calls it in
+    a process of its own, because after a spawn the process cannot fork. *)
+
 (** {1:pipes The pipes of the children} *)
 
 val drain : (Unix.file_descr * Buffer.t) list -> Unix.file_descr list

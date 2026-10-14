@@ -13,7 +13,8 @@
    [catalogue] prints the mutant identifiers instead of running: the
    driver needs them to spell --arm, and reading them from the binary is
    the only spelling that cannot go stale when a line moves in
-   subject.ml. *)
+   subject.ml. [spawned] also prints instead of running: the result of
+   [domain_spawned ()] before and after a domain. *)
 
 open Windtrap
 module Subject = Mutate_loop_subject.Subject
@@ -830,6 +831,15 @@ let () =
           print_endline
             (Windtrap_runtime.Mutate.id_to_string m.Windtrap_runtime.Mutate.id))
         (Windtrap_runtime.Mutate.catalogue ())
+  | "spawned" ->
+      (* Prints [domain_spawned ()] before a domain spawns and after the
+         domain ends. *)
+      let spawned () =
+        print_endline (string_of_bool (Private.Mutate_loop.domain_spawned ()))
+      in
+      spawned ();
+      Domain.join (Domain.spawn ignore);
+      spawned ()
   | "weak" -> exit @@ run "calc" [ group "widen" weak ]
   | "ordered" -> exit @@ run "calc" [ group "ordered" ordered ]
   | "primed" -> exit @@ run "calc" [ group "primed" priming ]

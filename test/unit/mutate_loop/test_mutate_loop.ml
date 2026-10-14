@@ -2064,6 +2064,13 @@ let refusals =
             r.err;
           equal (option (list string)) None (rows r));
       test
+        "domain_spawned is true after a domain spawned, also after the domain \
+         ended" (fun () ->
+          let r = spawn ~env:[ suite "spawned" ] [] in
+          equal (pair string string)
+            ("exited 0", "false\ntrue\n")
+            (r.status, r.out));
+      test
         "a suite that spawned a domain is refused, since the loop cannot fork"
         (fun () ->
           let r = spawn ~env:[ suite "domain" ] [ mutate ] in
