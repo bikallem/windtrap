@@ -324,7 +324,9 @@ with an `arm:` command, which runs the suite in a new process and ends
 on the mutant's verdict. Under `--mutate-children=exec`, or in auto mode
 (the default) in a process that started a domain, each child is a new
 process of the suite executable. Such a child has no cache from the dry
-run.
+run. The report then tells the mode in one line above the outcome line,
+for example `children: new processes, because the suite spawned a
+domain`.
 
 A site that no test runs, and that module initialization or a
 fixture release runs, is evaluated outside tests. No child tests its

@@ -219,9 +219,9 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     file of the executable when no mutant to test is on a changed line.
 
     {b Refusals.} Each of these is [Reported 1] with one sentence on standard
-    error ({!Os.say}). The first eight are tried in this order, and the last has
+    error ({!Os.say}). The first nine are tried in this order, and the last has
     no one place in it:
-    - The platform is Windows, which has no [Unix.fork].
+    - The platform is Windows, which has no process groups.
     - Under [--mutate-since], the changed lines cannot be read: the revision
       names no commit, the project root is in no git work tree, or git cannot
       run. This refusal stands under [config.broadcast.mutate] too.
@@ -230,6 +230,8 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     - The exit code of the dry run is not [0], because no test ran ([2]) or
       because the run is red.
     - The population is empty.
+    - Under {!Run.Fork}, the process spawned a domain, in the dry run or before
+      it. The sentence names [--mutate-children=auto] and [exec].
     - In exec mode, the startup child passes its deadline, gives an [error]
       line, or ends with no [ready] line or with an exit code that is not [0].
     - The probe disagrees with the dry run, and the sentence names the tests
@@ -241,9 +243,9 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     - The supervision fails. The scratch directory cannot be created, which is
       tried before the probe, or [pipe], [fork], [create_process_env], [select]
       or [waitpid] fails for the probe or for a child, or the request file of a
-      new process cannot be written. Under {!Run.Fork}, [fork] fails in a
-      process that has spawned a domain, in the dry run or before it, and the
-      sentence then says so. *)
+      new process cannot be written. If [fork] fails because a thread spawned a
+      domain after the loop selected the mode, the sentence says so and names
+      [--mutate-children=exec]. *)
 
 (** {1:armed The armed run}
 
@@ -442,14 +444,17 @@ val next_look : left:float -> waited:(unit -> float) -> float * float
     new process gets no pipe of another child. For each child, the loop writes a
     request file and makes a temporary directory in its scratch directory. It
     gives the directory to the child in [TMPDIR], and it removes the file and
-    the directory when it reaps the child. Under [--mutate-since] it runs [git]
-    four times, before the dry run ({!Changed_lines.of_git}). The loop calls
-    [kill] on the process group of a child that expired or was interrupted. It
-    creates one scratch directory per run under [Filename.get_temp_dir_name ()],
-    and removes it however the loop ends, a second signal excepted. For the
-    source line of a survivor and the digest of each record it reads the
-    recorded file of the mutant, under {!Os.project_root} first and then as
-    given. It reads the verdict file of the executable before the first child.
+    the directory when it reaps the child. In exec mode, the report that no
+    signal stopped has a line that tells that the children are new processes,
+    and why. The line comes above the outcome line ({!Report.mutation_finish}).
+    Under [--mutate-since] it runs [git] four times, before the dry run
+    ({!Changed_lines.of_git}). The loop calls [kill] on the process group of a
+    child that expired or was interrupted. It creates one scratch directory per
+    run under [Filename.get_temp_dir_name ()], and removes it however the loop
+    ends, a second signal excepted. For the source line of a survivor and the
+    digest of each record it reads the recorded file of the mutant, under
+    {!Os.project_root} first and then as given. It reads the verdict file of the
+    executable before the first child.
 
     At module initialization, the module reads the status of its executable file
     ([stat]) and the environment variable [WINDTRAP_MUTATE_CHILD]. If the

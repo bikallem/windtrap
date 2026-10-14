@@ -100,5 +100,24 @@ mutants: 3 reached by this suite, «g|3 killed», score 100.0%
 reproduce: dune exec --instrument-with ppx_windtrap.mutate test/test_calc.exe -- --arm lib/calc.ml:13:11:add
 mutants: 1 survived of 3 reached by this suite, 2 never reached, 2 not tested, score 0.0%
 
+=== the mode of the children prints above the reproduce line
+──────────────────────────────────────────────────────────
+
+─────────────────── never reached (2) ────────────────────
+  2  lib/calc.ml   lines 40-41
+──────────────────────────────────────────────────────────
+
+children: new processes
+reproduce: dune exec --instrument-with ppx_windtrap.mutate test/test_calc.exe -- --arm lib/calc.ml:13:11:add
+mutants: 1 survived of 4 reached by this suite, 3 killed, 2 never reached, score 75.0%
+
+=== the mode of the children prints above a lone outcome line
+children: new processes
+mutants: 3 reached by this suite, 3 killed, score 100.0%
+
+=== a note on standard error does not move the mode of the children
+children: new processes
+mutants: 3 reached by this suite, 3 killed, score 100.0%
+
 === stopped before a child ended
 mutants: 5 reached by this suite, 5 not tested

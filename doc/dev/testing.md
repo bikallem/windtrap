@@ -353,7 +353,7 @@ On Linux, the time that the threads of that group wait for a CPU does
 not count toward the deadline, up to the time that they do not use a
 CPU. Of that time, the wait for the other children of the loop does not
 count, because the longer deadline already gives it.
-Mutation needs `Unix.fork` and declines by name on Windows.
+Mutation needs process groups and declines by name on Windows.
 
 ## The conformance corpus
 

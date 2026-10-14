@@ -262,11 +262,17 @@ let () =
 
 let domain_spawned () = Atomic.get spawned
 
+(* The second defense: a thread of the suite spawned a domain after the
+   loop selected fork mode. *)
+let late_domain =
+  "a thread of the suite spawned a domain after the loop selected fork mode, \
+   and OCaml refuses Unix.fork in a process that spawned a domain: run with \
+   --mutate-children=exec to start each child as a new process"
+
 let domain_refusal =
   "this process has spawned a domain, and OCaml refuses Unix.fork in a process \
-   that has: mutation testing runs every mutant in a forked child, so it \
-   cannot run in this one. Exclude the tests that spawn a domain (-e) to test \
-   the rest"
+   that has: run with --mutate-children=auto or exec to start each child as a \
+   new process"
 
 (* Buffered bytes duplicated into a child would print twice. *)
 let flush_descriptors () =
@@ -369,7 +375,7 @@ let start ~deadline ~share ~removed ~siblings body =
       (* OCaml 5 refuses to fork a process that has ever spawned a domain. *)
       Unix.close read_fd;
       Unix.close write_fd;
-      raise (Supervision domain_refusal)
+      raise (Supervision late_domain)
   | 0 ->
       interrupt.children <- [];
       (try Unix.close read_fd with _ -> ());
@@ -1668,10 +1674,19 @@ let save_verdicts ~scope ~narrowed ~outside ~unreached ~filtered tested =
                (fun (m, reason) -> record m (Verdicts.Filtered reason))
                filtered))
 
+(* In exec mode, the verdicts follow the rules of a new process, so the
+   report tells the mode. *)
+let children_line ~children ~exec =
+  match (children, exec) with
+  | _, false -> None
+  | Run.Exec, true -> Some "children: new processes (--mutate-children=exec)"
+  | (Run.Auto | Run.Fork), true ->
+      Some "children: new processes, because the suite spawned a domain"
+
 (* A signal that came once the last child had ended stopped nothing: the
    report ends as usual, and the loop still dies by it. *)
-let finish renderer ~narrowed ~reach ~reached ~outside ~unreached ~filtered
-    forks =
+let finish renderer ~children ~narrowed ~reach ~reached ~outside ~unreached
+    ~filtered forks =
   match forks with
   | Error message ->
       Report.mutation_refused renderer message;
@@ -1710,7 +1725,7 @@ let finish renderer ~narrowed ~reach ~reached ~outside ~unreached ~filtered
           flush_descriptors ();
           Os.die_by signal
       | None -> (
-          Report.mutation_finish ?note renderer report;
+          Report.mutation_finish ?note ?children renderer report;
           flush_descriptors ();
           match interrupt.signal with
           | Some signal -> Os.die_by signal
@@ -1797,51 +1812,54 @@ let loop renderer ~scope ~jobs ~children ~suite (config : Run.config) tests =
             in
             let dry_run_wall = Float.max 0.01 (Os.count_s started) in
             let narrowed = narrows_suite config ~focus:outcome.focus_active in
-            (* Signals are handled until the verdict file is written, so a
-               loop that ended has its file whatever becomes of its
-               report. *)
-            let forks =
-              try
-                with_interrupts @@ fun () ->
-                let loop =
-                  let scratch = scratch_root () in
-                  let jobs = max 1 (min jobs (List.length reached)) in
-                  let share =
-                    Float.max 1.
-                      (float_of_int jobs
-                      /. float_of_int (Domain.recommended_domain_count ()))
-                  in
-                  {
-                    suite;
-                    config;
-                    tests;
-                    reach;
-                    dry_run_wall;
-                    exec =
-                      (match children with
-                      | Run.Exec -> true
-                      | Run.Fork -> false
-                      | Run.Auto -> domain_spawned ());
-                    startup_wall = 0.;
-                    scratch;
-                    jobs;
-                    share;
-                    killers = history reach.sites;
-                  }
-                in
-                Result.map
-                  (fun tested ->
-                    ( tested,
-                      save_verdicts ~scope ~narrowed ~outside ~unreached
-                        ~filtered tested ))
-                  (fork renderer loop reached)
-              with
-              | Supervision message -> Error message
-              | Sys_error _ when interrupt.signal = Some Sys.sigpipe ->
-                  Os.die_by Sys.sigpipe
+            let exec =
+              match children with
+              | Run.Exec -> true
+              | Run.Fork -> false
+              | Run.Auto -> domain_spawned ()
             in
-            finish renderer ~narrowed ~reach ~reached ~outside ~unreached
-              ~filtered forks)
+            if children = Run.Fork && domain_spawned () then
+              refuse domain_refusal
+            else
+              let forks =
+                try
+                  with_interrupts @@ fun () ->
+                  let loop =
+                    let scratch = scratch_root () in
+                    let jobs = max 1 (min jobs (List.length reached)) in
+                    let share =
+                      Float.max 1.
+                        (float_of_int jobs
+                        /. float_of_int (Domain.recommended_domain_count ()))
+                    in
+                    {
+                      suite;
+                      config;
+                      tests;
+                      reach;
+                      dry_run_wall;
+                      exec;
+                      startup_wall = 0.;
+                      scratch;
+                      jobs;
+                      share;
+                      killers = history reach.sites;
+                    }
+                  in
+                  Result.map
+                    (fun tested ->
+                      ( tested,
+                        save_verdicts ~scope ~narrowed ~outside ~unreached
+                          ~filtered tested ))
+                    (fork renderer loop reached)
+                with
+                | Supervision message -> Error message
+                | Sys_error _ when interrupt.signal = Some Sys.sigpipe ->
+                    Os.die_by Sys.sigpipe
+              in
+              finish renderer
+                ~children:(children_line ~children ~exec)
+                ~narrowed ~reach ~reached ~outside ~unreached ~filtered forks)
 
 (* The armed run *)
 
@@ -1942,7 +1960,8 @@ let execute_and_report ~suite (config : Run.config) tests =
   | Run.No_mutation -> ordinary ~suite config tests
   | Run.Armed spec -> armed (Report.terminal config) ~spec ~suite config tests
   | Run.Loop _ when Sys.win32 ->
-      refuse "mutation testing needs Unix.fork, which Windows does not have"
+      refuse
+        "mutation testing needs process groups, which Windows does not have"
   | Run.Loop { scope = prefixes; jobs; since; children } -> (
       match resolve_scope ~prefixes ~since with
       | Error message -> refuse message
