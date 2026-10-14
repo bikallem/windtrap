@@ -139,6 +139,7 @@ let changes (c : Run.config) =
         field "timeout" (opt (strf "%g")) (fun c -> c.Run.timeout);
         field "prop_count" (opt string_of_int) (fun c -> c.Run.prop_count);
         field "log_dir" Fun.id (fun c -> c.Run.log_dir);
+        field "store" bool (fun c -> c.Run.store);
         field "allow_focus" bool (fun c -> c.Run.allow_focus);
         field "color" color_name (fun c -> c.Run.color);
         field "slow_threshold" (strf "%g") (fun c -> c.Run.slow_threshold);
@@ -728,10 +729,11 @@ let resolution =
     [
       test "with no flag and no mirror, every field but the seed is the default"
         (fun () -> equal string "defaults" (resolved []));
-      test "allow_focus is false and invocation is `Mirrors" (fun () ->
+      test "store is true, allow_focus is false and invocation is `Mirrors"
+        (fun () ->
           let c = config [] in
-          equal (pair bool string) (false, "mirrors")
-            (c.allow_focus, invocation_name c.invocation));
+          equal (triple bool bool string) (true, false, "mirrors")
+            (c.store, c.allow_focus, invocation_name c.invocation));
       test "list_only, help and version are ignored" (fun () ->
           equal string "defaults"
             (settled
