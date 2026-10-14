@@ -73,6 +73,9 @@ OPTIONS:
   --mutate-since=REV (env WINDTRAP_MUTATE_SINCE)
       Test only the mutants on lines changed since git revision REV.
 
+  --mutate-children=MODE (env WINDTRAP_MUTATE_CHILDREN)
+      Test each mutant in a fork, a new process (exec), or auto (default).
+
   --arm=ID (env WINDTRAP_MUTATE_ARM)
       Run once with mutant ID armed.
 

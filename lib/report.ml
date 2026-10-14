@@ -926,11 +926,12 @@ let mutation_refused t message =
   Pp.flush t.out ();
   Os.say message
 
-type stopped = Probe | Testing of string list | Before of string
+type stopped = Startup | Probe | Testing of string list | Before of string
 
 let mutation_interrupted t stopped m =
   mutation_refused t
     (match stopped with
+    | Startup -> "interrupted while a new process of the suite started"
     | Probe -> "interrupted during the determinism probe"
     | Testing ids -> "interrupted while testing " ^ String.concat ", " ids
     | Before id -> "interrupted before testing " ^ id);

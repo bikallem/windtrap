@@ -382,6 +382,8 @@ val mutation_refused : t -> string -> unit
 
 (** What a signal stopped. *)
 type stopped =
+  | Startup
+      (** The child that measures the start of a new process, in exec mode. *)
   | Probe  (** The determinism probe. *)
   | Testing of string list
       (** The children of these mutants, one or more, in catalogue order. *)

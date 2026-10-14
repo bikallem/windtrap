@@ -38,6 +38,46 @@ let () =
           output_string oc (string_of_int (Unix.getpid ()) ^ "\n");
           close_out oc)
 
+(* A slow module initialization, of MUTATE_SLOW_INIT seconds. A child that
+   is a new process pays it before its first test, and the dry run does
+   not measure it. *)
+let () =
+  match Sys.getenv_opt "MUTATE_SLOW_INIT" with
+  | None | Some "" -> ()
+  | Some seconds -> Unix.sleepf (float_of_string seconds)
+
+(* A child that is a new process, and only such a child, fails as
+   MUTATE_CHILD_FAULT tells: [exit] ends the process at its module
+   initialization, [hang] sleeps there for a minute, and [rename] gives the
+   suite another name. *)
+let exec_child = Private.Mutate_loop.serving ()
+
+(* In a new process, a subprocess that module initialization starts writes
+   its descriptors and the request variable to the file of
+   MUTATE_INIT_FDS. *)
+let () =
+  match Sys.getenv_opt "MUTATE_INIT_FDS" with
+  | Some path when exec_child ->
+      ignore
+        (Sys.command
+           (Filename.quote_command "sh"
+              [
+                "-c";
+                "ls -l /proc/$$/fd; echo \
+                 \"variable=${WINDTRAP_MUTATE_CHILD-unset}\"";
+              ]
+              ~stdout:path))
+  | Some _ | None -> ()
+
+let child_fault =
+  if exec_child then Sys.getenv_opt "MUTATE_CHILD_FAULT" else None
+
+let () =
+  match child_fault with
+  | Some "exit" -> exit 3
+  | Some "hang" -> Unix.sleep 60
+  | Some _ | None -> ()
+
 let strong =
   [
     test "sub of two positives" (fun () -> equal int 6 (Subject.sub 10 4));
@@ -87,10 +127,14 @@ let domain =
    suite that fails for reasons of its own. *)
 let dry_run_pid = Unix.getpid ()
 
+(* A fork has another pid than the dry run. A new process has the pid of its
+   own module initialization, and [serving ()] tells it apart. *)
+let in_child () = exec_child || Unix.getpid () <> dry_run_pid
+
 let flaky =
   [
     test "passes where it was measured and fails where it is re-run" (fun () ->
-        is_true (Unix.getpid () = dry_run_pid));
+        is_true (not (in_child ())));
   ]
 
 (* Runs where it was measured and skips in every fork of it: the same
@@ -98,7 +142,7 @@ let flaky =
 let skippy =
   [
     test "runs where it was measured and skips where it is re-run" (fun () ->
-        if Unix.getpid () <> dry_run_pid then skip ());
+        if in_child () then skip ());
   ]
 
 (* Leaves through [Unix._exit], which the runner's exit guard does not
@@ -496,7 +540,7 @@ let use_cpu seconds =
 let starved =
   [
     test "uses the CPU where it is re-run and pins nothing about sub" (fun () ->
-        if Unix.getpid () <> dry_run_pid then use_cpu 0.4;
+        if in_child () then use_cpu 0.4;
         is_true (Subject.sub 10 4 < 100));
   ]
 
@@ -524,7 +568,7 @@ let spawning =
   [
     test "waits for a process that uses the CPU and pins nothing about sub"
       (fun () ->
-        if Unix.getpid () <> dry_run_pid then burn ();
+        if in_child () then burn ();
         is_true (Subject.sub 10 4 < 100));
   ]
 
@@ -537,7 +581,7 @@ let burn_then_sleep =
     test
       "waits for a process that uses the CPU, then sleeps, and pins nothing \
        about sub" (fun () ->
-        if Unix.getpid () = dry_run_pid then Unix.sleepf 0.2
+        if not (in_child ()) then Unix.sleepf 0.2
         else if Subject.sub 10 4 <> 6 then begin
           burn ~seconds:0.7 ();
           Unix.sleepf 0.9
@@ -554,7 +598,7 @@ let late_burn =
     test
       "uses the CPU, then waits for a process that uses the CPU, and pins \
        nothing about sub" (fun () ->
-        if Unix.getpid () <> dry_run_pid then begin
+        if in_child () then begin
           use_cpu 0.4;
           burn ()
         end;
@@ -648,7 +692,7 @@ let baseline =
 let released =
   fixture
     ~teardown:(fun () ->
-      if Unix.getpid () <> dry_run_pid then begin
+      if in_child () then begin
         print_string "a child's release on stdout\n";
         prerr_string "a child's release on stderr\n";
         flush stdout;
@@ -880,7 +924,9 @@ let write_request () =
     Private.Run.for_subset
       {
         (Private.Run.default_config ()) with
-        mutation = Private.Run.Loop { scope = []; jobs = 1; since = None };
+        mutation =
+          Private.Run.Loop
+            { scope = []; jobs = 1; since = None; children = Private.Run.Auto };
       }
       ~log_dir:(env "MUTATE_REQUEST" ^ ".log")
       ~bail:(kind <> Probe)
@@ -891,6 +937,16 @@ let write_request () =
 let () =
   match Option.value ~default:"green" (Sys.getenv_opt "MUTATE_FIXTURE") with
   | "request" -> write_request ()
+  | "two_suites" ->
+      (* A first suite that reaches no mutant, then the default suite. *)
+      ignore (run "first" [ group "first" [ test "nothing" ignore ] ]);
+      exit
+      @@ run "calc"
+           [
+             group "calc" strong;
+             group "widen" weak;
+             group "dismissed" dismissed;
+           ]
   | "child" -> exit @@ run "calc" [ group "child" child ]
   | "catalogue" ->
       List.iter
@@ -987,7 +1043,8 @@ let () =
            ]
   | _ ->
       exit
-      @@ run "calc"
+      @@ run
+           (if child_fault = Some "rename" then "renamed" else "calc")
            [
              group "calc" strong;
              group "widen" weak;

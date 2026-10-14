@@ -1865,7 +1865,8 @@ val run : ?argv:string array -> string -> test list -> int
 
     When the private environment variable [WINDTRAP_MUTATE_CHILD] is set and not
     empty, {!run} is a child of the mutation loop. It runs the request of the
-    loop and exits the process. Do not set the variable. *)
+    loop and exits the process. If the request is for another suite, {!run} runs
+    nothing and returns [0]. Do not set the variable. *)
 
 (** {1:private Private} *)
 

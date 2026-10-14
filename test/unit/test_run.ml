@@ -147,9 +147,13 @@ let color_name = function
 
 let mutation_name = function
   | Run.No_mutation -> "none"
-  | Run.Loop { scope; jobs; since } ->
-      strf "loop %s jobs %d%s" (String.concat "," scope) jobs
+  | Run.Loop { scope; jobs; since; children } ->
+      strf "loop %s jobs %d%s children %s" (String.concat "," scope) jobs
         (Option.fold ~none:"" ~some:(strf " since %s") since)
+        (match children with
+        | Run.Auto -> "auto"
+        | Run.Fork -> "fork"
+        | Run.Exec -> "exec")
   | Run.Armed id -> "armed " ^ id
 
 let broadcast_name (b : Run.broadcast) =
@@ -244,7 +248,9 @@ let parent : Run.config =
     slow_threshold = 2.;
     verbose = true;
     junit = Some "out.xml";
-    mutation = Run.Loop { scope = [ "lib/" ]; jobs = 4; since = None };
+    mutation =
+      Run.Loop
+        { scope = [ "lib/" ]; jobs = 4; since = None; children = Run.Exec };
     github = true;
     invocation = `Exe "suite.exe";
     broadcast = { selection = true; mutate = true };
@@ -276,7 +282,7 @@ let subset_rules =
         ("broadcast", "none");
       ] );
     ( "keeps the mutation, which its tests may read",
-      [ ("mutation", "loop lib/ jobs 4") ] );
+      [ ("mutation", "loop lib/ jobs 4 children exec") ] );
     ( "captures into the log directory it is given",
       [ ("stream", "false"); ("log_dir", "child") ] );
     ("writes no last-failed store, which no run reads", [ ("store", "false") ]);
