@@ -3707,6 +3707,69 @@ let exec_group =
               green_outcome;
             ]
             last);
+      test
+        "in exec mode, reaching tests that need an earlier test run after the \
+         tests of the dry run before them" (fun () ->
+          let fork = spawn ~env:[ suite "order" ] [ mutate ] in
+          let fork_killers = killers (Verdicts.output_file ~exe:suite_exe) in
+          let exec = spawn ~env:[ exec_children; suite "order" ] [ mutate ] in
+          equal seen_witness (seen fork) (seen (without_exec_line exec));
+          equal (list string) [ site 18 ] (survivors exec.out);
+          equal (list string)
+            [ "subject.ml:15 order \u{203a} needs the state and pins sub" ]
+            (killers (Verdicts.output_file ~exe:suite_exe));
+          equal (list string) fork_killers
+            (killers (Verdicts.output_file ~exe:suite_exe)));
+      test
+        "a suite that spawns a domain and whose tests need earlier tests gets \
+         the verdicts of a fork, with one job and with four" (fun () ->
+          let one = spawn ~env:[ suite "order_domain" ] [ mutate ] in
+          let four = spawn ~env:[ suite "order_domain" ] [ mutate; jobs 4 ] in
+          equal (pair string text) ("exited 0", "") (one.status, one.err);
+          contains
+            ~sub:
+              "\nchildren: new processes, because the suite spawned a domain\n"
+            one.out;
+          equal (list string) [ site 18 ] (survivors one.out);
+          equal seen_witness (seen one) (seen four);
+          equal
+            (option (list string))
+            (rows (spawn ~env:[ suite "order" ] [ mutate ]))
+            (rows one));
+      test
+        "in exec mode, a test before the last reaching test can kill the \
+         mutant, and the verdict names it, also in the next run" (fun () ->
+          let path = Verdicts.output_file ~exe:suite_exe in
+          let fork = spawn ~env:[ suite "order_kill" ] [ mutate ] in
+          equal (list string) [ site 15 ] (survivors fork.out);
+          let killed_by_reader =
+            [ "subject.ml:15 order \u{203a} reads what sub stored" ]
+          in
+          let exec () =
+            let r =
+              spawn ~env:[ exec_children; suite "order_kill" ] [ mutate ]
+            in
+            equal (pair string text) ("exited 0", "") (r.status, r.err);
+            equal (list string) [] (survivors r.out);
+            killers path
+          in
+          equal (list string) killed_by_reader (exec ());
+          equal (list string) killed_by_reader (exec ()));
+      test
+        "in exec mode, a test marked xfail does not stop the child before the \
+         reaching tests after it" (fun () ->
+          let path = Verdicts.output_file ~exe:suite_exe in
+          let pinned =
+            [ "subject.ml:15 order \u{203a} needs the state and pins sub" ]
+          in
+          let fork = spawn ~env:[ suite "order_xfail" ] [ mutate ] in
+          equal (pair string text) ("exited 0", "") (fork.status, fork.err);
+          equal (list string) pinned (killers path);
+          let exec =
+            spawn ~env:[ exec_children; suite "order_xfail" ] [ mutate ]
+          in
+          equal (pair string text) ("exited 0", "") (exec.status, exec.err);
+          equal (list string) pinned (killers path));
       test "the report of fork mode does not tell the mode" (fun () ->
           let r = spawn [ mutate ] in
           not_contains ~sub:"children:" r.out);
