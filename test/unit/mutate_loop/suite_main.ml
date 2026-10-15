@@ -52,6 +52,14 @@ let () =
    suite another name. *)
 let exec_child = Private.Mutate_loop.serving ()
 
+(* With MUTATE_DOMAIN_INIT, each process spawns a domain at module
+   initialization, so any fixture is a suite that spawned a domain, and the
+   loop starts new processes in auto mode. *)
+let () =
+  match Sys.getenv_opt "MUTATE_DOMAIN_INIT" with
+  | None | Some "" -> ()
+  | Some _ -> Domain.join (Domain.spawn ignore)
+
 (* In a new process, a subprocess that module initialization starts writes
    its descriptors and the request variable to the file of
    MUTATE_INIT_FDS. *)
@@ -993,6 +1001,18 @@ let write_request () =
 let () =
   match Option.value ~default:"green" (Sys.getenv_opt "MUTATE_FIXTURE") with
   | "request" -> write_request ()
+  | "tree" ->
+      (* A test name that changes in each process. *)
+      exit
+      @@ run "calc"
+           [
+             group "tree"
+               [
+                 test
+                   (Printf.sprintf "sub, in process %d" (Unix.getpid ()))
+                   (fun () -> equal int 6 (Subject.sub 10 4));
+               ];
+           ]
   | "order" -> exit @@ run "calc" [ group "order" (order ~domain:false) ]
   | "order_kill" -> exit @@ run "calc" [ group "order" order_kill ]
   | "order_xfail" -> exit @@ run "calc" [ group "order" order_xfail ]

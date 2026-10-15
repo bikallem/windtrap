@@ -3624,6 +3624,94 @@ let domain_in_auto () =
        ])
     (rows r)
 
+(* Suites that spawn a domain *)
+
+let domain_init = ("MUTATE_DOMAIN_INIT", "1")
+let auto_line = "children: new processes, because the suite spawned a domain"
+
+(* A run in auto mode with a domain at module initialization, with its mode
+   line removed. *)
+let without_auto_line r =
+  {
+    r with
+    out = String.concat "\n" (List.filter (( <> ) auto_line) (lines r.out));
+  }
+
+let domains =
+  group "Domains"
+    [
+      cases
+        "a domain at module initialization gives the report of a fork, with \
+         one job and with four"
+        ~name:(fun (name, _, _) -> name)
+        [
+          ("green", [], []);
+          ("green, 4 jobs", [], [ jobs 4 ]);
+          ("crash", [ suite "crash" ], [ jobs 4 ]);
+          ("known", [ suite "known" ], []);
+          ("release", [ suite "release" ], []);
+        ]
+        (fun (_, env, args) ->
+          let r = spawn ~env:(domain_init :: env) (mutate :: args) in
+          contains ~sub:("\n" ^ auto_line ^ "\n") r.out;
+          equal seen_witness
+            (seen (spawn ~env (mutate :: args)))
+            (seen (without_auto_line r)));
+      test
+        "a result that the dry run cached does not reach a new process, with \
+         one job and with four" (fun () ->
+          let r = spawn ~env:[ domain_init; suite "memo" ] [ mutate ] in
+          equal (pair string text) ("exited 0", "") (r.status, r.err);
+          equal string
+            "mutants: 2 reached by this suite, 2 killed, 2 never reached, 1 \
+             filtered, score 100.0%"
+            (outcome r.out);
+          equal seen_witness (seen r)
+            (seen (spawn ~env:[ domain_init; suite "memo" ] [ mutate; jobs 4 ])));
+      test
+        "a new process that blocks is killed at its deadline, and no process \
+         of its group stays" (fun () ->
+          let pidfile = Filename.concat (temp_dir ()) "grandchild"
+          and tmpdir = temp_dir () in
+          let r =
+            finish_within ~what:"the deadline of the blocked new process"
+              (start
+                 ~env:
+                   [
+                     domain_init;
+                     suite "block";
+                     ("MUTATE_GRANDCHILD_PIDFILE", pidfile);
+                     ("TMPDIR", tmpdir);
+                   ]
+                 [ mutate ])
+          in
+          equal (pair string text) ("exited 0", "") (r.status, r.err);
+          equal string
+            "mutants: 1 reached by this suite, 1 killed, 3 never reached, 1 \
+             filtered, score 100.0%"
+            (outcome r.out);
+          equal (list string) [ "gone" ] (List.map fate (pids (read pidfile)));
+          equal (list string) [] (entries tmpdir));
+      test "SIGINT stops a run in new processes, and nothing stays"
+        (stopped_with [ domain_init ]);
+      test "a test tree that changes in each process is refused" (fun () ->
+          let tmpdir = temp_dir () in
+          let r =
+            spawn
+              ~env:[ domain_init; suite "tree"; ("TMPDIR", tmpdir) ]
+              [ mutate ]
+          in
+          equal (list string) [] (entries tmpdir);
+          equal string "exited 1" r.status;
+          starts_with
+            ~affix:
+              "windtrap: the determinism probe refused to run: the tests \
+               changed after the dry run: this process has no test \"tree \
+               \u{203a} sub, in process "
+            r.err;
+          equal (option (list string)) None (rows r));
+    ]
+
 let exec_group =
   group "Exec mode"
     [
@@ -3857,6 +3945,7 @@ let () =
          forks;
          jobs_group;
          exec_group;
+         domains;
          signals;
          effects;
        ])

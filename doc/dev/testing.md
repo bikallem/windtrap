@@ -38,14 +38,14 @@ what is non-obvious.
   the at_exit dump and for a registration that runs before any window
   opens); `test_instr`, what the two file formats share (the header, the
   build paths, the atomic write); and `test_verdicts`, the verdict
-  lattice and the verdict file. `mutate_loop/` drives the fork loop
-  through a real spawned process (a loop that forks cannot be observed
-  from inside its own image). Only `Mutate_loop.drain`, which reads the
-  pipes of the children, is called in the suite's own process: a test
-  gives it `/dev/zero`, which never empties, and a child cannot keep a
-  pipe full with certainty. The suite runs `plain_main.exe` as the
-  zero-mutant control that must be declined by name, `runaway/` for the
-  hit-count budget, `inline/` for an armed inline partition and
+  lattice and the verdict file. `mutate_loop/` drives the loop of
+  children through a real spawned process (a loop that forks cannot be
+  observed from inside its own image). Only `Mutate_loop.drain`, which
+  reads the pipes of the children, is called in the suite's own process:
+  a test gives it `/dev/zero`, which never empties, and a child cannot
+  keep a pipe full with certainty. The suite runs `plain_main.exe` as
+  the zero-mutant control that must be declined by name, `runaway/` for
+  the hit-count budget, `inline/` for an armed inline partition and
   `scoped/` for a second file whose one site is filtered, which a scope
   of the other file must not record. `pty_stubs.c` opens a
   pseudo-terminal, which `Unix` does not do: the loop draws its live
@@ -342,11 +342,11 @@ A per-executable run exits 0 whatever it found, and a narrowed run
 the aggregate never merges a partial answer; a survivor is confirmed by
 arming it against the whole suite, with `--arm <id>` from the footer or
 `WINDTRAP_MUTATE_ARM=<id>` in front of the tree-wide command. Every
-forked child runs under a deadline derived from the dry run (its wall
-clock, plus ten times the measured timings of the tests that child runs,
-floored at one second, and longer by the ratio of children to CPUs when
-`--mutate-jobs` gives more children than CPUs) and under the runtime's
-per-site hit-count
+child runs under a deadline derived from the dry run (its wall clock,
+plus ten times the startup time in exec mode, plus ten times the
+measured timings of the tests that child runs, floored at one second,
+and longer by the ratio of children to CPUs when `--mutate-jobs` gives
+more children than CPUs) and under the runtime's per-site hit-count
 budget; a child that overruns or spins is killed with its process group
 and scored killed, because a suite that hangs has noticed the change.
 On Linux, the time that the threads of that group wait for a CPU does
