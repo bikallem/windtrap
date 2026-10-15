@@ -7,12 +7,12 @@
    that depend on the domain a call runs on, never on a race, so every
    verdict here is deterministic.
 
-   A process that has spawned a domain can never fork again, and the
-   mutation loop forks every mutant from this one. Under mutation testing a
-   stateful test on several domains spawns nothing, and every test here that
-   spawns a pool skips; the scenarios that leave a domain running forever
-   or spawn every domain the runtime has run in forked children, before any
-   domain exists. *)
+   A process that has spawned a domain can never fork again. Thus these
+   tests are an executable of their own. Under mutation testing a stateful
+   test on several domains spawns nothing, and every test here that spawns
+   a pool skips. Thus the loop forks its children. The scenarios that
+   leave a domain running forever or spawn every domain the runtime has
+   run in forked children, before any domain exists. *)
 
 open Windtrap
 module Failure = Windtrap.Private.Failure

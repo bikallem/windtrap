@@ -233,6 +233,35 @@
   the test that killed each mutant, a digest of its source file and the
   reason of each filtered mutant; `windtrap mutants` refuses a file of
   an earlier version, so run the suites with their mutants again.
+- A suite that spawns a domain gets a full mutation run and a verdict
+  file. OCaml refuses `Unix.fork` in a process that spawned a domain, so
+  in such a process each child of the loop is a new process of the
+  suite executable, where 0.2.0 refused the suite, and `-e` gave a
+  narrowed run that wrote no verdict file (see
+  [When a run cannot mutate](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#when-a-run-cannot-mutate)).
+- `--mutate-children=auto|fork|exec` and its mirror
+  `WINDTRAP_MUTATE_CHILDREN` tell how the loop starts a child: `fork`,
+  a new process (`exec`), or `auto`, the default, which is `exec` only
+  when the process spawned a domain. Under `fork`, a process that
+  spawned a domain is refused before the probe.
+- A child that is a new process starts from module initialization, not
+  from the state that the dry run left. Thus a result that the dry run
+  cached can kill a mutant that a fork gives as not evaluated. When the
+  reaching tests of a mutant fail together in a new process with no
+  mutant, its child also runs the tests that the dry run ran before
+  them, and the verdict can name one of these tests. The report of such
+  a run tells the mode in one line above its outcome line and its
+  `reproduce:` line, as
+  `children: new processes, because the suite spawned a domain`.
+- A new process costs more than a fork: it starts the executable and
+  does its module initialization again. Exec mode also runs a child
+  that measures this startup time, and one child for each different
+  list of reaching tests. The deadline of each child adds ten times the
+  startup time (see
+  [When a run cannot mutate](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#when-a-run-cannot-mutate)
+  for a measurement).
+- A mutation run on Windows is refused because the loop needs process
+  groups, where 0.2.0 said that it needs `Unix.fork`.
 
 ## v0.2.0 2026-09-26
 

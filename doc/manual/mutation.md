@@ -851,6 +851,24 @@ mutant, which no child tested. An interrupt after the last child exits
 stops nothing: the run writes the verdict file and the report as
 usual, and then dies by the signal.
 
+A new process costs more than a fork, because it starts the executable
+and does its module initialization again. The run also has more
+children in exec mode: one child measures the startup time, and one
+child runs each different list of reaching tests with no mutant. This
+table shows an example. It gives the mean wall times of 20 runs in a
+shell loop, on Linux with 16 CPUs. The suite is `suite_main.exe`, the
+test suite of the mutation loop, with 2 reached mutants:
+
+| Mode | Children | Mean wall time |
+|---|---|---|
+| `--mutate-children=fork` | 3 | 11.6 ms |
+| `--mutate-children=exec` | 6 | 25.4 ms |
+
+In the same loop, a new process of that suite that lists its tests
+(`-l`) takes 2.1 ms, and `/bin/true` takes 0.3 ms. A suite whose tests
+run for milliseconds or more pays a smaller part of its time for the
+new processes.
+
 ## The command's options
 
 `windtrap mutants --help` lists its options; the suite's own flags are
