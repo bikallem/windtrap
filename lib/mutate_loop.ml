@@ -855,18 +855,95 @@ let kills (r : Run.result) = Option.is_none r.xfail && counted_failure r
 let killed_by (outcome : Run.outcome) =
   outcome.release_failures <> [] || List.exists kills (Run.results outcome.run)
 
-(* A child that recorded no test did not test its mutant: a survivor would
-   send the reader to strengthen tests that never ran. A child keeps the
-   dry run's state, so a site whose result the dry run cached can pass
-   unevaluated. A killed mutant names the test that failed first, by its
-   index in [paths], when a test failed. *)
-let verdict_line ~paths (outcome : Run.outcome) =
-  if killed_by outcome || Run.results outcome.run = [] then
-    match List.find_opt kills (Run.results outcome.run) with
-    | Some r -> strf "killed %d" (index_in paths r)
-    | None -> "killed"
-  else if Mutate.armed_hits () = 0 then "not_evaluated"
-  else "survived"
+(* A record that tells if a process of an armed run evaluated the armed
+   site. A process that a test forks has a copy of the arming, and its counts
+   stay in that process. Thus the run maps two bytes of a file that it
+   removes at once. A fork shares the mapping, and the guard of each process
+   writes the bytes. Byte 0 tells if a process evaluated the site in the run.
+   Byte 1 tells if a process evaluated it in the test that runs at that time.
+   [byte] is [None] when the map fails. *)
+type witness = {
+  byte :
+    (char, Bigarray.int8_unsigned_elt, Bigarray.c_layout) Bigarray.Array1.t
+    option;
+}
+
+let witness () =
+  let map path =
+    let fd = Unix.openfile path [ Unix.O_RDWR ] 0o600 in
+    Fun.protect ~finally:(fun () -> Unix.close fd) @@ fun () ->
+    Bigarray.array1_of_genarray
+      (Unix.map_file fd Bigarray.char Bigarray.c_layout true [| 2 |])
+  in
+  (* Windows has no fork, and it does not remove a file that a process maps.
+     There, two bytes of the memory of the process are enough. *)
+  if Sys.win32 then
+    {
+      byte =
+        Some
+          (Bigarray.Array1.init Bigarray.char Bigarray.c_layout 2 (fun _ ->
+               '\000'));
+    }
+  else
+    match Filename.temp_file "windtrap-armed" "" with
+    | exception Sys_error _ -> { byte = None }
+    | path -> (
+        Fun.protect ~finally:(fun () ->
+            try Sys.remove path with Sys_error _ -> ())
+        @@ fun () ->
+        match map path with
+        | byte -> { byte = Some byte }
+        | exception (Unix.Unix_error _ | Sys_error _ | Failure _) ->
+            { byte = None })
+
+let on_evaluation w =
+  Option.map
+    (fun byte () ->
+      Bigarray.Array1.unsafe_set byte 0 '\001';
+      Bigarray.Array1.unsafe_set byte 1 '\001')
+    w.byte
+
+let start_test w = Option.iter (fun byte -> byte.{1} <- '\000') w.byte
+
+let evaluated_in_test w =
+  match w.byte with Some byte -> byte.{1} <> '\000' | None -> false
+
+let evaluated w =
+  Mutate.armed_hits () > 0
+  || match w.byte with Some byte -> byte.{0} <> '\000' | None -> false
+
+(* A run that did not evaluate the armed site ran the code of the unmutated
+   program, so the mutant cannot cause a failure that comes before the first
+   evaluation. Without the byte, the run cannot tell, and each failure can
+   come from the mutant. *)
+let can_cause w = evaluated w || Option.is_none w.byte
+
+(* [cause] is the first test whose failure the mutant can cause: a process
+   evaluated the site before the test or in it. A killed mutant names it by
+   its index in [paths].
+
+   A child that did not evaluate the armed site gives [not_evaluated]. A test
+   that failed there has a cause of its own, for example a schedule of
+   domains, the clock or the tests before it. The line names that test by its
+   index in [paths], or gives [release] for a fixture release that failed.
+   A child keeps the state of the dry run. Thus it can find the result that
+   the dry run cached for a site, and not evaluate the site.
+
+   A child that recorded no test, and evaluated the site only in a fixture
+   release, did not test its mutant. A survivor would send the reader to
+   strengthen tests that never ran. *)
+let verdict_line ~paths ~witness ~cause (outcome : Run.outcome) =
+  let results = Run.results outcome.run in
+  match cause with
+  | Some r -> strf "killed %d" (index_in paths r)
+  | None when outcome.release_failures <> [] && can_cause witness -> "killed"
+  | None when not (evaluated witness) -> (
+      match List.find_opt kills results with
+      | Some r -> strf "not_evaluated %d" (index_in paths r)
+      | None when outcome.release_failures <> [] -> "not_evaluated release"
+      | None -> "not_evaluated")
+  | None when results = [] -> "killed"
+  | None -> "survived"
 
 let alone_line (outcome : Run.outcome) =
   if killed_by outcome || Run.results outcome.run = [] then "fails"
@@ -891,34 +968,49 @@ type request = {
   kind : kind;
 }
 
-let arm = function
-  | Probe | Alone | Startup -> Ok ()
-  | Mutant { id; budget } -> (
-      match Mutate.arm ~budget id with
-      | Error error -> Error (Pp.to_string Mutate.pp_arm_error error)
-      | Ok _ ->
-          (* The budget counts the child's evaluations, not the dry run's. *)
-          Mutate.reset_reach ();
-          Ok ())
-
-(* The body of a child: the line that it writes to the parent. *)
+(* The body of a child: the line that it writes to the parent. A child of a
+   mutant stops only at a failure that the mutant can cause. Thus the later
+   reaching tests run after a test that fails before the first evaluation.
+   An exception that escapes the run, before the first evaluation, did not
+   come from the mutant either. *)
 let serve tests request =
-  let run line =
-    match arm request.kind with
-    | Error message -> error_line message
-    | Ok () -> (
-        let allowlist = List.map Test_tree.path_to_string request.paths in
-        match
-          Run.execute ~allowlist request.config ~suite:request.suite tests
-        with
-        | Error error -> error_line (Run.startup_message error)
-        | Ok outcome -> line outcome)
+  let allowlist = List.map Test_tree.path_to_string request.paths in
+  let run ?on_event ?stop_after config line =
+    match
+      Run.execute ?on_event ?stop_after ~allowlist config ~suite:request.suite
+        tests
+    with
+    | Error error -> error_line (Run.startup_message error)
+    | Ok outcome -> line outcome
   in
   match request.kind with
   | Startup -> "ready"
-  | Probe -> run (probe_line ~paths:request.paths)
-  | Alone -> run alone_line
-  | Mutant _ -> run (verdict_line ~paths:request.paths)
+  | Probe -> run request.config (probe_line ~paths:request.paths)
+  | Alone -> run request.config alone_line
+  | Mutant { id; budget } -> (
+      let witness = witness () in
+      match Mutate.arm ~budget ?on_evaluation:(on_evaluation witness) id with
+      | Error error -> error_line (Pp.to_string Mutate.pp_arm_error error)
+      | Ok _ -> (
+          (* The budget counts the child's evaluations, not the dry run's. *)
+          Mutate.reset_reach ();
+          let cause = ref None in
+          let on_event = function
+            | Run.Test_finished r
+              when Option.is_none !cause && kills r && can_cause witness ->
+                cause := Some r
+            | _ -> ()
+          in
+          let stop_after _ = request.config.bail && Option.is_some !cause in
+          let config = { request.config with bail = false } in
+          match
+            run ~on_event ~stop_after config (fun outcome ->
+                verdict_line ~paths:request.paths ~witness ~cause:!cause outcome)
+          with
+          | line -> line
+          | exception exn when not (can_cause witness) ->
+              ignore exn;
+              "not_evaluated"))
 
 (* A child that is a new process of the suite executable reads its request
    from a file: a header line, the identity of the executable, the
@@ -984,7 +1076,7 @@ let read_request path =
 
 (* A request for another suite, or for a test that this process does not
    have, gives a diagnostic. Without this check, a child that runs no test
-   gives an incorrect line: [killed] for a mutant, [fails] for a test
+   gives an incorrect line: [not_evaluated] for a mutant, [fails] for a test
    alone. *)
 let check_request ~suite tests (request : request) =
   let known = Hashtbl.create 64 in
@@ -1272,19 +1364,28 @@ let start_mutant loop ~index ~siblings ~paths ~bail
     ~paths ~siblings
 
 (* A diagnostic is a child that could not arm its mutant or was refused at
-   startup. [paths] are the tests that the parent handed the child. *)
+   startup. [paths] are the tests that the parent handed the child. With a
+   verdict comes what failed in a child that did not evaluate the site: a
+   test, or a fixture release. *)
 let verdict_of ~paths (site : site) child =
-  if child.ending = Expired then Ok (Verdicts.Killed { by = None })
+  let killed = Ok (Verdicts.Killed { by = None }, None) in
+  if child.ending = Expired then killed
   else
     match (words child.line, child.status) with
     | Error diagnostic, _ -> Error diagnostic
     | Ok [ "survived" ], Unix.WEXITED 0 ->
-        Ok (Verdicts.survived (List.rev site.tests))
-    | Ok [ "not_evaluated" ], Unix.WEXITED 0 -> Ok Verdicts.Not_evaluated
+        Ok (Verdicts.survived (List.rev site.tests), None)
+    | Ok [ "not_evaluated" ], Unix.WEXITED 0 -> Ok (Verdicts.Not_evaluated, None)
+    | Ok [ "not_evaluated"; "release" ], Unix.WEXITED 0 ->
+        Ok (Verdicts.Not_evaluated, Some "a fixture release")
+    | Ok [ "not_evaluated"; index ], Unix.WEXITED 0 ->
+        let failed =
+          Option.map Test_tree.path_to_string (named_in paths index)
+        in
+        Ok (Verdicts.Not_evaluated, Some (Option.value ~default:"a test" failed))
     | Ok [ "killed"; index ], Unix.WEXITED 0 ->
-        Ok (Verdicts.Killed { by = named_in paths index })
-    | Ok _, (Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _) ->
-        Ok (Verdicts.Killed { by = None })
+        Ok (Verdicts.Killed { by = named_in paths index }, None)
+    | Ok _, (Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _) -> killed
 
 (* Recorded paths are relative to the project root; under [dune runtest] the
    working directory is inside [_build], where they do not open. *)
@@ -1366,7 +1467,8 @@ type attempt = {
       (* the tests of the child, in the order of the run *)
   first : bool;
       (* a first child, which a full child follows when it kills nothing *)
-  bail : bool; (* the child stops at its first failure ([full_paths]) *)
+  bail : bool;
+      (* the child stops at its first failure that counts ([full_paths]) *)
 }
 
 (* What the loop committed: the verdicts of the mutants before
@@ -1523,7 +1625,7 @@ let test_mutants renderer loop reached =
       again = [];
     }
   in
-  let commit index verdict =
+  let commit index (verdict, failed) =
     let mutant, _ = reached.(index) in
     (match verdict with
     | Verdicts.Survived { first; others } ->
@@ -1532,7 +1634,7 @@ let test_mutants renderer loop reached =
         pool.survivors <- found :: pool.survivors
     | Verdicts.Not_evaluated ->
         let missed : Report_sections.not_evaluated =
-          { mutant = shown mutant; invocation = loop.config.invocation }
+          { mutant = shown mutant; invocation = loop.config.invocation; failed }
         in
         pool.not_evaluated <- missed :: pool.not_evaluated
     | Verdicts.Killed _ | Verdicts.Outside_tests | Verdicts.Filtered _
@@ -1630,7 +1732,7 @@ let test_mutants renderer loop reached =
                 (snd reached.(attempt.index))
                 child
             with
-            | Ok (Verdicts.Survived _ | Verdicts.Not_evaluated)
+            | Ok ((Verdicts.Survived _ | Verdicts.Not_evaluated), _)
               when attempt.first ->
                 pool.again <-
                   List.merge Int.compare pool.again [ attempt.index ]
@@ -1952,7 +2054,9 @@ let unarmable (id : Mutate.id) dismissal =
         id reason
 
 let armed renderer ~spec ~suite (config : Run.config) tests =
-  match Result.bind (Mutate.id_of_string spec) Mutate.arm with
+  let witness = witness () in
+  let arm = Mutate.arm ?on_evaluation:(on_evaluation witness) in
+  match Result.bind (Mutate.id_of_string spec) arm with
   | Error (Mutate.Uncatalogued _ as error) ->
       Os.say (Pp.to_string Mutate.pp_arm_error error);
       ordinary ~suite config tests
@@ -1969,19 +2073,42 @@ let armed renderer ~spec ~suite (config : Run.config) tests =
       flush_descriptors ();
       Mutate.reset_reach ();
       let xfail = { at_start = 0; hits = 0 } in
-      let result =
-        Report.run ~on_event:(count_xfail_hits xfail) ~suite config tests
+      (* As in a child, a failure counts when a process evaluated the site in
+         its test or before it. *)
+      let cause = ref false in
+      (* The types of the tests that evaluated the site in any process. *)
+      let in_xfail = ref false and in_other = ref false in
+      let on_event (event : Run.event) =
+        count_xfail_hits xfail event;
+        match event with
+        | Run.Test_started _ -> start_test witness
+        | Run.Test_finished r ->
+            if evaluated_in_test witness then
+              if Option.is_some r.xfail then in_xfail := true
+              else in_other := true;
+            if kills r && can_cause witness then cause := true
+        | _ -> ()
       in
+      (* Under [config.bail], the run stops only at a failure that counts. *)
+      let stop_after _ = config.bail && !cause in
+      let result = Report.run ~on_event ~stop_after ~suite config tests in
       (match result with
-      | Ok outcome when killed_by outcome -> Report.mutation_killed renderer
+      | Ok outcome
+        when !cause || (outcome.release_failures <> [] && can_cause witness) ->
+          Report.mutation_killed renderer
+      | Ok outcome when killed_by outcome && not (evaluated witness) ->
+          Report.mutation_not_evaluated ~failed:true renderer
       | Ok outcome when outcome.exit_code <> 2 -> (
           let hits = Mutate.armed_hits () in
-          match (hits - xfail.hits, xfail.hits) with
-          | 0, 0 -> Report.mutation_not_evaluated renderer
-          | 0, _ -> Report.mutation_not_reached renderer
+          let in_other = hits - xfail.hits > 0 || !in_other in
+          let in_xfail = xfail.hits > 0 || !in_xfail in
+          match (in_other, in_xfail) with
+          | false, false when not (evaluated witness) ->
+              Report.mutation_not_evaluated renderer
+          | false, true -> Report.mutation_not_reached renderer
           | _ ->
-              Report.mutation_survived renderer ~hits
-                ~xfail_failed:(xfail_failed outcome))
+              Report.mutation_survived ~failed_before:(killed_by outcome)
+                renderer ~hits ~xfail_failed:(xfail_failed outcome))
       | Ok _ | Error _ -> ());
       flush_descriptors ();
       Ran result

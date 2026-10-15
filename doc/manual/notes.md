@@ -274,7 +274,8 @@ the process that knows which test is running, so it can record which
 tests evaluate each mutant and name them in a survivor's block, which
 turns a score into a list of tests to strengthen. It forks one child per
 reached mutant from its own warm state, and each child runs only the
-tests that reach its mutant, up to the first failure. When the suite
+tests that reach its mutant, up to the first failure in or after the
+first test that evaluates its site. When the suite
 started a domain and the mode is auto (the default), or under
 `--mutate-children=exec`, each child is a new process of the suite
 instead, with no warm state. A tool outside

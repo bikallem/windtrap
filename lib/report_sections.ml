@@ -1426,7 +1426,13 @@ type mutant = {
 }
 
 type survivor = { mutant : mutant; witnesses : witness list }
-type not_evaluated = { mutant : mutant; invocation : Run.invocation }
+
+type not_evaluated = {
+  mutant : mutant;
+  invocation : Run.invocation;
+  failed : string option;
+}
+
 type scope = Suite | Selected of int | Executables of int
 
 type mutation = {
@@ -1583,10 +1589,40 @@ let not_evaluated_section ~selection = function
               styled `Bold n.mutant.id;
               plain (strf "  %s \u{2192} %s" n.mutant.before n.mutant.after);
             ];
-          Hint
-            ("    arm: "
-            ^ arm_command ~invocation:n.invocation ~selection n.mutant.id);
         ]
+        @ (match n.failed with
+          | None -> []
+          | Some failed ->
+              [
+                Line
+                  [
+                    plain "    ";
+                    styled `Yellow "a failure that the mutant did not cause: ";
+                    plain failed;
+                  ];
+              ])
+        @ [
+            Hint
+              ("    arm: "
+              ^ arm_command ~invocation:n.invocation ~selection n.mutant.id);
+          ]
+      in
+      let failures =
+        if
+          List.exists
+            (fun (n : not_evaluated) -> n.failed <> None)
+            not_evaluated
+        then
+          [
+            Line
+              [
+                plain
+                  "  A failure in such a child has a cause of its own, for \
+                   example a schedule of domains, the clock, or the tests \
+                   before it.";
+              ];
+          ]
+        else []
       in
       Rule (Some (strf "not evaluated (%d)" (List.length not_evaluated)))
       :: Line
@@ -1594,7 +1630,8 @@ let not_evaluated_section ~selection = function
              plain
                "  Each site ran in the dry run and not in its mutant's child.";
            ]
-      :: List.concat_map mutant not_evaluated
+      :: failures
+      @ List.concat_map mutant not_evaluated
       @ [ Rule None ]
 
 (* One row per file: what a reader does with an unreached mutant is write a

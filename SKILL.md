@@ -456,7 +456,7 @@ mutants. Set PCT a little under the measured score, as for `--min`.
 
 `--mutate-jobs auto` (`WINDTRAP_MUTATE_JOBS=auto`) tests mutants on
 every CPU at once. Use it only when the suite's tests share no port or
-file, because a test that another child disturbs kills its mutant.
+file, because a test that another child disturbs can kill its mutant.
 
 `--mutate-since=REV` (`WINDTRAP_MUTATE_SINCE=REV`) tests only the
 mutants on lines that changed since the git revision REV, and

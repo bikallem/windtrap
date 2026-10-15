@@ -1244,17 +1244,20 @@ let with_interrupts ~interrupt run fn =
 
 (* Executing *)
 
-(* [drive] runs [selected] in order, up to the first counted failure under
-   [config.bail], and is [true] iff a counted failure carried no kept
-   correction. *)
-let drive ~on_event ~interrupt run selected =
+(* [drive] runs [selected] in order. It stops after the first counted
+   failure under [config.bail], or after the first result for which
+   [stop_after] gives [true]. It is [true] iff a counted failure carried no
+   kept correction. *)
+let drive ~on_event ~stop_after ~interrupt run selected =
   let rec loop uncorrected = function
     | [] -> uncorrected
     | case :: cases ->
         Option.iter interrupt run.interrupted;
         let result, corrected = run_case ~on_event run case in
         let uncorrected = uncorrected || (result.counted && not corrected) in
-        if (run.config.bail && result.counted) || Option.is_some run.stopped
+        if
+          (run.config.bail && result.counted)
+          || stop_after result || Option.is_some run.stopped
         then uncorrected
         else loop uncorrected cases
   in
@@ -1279,7 +1282,8 @@ type outcome = {
   exit_code : int;
 }
 
-let execute ?(on_event = ignore) ?allowlist config ~suite tests =
+let execute ?(on_event = ignore) ?(stop_after = fun _ -> false) ?allowlist
+    config ~suite tests =
   let started = Os.counter () in
   let* selected, total, focus_active = select ?allowlist config ~suite tests in
   let baselines = Baseline.create ~mode:config.baseline () in
@@ -1299,7 +1303,7 @@ let execute ?(on_event = ignore) ?allowlist config ~suite tests =
   in
   on_event
     (Run_started { suite; total; selected = List.length selected; properties });
-  let uncorrected = drive ~on_event ~interrupt run selected in
+  let uncorrected = drive ~on_event ~stop_after ~interrupt run selected in
   Option.iter interrupt run.interrupted;
   let release_failures =
     release_fixtures run ~announce:(fun name ->

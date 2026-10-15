@@ -26,20 +26,27 @@ type reaching_test = string list
     mutant that no test reached is {!Outside_tests} or {!Unreached}. *)
 type verdict =
   | Killed of { by : reaching_test option }
-      (** A test failed, or the child that armed the mutant crashed or hung.
-          [by] is the test that failed first, and [None] when no one test is
-          known: the child crashed, hung or recorded no test, or a fixture
-          release failed. [by] is a reaching test, except in exec mode of the
-          loop: there, a child can also run the tests before the reaching tests,
-          and one of them can fail. *)
+      (** A test failed in or after the first test that evaluated the armed
+          site, or a fixture release failed after an evaluation. Or the child
+          that armed the mutant crashed or hung. [by] is the first test that
+          failed in this way. It is [None] when no one test is known: the child
+          crashed, hung or recorded no test, or a fixture release failed. [by]
+          is a reaching test, except in exec mode of the loop: there, a child
+          can also run the tests before the reaching tests, and one of them can
+          fail. *)
   | Survived of { first : reaching_test; others : reaching_test list }
-      (** Every reaching test passed, and the armed site was evaluated. [first]
-          and [others] are the reaching tests, sorted and without duplicates,
-          and [first] is the first. *)
+      (** A process of the child evaluated the armed site. No test failed in or
+          after the first test that evaluated it, and no fixture release failed.
+          A test that failed before that test does not count. [first] and
+          [others] are the reaching tests, sorted and without duplicates, and
+          [first] is the first. *)
   | Not_evaluated
-      (** Every reaching test passed, and the armed site was not evaluated. The
-          dry run evaluated the site and the child did not, as when the dry run
-          cached the result of the site in a table or a forced lazy value. *)
+      (** The child did not evaluate the armed site, so it ran the code of the
+          unmutated program and tells nothing about the mutant. The dry run
+          evaluated the site and the child did not, as when the dry run cached
+          the result of the site in a table or a forced lazy value. A test that
+          failed in the child failed for a reason of its own, and does not kill
+          the mutant. *)
   | Outside_tests
       (** No test reached the site, and the dry run evaluated it outside every
           test, at module initialization or in a fixture release. The loop forks
