@@ -67,6 +67,8 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     + It runs the determinism probe, which is one unarmed child over the tests
       that the dry run executed. The probe agrees iff it executed as many tests,
       skipped as many and counted no failure.
+    + It runs the unarmed children of {b History} and, in exec mode, of
+      {b Exec mode}.
     + It starts one child per reached mutant, in the order of the catalogue, and
       never starts one that is unreached or evaluated outside tests. A mutant
       with a history can have two children ({b History} below). Up to [jobs]
@@ -79,19 +81,20 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
 
     {b Children.} A child runs {!Run.execute} over {!Run.for_subset} of
     [config], with the reaching tests of its mutant as the allowlist, or with
-    the one test of its history for a first child. It checks baselines
-    read-only, records no correction and writes no last-failed store
-    ({!Run.config.store}). The loop removes the log directory of the child, and
-    on a busy file system a write of the store can take seconds, which count
-    toward the deadline of the child. But a child writes the capture log of each
-    test, because a test can read its captured output ({!Capture.val-output}).
-    The time of these writes also counts toward the deadline, and a stall of the
-    file system there can expire it. Nothing that a child prints is visible,
-    because both of its standard descriptors are [/dev/null]. No [at_exit]
-    function runs in a child. Each child has a log directory of its own in the
-    scratch directory of the loop, so children that run at once share no file of
-    the loop. Their tests can share a file or a port of their own, which is why
-    [jobs] is [1] unless a run sets it.
+    the one test of its history for a first child. In exec mode, a full child
+    can also get the tests that the dry run executed up to the last reaching
+    test ({b Exec mode}). It checks baselines read-only, records no correction
+    and writes no last-failed store ({!Run.config.store}). The loop removes the
+    log directory of the child, and on a busy file system a write of the store
+    can take seconds, which count toward the deadline of the child. But a child
+    writes the capture log of each test, because a test can read its captured
+    output ({!Capture.val-output}). The time of these writes also counts toward
+    the deadline, and a stall of the file system there can expire it. Nothing
+    that a child prints is visible, because both of its standard descriptors are
+    [/dev/null]. No [at_exit] function runs in a child. Each child has a log
+    directory of its own in the scratch directory of the loop, so children that
+    run at once share no file of the loop. Their tests can share a file or a
+    port of their own, which is why [jobs] is [1] unless a run sets it.
 
     {b Exec mode.} The [children] of {!Run.Loop} tells how the loop starts a
     child. {!Run.Fork} forks each child from the state after the dry run.
@@ -107,6 +110,22 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     of these directories have one length. A suite that a deep [TMPDIR] breaks,
     for example with the path of a Unix socket, gets a longer path in a new
     process than in the dry run.
+
+    In exec mode, a full child also starts from a new process. A reaching test
+    that needs the state that an earlier test sets then fails with no mutant.
+    Thus, before the child of any mutant, each different list of reaching tests
+    runs one time in a new process with no mutant armed, with the children of
+    {b History}. A list that does not pass gives its full children the tests
+    that the dry run executed, in its order, up to the last reaching test of the
+    mutant. This list is a prefix of the probe, which passed. A test after the
+    first reaching test can find the state that the mutant changed, and its
+    failure kills the mutant. Such a child runs every test of its list and does
+    not stop at its first failure, because the mutant can make a test marked
+    xfail pass, and that pass kills nothing. After a test kills the mutant, the
+    child continues. A later test that hangs or crashes then gives a verdict
+    that names no test, and the history of the mutant gets no killer. The cost
+    is one more child for each different list of reaching tests, and all of the
+    tests of a prefix for each of its children.
 
     {b History.} Before the first child, the loop reads the verdict file of the
     executable, which an earlier build can have written. A mutant that it
@@ -129,9 +148,11 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
 
     {b Verdicts.} A mutant is {!Windtrap_runtime.Verdicts.Killed} when its child
     counted a failure, that of a fixture release included. The verdict names the
-    reaching test that failed first, if one failed. It is also killed when its
-    child reported no survivor, because the child recorded no test, passed its
-    deadline, did not exit with [0], or left no complete line. Otherwise it is
+    test that failed first, if one failed. This test reaches the mutant, except
+    in exec mode, where it can be a test before the last reaching test
+    ({b Exec mode}). It is also killed when its child reported no survivor,
+    because the child recorded no test, passed its deadline, did not exit with
+    [0], or left no complete line. Otherwise it is
     {!Windtrap_runtime.Verdicts.Not_evaluated} when its child did not evaluate
     the armed site ({!Windtrap_runtime.Mutate.armed_hits} is [0]), and survived
     when it did. A fork starts from the state that the dry run left, so a site

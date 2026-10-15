@@ -775,6 +775,9 @@ type loop = {
   killers : (Mutate.id, Verdicts.reaching_test) Hashtbl.t;
       (* the test that killed each mutant in the run before, when its source
          did not change since ([history]) *)
+  alone_failed : (string list list, unit) Hashtbl.t;
+      (* in exec mode, the lists of reaching tests that did not pass alone in
+         a new process ([passing_alone]) *)
 }
 
 let deadline_multiplier = 10.
@@ -1262,9 +1265,9 @@ let probe loop =
 let budget_of hits =
   if hits > (max_int - 1000) / 8 then max_int else (hits * 8) + 1000
 
-let start_mutant loop ~index ~siblings ~paths
+let start_mutant loop ~index ~siblings ~paths ~bail
     ((mutant : Mutate.mutant), (site : site)) =
-  start_child loop ~share:loop.share ~log:(strf "m%d" index) ~bail:true
+  start_child loop ~share:loop.share ~log:(strf "m%d" index) ~bail
     ~kind:(Mutant { id = mutant.id; budget = budget_of site.hits })
     ~paths ~siblings
 
@@ -1363,6 +1366,7 @@ type attempt = {
       (* the tests of the child, in the order of the run *)
   first : bool;
       (* a first child, which a full child follows when it kills nothing *)
+  bail : bool; (* the child stops at its first failure ([full_paths]) *)
 }
 
 (* What the loop committed: the verdicts of the mutants before
@@ -1391,52 +1395,95 @@ let first_test loop ((mutant : Mutate.mutant), (site : site)) =
       Some killer
   | Some _, _ | None, _ -> None
 
-(* A first child runs its test alone, from the state that the dry run left.
-   A test that needs the state that an earlier test sets can fail alone with
-   no mutant. Its first child would then kill a mutant that a full child
-   lets survive. Thus, before any mutant, each [first_test] runs alone in a
-   child with no mutant armed, and a test that does not pass there gets no
-   first child. Up to [loop.jobs] of these children run at once. After a
-   signal, no child starts, and the loop then starts no child of a
-   mutant. *)
+(* A first child runs its test alone, from the state that the dry run left
+   or, in exec mode, from a new process. A test that needs the state that an
+   earlier test sets can fail alone with no mutant. Its first child would
+   then kill a mutant that a full child lets survive. Thus, before any
+   mutant, each [first_test] runs alone in a child with no mutant armed, and
+   a test that does not pass there gets no first child.
+
+   In exec mode, a full child also starts from a new process, so the same
+   problem occurs for the list of the reaching tests of a mutant. Thus each
+   different list also runs one time in a child with no mutant armed, and a
+   list that does not pass goes into [alone_failed] ([full_paths]). Up to
+   [loop.jobs] of these children run at once. After a signal, no child
+   starts, and the loop then starts no child of a mutant. *)
 let passing_alone loop reached =
-  let tests =
-    List.sort_uniq
-      (List.compare String.compare)
-      (List.filter_map (first_test loop) reached)
+  let compare = List.compare (List.compare String.compare) in
+  let firsts =
+    List.map (fun test -> [ test ]) (List.filter_map (first_test loop) reached)
   in
+  let fulls =
+    if loop.exec then
+      List.map (fun (_, (site : site)) -> List.rev site.tests) reached
+    else []
+  in
+  let lists = List.sort_uniq compare (firsts @ fulls) in
   let passing = Hashtbl.create 16 in
   let running = ref [] in
-  let rec next index tests =
-    match tests with
-    | test :: rest
+  let rec next index lists =
+    match lists with
+    | paths :: rest
       when Option.is_none interrupt.signal && List.length !running < loop.jobs
       ->
         let child =
           start_child loop ~share:loop.share ~log:(strf "t%d" index) ~bail:true
-            ~kind:Alone ~paths:[ test ] ~siblings:(List.map snd !running)
+            ~kind:Alone ~paths ~siblings:(List.map snd !running)
         in
-        running := !running @ [ (test, child) ];
+        running := !running @ [ (paths, child) ];
         next (index + 1) rest
     | _ when !running = [] -> ()
     | _ ->
         let finished, live = await !running in
         running := live;
         List.iter
-          (fun (test, child) ->
+          (fun (paths, child) ->
             match (child.ending, words child.line, child.status) with
             | Closed, Ok [ "passes" ], Unix.WEXITED 0 ->
-                Hashtbl.replace passing test ()
+                Hashtbl.replace passing paths ()
             | _ -> ())
           finished;
-        next index tests
+        next index lists
   in
-  Fun.protect ~finally:(fun () -> abandon !running) (fun () -> next 0 tests);
+  Fun.protect ~finally:(fun () -> abandon !running) (fun () -> next 0 lists);
   let killers = Hashtbl.copy loop.killers in
   Hashtbl.filter_map_inplace
-    (fun _ test -> if Hashtbl.mem passing test then Some test else None)
+    (fun _ test -> if Hashtbl.mem passing [ test ] then Some test else None)
     killers;
-  { loop with killers }
+  let alone_failed = Hashtbl.create 16 in
+  List.iter
+    (fun paths ->
+      if not (Hashtbl.mem passing paths) then
+        Hashtbl.replace alone_failed paths ())
+    fulls;
+  { loop with killers; alone_failed }
+
+(* The tests of a full child: the reaching tests of its mutant. In exec mode,
+   a list of reaching tests that does not pass alone ([passing_alone]) gets
+   the tests that the dry run executed, in its order, up to the last reaching
+   test. That list is a prefix of the probe, which passed in a new process.
+   A test before the first reaching test runs as in the dry run. A test after
+   it can find the state that the mutant changed, and its failure kills the
+   mutant. The verdict then names that test, which does not reach the
+   mutant. The child of such a list runs every test of it ([bail] is
+   false): the mutant can make a test marked xfail pass, and that
+   unexpected pass, which kills nothing, would stop the child before the
+   reaching tests after it. After a test kills the mutant, the child
+   continues. A later test that hangs or crashes then gives a verdict that
+   names no test, and the history of the mutant gets no killer. The result
+   is the tests and whether the child stops at its first failure. *)
+let full_paths loop (site : site) =
+  let reaching = List.rev site.tests in
+  match site.tests with
+  | last :: _ when Hashtbl.mem loop.alone_failed reaching ->
+      let rec from_last = function
+        | [] -> []
+        | path :: rest as executed ->
+            if List.equal String.equal path last then executed
+            else from_last rest
+      in
+      (List.rev (from_last loop.reach.executed), false)
+  | _ -> (reaching, true)
 
 (* Up to [loop.jobs] children at once, started in catalogue order. A verdict
    is kept by the catalogue index of its mutant until every mutant before it
@@ -1529,12 +1576,13 @@ let test_mutants renderer loop reached =
     let child =
       start_mutant loop ~index:attempt.index
         ~siblings:(List.map snd pool.running)
-        ~paths:attempt.paths reached.(attempt.index)
+        ~paths:attempt.paths ~bail:attempt.bail reached.(attempt.index)
     in
     pool.running <- pool.running @ [ (attempt, child) ]
   in
   let full index =
-    { index; paths = List.rev (snd reached.(index)).tests; first = false }
+    let paths, bail = full_paths loop (snd reached.(index)) in
+    { index; paths; first = false; bail }
   in
   let rec next index =
     if Option.is_none interrupt.signal && List.length pool.running < loop.jobs
@@ -1547,7 +1595,8 @@ let test_mutants renderer loop reached =
       | [] when index < total ->
           start
             (match first_test loop reached.(index) with
-            | Some test -> { index; paths = [ test ]; first = true }
+            | Some test ->
+                { index; paths = [ test ]; first = true; bail = true }
             | None -> full index);
           next (index + 1)
       | [] -> wait index
@@ -1844,6 +1893,7 @@ let loop renderer ~scope ~jobs ~children ~suite (config : Run.config) tests =
                       jobs;
                       share;
                       killers = history reach.sites;
+                      alone_failed = Hashtbl.create 0;
                     }
                   in
                   Result.map

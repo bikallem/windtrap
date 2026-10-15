@@ -306,7 +306,8 @@ the withheld-correction warning:
 - The determinism probe, in a child process, checks that the suite
   passes again.
 - Each reached mutant runs in a child with its reaching tests, up to the
-  first failure. When the verdict file gives the test that killed the
+  first failure. In exec mode, the child can also run the tests before
+  them (see below). When the verdict file gives the test that killed the
   mutant before, the source file of the mutant did not change, and the
   test passes alone with no mutant, a first child runs that test alone.
   A second child then runs every reaching test only when the first child
@@ -324,9 +325,12 @@ with an `arm:` command, which runs the suite in a new process and ends
 on the mutant's verdict. Under `--mutate-children=exec`, or in auto mode
 (the default) in a process that started a domain, each child is a new
 process of the suite executable. Such a child has no cache from the dry
-run. The report then tells the mode in one line above the outcome line,
-for example `children: new processes, because the suite spawned a
-domain`.
+run. Before the first mutant, each different list of reaching tests runs
+one time in a new process with no mutant. When a list fails there, the
+child of its mutant runs the tests that the dry run ran up to the last
+reaching test, and one of these tests can kill the mutant. In exec mode,
+the report tells the mode in one line above the outcome line, for
+example `children: new processes, because the suite spawned a domain`.
 
 A site that no test runs, and that module initialization or a
 fixture release runs, is evaluated outside tests. No child tests its

@@ -811,6 +811,62 @@ let ordered =
         is_true (Subject.sub 10 4 < 100));
   ]
 
+(* The second and the third tests of [order] need the state that the first
+   test sets, and each reaches one mutant. A new process that runs one of
+   them alone fails with no mutant. With [domain], the first test also
+   spawns a domain, so the loop starts new processes in auto mode. *)
+let state = ref false
+
+let order ~domain =
+  [
+    test "sets the state" (fun () ->
+        if domain then Domain.join (Domain.spawn ignore);
+        state := true);
+    test "needs the state and pins sub" (fun () ->
+        is_true !state;
+        equal int 6 (Subject.sub 10 4));
+    test "needs the state and watches widen" (fun () ->
+        is_true !state;
+        is_true (Subject.widen 3 4 <> 0));
+  ]
+
+(* [order_kill]'s third test does not reach [sub]: it reads what the second
+   test stored. In exec mode, the reaching tests fail alone, so the child of
+   the mutant of [sub] runs the tests of the dry run up to the last reaching
+   test, and the third test kills the mutant. A fork runs the reaching tests
+   only, and the mutant survives. *)
+let stored = ref 0
+
+let order_kill =
+  [
+    test "sets the state" (fun () -> state := true);
+    test "needs the state and stores sub" (fun () ->
+        is_true !state;
+        stored := Subject.sub 10 4;
+        is_true (!stored < 100));
+    test "reads what sub stored" (fun () -> equal int 6 !stored);
+    test "needs the state and watches sub" (fun () ->
+        is_true !state;
+        is_true (Subject.sub 10 4 < 100));
+  ]
+
+(* [order_xfail]'s third test is marked xfail and passes only with the
+   mutant of [sub]. In exec mode, the child of that mutant runs it and does
+   not stop at its unexpected pass. Thus the fourth test runs and kills the
+   mutant. *)
+let order_xfail =
+  [
+    test "sets the state" (fun () -> state := true);
+    test "needs the state and watches sub" (fun () ->
+        is_true !state;
+        is_true (Subject.sub 10 4 < 100));
+    xfail ~reason:"sub subtracts"
+      (test "expects sub to add" (fun () -> equal int 14 (Subject.sub 10 4)));
+    test "needs the state and pins sub" (fun () ->
+        is_true !state;
+        equal int 6 (Subject.sub 10 4));
+  ]
+
 (* [primed]'s second test runs [widen] only after the first test, and only
    once: the dry run leaves the flag down, so a child that runs the second
    test alone does not evaluate [widen]. Only the second test pins it. *)
@@ -937,6 +993,10 @@ let write_request () =
 let () =
   match Option.value ~default:"green" (Sys.getenv_opt "MUTATE_FIXTURE") with
   | "request" -> write_request ()
+  | "order" -> exit @@ run "calc" [ group "order" (order ~domain:false) ]
+  | "order_kill" -> exit @@ run "calc" [ group "order" order_kill ]
+  | "order_xfail" -> exit @@ run "calc" [ group "order" order_xfail ]
+  | "order_domain" -> exit @@ run "calc" [ group "order" (order ~domain:true) ]
   | "two_suites" ->
       (* A first suite that reaches no mutant, then the default suite. *)
       ignore (run "first" [ group "first" [ test "nothing" ignore ] ]);

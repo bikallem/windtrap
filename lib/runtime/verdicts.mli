@@ -26,10 +26,12 @@ type reaching_test = string list
     mutant that no test reached is {!Outside_tests} or {!Unreached}. *)
 type verdict =
   | Killed of { by : reaching_test option }
-      (** A reaching test failed, or the child that armed the mutant crashed or
-          hung. [by] is the reaching test that failed first, and [None] when no
-          one test is known: the child crashed, hung or recorded no test, or a
-          fixture release failed. *)
+      (** A test failed, or the child that armed the mutant crashed or hung.
+          [by] is the test that failed first, and [None] when no one test is
+          known: the child crashed, hung or recorded no test, or a fixture
+          release failed. [by] is a reaching test, except in exec mode of the
+          loop: there, a child can also run the tests before the reaching tests,
+          and one of them can fail. *)
   | Survived of { first : reaching_test; others : reaching_test list }
       (** Every reaching test passed, and the armed site was evaluated. [first]
           and [others] are the reaching tests, sorted and without duplicates,
