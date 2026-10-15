@@ -93,6 +93,7 @@ type parsed = {
           commit is checked when the loop reads the changed lines. *)
   mutate_children : Run.children option;
       (** [--mutate-children MODE]: [auto], [fork] or [exec], in any case. *)
+  mutate_workers : bool option;  (** [--mutate-workers]. *)
   arm : string option;
       (** [--arm ID]: the identifier as typed. It is not parsed here, so a
           malformed one is no {!type-error}, and
@@ -180,10 +181,12 @@ val settings : parsed -> (Run.config, error) result
       when no layer gives it. Its [since] is [mutate_since]. Its [children] is
       [mutate_children], and {!Run.Auto} when no layer gives it. Outside a
       {!Run.Loop}, [mutate_jobs], [mutate_since] and [mutate_children] are read
-      and checked, and change nothing. Under {!Run.No_mutation}, [unused_since]
-      names the flag or the mirror that gave [mutate_since]. [mutate] and [arm]
-      at once is [Error (Incompatible_flags _)], whichever layer gave each, and
-      it is checked after every mirror. A prefix that spells a boolean cannot go
+      and checked, and change nothing. [mutate_workers] is [true] when a layer
+      gives [--mutate-workers], and it changes nothing under {!Run.No_mutation}.
+      Under {!Run.No_mutation}, [unused_since] names the flag or the mirror that
+      gave [mutate_since]. [mutate] and [arm] at once is
+      [Error (Incompatible_flags _)], whichever layer gave each, and it is
+      checked after every mirror. A prefix that spells a boolean cannot go
       through the variable.
     - A relative path of [--junit] or [-o] is made absolute, against the working
       directory when the command line gives it and against {!Os.project_root}

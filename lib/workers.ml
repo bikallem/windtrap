@@ -119,8 +119,13 @@ let tell_quit t =
    the runner's handlers, not even in its first instructions. *)
 let runner_signals = [ Sys.sigalrm; Sys.sigint; Sys.sigterm; Sys.sighup ]
 
+(* Set by the first [spawn], so the mutation loop knows if a pool ran. *)
+let spawned_any = Atomic.make false
+let spawned () = Atomic.get spawned_any
+
 let spawn n =
   if n < 1 then invalid_arg "Workers.spawn: no worker";
+  Atomic.set spawned_any true;
   let t =
     {
       mutex = Mutex.create ();

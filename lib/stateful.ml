@@ -1572,15 +1572,17 @@ let never_called ?loc ~cases ~elements names =
        cases
        (if elements then ", its value lists an element" else ""))
 
+(* Under mutation testing, a program runs once on the test's domain, so a
+   kill does not depend on a schedule. [--mutate-workers] keeps the workers,
+   and a kill can then depend on a schedule. *)
 let mutating () =
-  match (Run.config (Run.current ())).mutation with
+  let config = Run.config (Run.current ()) in
+  match config.mutation with
   | Run.No_mutation -> false
-  | Run.Loop _ | Run.Armed _ -> true
+  | Run.Loop _ | Run.Armed _ -> not config.mutate_workers
 
 (* The workers live for the attempt: spawned before the first case, outside
-   the property, and joined when the body ends, however it ends. Under
-   mutation testing a program runs once on the test's domain, so a kill does
-   not depend on a schedule and the process can still fork. *)
+   the property, and joined when the body ends, however it ends. *)
 let with_workers ?loc ~domains fn =
   if domains = 1 || mutating () then fn None
   else

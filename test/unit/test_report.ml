@@ -2102,7 +2102,7 @@ let projections () =
   let entry pp f =
     Format.asprintf "%a"
       (pp ~ansi:false ?terminal:None ?excerpt:None ?hints:None ?filter:None
-         ?invocation:None ?armed:None)
+         ?invocation:None ?armed:None ?workers:None)
       f
   in
   equal (list string)

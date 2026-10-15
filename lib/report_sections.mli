@@ -58,6 +58,7 @@ val pp_failure :
   ?filter:string ->
   ?invocation:Run.invocation ->
   ?armed:string ->
+  ?workers:bool ->
   Format.formatter ->
   Failure.t ->
   unit
@@ -86,7 +87,7 @@ val pp_failure :
     - [hints] defaults to [true].
     - [invocation] and [armed] are the arguments of {!hints}, {!accept} and
       {!replay}, and [filter] is the path of their [`Filter]. Without [filter] a
-      command carries no filter.
+      command carries no filter. [workers] is the argument of {!replay}.
 
     {b Equality.} Two single-line renderings print as the expected side over the
     actual side, and the spans of {!Diff.refine} mark what changed. A line of
@@ -174,6 +175,7 @@ val accept :
 
 val replay :
   ?armed:string ->
+  ?workers:bool ->
   ?invocation:Run.invocation ->
   tests:[ `Run of Run.config | `Filter of string option ] ->
   Failure.t list ->
@@ -191,8 +193,10 @@ val replay :
       [config] configured: the line restates its [-f], [-e], [--tag],
       [--exclude-tag] and [--shard], and its [--failed] after its [-o] when
       [config.log_dir] is not {!Os.default_log_dir}, since the last-failed store
-      lies under it. [`Filter filter] is the test at the path [filter], or every
-      test when it is [None].
+      lies under it. It also restates [--mutate-workers] when
+      [config.mutate_workers] is [true] and [config.mutation] is not
+      {!Run.No_mutation}. [`Filter filter] is the test at the path [filter], or
+      every test when it is [None].
     - [invocation] defaults to [`Mirrors]. Under [`Exe cmd] the line is [cmd] as
       given and then its flags. Under [`Mirrors] it is the mirrors of those
       flags in front of [dune runtest]. [--failed] has no mirror, and a filter
@@ -200,7 +204,11 @@ val replay :
       so the line runs more tests, never fewer.
     - [armed] is the identifier of the armed mutant, passed through
       {!shell_word}. The line arms it, and under [`Mirrors] names the mutation
-      backend, since the armed action exists only in that build. *)
+      backend, since the armed action exists only in that build.
+    - [workers] (default [false]) is [config.mutate_workers] of the armed run.
+      With [armed] and [`Filter], the line then also gives [--mutate-workers],
+      or its mirror. A [`Run config] gives it through the selection of [config].
+*)
 
 (** {1:names Names and command words} *)
 

@@ -125,10 +125,10 @@ module.
   tag, and per-case seeds derive from root, path and index. A new
   selection knob `for_subset` does not clear gives a child a selection
   its parent's tree already applied, which is how a deterministic suite
-  comes to look non-deterministic. It keeps `mutation`: a stateful test
-  on several domains reads it to run each program on the test's domain,
-  and a mutation child must run it as the dry run did, which spawned
-  nothing, so the loop can still fork.
+  comes to look non-deterministic. It keeps `mutation` and
+  `mutate_workers`: a stateful test on several domains reads them, and a
+  mutation child must run it as the dry run did. Without
+  `--mutate-workers`, the dry run spawned nothing, so the loop can fork.
 - The ambient slot is an `Atomic.t`, and `Run.t` records the domain
   that called `execute`, so a read from another domain is defined and
   refused instead of racing. The refusal is raised in the calling domain

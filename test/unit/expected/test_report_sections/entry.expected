@@ -185,6 +185,37 @@
 === and in an armed run
     b
 
+=== an armed property's replay keeps --mutate-workers
+    test/test_geo.ml:17
+    counterexample (case 12, shrunk 4 steps): Rect (2, 0)
+    which failed at:
+      test/test_geo.ml:18
+      expected  true
+      actual    false
+    replay: ./t.exe --arm lib/calc.ml:9:12:add --seed s1:7be1d2c904aa31f5 -f 'math › adds' --mutate-workers
+
+=== and under a build action, as its mirror
+    test/test_geo.ml:17
+    counterexample (case 12, shrunk 4 steps): Rect (2, 0)
+    which failed at:
+      test/test_geo.ml:18
+      expected  true
+      actual    false
+    replay: WINDTRAP_MUTATE_ARM=lib/calc.ml:9:12:add WINDTRAP_SEED=s1:7be1d2c904aa31f5 WINDTRAP_FILTER='math › adds' WINDTRAP_MUTATE_WORKERS=1 dune runtest --instrument-with ppx_windtrap.mutate
+
+=== a replay outside an armed run leaves out --mutate-workers
+    test/test_geo.ml:17
+    counterexample (case 12, shrunk 4 steps): Rect (2, 0)
+    which failed at:
+      test/test_geo.ml:18
+      expected  true
+      actual    false
+    replay: ./t.exe --seed s1:7be1d2c904aa31f5 -f 'math › adds'
+
+=== a replay of a run's tests keeps --mutate-workers only under mutation
+replay: ./t.exe --seed s1:7be1d2c904aa31f5
+replay: ./t.exe --arm lib/calc.ml:9:12:add --seed s1:7be1d2c904aa31f5 --mutate-workers
+
 === a message's escape prints as text
     \x1b[31mred\x1b[0m boom
 

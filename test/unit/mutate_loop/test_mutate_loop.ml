@@ -3783,6 +3783,119 @@ let without_auto_line r =
 let domains =
   group "Domains"
     [
+      test
+        "a stateful test on two domains spawns no worker under mutation, and \
+         the loop forks" (fun () ->
+          let r = spawn ~env:[ suite "stateful_domains" ] [ mutate ] in
+          equal (pair string text) ("exited 0", "") (r.status, r.err);
+          not_contains ~sub:"children: " r.out;
+          equal string
+            "mutants: 1 reached by this suite, 1 killed, 3 never reached, 1 \
+             filtered, score 100.0%"
+            (outcome r.out));
+      test
+        "with --mutate-workers, a stateful test on two domains spawns its \
+         workers, and each child is a new process" (fun () ->
+          let r =
+            spawn
+              ~env:[ suite "stateful_domains" ]
+              [ mutate; "--mutate-workers" ]
+          in
+          equal (pair string text) ("exited 0", "") (r.status, r.err);
+          equal string auto_line (before_outcome r.out);
+          equal string
+            "mutants: 1 reached by this suite, 1 killed, 3 never reached, 1 \
+             filtered, score 100.0%"
+            (outcome r.out));
+      test
+        "with --mutate-workers and --mutate-children=fork, the loop refuses \
+         the suite" (fun () ->
+          let r =
+            spawn
+              ~env:[ suite "stateful_domains" ]
+              [ mutate; "--mutate-workers"; "--mutate-children=fork" ]
+          in
+          equal (pair string text)
+            ( "exited 1",
+              "windtrap: this process has spawned a domain, and OCaml refuses \
+               Unix.fork in a process that has: run with \
+               --mutate-children=auto or exec to start each child as a new \
+               process\n" )
+            (r.status, r.err));
+      test
+        "with --mutate-workers and more than one job, the report tells that \
+         the loop tests one mutant at a time" (fun () ->
+          let r =
+            spawn
+              ~env:[ suite "stateful_domains" ]
+              [ mutate; "--mutate-workers"; jobs 4 ]
+          in
+          equal (pair string text) ("exited 0", "") (r.status, r.err);
+          equal string
+            "children: new processes, one at a time, because of \
+             --mutate-workers"
+            (before_outcome r.out));
+      test
+        "without --mutate-workers, no test reaches a site that only a worker \
+         evaluates" (fun () ->
+          let r = spawn ~env:[ suite "on_workers" ] [ mutate ] in
+          equal string
+            "mutants: 0 reached by this suite, 4 never reached, 1 filtered"
+            (outcome r.out));
+      test
+        "with --mutate-workers, each child spawns its workers, which kill a \
+         mutant that only a worker evaluates" (fun () ->
+          let r =
+            spawn ~env:[ suite "on_workers" ] [ mutate; "--mutate-workers" ]
+          in
+          equal (pair string text) ("exited 0", "") (r.status, r.err);
+          equal string
+            "mutants: 1 reached by this suite, 1 killed, 3 never reached, 1 \
+             filtered, score 100.0%"
+            (outcome r.out));
+      test
+        "an armed run without --mutate-workers does not evaluate a site that \
+         only a worker evaluates" (fun () ->
+          let r = spawn ~env:[ suite "on_workers" ] [ "--arm"; site 15 ] in
+          equal string "mutant not evaluated: no selected test ran the site."
+            (outcome r.out));
+      test
+        "an armed run with --mutate-workers kills the mutant, and its replay \
+         line keeps the flag" (fun () ->
+          let r =
+            spawn
+              ~env:[ suite "on_workers" ]
+              [ "--arm"; site 15; "--mutate-workers" ]
+          in
+          equal string "exited 1" r.status;
+          equal string "mutant killed." (outcome r.out);
+          contains ~sub:" --mutate-workers\n" r.out);
+      test "with --mutate-workers, a suite that spawns no pool keeps its jobs"
+        (fun () ->
+          let r =
+            spawn
+              ~env:[ suite "forked" ]
+              [ mutate; "--mutate-workers"; "--mutate-children=exec"; jobs 4 ]
+          in
+          equal (pair string text) ("exited 0", "") (r.status, r.err);
+          equal string exec_line (before_outcome r.out));
+      test "an armed run with --mutate-workers keeps the flag in its JUnit file"
+        (fun () ->
+          let junit = Filename.concat (temp_dir ()) "junit.xml" in
+          let r =
+            spawn
+              ~env:[ suite "on_workers" ]
+              [ "--arm"; site 15; "--mutate-workers"; "--junit"; junit ]
+          in
+          equal string "mutant killed." (outcome r.out);
+          contains ~sub:" --mutate-workers\n" (read junit));
+      test "an armed run reads the mirror of --mutate-workers" (fun () ->
+          let r =
+            spawn
+              ~env:[ suite "on_workers"; ("WINDTRAP_MUTATE_WORKERS", "1") ]
+              [ "--arm"; site 15 ]
+          in
+          equal string "mutant killed." (outcome r.out));
       cases
         "a domain at module initialization gives the report of a fork, with \
          one job and with four"

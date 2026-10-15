@@ -130,7 +130,13 @@ type config = {
       (** [--junit]: a file, or a directory, where a JUnit report is written
           too. [None] writes none. *)
   mutation : mutation;
-      (** [--mutate], [--mutate-jobs], [--mutate-since] and [--arm]. *)
+      (** [--mutate], [--mutate-jobs], [--mutate-since], [--mutate-children] and
+          [--arm]. *)
+  mutate_workers : bool;
+      (** [--mutate-workers]: under [--mutate] and [--arm], a stateful test on
+          several domains spawns its worker domains, as it does without mutation
+          testing. When it is [false], such a test runs each program on the
+          domain of the test under mutation testing (see {!Stateful}). *)
   github : bool;
       (** Whether the report is written for GitHub Actions, with its group and
           its annotations (see {!Report}). *)
@@ -169,10 +175,10 @@ val for_subset : config -> log_dir:string -> bail:bool -> config
       the tags of its parent and draws the property cases its parent drew.
     - [baseline] is {!Baseline.Check}, [junit] is [None], nothing is broadcast
       and [allow_focus] is [true].
-    - [mutation] is kept, so a test that reads it runs in the child as in the
-      run the child was forked from: a stateful test on several domains runs
-      each program on the test's domain in both. No child reads it to test
-      mutants.
+    - [mutation] and [mutate_workers] are kept, so a test that reads them runs
+      in the child as in the run the child was forked from. A stateful test on
+      several domains runs in the same way in the two runs. No child reads them
+      to test mutants.
     - [stream] is [false] and [log_dir] is the argument.
     - [store] is [false]. The parent removes the log directory of a child, so no
       run reads a store there, and a write of it only takes time.

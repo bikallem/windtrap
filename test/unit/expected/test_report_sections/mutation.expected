@@ -270,6 +270,30 @@ mutants: «r|2 survived» of 5 reached by this suite, «g|3 killed», «y|2 neve
 
 mutants: 4 reached by this suite, 3 killed, 1 not evaluated, 2 never reached, score 75.0%
 
+=== a loop's commands keep --mutate-workers
+
+─────────────────── not evaluated (1) ────────────────────
+  Each site ran in the dry run and not in its mutant's child.
+  lib/memo.ml:4:17:sub  a + b → a - b
+    arm: ./test_memo.exe --arm lib/memo.ml:4:17:sub --mutate-workers
+──────────────────────────────────────────────────────────
+
+─────────────────── never reached (2) ────────────────────
+  2  lib/calc.ml   lines 40-41
+──────────────────────────────────────────────────────────
+
+mutants: 4 reached by this suite, 3 killed, 1 not evaluated, 2 never reached, score 75.0%
+
+=== a loop's commands keep --mutate-workers under the mirrors
+──────────────────────────────────────────────────────────
+
+─────────────────── never reached (2) ────────────────────
+  2  lib/calc.ml   lines 40-41
+──────────────────────────────────────────────────────────
+
+reproduce: WINDTRAP_MUTATE_ARM=lib/calc.ml:13:11:add WINDTRAP_MUTATE_WORKERS=1 dune runtest --force --instrument-with ppx_windtrap.mutate
+mutants: 2 survived of 5 reached by this suite, 3 killed, 2 never reached, score 60.0%
+
 === outside tests alone, in a loop: a blank line opens it
 
 ────────────── evaluated outside tests (1) ───────────────

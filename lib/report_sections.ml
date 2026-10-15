@@ -402,9 +402,16 @@ let hints ?armed ?(invocation = `Mirrors) failures =
 (* A command that runs a run's tests again restates the run's selection.
    [--failed] reads the last-failed store under the run's [-o]. It has no
    mirror, and a pattern's mirror holds one pattern: under the mirrors those
-   are left out, and the command runs more tests, never fewer. *)
+   are left out, and the command runs more tests, never fewer. Under
+   mutation testing, the command also keeps [--mutate-workers], which changes
+   what a stateful test runs. *)
 let selection_words invocation (c : Run.config) =
   let flag name var = function [] -> [] | values -> [ (name, var, values) ] in
+  let workers =
+    match c.mutation with
+    | (Run.Loop _ | Run.Armed _) when c.mutate_workers -> true
+    | Run.No_mutation | Run.Loop _ | Run.Armed _ -> false
+  in
   let patterns name var values =
     match invocation with
     | `Mirrors when List.compare_length_with values 1 > 0 -> []
@@ -425,6 +432,7 @@ let selection_words invocation (c : Run.config) =
         (List.concat_map
            (fun (name, _, values) -> List.map (strf " %s %s" name) values)
            flags)
+      ^ (if workers then " --mutate-workers" else "")
       ^
       if not c.failed_only then ""
       else if String.equal c.log_dir (Os.default_log_dir ()) then " --failed"
@@ -435,6 +443,7 @@ let selection_words invocation (c : Run.config) =
            (fun (_, var, values) ->
              strf "%s=%s " var (String.concat "," values))
            flags)
+      ^ if workers then "WINDTRAP_MUTATE_WORKERS=1 " else ""
 
 (* A build action's corrections are dune's to promote, file by file. *)
 let accept ?armed ?(invocation = `Mirrors) ~tests failures =
@@ -465,7 +474,9 @@ let drawn (f : Failure.t) =
 (* A late case replays only under at least as many cases as the failing run
    generated, so the largest count is restated. An armed action exists only
    in the instrumented build. *)
-let replay ?armed ?(invocation = `Mirrors) ~tests failures =
+let replay ?armed ?(workers = false) ?(invocation = `Mirrors) ~tests failures =
+  (* A [`Run] restates [--mutate-workers] through [selection_words]. *)
+  let workers = workers && Option.is_some armed in
   match List.filter_map drawn failures with
   | [] -> None
   | (root, _) :: _ as cases ->
@@ -487,7 +498,9 @@ let replay ?armed ?(invocation = `Mirrors) ~tests failures =
               | None -> "")
               (match tests with
               | `Run config -> selection_words invocation config
-              | `Filter filter -> filter_flag filter)
+              | `Filter filter ->
+                  filter_flag filter
+                  ^ if workers then " --mutate-workers" else "")
         | `Mirrors ->
             strf "replay: %sWINDTRAP_SEED=%s %s%sdune runtest%s"
               (arm_mirror armed) seed
@@ -496,8 +509,11 @@ let replay ?armed ?(invocation = `Mirrors) ~tests failures =
               | None -> "")
               (match tests with
               | `Run config -> selection_words invocation config
-              | `Filter (Some f) -> strf "WINDTRAP_FILTER=%s " (shell_quote f)
-              | `Filter None -> "")
+              | `Filter filter ->
+                  (match filter with
+                    | Some f -> strf "WINDTRAP_FILTER=%s " (shell_quote f)
+                    | None -> "")
+                  ^ if workers then "WINDTRAP_MUTATE_WORKERS=1 " else "")
               (match armed with
               | Some _ -> " --instrument-with ppx_windtrap.mutate"
               | None -> ""))
@@ -1146,7 +1162,8 @@ and law_terms ~seen ~excerpt terms =
    elsewhere the escapes may be stripped (dune strips an action's output when
    its own is no terminal) or read raw. *)
 let pp_failure ~ansi ?(terminal = false) ?(excerpt = false)
-    ?hints:(hinted = true) ?filter ?(invocation = `Mirrors) ?armed ppf f =
+    ?hints:(hinted = true) ?filter ?(invocation = `Mirrors) ?armed ?workers ppf
+    f =
   let entry = entry ~seen:(ansi && terminal) ~excerpt ~inner:false f in
   let hint_lines =
     if not hinted then []
@@ -1157,7 +1174,7 @@ let pp_failure ~ansi ?(terminal = false) ?(excerpt = false)
         @ Option.to_list
             (accept ?armed ~invocation ~tests:(`Filter filter) [ f ])
         @ Option.to_list
-            (replay ?armed ~invocation ~tests:(`Filter filter) [ f ]))
+            (replay ?armed ?workers ~invocation ~tests:(`Filter filter) [ f ]))
   in
   List.iter
     (fun line -> Pp.pf ppf "%s@\n" (render ~ansi (indented indent line)))

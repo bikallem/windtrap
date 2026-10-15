@@ -29,6 +29,7 @@ type parsed = {
   mutate_jobs : int option;
   mutate_since : string option;
   mutate_children : Run.children option;
+  mutate_workers : bool option;
   arm : string option;
   help : bool;
   version : bool;
@@ -59,6 +60,7 @@ let empty =
     mutate_jobs = None;
     mutate_since = None;
     mutate_children = None;
+    mutate_workers = None;
     arm = None;
     help = false;
     version = false;
@@ -305,6 +307,11 @@ let entries =
       ~mirror:
         (mirrored "WINDTRAP_MUTATE_CHILDREN" (fun p -> p.mutate_children = None))
       "Test each mutant in a fork, a new process (exec), or auto (default).";
+    row "--mutate-workers"
+      (Flag (fun p -> { p with mutate_workers = Some true }))
+      ~mirror:
+        (mirrored "WINDTRAP_MUTATE_WORKERS" (fun p -> p.mutate_workers = None))
+      "Spawn the worker domains of stateful tests under mutation testing.";
     row "--arm"
       (value "ID" any (fun p id -> { p with arm = Some id }))
       ~mirror:(mirrored "WINDTRAP_MUTATE_ARM" (fun p -> p.arm = None))
@@ -551,6 +558,7 @@ let settings cli =
       verbose = layered.verbose = Some true;
       junit = absolute_path ~cli ~layered (fun p -> p.junit);
       mutation;
+      mutate_workers = layered.mutate_workers = Some true;
       github = Os.in_github_actions ();
       (* The facade, which alone holds argv, computes it. *)
       invocation = `Mirrors;

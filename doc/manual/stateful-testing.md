@@ -825,6 +825,10 @@ no retries and ignores a group's; under `--mutate` and `--arm` each
 program runs once on the test's domain, so a kill does not depend on a
 schedule; and a call still running one limit after the test's limit
 expired fails the test as timed out and stops the run after it.
+With `--mutate-workers`, the test spawns its workers under `--mutate`
+and `--arm`, as without mutation testing. Then a counterexample does
+not run once more, and a kill can depend on a schedule (see
+[Stateful tests on several domains](mutation.md#stateful-tests-on-several-domains)).
 Without a limit, a deadlock hangs until interrupted, and Ctrl-C works
 on it.
 

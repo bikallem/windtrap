@@ -83,6 +83,7 @@ let flags (p : Cli.parsed) =
         some "mutate_jobs" string_of_int p.mutate_jobs;
         some "mutate_since" Fun.id p.mutate_since;
         some "mutate_children" children_name p.mutate_children;
+        switch "mutate_workers" p.mutate_workers;
         some "arm" Fun.id p.arm;
         bool "help" p.help;
         bool "version" p.version;
@@ -154,6 +155,7 @@ let changes (c : Run.config) =
         field "verbose" bool (fun c -> c.Run.verbose);
         field "junit" (opt Fun.id) (fun c -> c.Run.junit);
         field "mutation" mutation_name (fun c -> c.Run.mutation);
+        field "mutate_workers" bool (fun c -> c.Run.mutate_workers);
         field "github" bool (fun c -> c.Run.github);
         field "invocation" invocation_name (fun c -> c.Run.invocation);
         field "broadcast selection" bool (fun c ->
@@ -305,6 +307,7 @@ let mirrors =
         [
           ("WINDTRAP_STREAM", "yes", "stream");
           ("WINDTRAP_VERBOSE", " OFF ", "defaults");
+          ("WINDTRAP_MUTATE_WORKERS", "true", "mutate_workers");
           ("WINDTRAP_STREAM", "maybe", {|invalid WINDTRAP_STREAM "maybe"|});
         ];
       test "a boolean mirror refuses another word in Os.bool_expected's words"
@@ -454,14 +457,15 @@ let every_flag () =
      failed_only, list_only, bail, stream, update, seed s1:00000000000000ff, \
      timeout 2.5, slow_threshold 3, prop_count 50, verbose, junit out.xml, \
      color never, log_dir logs, mutate [lib/a.ml; lib/b.ml], mutate_jobs 3, \
-     mutate_since main, mutate_children exec, arm lib/a.ml:1:0:add"
+     mutate_since main, mutate_children exec, mutate_workers, arm \
+     lib/a.ml:1:0:add"
     (parsed
        (String.split_on_char ' '
           "-f pat -e ex --tag a --tag b --exclude-tag c --shard 2/4 --failed \
            -l -x -s -u --seed s1:00000000000000ff --timeout 2.5 \
            --slow-threshold 3 --prop-count 50 -v --junit out.xml --color never \
            -o logs --mutate=lib/a.ml,lib/b.ml --mutate-jobs 3 --mutate-since \
-           main --mutate-children exec --arm lib/a.ml:1:0:add"))
+           main --mutate-children exec --mutate-workers --arm lib/a.ml:1:0:add"))
 
 (* Whole arguments: each valueless flag in both spellings, value flags with a
    good value, and misspellings and separators, so that most vectors parse
@@ -563,6 +567,7 @@ let parsing =
           ([ "--mutate-children"; "fork" ], "mutate_children fork");
           ([ "--mutate-children=EXEC" ], "mutate_children exec");
           ([ "--mutate-children=Auto" ], "mutate_children auto");
+          ([ "--mutate-workers" ], "mutate_workers");
           ([ "--arm"; "lib/a.ml:1:0:add" ], "arm lib/a.ml:1:0:add");
           ([ "--arm=x" ], "arm x");
           ([ "-h" ], "help");
@@ -895,6 +900,21 @@ let resolution =
           ( [],
             [ "--arm"; "lib/a.ml:9:12:add"; "--mutate-children"; "exec" ],
             "mutation armed lib/a.ml:9:12:add" );
+        ];
+      resolve_rows
+        "--mutate-workers or its mirror sets mutate_workers, and nothing else \
+         reads it"
+        [
+          ( [],
+            [ "--mutate"; "--mutate-workers" ],
+            "mutation loop [], mutate_workers" );
+          ( [ ("WINDTRAP_MUTATE_WORKERS", "1") ],
+            [ "--arm"; "lib/a.ml:9:12:add" ],
+            "mutation armed lib/a.ml:9:12:add, mutate_workers" );
+          ( [ ("WINDTRAP_MUTATE_WORKERS", "0") ],
+            [ "--mutate" ],
+            "mutation loop []" );
+          ([], [ "--mutate-workers" ], "mutate_workers");
         ];
       resolve_rows
         "the revision of a loop is --mutate-since, else its mirror, and \

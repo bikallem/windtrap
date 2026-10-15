@@ -819,7 +819,7 @@ let escape_property s = encode ~property:true (Text.escape_controls s)
 let group_start name = strf "::group::%s\n" (escape_data name)
 let group_end = "::endgroup::\n"
 
-let annotation ?(invocation = `Mirrors) ?armed ~path (f : Failure.t) =
+let annotation ?(invocation = `Mirrors) ?armed ?workers ~path (f : Failure.t) =
   let path = Test_tree.path_to_string path in
   let location =
     match f.loc with
@@ -830,7 +830,8 @@ let annotation ?(invocation = `Mirrors) ?armed ~path (f : Failure.t) =
   let entry =
     Pp.str "%a"
       (fun ppf f ->
-        Sections.pp_failure ~ansi:false ~filter:path ~invocation ?armed ppf f)
+        Sections.pp_failure ~ansi:false ~filter:path ~invocation ?armed ?workers
+          ppf f)
       f
   in
   let rec stop i = if i > 0 && entry.[i - 1] = '\n' then stop (i - 1) else i in
@@ -838,8 +839,8 @@ let annotation ?(invocation = `Mirrors) ?armed ~path (f : Failure.t) =
     (escape_property ("Test failure: " ^ path))
     (escape_data (String.sub entry 0 (stop (String.length entry))))
 
-let annotations ?invocation ?armed ~release_failures results =
-  let annotate path f = annotation ?invocation ?armed ~path f in
+let annotations ?invocation ?armed ?workers ~release_failures results =
+  let annotate path f = annotation ?invocation ?armed ?workers ~path f in
   let counted (r : Run.result) =
     if status r = `Failed then List.map (annotate r.path) (failures r) else []
   in
@@ -990,7 +991,7 @@ let run ?(on_event = fun (_ : Run.event) -> ()) ?stop_after ~suite
       print_string group_end;
       print_string
         (annotations ~invocation:config.invocation ?armed:renderer.armed
-           ~release_failures results)
+           ~workers:config.mutate_workers ~release_failures results)
     end
   in
   (* The transcript observes first, so a subscriber can neither drop nor
@@ -1028,7 +1029,8 @@ let run ?(on_event = fun (_ : Run.event) -> ()) ?stop_after ~suite
       (* Last, so the file is written from the rows the terminal has shown. *)
       Option.iter
         (Report_junit.write ~invocation:config.invocation ?armed:renderer.armed
-           ~suite ~duration:outcome.duration ~results ~release_failures)
+           ~workers:config.mutate_workers ~suite ~duration:outcome.duration
+           ~results ~release_failures)
         config.junit;
       Pp.flush Format.std_formatter ();
       Pp.flush Format.err_formatter ();
