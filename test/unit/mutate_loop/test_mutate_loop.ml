@@ -777,6 +777,43 @@ let not_evaluated () =
     (outcome r.out);
   contains ~sub:(strf "arm: %s --arm %s\n" suite_exe (site 18)) r.out
 
+(* [memo_flaky] fails its test in each child after the probe. The child of
+   [widen]'s mutant reads the answer from the table and does not evaluate the
+   armed site. *)
+let unevaluated_failure () =
+  let marker = Filename.concat (temp_dir ()) "marker" in
+  let r =
+    spawn ~env:[ suite "memo_flaky"; ("MUTATE_MARKER", marker) ] [ mutate ]
+  in
+  equal string "exited 0" r.status;
+  equal text "" r.err;
+  equal string
+    "mutants: 1 reached by this suite, 1 not evaluated, 3 never reached, 1 \
+     filtered, score 0.0%"
+    (outcome r.out);
+  contains
+    ~sub:
+      "    a failure that the mutant did not cause: memo \u{203a} memoized \
+       widen adds, and fails in each child after the probe\n"
+    r.out;
+  equal
+    (option (list string))
+    (Some
+       [
+         "subject.ml:15 unreached";
+         "subject.ml:18 not evaluated";
+         "subject.ml:21 unreached";
+         "subject.ml:27 unreached";
+         "subject.ml:38 filtered: zero operand";
+       ])
+    (rows r)
+
+let with_marker name =
+  let marker = Filename.concat (temp_dir ()) "marker" in
+  spawn ~env:[ suite name; ("MUTATE_MARKER", marker) ] [ mutate ]
+
+let raw r = Option.fold ~none:"" ~some:(fun (f : file) -> f.raw) r.file
+
 let capped () =
   let r = spawn ~env:[ suite "capped" ] [ mutate ] in
   equal (list string) [ site 18; site 21 ] (survivors r.out);
@@ -829,6 +866,112 @@ let verdicts =
           let r = spawn ~env:[ suite "memo" ] [ "--arm"; site 18 ] in
           equal string "exited 1" r.status;
           equal string "mutant killed." (outcome r.out));
+      test
+        "a test that fails in a child that did not evaluate the site of the \
+         mutant does not kill it, and the report names the test"
+        unevaluated_failure;
+      test
+        "a fixture release that fails in a child that did not evaluate the \
+         site of the mutant does not kill it" (fun () ->
+          let r = with_marker "flaky_release" in
+          equal string "exited 0" r.status;
+          equal string
+            "mutants: 1 reached by this suite, 1 not evaluated, 3 never \
+             reached, 1 filtered, score 0.0%"
+            (outcome r.out);
+          contains
+            ~sub:
+              "    a failure that the mutant did not cause: a fixture release\n"
+            r.out);
+      test
+        "a test that fails before the first evaluation does not stop the \
+         child, and a later test kills the mutant" (fun () ->
+          let r = with_marker "fails_first" in
+          equal string "exited 0" r.status;
+          equal string
+            "mutants: 1 reached by this suite, 1 killed, 3 never reached, 1 \
+             filtered, score 100.0%"
+            (outcome r.out);
+          (* The record of the killer: its group, then its name. *)
+          contains ~sub:"killed 1 2 5 first 10 widen adds" (raw r);
+          equal bool false
+            (String.includes ~affix:"fails after the probe" (raw r)));
+      test
+        "an evaluation in a process that a test forks counts, and the failure \
+         kills the mutant" (fun () ->
+          let r = spawn ~env:[ suite "forked" ] [ mutate ] in
+          equal string "exited 0" r.status;
+          equal string
+            "mutants: 1 reached by this suite, 1 killed, 3 never reached, 1 \
+             filtered, score 100.0%"
+            (outcome r.out));
+      test
+        "a fatal exception before the first evaluation does not kill the mutant"
+        (fun () ->
+          let r = with_marker "fatal_first" in
+          equal string "exited 0" r.status;
+          equal string
+            "mutants: 1 reached by this suite, 1 not evaluated, 3 never \
+             reached, 1 filtered, score 0.0%"
+            (outcome r.out);
+          not_contains ~sub:"a failure that the mutant did not cause" r.out);
+      test "an armed run does not count a failure before the first evaluation"
+        (fun () ->
+          let r = spawn ~env:[ suite "red" ] [ "--arm"; site 18 ] in
+          equal string "exited 1" r.status;
+          equal string
+            "mutant survived: the site ran 2 times, and only tests before its \
+             first run failed."
+            (outcome r.out));
+      test
+        "an armed run under fail-fast does not stop at a failure before the \
+         first evaluation" (fun () ->
+          let r = spawn ~env:[ suite "red" ] [ "--arm"; site 18; "-x" ] in
+          equal string "exited 1" r.status;
+          equal string
+            "mutant survived: the site ran 2 times, and only tests before its \
+             first run failed."
+            (outcome r.out));
+      test
+        "an armed run counts an evaluation in a forked process for a survivor"
+        (fun () ->
+          let r = spawn ~env:[ suite "fork_only" ] [ "--arm"; site 18 ] in
+          equal string "exited 0" r.status;
+          equal string
+            "mutant survived: only a forked process ran the site, and no test \
+             failed after that."
+            (outcome r.out));
+      test
+        "an armed run in which only a test marked xfail evaluates the site, in \
+         a forked process, does not reach the mutant" (fun () ->
+          let r = spawn ~env:[ suite "fork_xfail" ] [ "--arm"; site 18 ] in
+          equal string "mutant not reached: only xfail tests ran the site."
+            (outcome r.out));
+      test
+        "an armed run counts the evaluation of an ordinary test in a forked \
+         process beside a test marked xfail" (fun () ->
+          let r = spawn ~env:[ suite "xfail_then_fork" ] [ "--arm"; site 18 ] in
+          equal string
+            "mutant survived: the armed site was evaluated 1 time and no test \
+             failed."
+            (outcome r.out));
+      test "an armed run counts an evaluation in a forked process" (fun () ->
+          let r = spawn ~env:[ suite "forked" ] [ "--arm"; site 18 ] in
+          equal string "exited 1" r.status;
+          equal string "mutant killed." (outcome r.out));
+      test
+        "an armed run whose tests fail without an evaluation of the site does \
+         not kill the mutant" (fun () ->
+          let r =
+            spawn
+              ~env:[ suite "red" ]
+              [ "--arm"; site 18; "--filter"; "always red" ]
+          in
+          equal string "exited 1" r.status;
+          equal string
+            "mutant not evaluated: no selected test ran the site, so the \
+             mutant did not cause the failure."
+            (outcome r.out));
       test "every survivor is named" capped;
       test
         "a loop that kills everything it reaches prints its filtered mutants \

@@ -3698,6 +3698,28 @@ let bailed, bail_released =
   in
   (r, !released)
 
+(* [stop_after] stops the run after the test "second". Each test gives its
+   [Test_finished] before [stop_after] gets its result. *)
+let stopped_after, stop_order, stop_released =
+  let released = ref false and order = ref [] in
+  let fx = Run.fixture ~teardown:(fun () -> released := true) ignore in
+  let name (r : Run.result) = String.concat "/" r.path in
+  let r =
+    Recorded.execute
+      ~on_event:(function
+        | Run.Test_finished r -> order := ("event " ^ name r) :: !order
+        | _ -> ())
+      ~stop_after:(fun r ->
+        order := ("stop_after " ^ name r) :: !order;
+        name r = "second")
+      [
+        test "first" (fun () -> fx ());
+        test "second" ignore;
+        test "never runs" ignore;
+      ]
+  in
+  (r, List.rev !order, !released)
+
 let release_failed =
   let fx = Run.fixture ~teardown:(fun () -> raise Boom) ignore in
   Recorded.execute [ test "acquires" fx ]
@@ -4378,6 +4400,23 @@ let executing =
            equal (list string) [ "stops" ] (Recorded.executed stopped_run);
            equal (option (list string)) (Some [ "stops" ]) (stopped stopped_run);
            equal (option (list string)) None (stopped bailed));
+       test
+         "stop_after ends the run after the test that it takes, and the \
+          fixtures are released" (fun () ->
+           equal (list string) [ "first"; "second" ]
+             (Recorded.executed stopped_after);
+           is_true stop_released;
+           equal int 0 (Recorded.outcome stopped_after).exit_code);
+       test "stop_after gets each result after its Test_finished event"
+         (fun () ->
+           equal (list string)
+             [
+               "event first";
+               "stop_after first";
+               "event second";
+               "stop_after second";
+             ]
+             stop_order);
        test "an expected failure does not stop a run under bail" (fun () ->
            equal (list string)
              [ "excused"; "ok"; "boom" ]

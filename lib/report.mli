@@ -332,16 +332,25 @@ val mutation_killed : t -> unit
 (** [mutation_killed t] prints the verdict of an armed run in which the mutant
     made a test fail, tests marked xfail aside. *)
 
-val mutation_survived : t -> hits:int -> xfail_failed:bool -> unit
+val mutation_survived :
+  ?failed_before:bool -> t -> hits:int -> xfail_failed:bool -> unit
 (** [mutation_survived t ~hits ~xfail_failed] prints the verdict of an armed run
-    in which no test failed although the armed site was evaluated, tests marked
-    xfail aside. The line states [hits], the number of evaluations. When
-    [xfail_failed] is [true], a test marked xfail passed, which fails it, and
-    the line says that only such tests failed. *)
+    in which a process evaluated the armed site and no test failed after an
+    evaluation, tests marked xfail aside. The line states [hits], the number of
+    evaluations in this process. When [hits] is [0], only a process that a test
+    forked evaluated the site, and the line says that instead. Then the line
+    tells which tests failed:
+    - When [failed_before] is [true] (default [false]), tests failed before the
+      first evaluation.
+    - When [xfail_failed] is [true], a test marked xfail passed, which fails it.
+    - When the two are [true], the line names the two types of tests.
+    - When the two are [false], the line says that no test failed. *)
 
-val mutation_not_evaluated : t -> unit
+val mutation_not_evaluated : ?failed:bool -> t -> unit
 (** [mutation_not_evaluated t] prints the verdict of an armed run in which no
-    selected test evaluated the armed site. *)
+    selected test evaluated the armed site. When [failed] is [true] (default
+    [false]), a test or a fixture release failed, and the line says that the
+    mutant did not cause the failure. *)
 
 val mutation_not_reached : t -> unit
 (** [mutation_not_reached t] prints the verdict of an armed run in which only
@@ -429,6 +438,7 @@ val pp_failure :
 
 val run :
   ?on_event:(Run.event -> unit) ->
+  ?stop_after:(Run.result -> bool) ->
   suite:string ->
   Run.config ->
   Test_tree.t list ->
@@ -461,6 +471,11 @@ val run :
     [on_event] is a second observer of the run, called after the transcript's
     for every event. It must not raise (see {!Run.execute}) and defaults to
     doing nothing.
+
+    [stop_after] is the [stop_after] of {!Run.execute}. When the caller gives
+    it, [run] executes [{ config with bail = false }]. Thus [config.bail] does
+    not stop the run, but [stop_after] and {!Run.stop} can stop it. The report
+    keeps [config.bail] for its hints.
 
     The whole report goes through [Format.std_formatter] and the standard
     descriptors. A caller that forks must therefore first flush both standard

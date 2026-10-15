@@ -610,8 +610,9 @@ val startup_message : startup_error -> string
 type outcome = {
   run : t;  (** The record of the run. *)
   selected : Test_tree.case list;
-      (** The selected tests, in the order of execution. Under [config.bail] or
-          after a {!stop} some may not have executed, and those have no row. *)
+      (** The selected tests, in the order of execution. Under [config.bail],
+          after [stop_after] gives [true], or after a {!stop}, some tests do not
+          execute, and those have no row. *)
   total : int;  (** The tests that the suite declares, before any selection. *)
   focus_active : bool;
       (** [true] iff the suite holds a focused node, selected or not. *)
@@ -637,6 +638,7 @@ type outcome = {
 
 val execute :
   ?on_event:(event -> unit) ->
+  ?stop_after:(result -> bool) ->
   ?allowlist:string list ->
   config ->
   suite:string ->
@@ -647,6 +649,9 @@ val execute :
     anything executes.
     - [on_event] receives the {!type-event}s. Defaults to a function that
       ignores them.
+    - [stop_after] receives the result of each test after [on_event] receives
+      its [Test_finished]. If it gives [true], no later test executes, as under
+      [config.bail]. Defaults to a function that gives [false].
     - [allowlist] keeps the tests whose path string is in the list, within every
       other layer of the {{!section-selection}selection}. Defaults to no
       narrowing.

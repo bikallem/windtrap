@@ -778,6 +778,109 @@ let memoized_widen a b =
 let memoized =
   [ test "memoized widen adds" (fun () -> equal int 7 (memoized_widen 3 4)) ]
 
+(* [true] in each child after the first. The first child, the probe, makes
+   the file MUTATE_MARKER. *)
+let after_probe () =
+  match Sys.getenv_opt "MUTATE_MARKER" with
+  | Some path when in_child () ->
+      Sys.file_exists path
+      ||
+      (close_out (open_out path);
+       false)
+  | Some _ | None -> false
+
+(* [memoized], but each child after the first fails the test for a reason of
+   its own. A child of [widen]'s mutant finds the answer in the table, does
+   not evaluate the armed site, and fails. *)
+let memoized_flaky =
+  [
+    test "memoized widen adds, and fails in each child after the probe"
+      (fun () ->
+        equal int 7 (memoized_widen 3 4);
+        if after_probe () then fail "a failure of its own");
+  ]
+
+(* [memoized], with a fixture whose release fails in each child after the
+   probe. *)
+let flaky_release =
+  let failing = ref false in
+  let held =
+    fixture
+      ~teardown:(fun () -> if !failing then failwith "a release of its own")
+      Fun.id
+  in
+  [
+    test "memoized widen adds, and its fixture release fails after the probe"
+      (fun () ->
+        held ();
+        failing := after_probe ();
+        equal int 7 (memoized_widen 3 4));
+  ]
+
+(* The first test fails in each child after the probe, before it evaluates
+   [widen]. The second test evaluates [widen] and kills its mutant. *)
+let fails_first =
+  [
+    test "fails after the probe before it adds" (fun () ->
+        if after_probe () then fail "a failure of its own";
+        is_true (Subject.widen 3 4 <> 0));
+    test "widen adds" (fun () -> equal int 7 (Subject.widen 3 4));
+  ]
+
+(* [widen] in a process that the test forks, which gives the answer on a
+   pipe. *)
+let widen_in_fork a b =
+  let r, w = Unix.pipe () in
+  match Unix.fork () with
+  | 0 ->
+      Unix.close r;
+      let answer = string_of_int (Subject.widen a b) in
+      ignore (Unix.write_substring w answer 0 (String.length answer));
+      Unix._exit 0
+  | pid ->
+      Unix.close w;
+      let answer = In_channel.input_all (Unix.in_channel_of_descr r) in
+      Unix.close r;
+      ignore (Unix.waitpid [] pid);
+      int_of_string answer
+
+(* Evaluates [widen] in a forked process only, and pins nothing. *)
+let fork_only =
+  [ test "widen in a fork" (fun () -> is_true (widen_in_fork 3 4 <> 0)) ]
+
+(* Only a test marked xfail evaluates [widen], in a forked process. *)
+let fork_xfail =
+  [
+    xfail
+      (test "widen is 99 in a fork" (fun () -> equal int 99 (widen_in_fork 1 2)));
+  ]
+
+(* A test marked xfail evaluates [widen] in the process, and an ordinary test
+   evaluates it only in a forked process. *)
+let xfail_then_fork =
+  [
+    xfail (test "widen is 99" (fun () -> equal int 99 (Subject.widen 1 2)));
+    test "widen in a fork" (fun () -> is_true (widen_in_fork 3 4 <> 0));
+  ]
+
+(* In each child after the probe, a fatal exception leaves the run before the
+   test evaluates [widen]. *)
+let fatal_first =
+  [
+    test "raises a fatal exception after the probe before it adds" (fun () ->
+        if after_probe () then raise Out_of_memory;
+        is_true (Subject.widen 3 4 <> 0));
+  ]
+
+(* The first check evaluates [widen] in a forked process only. It fails
+   under the mutant before the test evaluates [widen] in its own process. *)
+let forked =
+  [
+    test "widen in a fork, then in the process" (fun () ->
+        equal int 7 (widen_in_fork 3 4);
+        equal int 7 (Subject.widen 3 4));
+  ]
+
 let retried = ref 0
 let handle = fixture ~teardown:(fun () -> ignore (Subject.crasher 3 1)) Fun.id
 
@@ -1084,6 +1187,14 @@ let () =
   | "focused" -> exit @@ run "calc" [ group "focused" focused ]
   | "known" -> exit @@ run "calc" [ group "known" known ]
   | "memo" -> exit @@ run "calc" [ group "calc" strong; group "memo" memoized ]
+  | "memo_flaky" -> exit @@ run "calc" [ group "memo" memoized_flaky ]
+  | "flaky_release" -> exit @@ run "calc" [ group "memo" flaky_release ]
+  | "fails_first" -> exit @@ run "calc" [ group "first" fails_first ]
+  | "forked" -> exit @@ run "calc" [ group "forked" forked ]
+  | "fork_only" -> exit @@ run "calc" [ group "forked" fork_only ]
+  | "fork_xfail" -> exit @@ run "calc" [ group "forked" fork_xfail ]
+  | "xfail_then_fork" -> exit @@ run "calc" [ group "forked" xfail_then_fork ]
+  | "fatal_first" -> exit @@ run "calc" [ group "first" fatal_first ]
   | "crash" ->
       exit
       @@ run "calc"

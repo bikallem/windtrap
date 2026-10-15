@@ -260,6 +260,22 @@
   startup time (see
   [When a run cannot mutate](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#when-a-run-cannot-mutate)
   for a measurement).
+- A failure in a child before the first evaluation of the site of a
+  mutant does not kill the mutant. The child then runs the next
+  reaching test.
+- A mutant whose child did not evaluate its site is not evaluated, also
+  when a test failed. The report names the failure under the mutant, as
+  `a failure that the mutant did not cause: calc › memo`.
+- An armed run (`--arm`) whose tests failed without an evaluation of
+  the site ends on
+  `mutant not evaluated: no selected test ran the site, so the mutant did not cause the failure.`
+- An armed run (`--arm`) in which only tests before the first evaluation
+  of the site failed ends on
+  `mutant survived: the site ran 2 times, and only tests before its first run failed.`
+- An armed run (`--arm`) counts an evaluation in a process that a test
+  forks. When only such a process evaluated the site and no test failed
+  after it, the run ends on
+  `mutant survived: only a forked process ran the site, and no test failed after that.`
 - The dry run finds each test that reaches a mutation site, also when
   the test evaluates the site on several domains at the same time.
 - A mutation run on Windows is refused because the loop needs process

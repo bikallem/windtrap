@@ -224,13 +224,18 @@ a lossy `%g` spelling is asked for at the call site.
 
 - Child hygiene. A forked child never reaches `Stdlib`'s exit
   machinery: every exception, fatal included, is caught, reduced to a
-  verdict line and followed by `Unix._exit`; otherwise a child dying of
-  `Out_of_memory` would run the coverage at-exit dump against a path
-  resolved before the fork and overwrite the parent's `.coverage`. For
+  verdict line and followed by `Unix._exit`. Without this, if
+  `Out_of_memory` stops a child, the child runs the coverage at-exit
+  dump. The dump uses a path from before the fork and overwrites the
+  parent's `.coverage`.
+  When the child can map its byte, an exception before the first
+  evaluation of the site gives `not_evaluated`. Any other exception
+  gives `crashed`, and the parent counts the mutant as killed. For
   the same reason the parent removes each child's log directory
   (`Run.remove_tree`): a child killed at its deadline never runs its own
   cleanup, and an orphaned capture tree would be a trace of the mutant.
-- No errored verdict. Under the child's bail-on-first-failure rule a
+- No errored verdict. Under the child's rule to stop at its first
+  failure that counts, a
   killed child always runs fewer tests than were selected, so any verdict
   keyed on "ran fewer than expected" would fire on every kill; three
   verdicts suffice, and a failure of the parent's own supervision (a

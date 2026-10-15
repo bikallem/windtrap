@@ -864,10 +864,21 @@ let mutation_killed t =
   clear_live t;
   put t [ styled `Green "mutant killed." ]
 
-let mutation_survived t ~hits ~xfail_failed =
+let mutation_survived ?(failed_before = false) t ~hits ~xfail_failed =
   clear_live t;
+  let ran () =
+    if hits = 0 then "mutant survived: only a forked process ran the site"
+    else strf "mutant survived: the site ran %d time%s" hits (plural hits)
+  in
   let line =
-    if xfail_failed then
+    if hits = 0 && not (failed_before || xfail_failed) then
+      ran () ^ ", and no test failed after that."
+    else if failed_before && xfail_failed then
+      ran () ^ ", and only xfail tests and tests before its first run failed."
+    else if failed_before then
+      ran () ^ ", and only tests before its first run failed."
+    else if hits = 0 then ran () ^ ", and only xfail tests failed."
+    else if xfail_failed then
       strf
         "mutant survived: the site was evaluated %d time%s and only xfail \
          tests failed."
@@ -880,10 +891,16 @@ let mutation_survived t ~hits ~xfail_failed =
   in
   put t [ styled `Red line ]
 
-let mutation_not_evaluated t =
+let mutation_not_evaluated ?(failed = false) t =
   clear_live t;
   put t
-    [ styled `Yellow "mutant not evaluated: no selected test ran the site." ]
+    [
+      styled `Yellow
+        (if failed then
+           "mutant not evaluated: no selected test ran the site, so the mutant \
+            did not cause the failure."
+         else "mutant not evaluated: no selected test ran the site.");
+    ]
 
 let mutation_not_reached t =
   clear_live t;
@@ -956,8 +973,8 @@ let pp_failure = Sections.pp_failure
 
 (* Running *)
 
-let run ?(on_event = fun (_ : Run.event) -> ()) ~suite (config : Run.config)
-    tests =
+let run ?(on_event = fun (_ : Run.event) -> ()) ?stop_after ~suite
+    (config : Run.config) tests =
   let renderer = terminal config in
   let transcript =
     observe renderer ~seed:config.seed
@@ -990,7 +1007,12 @@ let run ?(on_event = fun (_ : Run.event) -> ()) ~suite (config : Run.config)
     on_event event
   in
   if config.github then print_string (group_start suite);
-  match Run.execute ~on_event config ~suite tests with
+  (* [stop_after] replaces [config.bail] as the rule that stops the run at a
+     failure. The report keeps [config.bail] for its hints. *)
+  let executed =
+    if Option.is_some stop_after then { config with bail = false } else config
+  in
+  match Run.execute ~on_event ?stop_after executed ~suite tests with
   | Error error ->
       if config.github then print_string group_end;
       Os.say (Run.startup_message error);

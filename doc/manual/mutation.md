@@ -142,8 +142,14 @@ mutants: 2 survived of 9 reached by this suite, 7 killed, score 77.8%
 The `reproduce:` line arms the first survivor. `--arm ID` runs the
 suite once with that mutant active, names it first, records no
 correction, and ends on its verdict: killed, survived, or not evaluated
-when no selected test ran the site. Under `dune runtest`, the mirror
-arms it in every suite that holds its file, as in
+when no selected test ran the site. As in a child of a mutation run, a
+failure before the first evaluation of the site does not kill the
+mutant (see [What a mutation run runs](#what-a-mutation-run-runs)).
+When a test or a fixture release failed and no test ran the site, the
+line tells that the mutant did not cause the failure.
+When only tests before the first evaluation failed, the survived line
+says so. Under `dune runtest`, the mirror arms it in every suite
+that holds its file, as in
 `WINDTRAP_MUTATE_ARM=ID dune runtest --force --instrument-with ppx_windtrap.mutate`
 (see [Mutation testing a project](#mutation-testing-a-project) for
 `--force`). Arming a killed mutant shows the failure that killed it:
@@ -306,7 +312,8 @@ the withheld-correction warning:
 - The determinism probe, in a child process, checks that the suite
   passes again.
 - Each reached mutant runs in a child with its reaching tests, up to the
-  first failure. In exec mode, the child can also run the tests before
+  first failure in or after the first test that evaluates its site. In
+  exec mode, the child can also run the tests before
   them (see below). When the verdict file gives the test that killed the
   mutant before, the source file of the mutant did not change, and the
   test passes alone with no mutant, a first child runs that test alone.
@@ -322,9 +329,24 @@ without evaluating its mutant's site, as when the dry run cached the
 site's result in a table or a forced lazy value, the mutant is not
 evaluated and is no survivor. The report lists it under `not evaluated`
 with an `arm:` command, which runs the suite in a new process and ends
-on the mutant's verdict. Under `--mutate-children=exec`, or in auto mode
-(the default) in a process that started a domain, each child is a new
-process of the suite executable. Such a child has no cache from the dry
+on the mutant's verdict.
+
+Before the first evaluation of its site, a child runs the code of the
+unmutated program. Thus a failure before that evaluation does not kill
+the mutant, and the child runs the next reaching test. An evaluation in
+a process that a test forks also counts. When no process of the child
+evaluates the site, the mutant is not evaluated. A failure in such a
+child has a cause of its own, for example a schedule of domains, the
+clock, or the tests before it. The report names the
+failure under the mutant, as
+`a failure that the mutant did not cause: calc › memo`. The verdict
+file does not keep the failure, so `windtrap mutants` does not show it.
+A child that outruns its deadline, or that ends without a verdict line,
+gives no count of evaluations, and its mutant counts as killed.
+
+Under `--mutate-children=exec`, or in auto mode (the default) in a
+process that started a domain, each child is a new process of the
+suite executable. Such a child has no cache from the dry
 run. Before the first mutant, each different list of reaching tests runs
 one time in a new process with no mutant. When a list fails there, the
 child of its mutant runs the tests that the dry run ran up to the last
@@ -386,9 +408,10 @@ each suite, as in
 
 The default is 1, because the children of one suite run the same
 tests. Two children that use the same port or write the same file can
-make each other fail, and the mutant of a child that fails counts as
-killed. Use more than one job only when the tests can run at the same
-time. When the children are more than the CPUs, the deadline of each
+make each other fail. When a child evaluated the site of its mutant
+in or before the test that failed, the mutant counts as killed. Use
+more than one job only when the tests can run at the same time. When
+the children are more than the CPUs, the deadline of each
 child is multiplied by the number of children for each CPU. For
 example, 8 children on 4 CPUs double each deadline. The probe runs
 alone before these children, and its deadline does not change.

@@ -171,13 +171,18 @@ val id_of_string : string -> (id, arm_error) result
     [id_of_string (id_to_string id)] is [Ok id] for every identifier of
     {!val-catalogue}, unless its file was registered under the name [""]. *)
 
-val arm : ?budget:int -> id -> (mutant, arm_error) result
-(** [arm ?budget id] arms the mutant that [id] names and is that mutant, or an
-    {!Uncatalogued}, {!Unmatched} or {!Ambiguous} error. The mutant that was
-    armed before is disarmed first, whether or not [id] resolves. From then on
-    the guard of the site answers [true], in every module that registered an
-    equal table for its file. [arm] does not read [dismissed]. Arming a
-    dismissed mutant succeeds, and no guard ever evaluates its site.
+val arm :
+  ?budget:int ->
+  ?on_evaluation:(unit -> unit) ->
+  id ->
+  (mutant, arm_error) result
+(** [arm ?budget ?on_evaluation id] arms the mutant that [id] names and is that
+    mutant, or an {!Uncatalogued}, {!Unmatched} or {!Ambiguous} error. The
+    mutant that was armed before is disarmed first, whether or not [id]
+    resolves. From then on the guard of the site answers [true], in every module
+    that registered an equal table for its file. [arm] does not read
+    [dismissed]. Arming a dismissed mutant succeeds, and no guard ever evaluates
+    its site.
 
     [budget] bounds the evaluations of the armed site. With a budget of [n],
     evaluation [n + 1] raises {!Runaway}. There is no bound by default. The
@@ -186,13 +191,23 @@ val arm : ?budget:int -> id -> (mutant, arm_error) result
     {!reset_reach}, and not since this call, so a caller that inherited counts,
     as a forked child does, must call {!reset_reach} after [arm].
 
+    The guard calls [on_evaluation] at each evaluation of the armed site, before
+    it compares the count with [budget]. The default does nothing. A process
+    that the program forks has a copy of the arming, and its counts stay in that
+    process. Thus a caller that must know if such a process evaluated the site
+    gives an [on_evaluation] that writes to memory that the processes share.
+    Guards on several domains can call [on_evaluation] at the same time. An
+    exception of [on_evaluation] escapes into the mutated program. The next
+    [arm] drops [on_evaluation], also when it refuses its [id].
+
     Raises [Invalid_argument] if [budget] is not positive, and nothing is
     disarmed then. *)
 
 val armed_hits : unit -> int
 (** [armed_hits ()] is the number of evaluations of the armed site since the
     last {!reset_reach}, added over every module that registered its file. It
-    saturates at [max_int], and it is [0] when nothing is armed. *)
+    saturates at [max_int], and it is [0] when nothing is armed. It does not
+    count the evaluations in a process that this process forked. *)
 
 exception Runaway of { id : id; hits : int; budget : int }
 (** Raised by the guard of the armed site [id] when [hits], its count of

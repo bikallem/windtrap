@@ -484,6 +484,31 @@ let runaway () =
   disarm ();
   equal (list string) [ "false" ] (evaluations g 1)
 
+(* The guard calls the hook at each evaluation of the armed site, before it
+   compares the count with the budget. The next arming drops the hook. *)
+let on_evaluation () =
+  let file = "t/on_evaluation.ml" in
+  let g = Mutate.register ~file ~sites:[| site 2 0 "not"; site 3 0 "not" |] in
+  let calls = ref 0 in
+  let armed ?budget i =
+    require_ok ~pp:Mutate.pp_arm_error
+      (Mutate.arm ?budget
+         ~on_evaluation:(fun () -> incr calls)
+         (id file i 0 "not"))
+  in
+  ignore (armed ~budget:2 2);
+  Mutate.reset_reach ();
+  ignore (g 1 : bool);
+  equal int 0 !calls;
+  equal (list string)
+    [ "true"; "true"; "runaway t/on_evaluation.ml:2:0:not 3/2" ]
+    (evaluations g 3);
+  equal int 3 !calls;
+  ignore (arm_ok (id file 3 0 "not"));
+  ignore (g 0 : bool);
+  ignore (g 1 : bool);
+  equal int 3 !calls
+
 let headroom () =
   let g = Mutate.register ~file:"t/forked.ml" ~sites:[| site 1 0 "and" |] in
   ignore (evaluations g 10);
@@ -626,6 +651,10 @@ let arming =
       test "arming a second mutant drops the first's budget" (disarming rearm);
       test "the guard raises Runaway past the budget, at every later evaluation"
         (disarming runaway);
+      test
+        "the guard calls on_evaluation at each evaluation of the armed site, \
+         before the budget, until the next arming"
+        (disarming on_evaluation);
       test "reset_reach gives an armed site its whole budget again"
         (disarming headroom);
       test "the budget bounds each registration, and armed_hits adds them up"

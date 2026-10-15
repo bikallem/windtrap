@@ -289,7 +289,7 @@ let merge ~source files merged =
       | Some f -> f.invocation
       | None -> assert false
     in
-    { mutant = mutant r; invocation }
+    { mutant = mutant r; invocation; failed = None }
   in
   let survivors, not_evaluated, unreached, outside_tests, killed =
     List.fold_right

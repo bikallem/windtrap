@@ -186,6 +186,23 @@ mutants: 1 reached, «g|1 killed», «y|124 never reached», 1 executable, score
 
 mutants: 4 reached by this suite, «g|3 killed», «y|1 not evaluated», «y|2 never reached», score 75.0%
 
+=== not evaluated after a failure: the failure that the mutant did not cause, under its mutant
+«d|─────────────────── not evaluated (2) ────────────────────»
+  Each site ran in the dry run and not in its mutant's child.
+  A failure in such a child has a cause of its own, for example a schedule of domains, the clock, or the tests before it.
+  «b|lib/memo.ml:4:17:sub»  a + b → a - b
+    «y|a failure that the mutant did not cause: »memo › adds
+    arm: ./test_memo.exe --arm lib/memo.ml:4:17:sub
+  «b|lib/memo.ml:9:4:add»  a + b → a - b
+    arm: ./test_memo.exe --arm lib/memo.ml:9:4:add
+«d|──────────────────────────────────────────────────────────»
+
+«d|─────────────────── never reached (2) ────────────────────»
+  «y|2»  lib/calc.ml   lines 40-41
+«d|──────────────────────────────────────────────────────────»
+
+mutants: 5 reached by this suite, «g|3 killed», «y|2 not evaluated», «y|2 never reached», score 60.0%
+
 === evaluated outside tests follows never reached
 ─────────────────── never reached (2) ────────────────────
   2  lib/calc.ml   lines 40-41

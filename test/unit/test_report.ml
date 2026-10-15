@@ -1826,6 +1826,31 @@ let verdict_rows =
       ( (fun r -> Report.mutation_survived r ~hits:2 ~xfail_failed:true),
         "mutant survived: the site was evaluated 2 times and only xfail tests \
          failed.\n" ) );
+    ( "survived, evaluated only in a forked process",
+      ( (fun r -> Report.mutation_survived r ~hits:0 ~xfail_failed:false),
+        "mutant survived: only a forked process ran the site, and no test \
+         failed after that.\n" ) );
+    ( "survived, evaluated only in a forked process, and an xfail test passed",
+      ( (fun r -> Report.mutation_survived r ~hits:0 ~xfail_failed:true),
+        "mutant survived: only a forked process ran the site, and only xfail \
+         tests failed.\n" ) );
+    ( "survived, and a test failed before the first evaluation",
+      ( (fun r ->
+          Report.mutation_survived ~failed_before:true r ~hits:1
+            ~xfail_failed:false),
+        "mutant survived: the site ran 1 time, and only tests before its first \
+         run failed.\n" ) );
+    ( "survived, a test failed before the first evaluation, and an xfail test \
+       passed",
+      ( (fun r ->
+          Report.mutation_survived ~failed_before:true r ~hits:2
+            ~xfail_failed:true),
+        "mutant survived: the site ran 2 times, and only xfail tests and tests \
+         before its first run failed.\n" ) );
+    ( "not evaluated after a failure",
+      ( (fun r -> Report.mutation_not_evaluated ~failed:true r),
+        "mutant not evaluated: no selected test ran the site, so the mutant \
+         did not cause the failure.\n" ) );
     ( "not evaluated",
       ( (fun r -> Report.mutation_not_evaluated r),
         "mutant not evaluated: no selected test ran the site.\n" ) );
@@ -1834,9 +1859,12 @@ let verdict_rows =
         "mutant not reached: only xfail tests ran the site.\n" ) );
   ]
 
+(* A line longer than the margin leaves the queue of [Format] before the
+   flush, so the margin is wider than each line. *)
 let unflushed (_, (write, expected)) =
   let b = Buffer.create 64 in
   let ppf = Format.formatter_of_buffer b in
+  Format.pp_set_margin ppf 1000;
   write (Report.create ~out:ppf ~ansi:false (config ~armed:"x" ()));
   let before = Buffer.contents b in
   Format.pp_print_flush ppf ();

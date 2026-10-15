@@ -146,20 +146,39 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     and an earlier test changes the state so that it passes with the mutant. A
     test that fails alone with no mutant gets no first child.
 
-    {b Verdicts.} A mutant is {!Windtrap_runtime.Verdicts.Killed} when its child
-    counted a failure, that of a fixture release included. The verdict names the
-    test that failed first, if one failed. This test reaches the mutant, except
-    in exec mode, where it can be a test before the last reaching test
-    ({b Exec mode}). It is also killed when its child reported no survivor,
-    because the child recorded no test, passed its deadline, did not exit with
-    [0], or left no complete line. Otherwise it is
-    {!Windtrap_runtime.Verdicts.Not_evaluated} when its child did not evaluate
-    the armed site ({!Windtrap_runtime.Mutate.armed_hits} is [0]), and survived
-    when it did. A fork starts from the state that the dry run left, so a site
-    whose result the dry run cached, in a table or a forced lazy value, can pass
-    unevaluated. The report lists such a mutant with the [--arm] command that
-    tests it in a new process, and names it no survivor. In exec mode, a new
-    process has no such cache, and its tests evaluate the site.
+    {b Verdicts.} A child of a mutant knows if one of its processes evaluated
+    the armed site: {!Windtrap_runtime.Mutate.armed_hits} counts the evaluations
+    of the child. A process that a test forks writes one byte of memory that it
+    shares with the child. Before the first evaluation, the child runs the code
+    of the unmutated program. Thus the mutant cannot cause a failure that comes
+    before the first evaluation. A failure counts when it comes in a test that
+    evaluated the site, or in a test after such a test. Unless it runs every
+    test of a list ({b Exec mode}), the child stops at the first failure that
+    counts. It does not stop at a failure that does not count. If the byte is
+    not available, each failure counts.
+
+    A mutant is {!Windtrap_runtime.Verdicts.Killed} when its child had a failure
+    that counts, that of a fixture release included. The verdict names the first
+    test that failed in this way, if a test failed. This test reaches the
+    mutant, except in exec mode, where it can be a test before the last reaching
+    test ({b Exec mode}). It is also killed when its child evaluated the site
+    and recorded no test. It is also killed when its child passed its deadline,
+    did not exit with [0], or left no complete line. Such a child gives no count
+    of evaluations.
+
+    A mutant is {!Windtrap_runtime.Verdicts.Not_evaluated} when no process of
+    its child evaluated the armed site. A test or a fixture release that failed
+    in such a child has a cause of its own. Examples are a schedule of domains,
+    the clock or the tests before it. The report names that failure under the
+    mutant. An exception that escapes the run before the first evaluation also
+    gives [Not_evaluated], and the report names no failure. A fork starts from
+    the state that the dry run left. Thus a child can find the result that the
+    dry run cached for a site, in a table or a forced lazy value. Then the child
+    does not evaluate the site. The report lists such a mutant with the [--arm]
+    command that tests it in a new process, and names it no survivor. In exec
+    mode, a new process has no such cache, and its tests evaluate the site. When
+    its child evaluated the site and had no failure that counts, the mutant is
+    {!Windtrap_runtime.Verdicts.Survived}.
 
     {b Tests marked xfail.} A test marked xfail ({!Test_tree.val-xfail}) reaches
     no mutant and kills none. The dry run and the probe run it, no child runs
@@ -292,6 +311,12 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
       unexpected pass of such a test fails the run and kills no mutant, and a
       site that only such tests evaluated is not reached
       ({!Report.mutation_not_reached}).
+    - As in a child, a failure counts when a process evaluated the site in its
+      test or before it. A run with no failure that counts and no evaluation is
+      {!Report.mutation_not_evaluated}, with [~failed:true] when a test or a
+      fixture release failed. A run with an evaluation and no failure that
+      counts is {!Report.mutation_survived}, with [~failed_before:true] when a
+      test failed before the first evaluation.
 
     The result of an armed run is [Ran], so its exit code is that of the
     ordinary run, [2] included, and it writes its JUnit file. *)
@@ -354,7 +379,9 @@ type kind =
   | Mutant of { id : Windtrap_runtime.Mutate.id; budget : int }
       (** The child arms the mutant [id] with the runaway [budget] and runs the
           tests. It gives the verdict: [survived], [not_evaluated],
-          [killed <index>] or [killed]. If the mutant does not arm, it gives
+          [killed <index>] or [killed]. When a test or a fixture release failed
+          without an evaluation of the site, it gives [not_evaluated <index>] or
+          [not_evaluated release]. If the mutant does not arm, it gives
           [error <diagnostic>]. *)
   | Startup
       (** The child runs no test and gives [ready]. The loop measures the time
