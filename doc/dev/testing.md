@@ -267,36 +267,37 @@ run every test family and every example first, because `.coverage` and
 declarable dependencies, so nothing else can express "after every suite
 has run"; the examples too, because the merges read every dump under
 `_build` and `examples/` carries instrumented libraries of its own; and
-`(universe)` re-runs the milliseconds-cheap merge on every build, without which the
-action caches against nothing and silently goes stale. The mutation
-command carries the variable because a verdict file exists only when a
-suite was asked to mutate (`WINDTRAP_MUTATE` is `--mutate`'s mirror, the
-spelling that reaches every stanza), and `--force` because a mutation
-run is not a cached artifact. Driven without `--instrument-with`, either
-alias rebuilds the executables uninstrumented: the coverage merge then
-reads stale dumps and the mutation merge refuses loudly.
-`WINDTRAP_MUTATE_JOBS=auto` in front of the mutation command lets each
-suite run one child for each CPU. On 2026-10-13, on 16 CPUs that other
-processes also used, the command above under `SKIP_PACKAGE_SESSIONS=true`
-took 164 s with one job and 81 s to 96 s with `auto`. Each time is the
-wall time of one run, after a first run built the instrumented
-executables. In each run, every suite ran, but the merge did not run: the
-probe of `test_property` refused the suite as not deterministic. The
-counts of 9 suites were not the same with `auto`, and two runs with one
-job also gave different counts in 3 suites. The command above and the
-`self-mutate` rule do not set the variable, because the scenarios of
-`test_mutate_loop` share the verdict file of `suite_main.exe`. Thus their
-children can disturb each other and kill a mutant that no test kills.
-The `nodune.t` session compiles a scratch project against the installed
-core, which under the coverage backend is instrumented too and adds its
-own rows to the scratch project's report; the session therefore pins the
-scratch library's row alone, never the total. Its dump lands under the
-scratch directory's `_windtrap`, never under `_build/_coverage`, so it
-never enters the number. Dune 3.24, the release CI installs, reports a
-`(package windtrap)` dependency as a cycle under the coverage backend, so
-the coverage job binds `SKIP_PACKAGE_SESSIONS=true` to leave out the
-sessions that have one, `nodune.t` and `cram/ppx/expect_typing.t`; a dune
-built from main runs them under every configuration.
+`(universe)` re-runs the milliseconds-cheap merge on every build,
+without which the action caches against nothing and silently goes stale.
+The mutation command carries the variable because a verdict file exists
+only when a suite was asked to mutate (`WINDTRAP_MUTATE` is `--mutate`'s
+mirror, the spelling that reaches every stanza), and `--force` because a
+mutation run is not a cached artifact. Driven without
+`--instrument-with`, either alias rebuilds the executables
+uninstrumented: the coverage merge then reads stale dumps and the
+mutation merge refuses loudly. `WINDTRAP_MUTATE_JOBS=auto` in front of
+the mutation command lets the children of each suite use each CPU. On
+2026-10-13, on 16 CPUs that other processes also used, the command above
+under `SKIP_PACKAGE_SESSIONS=true` took 164 s with one job and 81 s to
+96 s with `auto`. Each time is the wall time of one run, after a first
+run built the instrumented executables. In each run, every suite ran,
+but the merge did not run: the probe of `test_property` refused the
+suite as not deterministic. The counts of 9 suites were not the same
+with `auto`, and two runs with one job also gave different counts in 3
+suites. The command above and the `self-mutate` rule do not set the
+variable, because the scenarios of `test_mutate_loop` share the verdict
+file of `suite_main.exe`. Thus their children can disturb each other and
+kill a mutant that no test kills. The `nodune.t` session compiles a
+scratch project against the installed core, which under the coverage
+backend is instrumented too and adds its own rows to the scratch
+project's report; the session therefore pins the scratch library's row
+alone, never the total. Its dump lands under the scratch directory's
+`_windtrap`, never under `_build/_coverage`, so it never enters the
+number. Dune 3.24, the release CI installs, reports a `(package
+windtrap)` dependency as a cycle under the coverage backend, so the
+coverage job binds `SKIP_PACKAGE_SESSIONS=true` to leave out the
+sessions that have one, `nodune.t` and `cram/ppx/expect_typing.t`; a
+dune built from main runs them under every configuration.
 
 `--min 84` is a ratchet: the measured number (86.2% on 2026-08-19, 93.0%
 on 2026-09-16) less a few points of headroom. Raise it when the margin is comfortable;
@@ -347,15 +348,17 @@ arming it against the whole suite, with `--arm <id>` from the footer or
 child runs under a deadline derived from the dry run (its wall clock,
 plus ten times the startup time in exec mode, plus ten times the
 measured timings of the tests that child runs, floored at one second,
-and longer by the ratio of children to CPUs when `--mutate-jobs` gives
-more children than CPUs) and under the runtime's per-site hit-count
-budget; a child that overruns or spins is killed with its process group
-and scored killed, because a suite that hangs has noticed the change.
-On Linux, the time that the threads of that group wait for a CPU does
-not count toward the deadline, up to the time that they do not use a
-CPU. Of that time, the wait for the other children of the loop does not
-count, because the longer deadline already gives it.
-Mutation needs process groups and declines by name on Windows.
+and longer by the ratio of the CPUs of the children to the CPUs of the
+host when `--mutate-jobs` gives more CPUs than the host has) and under
+the runtime's per-site hit-count budget; a child that overruns or spins
+is killed with its process group and scored killed, because a suite that
+hangs has noticed the change. On Linux, the time that the threads of
+that group wait for a CPU does not count toward the deadline, up to the
+time that they do not use a CPU. For this limit, the loop divides their
+CPU time by the average CPUs of the tests of the child in the dry run.
+Of that time, the wait for the other children of the loop does not
+count, because the longer deadline already gives it. Mutation needs
+process groups and declines by name on Windows.
 
 ## The conformance corpus
 

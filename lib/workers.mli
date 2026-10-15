@@ -18,7 +18,10 @@
     the job it holds, if any. Only one that lands while the domain starts,
     before its loop, as a memory profiler's callback may raise, ends the worker,
     and {!run} then waits for it as for a job that never ends. Between runs a
-    worker waits in a blocking section; it spins only at the start of a run.
+    worker waits in a blocking section. At the start of a run, it waits for the
+    other workers: it spins for a short time, then sleeps in short steps. When
+    all arrived, each worker spins for a short time until all are ready, so that
+    the jobs start together.
 
     {b Signals.} A worker is born blocking [SIGALRM], [SIGINT], [SIGTERM] and
     [SIGHUP], except on Windows, and so is every domain it spawns. The runtime
@@ -40,9 +43,15 @@ val spawn : int -> t
     what a signal handler raises meanwhile, after the workers already spawned
     have been told to exit and joined. Raises [Invalid_argument] if [n < 1]. *)
 
-val spawned : unit -> bool
-(** [spawned ()] is [true] after the first call of {!spawn} in this process with
-    [n >= 1], also when that call raised. *)
+val ended : unit -> (int * float) list
+(** [ended ()] gives an entry for each worker that ended in this process, the
+    newest first. An entry is the thread id of the worker ({!Os.thread_id}) and
+    the seconds that it waited for a CPU ({!Os.cpu_wait}). A worker adds its
+    entry when its domain ends, after {!join} tells it to exit. A later call
+    gives the list of an earlier call as its tail. The mutation loop adds these
+    waits to the waits of the live threads, because a worker ends before its
+    test ends. Where the system does not give a thread id, the list stays empty.
+*)
 
 exception Stuck of exn * Printexc.raw_backtrace
 (** Raised by {!run} when a job is still running after its grace: the exception

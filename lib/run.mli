@@ -53,11 +53,11 @@ type mutation =
       (** [--mutate[=PREFIX,…]]: the mutation loop, over the mutants whose
           recorded source path starts with one of the prefixes of [scope]. The
           bare flag gives the empty list, which keeps every mutant. [jobs] is
-          [--mutate-jobs]: the most children that the loop runs at once. It is
-          from [1] to [256]. [since] is [--mutate-since]: a git revision, and
-          the loop then keeps only the mutants on a line that changed since that
-          revision ({!Changed_lines.of_git}). [children] is [--mutate-children].
-      *)
+          [--mutate-jobs]: the most CPUs that the children of the loop use at
+          once. It is from [1] to [256]. [since] is [--mutate-since]: a git
+          revision, and the loop then keeps only the mutants on a line that
+          changed since that revision ({!Changed_lines.of_git}). [children] is
+          [--mutate-children]. *)
   | Armed of string
       (** [--arm ID]: one ordinary run with the mutant [ID] armed. The
           identifier is kept as typed, and its grammar is that of

@@ -95,6 +95,12 @@
   the parallel calls, and the refusal of a command list with no call to
   run after the prefix reads
   `every command makes a value, has a ~pre or takes an element`.
+- At the start of a run of the parallel calls, a worker that waits for
+  the other workers sleeps after a short spin. Before, it spun until
+  each worker arrived. On a host with fewer CPUs than busy domains, it
+  spun for the time slices of the workers that did not run. For
+  example, on one CPU, a test with 100 programs on 4 domains took 57 s
+  before this change and 21 s after it.
 
 ### Coverage
 
@@ -185,15 +191,19 @@
 - `--arm` refuses a mutant that `[@mutate off]` dismisses or that the
   rewriter filtered, and exits 1: its site has no guard, so no run can
   arm it.
-- `--mutate-jobs N` and its mirror `WINDTRAP_MUTATE_JOBS` let a
-  mutation run test up to `N` mutants at the same time, at most 256, or
-  one for each CPU with `auto`, and give the same report and verdict
-  file for each `N` (see
+- `--mutate-jobs N` and its mirror `WINDTRAP_MUTATE_JOBS` let a mutation
+  run test mutants at the same time on up to `N` CPUs. The maximum of
+  `N` is 256, and `auto` uses each CPU. The report and the verdict file
+  are the same for each `N`. A child uses the most CPUs that one of its
+  tests used at once in the dry run. For example, a test that uses two
+  domains at once gives 2. A child that uses more than `N` CPUs runs
+  alone (see
   [Testing mutants in parallel](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#testing-mutants-in-parallel)).
 - The deadline of a mutation child does not count the time that the
   child, or a process that its tests start, waits for a CPU on Linux,
   so that the children of other suites under a parallel `dune runtest`
-  do not kill its mutant (see
+  do not kill its mutant. This is also true for a child on several
+  domains (see
   [Testing mutants in parallel](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#testing-mutants-in-parallel)).
 - A mutation child writes no last-failed store. The run removes the
   store with the child, and on a busy file system the write can take
@@ -279,7 +289,7 @@
 - `--mutate-workers` (`WINDTRAP_MUTATE_WORKERS`) lets a stateful test
   on several domains spawn its workers under `--mutate` and `--arm`. Then
   a kill of such a test can depend on a schedule, and each child of the
-  run is a new process. The loop tests one mutant at a time (see
+  run is a new process (see
   [Stateful tests on several domains](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#stateful-tests-on-several-domains)).
 - The dry run finds each test that reaches a mutation site, also when
   the test evaluates the site on several domains at the same time.

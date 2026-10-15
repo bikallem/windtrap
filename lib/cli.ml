@@ -295,7 +295,8 @@ let entries =
     row "--mutate-jobs"
       (value "N" jobs (fun p n -> { p with mutate_jobs = Some n }))
       ~mirror:(mirrored "WINDTRAP_MUTATE_JOBS" (fun p -> p.mutate_jobs = None))
-      "Test up to N mutants at once, or one per CPU for auto (default 1).";
+      "Test mutants at once on up to N CPUs, or on each CPU for auto (default \
+       1).";
     row "--mutate-since"
       (value "REV" revision (fun p rev -> { p with mutate_since = Some rev }))
       ~mirror:
