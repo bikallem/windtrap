@@ -658,7 +658,7 @@ let reach_rows =
       reach_sites,
       [ Eval 0; Eval 0; Eval 1; Drain ],
       [ "1:0:lt x2, 2:0:add x1" ] );
-    ( "a drain empties the marks",
+    ( "a drain removes the marks",
       reach_sites,
       [ Eval 0; Drain; Drain ],
       [ "1:0:lt x1"; "" ] );
@@ -696,7 +696,7 @@ let reach_rows =
       reach_sites,
       [ Eval 0; Drain; Eval 0; Eval 0; Drain; Next_epoch; Eval 0; Drain ],
       [ "1:0:lt x1"; ""; "1:0:lt x1" ] );
-    ( "reset_reach empties the marks and counts from zero",
+    ( "reset_reach removes the marks and counts from zero",
       reach_sites,
       [ Eval 0; Eval 0; Eval 0; Reset; Drain; Eval 0; Drain ],
       [ ""; "1:0:lt x1" ] );
@@ -734,6 +734,76 @@ let reset_keeps_armed () =
   Mutate.reset_reach ();
   equal (list string) [ "true" ] (evaluations g 1)
 
+(* Worker domains mark sites at the same time, round after round. The old
+   runtime pushed each mark to a shared list, and the guards lost some marks.
+   Each drain must report every site. The workers live for all the rounds.
+   Atomic counters order the guards of a round after its [next_epoch] and
+   before its drain, as a spawn and a join do. On 1 CPU, the tests do not find
+   the old defect, and they take about 3 s. They run in a forked child,
+   because a process that spawned a domain can never fork again. *)
+let domain_workers = 4
+let domain_rounds = 50
+let domain_sites = Array.init 4096 (fun i -> site (i + 1) 0 "not")
+
+(* Worker [d] evaluates site [i] when [mine d i]. The result is ["ok"], or
+   one line for each round that lost a mark or gave a count that [counts]
+   refuses. A child that dies before it writes gives [""], which is not a
+   pass. *)
+let marks_on_domains ~file ~mine ~counts () =
+  let guard = Mutate.register ~file ~sites:domain_sites in
+  fresh ();
+  let round = Atomic.make 0 and finished = Atomic.make 0 in
+  let crashed = Atomic.make None in
+  let worker d () =
+    try
+      for r = 1 to domain_rounds do
+        while Atomic.get round < r do
+          Domain.cpu_relax ()
+        done;
+        Array.iteri
+          (fun i _ -> if mine d i then ignore (guard i : bool))
+          domain_sites;
+        Atomic.incr finished
+      done
+    with exn ->
+      Atomic.set crashed
+        (Some (strf "worker %d: %s" d (Printexc.to_string exn)))
+  in
+  let _ : unit Domain.t list =
+    List.init domain_workers (fun d -> Domain.spawn (worker d))
+  in
+  let rows = ref [] in
+  for r = 1 to domain_rounds do
+    Mutate.next_epoch ();
+    Atomic.set round r;
+    while
+      Atomic.get finished < r * domain_workers
+      && Option.is_none (Atomic.get crashed)
+    do
+      Domain.cpu_relax ()
+    done;
+    Option.iter failwith (Atomic.get crashed);
+    let reached =
+      List.filter
+        (fun (x : Mutate.reached) -> String.equal x.mutant.id.file file)
+        (Mutate.drain ())
+    in
+    let lost = Array.length domain_sites - List.length reached in
+    let miscounted =
+      List.length
+        (List.filter (fun (x : Mutate.reached) -> not (counts x.hits)) reached)
+    in
+    if lost > 0 || miscounted > 0 then
+      rows := strf "round %d: %d lost, %d miscounted" r lost miscounted :: !rows
+  done;
+  if !rows = [] then "ok" else String.concat "\n" (List.rev !rows)
+
+(* The child leaves by [_exit], which also ends the workers. *)
+let on_domains ~file ~mine ~counts () =
+  match Child.forked (marks_on_domains ~file ~mine ~counts) with
+  | None -> skip ~reason:"POSIX only: the domains run in a forked child" ()
+  | Some text -> equal string "ok" text
+
 let child_exe =
   Filename.concat
     (Filename.dirname Windtrap_runtime.Instr.executable)
@@ -756,6 +826,18 @@ let reach_map =
     [
       cases "drains" ~name:(fun (claim, _, _, _) -> claim) reach_rows drains;
       test "reset_reach does not disarm" (disarming reset_keeps_armed);
+      test
+        "guards on several domains that mark different sites at the same time \
+         lose no mark, and count each evaluation"
+        (on_domains ~file:"t/reach/domains.ml"
+           ~mine:(fun d i -> i mod domain_workers = d)
+           ~counts:(Int.equal 1));
+      test
+        "guards on several domains that mark one site at the same time lose no \
+         mark, and count 1 to 4 evaluations"
+        (on_domains ~file:"t/reach/one_site.ml"
+           ~mine:(fun _ _ -> true)
+           ~counts:(fun hits -> hits >= 1 && hits <= domain_workers));
       test
         "in a fresh process, the first drain is module initialization's, and \
          the first window counts its own evaluations" (fun () ->
