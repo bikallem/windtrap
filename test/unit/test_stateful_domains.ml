@@ -1329,6 +1329,26 @@ let masked () =
   is_false ~msg:"the test's domain blocks none of them"
     (List.mem Sys.sigalrm (mask ()))
 
+(* Each worker that ends adds one entry to [Workers.ended], before the
+   entries that were there. On Linux, an entry has the thread id of its
+   worker, which is not that of the test. Where the system gives no thread
+   id, no worker adds an entry. *)
+let ended_entries () =
+  let before = Workers.ended () in
+  with_pool 3 (fun workers ->
+      Workers.run workers ~grace:(Fun.const 0.) (Array.make 3 ignore));
+  let rec added acc = function
+    | entries when entries == before -> List.rev acc
+    | [] -> fail "the entries before the pool are not the tail of the list"
+    | entry :: older -> added (entry :: acc) older
+  in
+  let tids = List.map fst (added [] (Workers.ended ())) in
+  match Windtrap.Private.Os.thread_id () with
+  | None -> equal (list int) [] tids
+  | Some test ->
+      equal int 3 (List.length (List.sort_uniq Int.compare tids));
+      is_false ~msg:"no entry is the thread of the test" (List.mem test tids)
+
 exception Job of int
 
 (* Jobs 1 and 2 raise; every job runs to its end, and the pool lives on. *)
@@ -1491,6 +1511,10 @@ let executor =
          again, and the workers live on"
         controls;
       test "an exception on a worker keeps its backtrace" backtrace;
+      test
+        "each worker that ends adds one entry with its thread id to the ended \
+         workers"
+        ended_entries;
       test "what a worker prints reaches the test's output" printed_output;
       test "a failing case's output is that of the run that failed"
         failing_run_output;

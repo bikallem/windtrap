@@ -19,6 +19,28 @@ let counter = elapsed_ns
 let count start = Int64.sub (elapsed_ns ()) start
 let count_s start = Int64.to_float (count start) /. 1e9
 
+let cpu_wait () =
+  match In_channel.with_open_bin "/proc/thread-self/schedstat" input_line with
+  | line -> (
+      match String.split_on_char ' ' line with
+      | _ :: waited :: _ -> (
+          match float_of_string_opt waited with
+          | Some ns -> ns /. 1e9
+          | None -> 0.)
+      | [] | [ _ ] -> 0.)
+  | exception (Sys_error _ | End_of_file) -> 0.
+
+(* /proc/thread-self is a link to <pid>/task/<tid>. *)
+let thread_id () =
+  match Unix.readlink "/proc/thread-self" with
+  | link -> (
+      match String.rindex_opt link '/' with
+      | Some i ->
+          int_of_string_opt
+            (String.sub link (i + 1) (String.length link - i - 1))
+      | None -> None)
+  | exception Unix.Unix_error _ -> None
+
 (* Environment variables *)
 
 (* An empty value counts as unset: [VAR= cmd] then reads as unset, and a

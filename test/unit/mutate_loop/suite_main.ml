@@ -538,7 +538,8 @@ let slow =
    that measured the reach map, in the probe and in the child, its test
    first uses 0.4 seconds of CPU time. The dry run does not, so the
    deadlines do not grow with it. Under [hog], the process gets a session
-   of its own and uses the CPU until a signal kills it. *)
+   of its own and uses the CPU until a signal kills it. Under
+   MUTATE_HOG_GATE, it first waits until that file exists. *)
 let use_cpu seconds =
   let start = Sys.time () in
   while Sys.time () -. start < seconds do
@@ -624,6 +625,132 @@ let spinners =
     test "spins when widen changes" (fun () ->
         if Subject.widen 3 4 <> 7 then use_cpu Float.infinity;
         is_true (Subject.widen 3 4 <> 0));
+  ]
+
+(* [use_cpus seconds] uses about [seconds] of CPU time in all, on two
+   domains at once: the domain of the test and a domain that it spawns.
+   [use_cpu] reads the CPU time of the process, so each domain uses about
+   half of it. *)
+let use_cpus seconds =
+  let other = Domain.spawn (fun () -> use_cpu seconds) in
+  use_cpu seconds;
+  Domain.join other
+
+(* [wide_rendezvous] is [rendezvous], but each mutant has two reaching
+   tests. The first uses 0.3 seconds of CPU time on one domain. The second
+   uses 0.2 seconds of CPU time on two domains, then meets the other child.
+   Thus each child uses two CPUs at the end, but on average it uses about
+   1.25 CPUs. Two jobs let only one child run at a time. *)
+let wide_rendezvous =
+  [
+    test "sub on one domain" (fun () ->
+        use_cpu 0.3;
+        is_true (Subject.sub 10 4 < 100));
+    test "widen on one domain" (fun () ->
+        use_cpu 0.3;
+        is_true (Subject.widen 3 4 <> 0));
+    test "sub meets widen on two domains" (fun () ->
+        use_cpus 0.2;
+        if Subject.sub 10 4 <> 6 then meet ~mark:"sub" ~other:"widen";
+        is_true (Subject.sub 10 4 < 100));
+    test "widen meets sub on two domains" (fun () ->
+        use_cpus 0.2;
+        if Subject.widen 3 4 <> 7 then meet ~mark:"widen" ~other:"sub";
+        is_true (Subject.widen 3 4 <> 0));
+  ]
+
+(* [spin_for seconds] uses the CPU for [seconds] on the clock. *)
+let spin_for seconds =
+  let start = Unix.gettimeofday () in
+  while Unix.gettimeofday () -. start < seconds do
+    ignore (Sys.opaque_identity ())
+  done
+
+(* [a_little_more ()] uses the CPU for 0.3 seconds on the clock, and a
+   second domain uses the CPU for 0.06 seconds of that time. *)
+let a_little_more () =
+  let other = Domain.spawn (fun () -> spin_for 0.06) in
+  spin_for 0.3;
+  Domain.join other
+
+(* [narrow_rendezvous] is [rendezvous], but each test first calls
+   [a_little_more]. Thus the test uses about 1.2 CPUs, and each child counts
+   as one job. Two jobs let the two children run at once. *)
+let narrow_rendezvous =
+  [
+    test "sub meets widen on about one CPU" (fun () ->
+        a_little_more ();
+        if Subject.sub 10 4 <> 6 then meet ~mark:"sub" ~other:"widen";
+        is_true (Subject.sub 10 4 < 100));
+    test "widen meets sub on about one CPU" (fun () ->
+        a_little_more ();
+        if Subject.widen 3 4 <> 7 then meet ~mark:"widen" ~other:"sub";
+        is_true (Subject.widen 3 4 <> 0));
+  ]
+
+(* [starved_domains] is [starved] on two domains. In the dry run, each of
+   two domains of its test uses the CPU for 0.3 seconds on the clock. Thus
+   other load does not make its deadline longer. Then the test makes the
+   file MUTATE_HOG_GATE, which lets the hogs use the CPU. In the armed
+   child, the test uses 5 seconds of CPU time on two domains. *)
+let starved_domains =
+  [
+    test
+      "uses the CPU on two domains where it is armed and pins nothing about sub"
+      (fun () ->
+        if not (in_child ()) then begin
+          (let other = Domain.spawn (fun () -> spin_for 0.3) in
+           spin_for 0.3;
+           Domain.join other);
+          Option.iter
+            (fun gate -> close_out (open_out gate))
+            (Sys.getenv_opt "MUTATE_HOG_GATE")
+        end
+        else if Subject.sub 10 4 <> 6 then use_cpus 5.0;
+        is_true (Subject.sub 10 4 < 100));
+  ]
+
+(* [stateful_rendezvous] is [rendezvous] with stateful tests on two
+   domains. With [--mutate-workers], each test spawns its workers, so each
+   child uses about two CPUs. Two jobs on two CPUs let only one child run at
+   a time, and four jobs let the two children run at once. *)
+let stateful_rendezvous =
+  [
+    stateful ~count:3 ~domains:2 "sub meets widen on the workers"
+      [
+        command "sub"
+          (Gen.unit @-> returns bool)
+          (fun () -> true)
+          (fun () ->
+            if Subject.sub 10 4 <> 6 then meet ~mark:"sub" ~other:"widen";
+            Subject.sub 10 4 < 100);
+      ];
+    stateful ~count:3 ~domains:2 "widen meets sub on the workers"
+      [
+        command "widen"
+          (Gen.unit @-> returns bool)
+          (fun () -> true)
+          (fun () ->
+            if Subject.widen 3 4 <> 7 then meet ~mark:"widen" ~other:"sub";
+            Subject.widen 3 4 <> 0);
+      ];
+  ]
+
+(* [stateful_survivors] is a stateful test on two domains that reaches
+   [sub], [widen], [orphan] and [crasher], and pins nothing about them. Its
+   20 programs keep the workers busy. *)
+let stateful_survivors =
+  [
+    stateful ~count:20 ~domains:2 "four sites on two domains"
+      [
+        command "all"
+          (Gen.unit @-> returns bool)
+          (fun () -> true)
+          (fun () ->
+            Subject.sub 10 4 + Subject.widen 3 4 + Subject.orphan 3 4
+            + Subject.crasher 3 1
+            < 1000);
+      ];
   ]
 
 (* The probe says it started, beside the dry run's marker, before it
@@ -1197,9 +1324,22 @@ let () =
   | "burn_then_sleep" -> exit @@ run "calc" [ group "starved" burn_then_sleep ]
   | "late_burn" -> exit @@ run "calc" [ group "starved" late_burn ]
   | "spinners" -> exit @@ run "calc" [ group "jobs" spinners ]
+  | "wide_rendezvous" -> exit @@ run "calc" [ group "jobs" wide_rendezvous ]
+  | "narrow_rendezvous" -> exit @@ run "calc" [ group "jobs" narrow_rendezvous ]
+  | "starved_domains" -> exit @@ run "calc" [ group "starved" starved_domains ]
+  | "stateful_rendezvous" ->
+      exit @@ run "calc" [ group "jobs" stateful_rendezvous ]
+  | "stateful_survivors" ->
+      exit @@ run "calc" [ group "stateful" stateful_survivors ]
   | "burn" -> use_cpu (float_of_string Sys.argv.(1))
   | "hog" ->
       ignore (Unix.setsid ());
+      (match Sys.getenv_opt "MUTATE_HOG_GATE" with
+      | None | Some "" -> ()
+      | Some gate ->
+          while not (Sys.file_exists gate) do
+            Unix.sleepf 0.01
+          done);
       while true do
         ignore (Sys.opaque_identity ())
       done

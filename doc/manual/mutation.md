@@ -384,18 +384,9 @@ share. It has these costs:
 - The dry run spawns domains, so each child of the run is a new
   process (`--mutate-children`). With `--mutate-children=fork`, the loop
   refuses the run.
-- The loop tests one mutant at a time, also under `--mutate-jobs`. The
-  workers of children at the same time need more CPUs than the
-  deadlines count. A child that passes its deadline counts as a kill.
-  With `--mutate-jobs` above 1, the report tells
-  `children: new processes, one at a time, because of --mutate-workers`.
-- Other processes that use the CPUs after the dry run can make a child
-  with workers pass its deadline. The loop gives a child extra time for
-  its waits for a CPU. But this extra time is at most the time since
-  the start of the child less the CPU time of its threads. The workers
-  of a child use more than one CPU at a time, so the child gets little
-  or no extra time. Thus run such a suite on a machine with no other
-  load.
+- A child that runs such a test can use several CPUs at once. Then it
+  counts as several jobs of `--mutate-jobs`
+  ([Testing mutants in parallel](#testing-mutants-in-parallel)).
 - A child that runs such a test does about 50 times more work.
 - A kill can depend on a schedule. A mutant that a run kills can
   survive the next run, and an `--arm` run of the same mutant can pass.
@@ -410,13 +401,21 @@ not keep it, because the verdict file does not record it. Add
 
 ## Testing mutants in parallel
 
-A mutation run tests one mutant at a time. `--mutate-jobs N` lets up to
-`N` children run at the same time, and `--mutate-jobs auto` lets one
-child run for each CPU. The maximum is 256 children. The report and
-the verdict file are the same for each value of `N`. The run keeps the
-verdict of a mutant until each mutant before it in the file has a
-verdict, and only then prints the mutant if it survived. This run
-gives the report of the run with one job in
+A mutation run tests one mutant at a time. `--mutate-jobs N` lets
+children run at the same time on up to `N` CPUs, and `--mutate-jobs
+auto` uses each CPU. The maximum of `N` is 256. A test that spawns
+domains can use more than one CPU. A child uses the most CPUs that one
+of its tests used at once in the dry run, rounded to the nearest
+integer. A test shorter than 10 ms counts as one CPU. On Linux, the loop
+also counts the time that the threads of a test waited for a CPU in the
+dry run. But it does not get this time for a domain that a test spawns
+and joins. The workers of a stateful test are not such domains. Thus
+other load in the dry run can make the count smaller for a test whose
+thread sleeps while such domains work. A child that uses more than `N`
+CPUs runs alone. The report and the verdict file are the same for each
+value of `N`. The run keeps the verdict of a mutant until each mutant
+before it in the file has a verdict, and only then prints the mutant if
+it survived. This run gives the report of the run with one job in
 [Testing a suite's mutants](#testing-a-suites-mutants):
 
 ```
@@ -453,9 +452,9 @@ tests. Two children that use the same port or write the same file can
 make each other fail. When a child evaluated the site of its mutant
 in or before the test that failed, the mutant counts as killed. Use
 more than one job only when the tests can run at the same time. When
-the children are more than the CPUs, the deadline of each
-child is multiplied by the number of children for each CPU. For
-example, 8 children on 4 CPUs double each deadline. The probe runs
+the children use more CPUs than the host has, the loop multiplies the
+deadline of each child by the ratio of the two. For example, 8
+children of one CPU each on 4 CPUs double each deadline. The probe runs
 alone before these children, and its deadline does not change.
 
 On Linux, the time that a child waits for a CPU does not count toward
@@ -477,10 +476,13 @@ can take more than 0.5 seconds. Then a child can pass its deadline, and
 its mutant counts as killed. The loop does not get this time from the
 system.
 
-When the children are more than the CPUs, they also wait for each
-other. Their longer deadlines are for this wait, and the wait does not
-move them again. Thus a child that uses the CPU and never stops is
+When the children use more CPUs than the host has, they also wait for
+each other. Their longer deadlines are for this wait, and the wait does
+not move them again. Thus a child that uses the CPU and never stops is
 killed when it used the CPU time of its deadline in a run with one job.
+The loop kills a child that uses several CPUs when it used that CPU time
+on each of its CPUs. Thus the wait of a child on several domains moves
+its deadline too.
 
 Other systems do not give the time that a child waits for a CPU.
 There, if you set `WINDTRAP_MUTATE_JOBS` for `dune runtest`, also give

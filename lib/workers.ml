@@ -8,11 +8,11 @@ type ending = Done | Raised of exn * Printexc.raw_backtrace
 exception Stuck of exn * Printexc.raw_backtrace
 
 (* The caller publishes a run under [mutex], as a new [generation] and its
-   [jobs]. Worker [i] marks the generation it took in [arrived.(i)] at the
-   start barrier, and in [ended.(i)] once it has written its [ending], so
-   the ending and every write of the job are visible to the caller that
-   reads the mark. A mark is an atomic store: it allocates nothing, so no
-   asynchronous exception lands between a worker and its mark, as one can
+   [jobs]. Worker [i] marks the generation it took in [arrived.(i)] and then in
+   [ready.(i)] at the start barrier. It marks it in [ended.(i)] after it wrote
+   its [ending]. Thus the ending and every write of the job are visible to the
+   caller that reads the mark. A mark is an atomic store: it allocates nothing,
+   so no asynchronous exception lands between a worker and its mark, as one can
    in [Atomic.incr], which allocates from OCaml 5.4; and marking twice is
    harmless. *)
 type t = {
@@ -22,6 +22,7 @@ type t = {
   mutable jobs : (unit -> unit) array;
   mutable quit : bool;
   arrived : int Atomic.t array; (* the start barrier *)
+  ready : int Atomic.t array; (* the second phase of the start barrier *)
   ended : int Atomic.t array;
   endings : ending array;
   mutable domains : unit Domain.t list;
@@ -58,14 +59,57 @@ let flush_formatters () =
   Format.pp_print_flush Format.std_formatter ();
   Format.pp_print_flush Format.err_formatter ()
 
-(* Whatever the job raises is its ending. *)
+(* [wait] first spins, so that it sees the end of a short wait at once.
+   Then it sleeps in short steps, and the other domains can use the
+   processors. A signal handler runs at the poll points of the two. *)
+let spins = 20_000
+let pause = 0.000_2
+
+let wait done_ =
+  let rec step spun =
+    if not (done_ ()) then
+      if spun < spins then begin
+        Domain.cpu_relax ();
+        step (spun + 1)
+      end
+      else begin
+        Unix.sleepf pause;
+        step spun
+      end
+  in
+  step 0
+
+(* The most seconds of the second phase of the start barrier: more than a
+   sleep step of [wait] and the time that the system takes to wake the
+   thread. A bound in time and not in spins does not depend on the speed of
+   [Domain.cpu_relax]. *)
+let ready_limit = 0.000_5
+
+(* [spin done_] spins until [done_ ()], but at most [ready_limit]
+   seconds. *)
+let spin done_ =
+  let started = Os.counter () in
+  while (not (done_ ())) && Os.count_s started < ready_limit do
+    Domain.cpu_relax ()
+  done
+
+(* Whatever the job raises is its ending.
+
+   The start barrier has two phases. In the first, a worker waits for the other
+   workers ([wait]), and it sleeps after [spins], as the caller does in [run].
+   Thus, when a process has fewer CPUs than domains, its workers do not spin for
+   the time slices of the workers that do not run. But a worker that sleeps sees
+   the last arrival late, and the last worker starts its job at once. In the
+   second phase, each worker is awake, and it spins until all are ready
+   ([spin]). Thus the jobs start together. A worker that does not get ready in
+   [ready_limit] does not stop the others. *)
 let run_job t i generation jobs =
   let ending =
     match
       Atomic.set t.arrived.(i) generation;
-      while not (all_marked t.arrived generation) do
-        Domain.cpu_relax ()
-      done;
+      wait (fun () -> all_marked t.arrived generation);
+      Atomic.set t.ready.(i) generation;
+      spin (fun () -> all_marked t.ready generation);
       jobs.(i) ()
     with
     | () -> Done
@@ -100,6 +144,7 @@ let work t i =
     match
       if Atomic.get t.ended.(i) <> !taken then begin
         Atomic.set t.arrived.(i) !taken;
+        Atomic.set t.ready.(i) !taken;
         publish (Raised (exn, Printexc.get_raw_backtrace ()))
       end
     with
@@ -119,13 +164,28 @@ let tell_quit t =
    the runner's handlers, not even in its first instructions. *)
 let runner_signals = [ Sys.sigalrm; Sys.sigint; Sys.sigterm; Sys.sighup ]
 
-(* Set by the first [spawn], so the mutation loop knows if a pool ran. *)
-let spawned_any = Atomic.make false
-let spawned () = Atomic.get spawned_any
+(* The thread id and the wait of each worker that ended, the newest
+   first. *)
+let ended_list = Atomic.make []
+let ended () = Atomic.get ended_list
+
+(* Nothing that a handler or a callback raises here ends the worker. *)
+let add_wait () =
+  try
+    match Os.thread_id () with
+    | None -> ()
+    | Some tid ->
+        let ended = (tid, Os.cpu_wait ()) in
+        let rec add () =
+          let old = Atomic.get ended_list in
+          if not (Atomic.compare_and_set ended_list old (ended :: old)) then
+            add ()
+        in
+        add ()
+  with _ -> ()
 
 let spawn n =
   if n < 1 then invalid_arg "Workers.spawn: no worker";
-  Atomic.set spawned_any true;
   let t =
     {
       mutex = Mutex.create ();
@@ -134,6 +194,7 @@ let spawn n =
       jobs = [||];
       quit = false;
       arrived = Array.init n (fun _ -> Atomic.make 0);
+      ready = Array.init n (fun _ -> Atomic.make 0);
       ended = Array.init n (fun _ -> Atomic.make 0);
       endings = Array.make n Done;
       domains = [];
@@ -144,7 +205,13 @@ let spawn n =
   let start i =
     Domain.spawn (fun () ->
         Printexc.record_backtrace backtraces;
-        work t i)
+        match work t i with
+        | () -> add_wait ()
+        | exception exn ->
+            (* Only an exception before the loop of [work] gets here. *)
+            let backtrace = Printexc.get_raw_backtrace () in
+            add_wait ();
+            Printexc.raise_with_backtrace exn backtrace)
   in
   let start_all () =
     for i = 0 to n - 1 do
@@ -159,26 +226,6 @@ let spawn n =
       tell_quit t;
       List.iter Domain.join t.domains;
       Printexc.raise_with_backtrace exn backtrace
-
-(* Spinning answers a short run at once; a long one is waited for in
-   sleeps, which leave the workers the processors. A signal handler runs at
-   the poll points of either. *)
-let spins = 20_000
-let pause = 0.000_2
-
-let wait done_ =
-  let rec step spun =
-    if not (done_ ()) then
-      if spun < spins then begin
-        Domain.cpu_relax ();
-        step (spun + 1)
-      end
-      else begin
-        Unix.sleepf pause;
-        step spun
-      end
-  in
-  step 0
 
 (* Nothing a handler raises during the grace ends it early. *)
 let rec wait_until ~started ~grace done_ =

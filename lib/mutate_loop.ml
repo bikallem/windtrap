@@ -152,15 +152,90 @@ type site = {
   mutable hits : int; (* the drained evaluations, saturating at [max_int] *)
 }
 
+(* What the threads of the process used of the CPUs in a test of the dry
+   run ([observe]). *)
+type usage = {
+  cpu : float; (* the CPU time of the process ([process_cpu]) *)
+  waited : float;
+      (* the wait for a CPU of the thread of the test ([test_waited]), of the
+         other live threads ([waits]) and of the workers that ended
+         ([Workers.ended]) *)
+  test_waited : float; (* the wait for a CPU of the thread of the test *)
+  seconds : float; (* the time of the test on the clock *)
+}
+
+(* The values at the start of a test that [usage] subtracts. *)
+type start = {
+  start_cpu : float;
+  start_waits : (int, float) Hashtbl.t;
+  start_ended : (int * float) list;
+  start_test : float;
+  clock : Os.counter;
+}
+
 (* Filled by the dry run's observer, which only writes: an observer that
    raises ends the run. *)
 type reach = {
   sites : (Mutate.id, site) Hashtbl.t;
   outside : (Mutate.id, unit) Hashtbl.t; (* evaluated outside every test *)
   durations : (string, float) Hashtbl.t; (* seconds, by path string *)
+  usage : (string, usage) Hashtbl.t; (* by path string *)
+  mutable began : start; (* of the last test *)
   mutable executed : string list list; (* newest first *)
   mutable skipped : int;
 }
+
+(* The CPU time of this process, which is the sum of the CPU time of its domains
+   and threads. The CPU time of a subprocess is not in it. A test can reap a
+   subprocess that an earlier test or the module initialization started. Then
+   that test would get all of the CPU time of the subprocess. *)
+let process_cpu () =
+  let times = Unix.times () in
+  times.tms_utime +. times.tms_stime
+
+(* The first line of the file [path], if it can be read. *)
+let first_line path =
+  match In_channel.with_open_bin path input_line with
+  | line -> Some line
+  | exception (Sys_error _ | End_of_file) -> None
+
+(* The numeric entries of the directory [dir]: the pids of /proc, or the
+   thread ids of /proc/<pid>/task. *)
+let ids dir =
+  match Sys.readdir dir with
+  | names -> List.filter_map int_of_string_opt (Array.to_list names)
+  | exception Sys_error _ -> []
+
+(* The seconds that the thread [tid] of the process [pid] used a CPU, and
+   the seconds that it waited for a CPU while it could run. Linux gives the
+   two in nanoseconds, as the first two fields of
+   /proc/<pid>/task/<tid>/schedstat. *)
+let thread_times pid tid =
+  let seconds field =
+    Option.map (fun ns -> ns /. 1e9) (float_of_string_opt field)
+  in
+  match first_line (strf "/proc/%d/task/%d/schedstat" pid tid) with
+  | None -> None
+  | Some line -> (
+      match String.split_on_char ' ' line with
+      | used :: waited :: _ -> (
+          match (seconds used, seconds waited) with
+          | Some used, Some waited -> Some (used, waited)
+          | _ -> None)
+      | [] | [ _ ] -> None)
+
+(* The wait for a CPU of each live thread of this process, by thread id
+   ([thread_times]). It is empty where the system does not give it. *)
+let waits () =
+  let pid = Unix.getpid () in
+  let waits = Hashtbl.create 8 in
+  List.iter
+    (fun tid ->
+      Option.iter
+        (fun (_, waited) -> Hashtbl.replace waits tid waited)
+        (thread_times pid tid))
+    (ids (strf "/proc/%d/task" pid));
+  waits
 
 let is_skip (r : Run.result) =
   match r.outcome with
@@ -184,7 +259,20 @@ let observe reach (event : Run.event) =
       ()
   | Run.Test_started _ ->
       evaluated_outside reach;
-      Mutate.next_epoch ()
+      Mutate.next_epoch ();
+      (* [waits] comes before [Workers.ended]. Thus a worker that ends
+         between the two reads is in [start_waits] or in [start_ended]. The
+         clock starts before the reads of the CPU time and of the wait of
+         the thread of the test, and it stops after them. The other reads of
+         /proc are outside the clock. For the thread of the test, [usage]
+         uses only the wait inside the clock ([test_waited]). Thus the cost
+         of the reads does not make a short test count more CPUs. *)
+      let start_waits = waits () in
+      let start_ended = Workers.ended () in
+      let clock = Os.counter () in
+      let start_test = Os.cpu_wait () in
+      let start_cpu = process_cpu () in
+      reach.began <- { start_cpu; start_waits; start_ended; start_test; clock }
   | Run.Test_finished result ->
       let add (reached : Mutate.reached) =
         match Hashtbl.find_opt reach.sites reached.mutant.id with
@@ -200,9 +288,39 @@ let observe reach (event : Run.event) =
       let reached = Mutate.drain () in
       if Option.is_none result.xfail then List.iter add reached;
       reach.executed <- result.path :: reach.executed;
-      Hashtbl.replace reach.durations
-        (Test_tree.path_to_string result.path)
-        result.duration;
+      let key = Test_tree.path_to_string result.path in
+      Hashtbl.replace reach.durations key result.duration;
+      (let start = reach.began in
+       let cpu = process_cpu () -. start.start_cpu in
+       let test_waited = Float.max 0. (Os.cpu_wait () -. start.start_test) in
+       let seconds = Os.count_s start.clock in
+       (* A worker that ended in the test is in [Workers.ended]. Its thread can
+          stay in [waits] for a short time after the join of its domain. Thus
+          each thread counts once, with the larger of its two waits. A worker
+          that started before the test counts only its wait in the test. *)
+       let waited =
+         let threads = waits () in
+         let rec add_ended = function
+           | ended when ended == start.start_ended -> ()
+           | [] -> ()
+           | (tid, waited) :: older ->
+               let live =
+                 Option.value ~default:0. (Hashtbl.find_opt threads tid)
+               in
+               Hashtbl.replace threads tid (Float.max live waited);
+               add_ended older
+         in
+         add_ended (Workers.ended ());
+         Option.iter (Hashtbl.remove threads) (Os.thread_id ());
+         Hashtbl.fold
+           (fun tid waited sum ->
+             let before =
+               Option.value ~default:0. (Hashtbl.find_opt start.start_waits tid)
+             in
+             sum +. Float.max 0. (waited -. before))
+           threads test_waited
+       in
+       Hashtbl.replace reach.usage key { cpu; waited; test_waited; seconds });
       if is_skip result then reach.skipped <- reach.skipped + 1
 
 (* Signals *)
@@ -320,7 +438,13 @@ type running = {
       (* what the parent read from [pipe], [output_limit] at most *)
   started : Os.counter;
   deadline : float; (* seconds after [started] *)
-  share : float; (* the children for each CPU that [deadline] pays for *)
+  share : float;
+      (* the CPUs of the children for each CPU of the host, which [deadline]
+         pays for *)
+  cpus : float;
+      (* the CPUs that the tests of the child used at once in the dry run,
+         on average, [1.] or more ([child_cpus]) *)
+  weight : int; (* the jobs of the loop that the child uses ([weight]) *)
   removed : string list;
       (* the log directory of the child, and the request file and the
          temporary directory of a new process: removed once the child is
@@ -347,7 +471,7 @@ type child = {
 
    XXX a second signal between [fork] returning and the pid being recorded
    kills the parent with the child alive. *)
-let supervise ~deadline ~share ~removed pid pipe =
+let supervise ~deadline ~share ~cpus ~weight ~removed pid pipe =
   interrupt.children <- pid :: interrupt.children;
   {
     pid;
@@ -356,11 +480,13 @@ let supervise ~deadline ~share ~removed pid pipe =
     started = Os.counter ();
     deadline;
     share;
+    cpus;
+    weight;
     removed;
     threads = Hashtbl.create 8;
   }
 
-let start ~deadline ~share ~removed ~siblings body =
+let start ~deadline ~share ~cpus ~weight ~removed ~siblings body =
   flush_descriptors ();
   let read_fd, write_fd =
     try Unix.pipe ~cloexec:true ()
@@ -386,7 +512,7 @@ let start ~deadline ~share ~removed ~siblings body =
       in_child write_fd body
   | pid ->
       Unix.close write_fd;
-      supervise ~deadline ~share ~removed pid read_fd
+      supervise ~deadline ~share ~cpus ~weight ~removed pid read_fd
 
 (* XXX a signal between [waitpid] and the removal of the pid from
    [interrupt.children] goes to a reaped pid. *)
@@ -456,19 +582,6 @@ let drain pipes =
   in
   drain [] drain_rounds pipes
 
-(* The first line of the file [path], if it can be read. *)
-let first_line path =
-  match In_channel.with_open_bin path input_line with
-  | line -> Some line
-  | exception (Sys_error _ | End_of_file) -> None
-
-(* The numeric entries of the directory [dir]: the pids of /proc, or the
-   thread ids of /proc/<pid>/task. *)
-let ids dir =
-  match Sys.readdir dir with
-  | names -> List.filter_map int_of_string_opt (Array.to_list names)
-  | exception Sys_error _ -> []
-
 (* The process group of the process [pid], from /proc/<pid>/stat. The
    second field, the name of the command, is in parentheses and can contain
    spaces. The group is the third field after it. *)
@@ -483,24 +596,6 @@ let group_of pid =
           match String.split_on_char ' ' (String.trim rest) with
           | _ :: _ :: group :: _ -> int_of_string_opt group
           | _ -> None))
-
-(* The seconds that the thread [tid] of the process [pid] used a CPU, and
-   the seconds that it waited for a CPU while it could run. Linux gives the
-   two in nanoseconds, as the first two fields of
-   /proc/<pid>/task/<tid>/schedstat. *)
-let thread_times pid tid =
-  let seconds field =
-    Option.map (fun ns -> ns /. 1e9) (float_of_string_opt field)
-  in
-  match first_line (strf "/proc/%d/task/%d/schedstat" pid tid) with
-  | None -> None
-  | Some line -> (
-      match String.split_on_char ' ' line with
-      | used :: waited :: _ -> (
-          match (seconds used, seconds waited) with
-          | Some used, Some waited -> Some (used, waited)
-          | _ -> None)
-      | [] | [ _ ] -> None)
 
 (* The pids that the last read of /proc found outside the group of every
    running child ([interrupt.children]), and when that read was
@@ -574,19 +669,25 @@ let read_threads children =
 
 (* The seconds that the group of [child] waited for a CPU, [elapsed] seconds
    after its start, at the last [read_threads]. It is the sum of the waits of
-   its threads, because a test can do its work in a subprocess and wait for
-   it. But it is at most the [elapsed] seconds less [child.share] times the
-   CPU time of these threads.
+   its threads, because a test can do its work in a subprocess and wait for it.
+   But it is at most the [elapsed] seconds less [child.share] times the CPU time
+   of these threads divided by [child.cpus].
 
-   Threads that use the CPUs at the same time, for example 8 processes that
-   each use the CPU, wait at the same time. Then the sum of their waits grows
-   faster than the clock, and without this limit the deadline never comes.
-   Children that outnumber the CPUs also wait for each other, and their
-   deadlines are already [share] times longer for this wait. Without [share]
-   in this limit, the wait moves their deadlines a second time, and a child
-   that uses the CPU uses [share] times the CPU time of the deadline of one
-   job. With the limit, the deadline comes at the latest when the group used
-   as much CPU time as the deadline of one job. *)
+   Threads that use the CPUs at the same time, for example 8 processes that each
+   use the CPU, wait at the same time. Then the sum of their waits grows faster
+   than the clock, and without this limit the deadline never comes. Children
+   that use more CPUs than the host has also wait for each other, and their
+   deadlines are already [share] times longer for this wait. Without [share] in
+   this limit, the wait moves their deadlines a second time. Then a child that
+   uses the CPU uses [share] times the CPU time of the deadline of one job. With
+   the limit, the deadline comes at the latest when the group used [child.cpus]
+   times the CPU time of the deadline of one job.
+
+   The tests of a child can use more than one CPU at a time, for example on
+   several domains. Then the CPU time of the group grows faster than the clock.
+   Without [child.cpus] in this limit, the limit goes to 0. Then the wait of the
+   child for other processes counts toward its deadline, and they can make it
+   pass its deadline. *)
 let waited_for_cpu child ~elapsed =
   let used, waited =
     Hashtbl.fold
@@ -594,7 +695,8 @@ let waited_for_cpu child ~elapsed =
         (all_used +. used, all_waited +. waited))
       child.threads (0., 0.)
   in
-  Float.max 0. (Float.min waited (elapsed -. (child.share *. used)))
+  Float.max 0.
+    (Float.min waited (elapsed -. (child.share *. used /. child.cpus)))
 
 (* The most seconds between two reads of the group of a child past its
    deadline ([read_threads]). When a process of the group ends, the loop
@@ -770,8 +872,9 @@ type loop = {
       (* the seconds that a new process takes before its first test, and [0.]
          for a fork *)
   scratch : string; (* a child killed at its deadline removes nothing *)
-  jobs : int; (* the most children at once, [1] or more *)
-  share : float; (* the children for each CPU, [1.] or more *)
+  jobs : int;
+      (* the most CPUs that the children use at once, [1] or more ([fits]) *)
+  share : float; (* [jobs] for each CPU of the host, [1.] or more *)
   killers : (Mutate.id, Verdicts.reaching_test) Hashtbl.t;
       (* the test that killed each mutant in the run before, when its source
          did not change since ([history]) *)
@@ -783,9 +886,9 @@ type loop = {
 let deadline_multiplier = 10.
 
 (* The dry run's wall clock bounds what a child pays before its first test:
-   the fork and a whole process's module initialization. Children that
-   outnumber the CPUs share them, and their deadlines grow by [share]. The
-   probe runs alone, and its share is [1.]. *)
+   the fork and a whole process's module initialization. Children that use
+   more CPUs than the host has share them, and their deadlines grow by
+   [share]. The probe runs alone, and its share is [1.]. *)
 let child_deadline loop ~share paths =
   let took path =
     Hashtbl.find_opt loop.reach.durations (Test_tree.path_to_string path)
@@ -799,6 +902,66 @@ let child_deadline loop ~share paths =
   *. (loop.dry_run_wall
      +. (deadline_multiplier *. loop.startup_wall)
      +. Float.max 1. (deadline_multiplier *. scheduled))
+
+(* The seconds below which [child_cpus] is [1.]. In a shorter time, the
+   reads of the clock, of the CPU time and of /proc cost as much as the
+   test. *)
+let shortest = 0.01
+
+(* The CPUs that the tests of [paths] used at once in the dry run, on average
+   ([observe]). It is at least [1.], also for tests that sleep, and at most the
+   CPUs of the host. It is [1.] for tests that took less than [shortest] seconds
+   in all.
+
+   Other processes can hold the CPUs in the dry run. Then the threads of the
+   tests wait for a CPU. Their CPU time over their seconds counts only the share
+   of the CPUs that they got. Thus the CPUs are the larger of two measures, and
+   each measure counts the waits:
+   - The CPU time and the waits of the threads over the seconds. This measure
+     loses the wait of a thread that ended in the test, except that of a worker
+     ([Workers.ended]). An example is a domain that a test spawns and joins.
+   - The CPU time over the seconds in which the thread of the test did not wait.
+     Under an even load, this measure is correct when the thread of the test
+     uses the CPU, but not when it sleeps while workers work. *)
+let child_cpus reach paths =
+  let sum =
+    List.fold_left
+      (fun sum path ->
+        match Hashtbl.find_opt reach.usage (Test_tree.path_to_string path) with
+        | Some u ->
+            {
+              cpu = sum.cpu +. u.cpu;
+              waited = sum.waited +. u.waited;
+              test_waited = sum.test_waited +. u.test_waited;
+              seconds = sum.seconds +. u.seconds;
+            }
+        | None -> sum)
+      { cpu = 0.; waited = 0.; test_waited = 0.; seconds = 0. }
+      paths
+  in
+  if sum.seconds < shortest then 1.
+  else
+    let ran = sum.seconds -. sum.test_waited in
+    let cpus =
+      Float.max
+        ((sum.cpu +. sum.waited) /. sum.seconds)
+        (if ran > 0. then sum.cpu /. ran else 0.)
+    in
+    Float.min
+      (float_of_int (Domain.recommended_domain_count ()))
+      (Float.max 1. cpus)
+
+(* The jobs of the loop that a child of [paths] uses: the most CPUs of one of
+   its tests ([child_cpus]), rounded to the nearest integer. Thus a test on one
+   CPU counts as one job, also when its CPU time is a little more than its
+   seconds. A child can run a long test on one CPU and then a short test on
+   several domains. At the end it uses several CPUs. Thus the average of the two
+   is not its weight. *)
+let weight reach paths =
+  List.fold_left
+    (fun most path ->
+      max most (int_of_float (Float.round (child_cpus reach [ path ]))))
+    1 paths
 
 (* The lines of a child *)
 
@@ -1194,7 +1357,7 @@ let next_tmp () =
    XXX if a second signal comes after [create_process_env] gives the pid and
    before the loop records the pid, the parent dies and the child stays
    alive. *)
-let start_process ~deadline ~share ~log_dir request =
+let start_process ~deadline ~share ~cpus ~weight ~log_dir request =
   flush_descriptors ();
   let request_file = log_dir ^ ".request" in
   let tmp = Filename.concat (Filename.dirname log_dir) (next_tmp ()) in
@@ -1232,7 +1395,7 @@ let start_process ~deadline ~share ~log_dir request =
   | pid ->
       Unix.close write_fd;
       Unix.close null;
-      supervise ~deadline ~share ~removed pid read_fd
+      supervise ~deadline ~share ~cpus ~weight ~removed pid read_fd
 
 let start_child loop ~share ~log ~bail ~kind ~paths ~siblings =
   let log_dir = Filename.concat loop.scratch log in
@@ -1245,10 +1408,13 @@ let start_child loop ~share ~log ~bail ~kind ~paths ~siblings =
     }
   in
   let deadline = child_deadline loop ~share paths in
-  if loop.exec then start_process ~deadline ~share ~log_dir request
+  let cpus = child_cpus loop.reach paths in
+  let weight = weight loop.reach paths in
+  if loop.exec then
+    start_process ~deadline ~share ~cpus ~weight ~log_dir request
   else
-    start ~deadline ~share ~removed:[ log_dir ] ~siblings (fun () ->
-        serve loop.tests request)
+    start ~deadline ~share ~cpus ~weight ~removed:[ log_dir ] ~siblings
+      (fun () -> serve loop.tests request)
 
 (* The startup of a new process *)
 
@@ -1272,7 +1438,12 @@ let startup loop =
   in
   let child =
     match
-      await [ ((), start_process ~deadline ~share:1. ~log_dir request) ]
+      await
+        [
+          ( (),
+            start_process ~deadline ~share:1. ~cpus:1. ~weight:1 ~log_dir
+              request );
+        ]
     with
     | ((), child) :: _, _ -> child
     | [], _ -> (* [await] ends once a child ends. *) assert false
@@ -1497,6 +1668,18 @@ let first_test loop ((mutant : Mutate.mutant), (site : site)) =
       Some killer
   | Some _, _ | None, _ -> None
 
+(* A child of [paths] starts when no other child runs. It also starts when
+   its weight and the weights of the [running] children are at most
+   [loop.jobs] ([weight]). Thus [loop.jobs] is the most CPUs that the
+   children use at once, as their tests did in the dry run. A child whose
+   weight is more than [loop.jobs] runs alone. *)
+let fits loop running paths =
+  running = []
+  || List.fold_left
+       (fun sum child -> sum + child.weight)
+       (weight loop.reach paths) running
+     <= loop.jobs
+
 (* A first child runs its test alone, from the state that the dry run left
    or, in exec mode, from a new process. A test that needs the state that an
    earlier test sets can fail alone with no mutant. Its first child would
@@ -1507,8 +1690,8 @@ let first_test loop ((mutant : Mutate.mutant), (site : site)) =
    In exec mode, a full child also starts from a new process, so the same
    problem occurs for the list of the reaching tests of a mutant. Thus each
    different list also runs one time in a child with no mutant armed, and a
-   list that does not pass goes into [alone_failed] ([full_paths]). Up to
-   [loop.jobs] of these children run at once. After a signal, no child
+   list that does not pass goes into [alone_failed] ([full_paths]). These
+   children run at once as [fits] lets them. After a signal, no child
    starts, and the loop then starts no child of a mutant. *)
 let passing_alone loop reached =
   let compare = List.compare (List.compare String.compare) in
@@ -1526,8 +1709,8 @@ let passing_alone loop reached =
   let rec next index lists =
     match lists with
     | paths :: rest
-      when Option.is_none interrupt.signal && List.length !running < loop.jobs
-      ->
+      when Option.is_none interrupt.signal
+           && fits loop (List.map snd !running) paths ->
         let child =
           start_child loop ~share:loop.share ~log:(strf "t%d" index) ~bail:true
             ~kind:Alone ~paths ~siblings:(List.map snd !running)
@@ -1560,6 +1743,15 @@ let passing_alone loop reached =
     fulls;
   { loop with killers; alone_failed }
 
+(* The tests that the dry run executed, in its order, up to [last]. *)
+let executed_until reach last =
+  let rec from_last = function
+    | [] -> []
+    | path :: rest as executed ->
+        if List.equal String.equal path last then executed else from_last rest
+  in
+  List.rev (from_last reach.executed)
+
 (* The tests of a full child: the reaching tests of its mutant. In exec mode,
    a list of reaching tests that does not pass alone ([passing_alone]) gets
    the tests that the dry run executed, in its order, up to the last reaching
@@ -1578,33 +1770,28 @@ let full_paths loop (site : site) =
   let reaching = List.rev site.tests in
   match site.tests with
   | last :: _ when Hashtbl.mem loop.alone_failed reaching ->
-      let rec from_last = function
-        | [] -> []
-        | path :: rest as executed ->
-            if List.equal String.equal path last then executed
-            else from_last rest
-      in
-      (List.rev (from_last loop.reach.executed), false)
+      (executed_until loop.reach last, false)
   | _ -> (reaching, true)
 
-(* Up to [loop.jobs] children at once, started in catalogue order. A verdict
-   is kept by the catalogue index of its mutant until every mutant before it
-   has one. It is then committed, and a survivor's block printed, so the
-   report is the same for any number of jobs. A mutant that its child cannot
-   arm ends the loop without a score, when it is committed: running on with
-   nothing armed would score it a survivor.
+(* Children at once as [fits] lets them, started in catalogue order. A child
+   that does not fit waits for a child to end, and no child after it starts
+   before it. A verdict is kept by the catalogue index of its mutant until
+   every mutant before it has one. It is then committed, and a survivor's
+   block printed, so the report is the same for any number of jobs. A mutant
+   that its child cannot arm ends the loop without a score, when it is
+   committed: running on with nothing armed would score it a survivor.
 
    A mutant with a [first_test] that [passing_alone] kept has a first child,
-   which runs that test alone. When the first child kills the mutant, that
-   is its verdict. When it
-   does not, a full child runs every reaching test, before the loop starts
-   the child of a mutant after it, and its verdict is the verdict.
+   which runs that test alone. When the first child kills the mutant, that is
+   its verdict. When it does not, a full child runs every reaching test,
+   before the loop starts the child of a mutant after it, and its verdict is
+   the verdict.
 
-   The loop starts no child after a signal. The signal stops the children
-   that run, and a child that exited first keeps its verdict, reaped or
-   not. The verdicts that ended before it are committed in catalogue order,
-   over the gaps of the mutants it stopped. When no child runs and mutants
-   remain, the loop stops before the next mutant. *)
+   The loop starts no child after a signal. The signal stops the children that
+   run, and a child that exited first keeps its verdict, reaped or not. The
+   verdicts that ended before it are committed in catalogue order, over the
+   gaps of the mutants it stopped. When no child runs and mutants remain, the
+   loop stops before the next mutant. *)
 let test_mutants renderer loop reached =
   let locations = Hashtbl.create 256 in
   List.iter
@@ -1687,22 +1874,28 @@ let test_mutants renderer loop reached =
     { index; paths; first = false; bail }
   in
   let rec next index =
-    if Option.is_none interrupt.signal && List.length pool.running < loop.jobs
-    then
-      match pool.again with
-      | again :: rest ->
-          pool.again <- rest;
-          start (full again);
-          next index
-      | [] when index < total ->
-          start
-            (match first_test loop reached.(index) with
-            | Some test ->
-                { index; paths = [ test ]; first = true; bail = true }
-            | None -> full index);
-          next (index + 1)
-      | [] -> wait index
-    else wait index
+    let candidate =
+      if Option.is_some interrupt.signal then None
+      else
+        match pool.again with
+        | again :: rest -> Some (full again, rest, index)
+        | [] when index < total ->
+            let attempt =
+              match first_test loop reached.(index) with
+              | Some test ->
+                  { index; paths = [ test ]; first = true; bail = true }
+              | None -> full index
+            in
+            Some (attempt, [], index + 1)
+        | [] -> None
+    in
+    match candidate with
+    | Some (attempt, again, index)
+      when fits loop (List.map snd pool.running) attempt.paths ->
+        pool.again <- again;
+        start attempt;
+        next index
+    | Some _ | None -> wait index
   and wait index =
     match (pool.running, interrupt.signal) with
     | [], Some signal when index < total || pool.again <> [] ->
@@ -1827,11 +2020,9 @@ let save_verdicts ~scope ~narrowed ~outside ~unreached ~filtered tested =
 
 (* In exec mode, the verdicts follow the rules of a new process, so the
    report tells the mode. *)
-let children_line ~children ~exec ~one_at_a_time =
+let children_line ~children ~exec =
   match (children, exec) with
   | _, false -> None
-  | _, true when one_at_a_time ->
-      Some "children: new processes, one at a time, because of --mutate-workers"
   | Run.Exec, true -> Some "children: new processes (--mutate-children=exec)"
   | (Run.Auto | Run.Fork), true ->
       Some "children: new processes, because the suite spawned a domain"
@@ -1926,6 +2117,15 @@ let loop renderer ~scope ~jobs ~children ~suite (config : Run.config) tests =
       sites = Hashtbl.create 256;
       outside = Hashtbl.create 16;
       durations = Hashtbl.create 256;
+      usage = Hashtbl.create 256;
+      began =
+        {
+          start_cpu = 0.;
+          start_waits = Hashtbl.create 0;
+          start_ended = [];
+          start_test = 0.;
+          clock = Os.counter ();
+        };
       executed = [];
       skipped = 0;
     }
@@ -1974,21 +2174,33 @@ let loop renderer ~scope ~jobs ~children ~suite (config : Run.config) tests =
             if children = Run.Fork && domain_spawned () then
               refuse domain_refusal
             else
-              (* The worker domains of each child need CPUs that the share of a
-                 job does not count. Thus children at the same time can pass
-                 their deadlines and give false kills. A child runs only tests that
-                 the dry run ran, so a dry run that spawned no pool tells that
-                 no child spawns one. *)
-              let one_at_a_time =
-                exec && config.mutate_workers && Workers.spawned () && jobs > 1
-              in
-              let jobs = if one_at_a_time then 1 else jobs in
               let forks =
                 try
                   with_interrupts @@ fun () ->
                   let loop =
                     let scratch = scratch_root () in
-                    let jobs = max 1 (min jobs (List.length reached)) in
+                    (* The children at once use at most [jobs] CPUs, and at most
+                       the weights of all of the reached mutants. In exec mode,
+                       a full child can run each test that the dry run executed
+                       up to the last reaching test ([full_paths]). That list
+                       gives its weight. *)
+                    let jobs =
+                      (* Each weight is at least 1, so with [jobs] mutants
+                         or more the sum is at least [jobs]. *)
+                      let most (_, (site : site)) =
+                        match site.tests with
+                        | last :: _ when exec ->
+                            weight reach (executed_until reach last)
+                        | _ -> weight reach site.tests
+                      in
+                      if List.compare_length_with reached jobs >= 0 then jobs
+                      else
+                        max 1
+                          (min jobs
+                             (List.fold_left
+                                (fun sum mutant -> sum + most mutant)
+                                0 reached))
+                    in
                     let share =
                       Float.max 1.
                         (float_of_int jobs
@@ -2021,7 +2233,7 @@ let loop renderer ~scope ~jobs ~children ~suite (config : Run.config) tests =
                     Os.die_by Sys.sigpipe
               in
               finish renderer
-                ~children:(children_line ~children ~exec ~one_at_a_time)
+                ~children:(children_line ~children ~exec)
                 ~narrowed ~reach ~reached ~outside ~unreached ~filtered forks)
 
 (* The armed run *)

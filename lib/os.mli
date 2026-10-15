@@ -26,6 +26,16 @@ val count_s : counter -> float
 (** [count_s start] is the time elapsed since [start], in seconds. It is never
     negative. *)
 
+val cpu_wait : unit -> float
+(** [cpu_wait ()] is the seconds that the calling thread waited for a CPU since
+    it started, from [/proc/thread-self/schedstat]. It is [0.] where the system
+    does not give this time. It never raises. *)
+
+val thread_id : unit -> int option
+(** [thread_id ()] is the id that the system gives the calling thread, from
+    [/proc/thread-self]. It is [None] where the system does not give it. It
+    never raises. *)
+
 (** {1:env Environment variables}
 
     Every reader reads the environment on each call, and nothing is cached. A

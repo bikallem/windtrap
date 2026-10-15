@@ -329,7 +329,7 @@ OPTIONS:
       Test this executable's mutants, all or those under PREFIX.
 
   --mutate-jobs=N (env WINDTRAP_MUTATE_JOBS)
-      Test up to N mutants at once, or one per CPU for auto (default 1).
+      Test mutants at once on up to N CPUs, or on each CPU for auto (default 1).
 
   --mutate-since=REV (env WINDTRAP_MUTATE_SINCE)
       Test only the mutants on lines changed since git revision REV.

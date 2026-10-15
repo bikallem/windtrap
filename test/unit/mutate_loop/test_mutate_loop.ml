@@ -1266,6 +1266,24 @@ let one_cpu () =
   remove (Verdicts.output_file ~exe:suite_exe);
   taskset
 
+(* Under [taskset -c 0,1] the loop sees two CPUs, on a host that has two
+   or more. *)
+let two_cpus () =
+  if Domain.recommended_domain_count () < 2 then
+    skip ~reason:"the host has fewer than two CPUs" ();
+  let taskset =
+    match taskset with
+    | None -> skip ~reason:"taskset is not on PATH" ()
+    | Some taskset -> taskset
+  in
+  let pinned =
+    spawn ~exe:taskset ~env:[ suite "catalogue" ] [ "-c"; "0,1"; suite_exe ]
+  in
+  if pinned.status <> "exited 0" then
+    skip ~reason:"taskset cannot hold a process to CPUs 0 and 1" ();
+  remove (Verdicts.output_file ~exe:suite_exe);
+  taskset
+
 (* [hung] reaches two mutants, so on one CPU 16 jobs give two children,
    which share the CPU, and each child of [hung] blocks until its deadline,
    two seconds or more. With the 16 jobs of the command line, the deadline
@@ -1364,16 +1382,19 @@ let probe_alone () =
    it and never stop. Thus its probe and its child wait for the CPU 4 times
    as long as they use it, and end after about 2 seconds, past their
    deadlines of about 1 second. The time that a child waits for a CPU does
-   not count, so the probe agrees and the mutant survives. *)
-let starve fixture test_name =
+   not count, so the probe agrees and the mutant survives.
+
+   With [~two:true], the fixture and the hogs run on two CPUs. [env] goes
+   to the fixture and to the hogs. *)
+let starve ?(two = false) ?(env = []) fixture test_name =
   if not (Sys.file_exists "/proc/self/schedstat") then
     skip ~reason:"the system does not give the time that a process waits" ();
-  let taskset = one_cpu () in
+  let taskset, cpus = if two then (two_cpus (), "0,1") else (one_cpu (), "0") in
   let hogs =
     List.init 4 (fun _ ->
         Unix.create_process_env taskset
-          [| taskset; "-c"; "0"; suite_exe |]
-          (Child.environment [ suite "hog" ])
+          [| taskset; "-c"; cpus; suite_exe |]
+          (Child.environment (suite "hog" :: env))
           Unix.stdin Unix.stdout Unix.stderr)
   in
   let stop pid =
@@ -1383,9 +1404,8 @@ let starve fixture test_name =
   let r =
     Fun.protect ~finally:(fun () -> List.iter stop hogs) @@ fun () ->
     finish_within ~seconds:30. ~what:"the starved probe and child"
-      (start ~exe:taskset
-         ~env:[ suite fixture ]
-         [ "-c"; "0"; suite_exe; mutate ])
+      (start ~exe:taskset ~env:(suite fixture :: env)
+         [ "-c"; cpus; suite_exe; mutate ])
   in
   equal (pair string text) ("exited 0", "") (r.status, r.err);
   equal
@@ -1433,6 +1453,53 @@ let burnt_late () =
   starve "late_burn"
     "uses the CPU, then waits for a process that uses the CPU, and pins \
      nothing about sub"
+
+(* In [starved_domains], the test of the armed child uses 5 seconds of CPU
+   time on two domains, beside 4 hogs on the same two CPUs. Its deadline is
+   about 3.5 seconds. Thus the child uses more CPU time than the deadline of
+   one CPU. But the dry run measured about two CPUs for the test. Thus the
+   wait of the child does not count toward its deadline until the child
+   used about twice the CPU time of its deadline. The hogs use the CPU only
+   after the test of the dry run, so that the dry run measures two CPUs. *)
+let starved_on_two_cpus () =
+  let gate = Filename.concat (temp_dir ()) "gate" in
+  starve ~two:true
+    ~env:[ ("MUTATE_HOG_GATE", gate) ]
+    "starved_domains"
+    "uses the CPU on two domains where it is armed and pins nothing about sub";
+  is_true (Sys.file_exists gate)
+
+(* In [wide_rendezvous], each child ends with a test that uses two CPUs. On
+   two CPUs, two jobs let one child run at a time, so the first child waits
+   until its deadline kills it. Four jobs let the two children run at once,
+   and they meet. In [narrow_rendezvous], each test uses one CPU, and two
+   jobs let the two children run at once. *)
+let jobs_of_two_cpus () =
+  let taskset = two_cpus () in
+  let run fixture n =
+    let dir = temp_dir () in
+    spawn ~exe:taskset
+      ~env:[ suite fixture; ("MUTATE_RENDEZVOUS", dir) ]
+      [ "-c"; "0,1"; suite_exe; mutate; jobs n ]
+  in
+  let two = run "wide_rendezvous" 2
+  and four = run "wide_rendezvous" 4
+  and narrow = run "narrow_rendezvous" 2 in
+  List.iter
+    (fun r -> equal (pair string text) ("exited 0", "") (r.status, r.err))
+    [ two; four; narrow ];
+  equal string
+    "mutants: 1 survived of 2 reached by this suite, 1 killed, 2 never \
+     reached, 1 filtered, score 50.0%"
+    (outcome two.out);
+  equal string
+    "mutants: 2 survived of 2 reached by this suite, 2 never reached, 1 \
+     filtered, score 0.0%"
+    (outcome four.out);
+  equal string
+    "mutants: 2 survived of 2 reached by this suite, 2 never reached, 1 \
+     filtered, score 0.0%"
+    (outcome narrow.out)
 
 (* [next_look] is the decision of the loop at each look at a child. Past
    the deadline, the next look comes after 0.1 seconds at the latest, also
@@ -1500,6 +1567,10 @@ let limits =
         "the time that a child waits for a CPU does not count toward its \
          deadline"
         starved;
+      test
+        "the time that a child on two domains waits for a CPU does not count \
+         toward its deadline"
+        starved_on_two_cpus;
       test
         "the time that a subprocess of a child waits for a CPU does not count \
          toward the deadline of the child"
@@ -3155,6 +3226,10 @@ let jobs_group =
         fixtures same_with_jobs;
       test "children of several jobs run at once" at_once;
       test "children of one job run one at a time" one_at_a_time;
+      test
+        "a child counts as many jobs as the CPUs of its heaviest test, rounded \
+         to the nearest integer"
+        jobs_of_two_cpus;
       test "a child does not keep the pipes of the other children" own_pipe;
       test
         "each child of several jobs has a log directory of its own, removed \
@@ -3823,18 +3898,52 @@ let domains =
                process\n" )
             (r.status, r.err));
       test
-        "with --mutate-workers and more than one job, the report tells that \
-         the loop tests one mutant at a time" (fun () ->
+        "with --mutate-workers and more than one job, the report has the line \
+         of a suite that spawned a domain" (fun () ->
           let r =
             spawn
               ~env:[ suite "stateful_domains" ]
               [ mutate; "--mutate-workers"; jobs 4 ]
           in
           equal (pair string text) ("exited 0", "") (r.status, r.err);
+          equal string auto_line (before_outcome r.out));
+      test
+        "with --mutate-workers, a child of a stateful test on two domains \
+         counts as two jobs" (fun () ->
+          let taskset = two_cpus () in
+          let run n =
+            let dir = temp_dir () in
+            spawn ~exe:taskset
+              ~env:[ suite "stateful_rendezvous"; ("MUTATE_RENDEZVOUS", dir) ]
+              [ "-c"; "0,1"; suite_exe; mutate; "--mutate-workers"; jobs n ]
+          in
+          let two = run 2 and four = run 4 in
+          List.iter
+            (fun r ->
+              equal (pair string text) ("exited 0", "") (r.status, r.err))
+            [ two; four ];
           equal string
-            "children: new processes, one at a time, because of \
-             --mutate-workers"
-            (before_outcome r.out));
+            "mutants: 1 survived of 2 reached by this suite, 1 killed, 2 never \
+             reached, 1 filtered, score 50.0%"
+            (outcome two.out);
+          equal string
+            "mutants: 2 survived of 2 reached by this suite, 2 never reached, \
+             1 filtered, score 0.0%"
+            (outcome four.out));
+      test
+        "with --mutate-workers and more jobs than CPUs, children of a test on \
+         two domains kill no mutant that survives" (fun () ->
+          let taskset = two_cpus () in
+          let r =
+            spawn ~exe:taskset
+              ~env:[ suite "stateful_survivors" ]
+              [ "-c"; "0,1"; suite_exe; mutate; "--mutate-workers"; jobs 8 ]
+          in
+          equal (pair string text) ("exited 0", "") (r.status, r.err);
+          equal string
+            "mutants: 4 survived of 4 reached by this suite, 1 filtered, score \
+             0.0%"
+            (outcome r.out));
       test
         "without --mutate-workers, no test reaches a site that only a worker \
          evaluates" (fun () ->

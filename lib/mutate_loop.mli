@@ -71,15 +71,24 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
       {b Exec mode}.
     + It starts one child per reached mutant, in the order of the catalogue, and
       never starts one that is unreached or evaluated outside tests. A mutant
-      with a history can have two children ({b History} below). Up to [jobs]
-      children of {!Run.Loop} run at once, and one more starts when one ends. In
-      exec mode under [config.mutate_workers], when the dry run spawned a pool
-      of workers, one child runs at a time, whatever [jobs] is. The worker
-      domains of a child need CPUs that its deadline does not count. The verdict
-      of a mutant is kept until each mutant before it in the catalogue has a
-      verdict. Then it is committed, and the block of a survivor printed
-      ({!Report.mutation_survivor}). Thus the report and the verdict file are
-      the same for every value of [jobs].
+      with a history can have two children ({b History} below). The children at
+      once use at most the [jobs] CPUs of {!Run.Loop}. A child uses the most
+      CPUs that one of its tests used at once in the dry run. The loop rounds
+      this value to the nearest integer. The value is at least 1 and at most the
+      CPUs of the host. Tests that took less than 10 ms in all count as 1. These
+      CPUs are the CPU time of the process in the test over the time of the
+      test. On Linux, the loop also counts the waits of its threads for a CPU
+      ([child_cpus]). Thus a child of a test on several domains counts as
+      several jobs, also when other load held the CPUs in the dry run. The loop
+      does not get the wait of a domain that a test spawns and joins. The
+      workers of a stateful test are an exception. Thus other load can make the
+      count smaller for a test whose thread sleeps while such domains work. A
+      child that uses more than [jobs] CPUs runs alone. A child that does not
+      fit waits for other children to end, and no child after it starts before
+      it. The verdict of a mutant is kept until each mutant before it in the
+      catalogue has a verdict. Then it is committed, and the block of a survivor
+      printed ({!Report.mutation_survivor}). Thus the report and the verdict
+      file are the same for every value of [jobs].
     + When the last child has ended it writes the verdict file.
 
     {b Children.} A child runs {!Run.execute} over {!Run.for_subset} of
@@ -201,31 +210,35 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     reads a pipe at most 17 times ([drain_rounds]) before it looks at the
     deadlines and the signal, and keeps the first 64 KiB ([output_limit]) of
     what a child writes. Thus a child that writes and never stops cannot keep
-    the loop past its deadline, or fill the memory of the loop. When the
-    children at once outnumber the CPUs ([Domain.recommended_domain_count]),
-    each deadline is multiplied by the children for each CPU. The children at
-    once are [jobs], or 1 in the case of [config.mutate_workers] above, but at
-    most the reached mutants. The probe runs alone, before the children of the
-    mutants, and its deadline is not multiplied. On Linux, the time that a child
-    or the probe waited for a CPU does not count toward its deadline
-    ([waited_for_cpu]). This time is the sum of the waits of the threads of the
-    processes in the group of the child, which include the processes that its
-    tests start ([read_threads]). Thus other processes that hold the CPUs, for
-    example the children of the other suites of a parallel [dune runtest], do
-    not kill a mutant by its deadline. The sum is at most the time since the
-    start of the child less [share] times the CPU time of these threads. [share]
-    is the factor of the deadline of the child, and [1.] for the probe. Thus the
-    deadline comes at the latest when the group used as much CPU time as the
-    deadline of one job, also when its threads wait at the same time, or wait
-    for the other children. The threads of a group can use more than one CPU at
-    a time, for example the workers under [config.mutate_workers]. The wait of
-    such a group then moves its deadline little or not at all, and other
-    processes can make it pass its deadline (issue #15). The loop reads these
-    times only when a child is past its deadline, and then at least every 0.1
-    seconds ([reread]). The wait of a process that ended before the first read
-    counts toward the deadline. So does the wait of a process after its last
-    read. While nothing else holds the loop, this wait is at most 0.1 seconds
-    for each thread of the process. Other systems do not give these times.
+    the loop past its deadline, or fill the memory of the loop. When the CPUs
+    that the children use at once outnumber the CPUs of the host
+    ([Domain.recommended_domain_count]), each deadline is multiplied by that
+    ratio. The CPUs at once are [jobs], but at most the sum of the CPUs of the
+    reached mutants. A mutant counts the most CPUs of one of its reaching tests.
+    In exec mode, it counts the most CPUs of one of the tests up to its last
+    reaching test. The probe runs alone, before the children of the mutants, and
+    its deadline is not multiplied. On Linux, the time that a child or the probe
+    waited for a CPU does not count toward its deadline ([waited_for_cpu]). This
+    time is the sum of the waits of the threads of the processes in the group of
+    the child, which include the processes that its tests start
+    ([read_threads]). Thus other processes that hold the CPUs, for example the
+    children of the other suites of a parallel [dune runtest], do not kill a
+    mutant by its deadline. The sum is at most the time since the start of the
+    child less [share] times a part of the CPU time of these threads. This part
+    is the CPU time divided by the CPUs of the child ([child_cpus]). [share] is
+    the factor of the deadline of the child, and [1.] for the probe. The CPUs of
+    the child are the average of all of its tests in the dry run. They are not
+    rounded, and are at most the CPUs of the host. Thus the deadline comes at
+    the latest when each CPU of the child used the CPU time of the deadline of
+    one job. This is also true when its threads wait at the same time, or wait
+    for the other children. The threads of a child on several domains use more
+    than one CPU at a time, and their wait moves the deadline too. The loop
+    reads these times only when a child is past its deadline, and then at least
+    every 0.1 seconds ([reread]). The wait of a process that ended before the
+    first read counts toward the deadline. So does the wait of a process after
+    its last read. While nothing else holds the loop, this wait is at most 0.1
+    seconds for each thread of the process. Other systems do not give these
+    times.
 
     The runaway budget of a child ({!Windtrap_runtime.Mutate.arm}) is
     [(hits * 8) + 1000] ([budget_of]) for a site that the dry run evaluated
@@ -501,15 +514,13 @@ val next_look : left:float -> waited:(unit -> float) -> float * float
     gives the directory to the child in [TMPDIR], and it removes the file and
     the directory when it reaps the child. In exec mode, the report that no
     signal stopped has a line that tells that the children are new processes,
-    and why. When [config.mutate_workers] and a [jobs] above 1 make the loop run
-    one child at a time, the line also tells that. The line comes above the
-    outcome line ({!Report.mutation_finish}). Under [--mutate-since] it runs
-    [git] four times, before the dry run ({!Changed_lines.of_git}). The loop
-    calls [kill] on the process group of a child that expired or was
-    interrupted. It creates one scratch directory per run under
-    [Filename.get_temp_dir_name ()], and removes it however the loop ends, a
-    second signal excepted. For the source line of a survivor and the digest of
-    each record it reads the recorded file of the mutant, under
+    and why. The line comes above the outcome line ({!Report.mutation_finish}).
+    Under [--mutate-since] it runs [git] four times, before the dry run
+    ({!Changed_lines.of_git}). The loop calls [kill] on the process group of a
+    child that expired or was interrupted. It creates one scratch directory per
+    run under [Filename.get_temp_dir_name ()], and removes it however the loop
+    ends, a second signal excepted. For the source line of a survivor and the
+    digest of each record it reads the recorded file of the mutant, under
     {!Os.project_root} first and then as given. It reads the verdict file of the
     executable before the first child.
 
