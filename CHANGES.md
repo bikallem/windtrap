@@ -260,6 +260,8 @@
   startup time (see
   [When a run cannot mutate](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#when-a-run-cannot-mutate)
   for a measurement).
+- The dry run finds each test that reaches a mutation site, also when
+  the test evaluates the site on several domains at the same time.
 - A mutation run on Windows is refused because the loop needs process
   groups, where 0.2.0 said that it needs `Unix.fork`.
 

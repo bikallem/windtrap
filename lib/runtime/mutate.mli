@@ -95,11 +95,15 @@ val register : file:string -> sites:site array -> int -> bool
     + It is [true] iff site [i] is the armed one. It raises {!Runaway} instead
       if the count of the armed site is above the budget given to {!arm}.
 
-    The guard is not synchronized. A site that several domains evaluate at once
-    can lose evaluations and, when an epoch starts, its mark. The reach map is
-    then a lower bound, which can miss a mutant and never invents one. The guard
-    raises [Invalid_argument] if [i] is outside [sites], which only a broken
-    instrumenter causes.
+    The guard is not synchronized, but each site keeps its mark in a slot of its
+    own. Thus guards that run on several domains at the same time do not lose
+    the marks of other guards. {!drain} gets each mark that a domain made before
+    a [Domain.join] or other synchronization with the domain that calls [drain].
+    Without that synchronization, a mark can stay for a later [drain], or
+    [drain] can lose it. Guards on several domains can lose evaluations of one
+    site. Then the count of evaluations of the site is too low, but a drained
+    count is never below 1. The guard raises [Invalid_argument] if [i] is
+    outside [sites], which only a broken instrumenter causes.
 
     When [file] is registered again with an equal table, as when one source is
     compiled into two modules, the two registrations arm together, and
@@ -200,8 +204,8 @@ exception Runaway of { id : id; hits : int; budget : int }
 
 (** {1:reach The reach map}
 
-    The runtime keeps an epoch counter and the list of the sites marked in the
-    current epoch, and takes no position on what an epoch means.
+    The runtime keeps an epoch counter and a mark for each site, and takes no
+    position on what an epoch means.
 
     To learn which mutants one test evaluates, a caller must call {!drain} and
     then {!next_epoch} when the test starts, and {!drain} when it finishes. The
@@ -226,15 +230,18 @@ val drain : unit -> reached list
 (** [drain ()] is the mutants marked since the previous [drain], ordered by
     {!compare_id} on [id] and without duplicates. Each comes with its
     evaluations, counted from the one that marked it up to this call. [drain]
-    then empties the list of marks. A mutant that two modules registered for one
-    file appears once, with its evaluations added up.
+    then removes the marks. It examines every site of every registration, so its
+    cost increases with the number of registered sites. A mutant that two
+    modules registered for one file appears once, with the sum of its
+    evaluations.
 
     A site marks itself at its first evaluation in an epoch, and only then. When
     it is evaluated again in that epoch after a [drain], no later [drain]
     reports those evaluations. A drained count is a lower bound of what an armed
-    run of the same tests evaluates, so a budget that is derived from one needs
-    headroom. *)
+    run of the same tests evaluates, also on domains that synchronize with
+    [drain] (see {!register}). Thus a budget that a caller derives from a
+    drained count needs headroom. *)
 
 val reset_reach : unit -> unit
-(** [reset_reach ()] sets every count of evaluations to zero, empties the list
-    of marks and opens a new epoch. It does not disarm. *)
+(** [reset_reach ()] sets every count of evaluations to zero, removes the marks
+    and opens a new epoch. It does not disarm. *)
