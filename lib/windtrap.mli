@@ -1550,11 +1550,12 @@ val stateful :
     The contract differs from one domain's in five ways:
     - a replay draws the same programs, not the same schedules, and may pass;
     - a counterexample does not run once more after the search, except under
-      [--mutate] and [--arm];
+      [--mutate] and [--arm] without [--mutate-workers];
     - the test takes no retries and ignores a group's;
     - under [--mutate] and [--arm] each program runs once on the test's domain,
       the prefix, branch 1 to [n], then the suffix, so a kill does not depend on
-      a schedule;
+      a schedule. [--mutate-workers] spawns the workers as without mutation
+      testing, and a kill can then depend on a schedule;
     - a call still running one limit after the test's limit expired fails the
       test as timed out, and the run stops after it, since its domain would run
       this test's code inside the next test. On Windows, where no limit is

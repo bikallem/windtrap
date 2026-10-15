@@ -281,6 +281,7 @@ val group_end : string
 val annotation :
   ?invocation:Run.invocation ->
   ?armed:string ->
+  ?workers:bool ->
   path:string list ->
   Failure.t ->
   string
@@ -291,11 +292,13 @@ val annotation :
     source line, hint lines included, with [path] as their filter. An annotation
     is read alone, away from the transcript, so its [accept:] and its [replay:]
     name the test. [invocation] and [armed] are those of
-    {!Report_sections.hints}, and [invocation] defaults to [`Mirrors]. *)
+    {!Report_sections.hints}, and [invocation] defaults to [`Mirrors]. [workers]
+    is that of {!Report_sections.replay}. *)
 
 val annotations :
   ?invocation:Run.invocation ->
   ?armed:string ->
+  ?workers:bool ->
   release_failures:Failure.t list ->
   Run.result list ->
   string
@@ -429,6 +432,7 @@ val pp_failure :
   ?filter:string ->
   ?invocation:Run.invocation ->
   ?armed:string ->
+  ?workers:bool ->
   Format.formatter ->
   Failure.t ->
   unit

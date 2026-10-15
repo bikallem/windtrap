@@ -366,6 +366,48 @@ reached, and an `--arm` run of its mutant ends on `mutant not reached`.
 The mutation run exits 0 whatever it finds. It exits 1, with a sentence
 on standard error, when a pass fails or no mutant is left to test.
 
+## Stateful tests on several domains
+
+Under mutation testing, a stateful test on several domains spawns no
+worker. It runs each program one time on the domain of the test, the
+branches one after the other. Thus its kills do not depend on a
+schedule, and the suite can fork its children. But a mutant that only
+a concurrent order of the calls shows survives, and no test
+reaches code that only a concurrent order runs.
+
+`--mutate-workers` (`WINDTRAP_MUTATE_WORKERS=1`) lets such a test
+spawn its workers under `--mutate` and `--arm`, as it does without
+mutation testing. Each program then runs 50 times, and its branches
+run on the workers. Use it for the code of a structure that domains
+share. It has these costs:
+
+- The dry run spawns domains, so each child of the run is a new
+  process (`--mutate-children`). With `--mutate-children=fork`, the loop
+  refuses the run.
+- The loop tests one mutant at a time, also under `--mutate-jobs`. The
+  workers of children at the same time need more CPUs than the
+  deadlines count. A child that passes its deadline counts as a kill.
+  With `--mutate-jobs` above 1, the report tells
+  `children: new processes, one at a time, because of --mutate-workers`.
+- Other processes that use the CPUs after the dry run can make a child
+  with workers pass its deadline. The loop gives a child extra time for
+  its waits for a CPU. But this extra time is at most the time since
+  the start of the child less the CPU time of its threads. The workers
+  of a child use more than one CPU at a time, so the child gets little
+  or no extra time. Thus run such a suite on a machine with no other
+  load.
+- A child that runs such a test does about 50 times more work.
+- A kill can depend on a schedule. A mutant that a run kills can
+  survive the next run, and an `--arm` run of the same mutant can pass.
+
+A failure before the first evaluation of the site of a mutant does not
+kill the mutant (see [What a mutation run runs](#what-a-mutation-run-runs)).
+
+The `reproduce:`, `arm:` and `replay:` commands of such a run keep
+`--mutate-workers`. The `reproduce:` line of `windtrap mutants` does
+not keep it, because the verdict file does not record it. Add
+`--mutate-workers` to that command yourself.
+
 ## Testing mutants in parallel
 
 A mutation run tests one mutant at a time. `--mutate-jobs N` lets up to

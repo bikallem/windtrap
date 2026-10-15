@@ -377,6 +377,9 @@ In `windtrap.mli`: Baselines, Captured output.
   operation meant to be called concurrently must be total. Its failure
   does not replay its schedule; a structure known to be unsafe is
   `xfail (stateful ~domains:2 …)`.
+  Under mutation testing it runs each program on one domain.
+  `--mutate-workers` makes it spawn its workers, and then a kill can
+  depend on a schedule.
 
 In `windtrap.mli`: Properties, `Gen`, Discarding and labelling cases,
 Laws, Stateful tests (with `judges`, `among` and `stateful`'s

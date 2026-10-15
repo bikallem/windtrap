@@ -76,6 +76,9 @@ OPTIONS:
   --mutate-children=MODE (env WINDTRAP_MUTATE_CHILDREN)
       Test each mutant in a fork, a new process (exec), or auto (default).
 
+  --mutate-workers (env WINDTRAP_MUTATE_WORKERS)
+      Spawn the worker domains of stateful tests under mutation testing.
+
   --arm=ID (env WINDTRAP_MUTATE_ARM)
       Run once with mutant ID armed.
 

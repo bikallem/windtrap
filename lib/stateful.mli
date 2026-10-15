@@ -456,7 +456,9 @@ val stateful :
     counterexample does not run again. The test takes [~retries:0], so a group's
     retries do not apply. Under [--mutate] or [--arm] ([config.mutation] is not
     {!Run.No_mutation}) the body spawns nothing, each program runs once on the
-    test's domain, and a counterexample runs again.
+    test's domain, and a counterexample runs again. With [--mutate-workers]
+    ([config.mutate_workers]), the body spawns its workers as without mutation
+    testing, and a counterexample does not run again.
 
     {b A broken reference.} {!execute} raises {!Property.Oracle_failure} for a
     broken reference, so {!Property.run} shrinks a case that broke the reference

@@ -848,6 +848,34 @@ let widen_in_fork a b =
 let fork_only =
   [ test "widen in a fork" (fun () -> is_true (widen_in_fork 3 4 <> 0)) ]
 
+(* A stateful test on two domains that pins [sub]. Under mutation testing it
+   spawns its workers only with [--mutate-workers]. *)
+let stateful_domains =
+  [
+    stateful ~count:3 ~domains:2 "sub on two domains"
+      [
+        command "sub"
+          (Gen.unit @-> returns int)
+          (fun () -> 6)
+          (fun () -> Subject.sub 10 4);
+      ];
+  ]
+
+(* [stateful_domains], but only a call on a worker evaluates [sub]: a call on
+   the main domain answers without it. Without workers, no test reaches
+   [sub]. *)
+let on_workers =
+  [
+    stateful ~count:3 ~domains:2 "sub on the workers only"
+      [
+        command "sub"
+          (Gen.unit @-> returns int)
+          (fun () -> 6)
+          (fun () ->
+            if (Domain.self () :> int) = 0 then 6 else Subject.sub 10 4);
+      ];
+  ]
+
 (* Only a test marked xfail evaluates [widen], in a forked process. *)
 let fork_xfail =
   [
@@ -1192,6 +1220,9 @@ let () =
   | "fails_first" -> exit @@ run "calc" [ group "first" fails_first ]
   | "forked" -> exit @@ run "calc" [ group "forked" forked ]
   | "fork_only" -> exit @@ run "calc" [ group "forked" fork_only ]
+  | "stateful_domains" ->
+      exit @@ run "calc" [ group "stateful" stateful_domains ]
+  | "on_workers" -> exit @@ run "calc" [ group "stateful" on_workers ]
   | "fork_xfail" -> exit @@ run "calc" [ group "forked" fork_xfail ]
   | "xfail_then_fork" -> exit @@ run "calc" [ group "forked" xfail_then_fork ]
   | "fatal_first" -> exit @@ run "calc" [ group "first" fatal_first ]

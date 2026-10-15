@@ -1827,9 +1827,11 @@ let save_verdicts ~scope ~narrowed ~outside ~unreached ~filtered tested =
 
 (* In exec mode, the verdicts follow the rules of a new process, so the
    report tells the mode. *)
-let children_line ~children ~exec =
+let children_line ~children ~exec ~one_at_a_time =
   match (children, exec) with
   | _, false -> None
+  | _, true when one_at_a_time ->
+      Some "children: new processes, one at a time, because of --mutate-workers"
   | Run.Exec, true -> Some "children: new processes (--mutate-children=exec)"
   | (Run.Auto | Run.Fork), true ->
       Some "children: new processes, because the suite spawned a domain"
@@ -1972,6 +1974,15 @@ let loop renderer ~scope ~jobs ~children ~suite (config : Run.config) tests =
             if children = Run.Fork && domain_spawned () then
               refuse domain_refusal
             else
+              (* The worker domains of each child need CPUs that the share of a
+                 job does not count. Thus children at the same time can pass
+                 their deadlines and give false kills. A child runs only tests that
+                 the dry run ran, so a dry run that spawned no pool tells that
+                 no child spawns one. *)
+              let one_at_a_time =
+                exec && config.mutate_workers && Workers.spawned () && jobs > 1
+              in
+              let jobs = if one_at_a_time then 1 else jobs in
               let forks =
                 try
                   with_interrupts @@ fun () ->
@@ -2010,7 +2021,7 @@ let loop renderer ~scope ~jobs ~children ~suite (config : Run.config) tests =
                     Os.die_by Sys.sigpipe
               in
               finish renderer
-                ~children:(children_line ~children ~exec)
+                ~children:(children_line ~children ~exec ~one_at_a_time)
                 ~narrowed ~reach ~reached ~outside ~unreached ~filtered forks)
 
 (* The armed run *)

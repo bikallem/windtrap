@@ -8,11 +8,12 @@
    verdict here is deterministic.
 
    A process that has spawned a domain can never fork again. Thus these
-   tests are an executable of their own. Under mutation testing a stateful
-   test on several domains spawns nothing, and every test here that spawns
-   a pool skips. Thus the loop forks its children. The scenarios that
-   leave a domain running forever or spawn every domain the runtime has
-   run in forked children, before any domain exists. *)
+   tests are an executable of their own. Under mutation testing without
+   [--mutate-workers], a stateful test on several domains spawns nothing,
+   and every test here that spawns a pool skips. Thus the loop forks its
+   children. Some scenarios run in forked children, before any domain
+   exists. These scenarios leave a domain that runs forever, spawn every
+   domain that the runtime has, or test [--mutate-workers]. *)
 
 open Windtrap
 module Failure = Windtrap.Private.Failure
@@ -1524,6 +1525,26 @@ let under_mutation, seen_under_mutation =
   in
   (r, List.sort_uniq Int.compare (Log.take ()))
 
+(* Under mutation testing with [--mutate-workers], in a forked child: the
+   programs run on the workers. The text is the row of the test and whether
+   a call ran on a domain other than the test's. *)
+let workers_under_mutation =
+  Windtrap_test_support.Child.forked (fun () ->
+      let r =
+        Recorded.execute
+          ~config:(fun c ->
+            {
+              c with
+              mutation =
+                Run.Loop
+                  { scope = []; jobs = 1; since = None; children = Run.Auto };
+              mutate_workers = true;
+            })
+          [ Stateful.stateful ~count:5 ~domains:2 "parallel" [ where () ] ]
+      in
+      let others = List.filter (fun d -> d <> self ()) (Log.take ()) in
+      strf "%s %b" (Recorded.row r [ "parallel" ]) (others <> []))
+
 (* One after the other, a control from branch 1 ends the run before any
    later call runs. *)
 let stops_at_a_control () =
@@ -1618,6 +1639,12 @@ let mutation =
         (fun () ->
           equal string "pass" (Recorded.row under_mutation [ "sequential" ]);
           equal (list int) [ self () ] seen_under_mutation);
+      test "with --mutate-workers, a program runs calls on the workers"
+        (fun () ->
+          match workers_under_mutation with
+          | None ->
+              skip ~reason:"POSIX only: the domains run in a forked child" ()
+          | Some text -> equal string "pass true" text);
       test "a control from a branch ends the run before the next branch"
         stops_at_a_control;
       test "a control from a branch keeps the rows of the calls that ran"

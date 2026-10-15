@@ -21,10 +21,10 @@ let exe = `Exe "./t.exe"
 let armed = "lib/calc.ml:9:12:add"
 
 let entry ?(ansi = false) ?(terminal = ansi) ?excerpt ?hints ?filter ?invocation
-    ?armed f =
+    ?armed ?workers f =
   Format.asprintf "%a"
     (Sections.pp_failure ~ansi ~terminal ?excerpt ?hints ?filter ?invocation
-       ?armed)
+       ?armed ?workers)
     f
 
 let printed ?(ansi = false) sections =
@@ -868,6 +868,35 @@ let entry_entries () =
     ( "and in an armed run",
       entry ~invocation:exe ~armed ~filter:"math \u{203a} adds"
         (Failure.message "b") );
+    ( "an armed property's replay keeps --mutate-workers",
+      entry ~invocation:exe ~armed ~workers:true ~filter:"math \u{203a} adds"
+        Fixtures.prop_failure );
+    ( "and under a build action, as its mirror",
+      entry ~armed ~workers:true ~filter:"math \u{203a} adds"
+        Fixtures.prop_failure );
+    ( "a replay outside an armed run leaves out --mutate-workers",
+      entry ~invocation:exe ~workers:true ~filter:"math \u{203a} adds"
+        Fixtures.prop_failure );
+    ( "a replay of a run's tests keeps --mutate-workers only under mutation",
+      String.concat "\n"
+        (List.filter_map
+           (fun mutation ->
+             let armed =
+               match mutation with
+               | Run.Armed id -> Some id
+               | Run.No_mutation | Run.Loop _ -> None
+             in
+             Sections.replay ?armed ~invocation:exe
+               ~tests:
+                 (`Run
+                    {
+                      (Run.default_config ()) with
+                      Run.mutation;
+                      mutate_workers = true;
+                    })
+               [ Fixtures.prop_failure ])
+           [ Run.No_mutation; Run.Armed armed ])
+      ^ "\n" );
     ( "a message's escape prints as text",
       entry (Failure.message (hostile ^ " boom")) );
     ( "and under colour as text too",
@@ -2272,6 +2301,14 @@ let closing ?(ansi = false) ?(invocation = exe) ?(config = Fun.id) m =
        ~config:(config { (Run.default_config ()) with Run.invocation })
        m)
 
+let with_workers c =
+  {
+    c with
+    Run.mutation =
+      Run.Loop { scope = []; jobs = 1; since = None; children = Run.Auto };
+    mutate_workers = true;
+  }
+
 let with_source source (s : Sections.survivor) =
   let m : Sections.mutant = s.mutant in
   { s with Sections.mutant = { m with source } }
@@ -2428,6 +2465,10 @@ let mutation_entries () =
       closing
         ~config:(fun c -> { c with Run.filter = [ "memoized" ] })
         reached_report );
+    ( "a loop's commands keep --mutate-workers",
+      closing ~config:with_workers reached_report );
+    ( "a loop's commands keep --mutate-workers under the mirrors",
+      closing ~invocation:`Mirrors ~config:with_workers loop_report );
     ( "outside tests alone, in a loop: a blank line opens it",
       closing
         {

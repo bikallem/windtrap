@@ -47,6 +47,7 @@ type config = {
   verbose : bool;
   junit : string option;
   mutation : mutation;
+  mutate_workers : bool;
   github : bool;
   invocation : invocation;
   broadcast : broadcast;
@@ -77,6 +78,7 @@ let default_config () =
     verbose = false;
     junit = None;
     mutation = No_mutation;
+    mutate_workers = false;
     github = false;
     invocation = `Mirrors;
     broadcast = not_broadcast;

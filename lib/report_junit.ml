@@ -71,11 +71,12 @@ type testcase = {
   children : child list option;
 }
 
-let failure ~invocation ~armed ~filter f =
+let failure ~invocation ~armed ~workers ~filter f =
   let body =
     Pp.str "%a"
       (fun ppf ->
-        Report_sections.pp_failure ~ansi:false ~filter ~invocation ?armed ppf)
+        Report_sections.pp_failure ~ansi:false ~filter ~invocation ?armed
+          ~workers ppf)
       f
   in
   Failure { message = Report_sections.headline f; body }
@@ -165,8 +166,9 @@ let count p testcases =
   let has t = List.exists p (Option.value ~default:[] t.children) in
   List.length (List.filter has testcases)
 
-let render ~invocation ?armed ~suite ~results ~release_failures ~duration () =
-  let failure = failure ~invocation ~armed in
+let render ~invocation ?armed ?(workers = false) ~suite ~results
+    ~release_failures ~duration () =
+  let failure = failure ~invocation ~armed ~workers in
   let rows = List.concat_map (row_testcases ~suite ~failure) results in
   (* A failed release is timed no more than a subtest is. *)
   let release f =
@@ -209,11 +211,12 @@ let path ~suite target =
   if names_file target then target
   else Filename.concat target (Os.sanitize_component suite ^ ".xml")
 
-let write ~invocation ?armed ~suite ~duration ~results ~release_failures target
-    =
+let write ~invocation ?armed ?workers ~suite ~duration ~results
+    ~release_failures target =
   let file = path ~suite target in
   let document =
-    render ~invocation ?armed ~suite ~results ~release_failures ~duration ()
+    render ~invocation ?armed ?workers ~suite ~results ~release_failures
+      ~duration ()
   in
   try
     if not (names_file target) then Os.mkdir_p (Filename.dirname file);

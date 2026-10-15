@@ -33,6 +33,8 @@ what is non-obvious.
   and each test that spawns a pool skips. Its scenarios that leave a
   domain running forever or spawn every domain the runtime has run in
   children forked as the module initialises, before any domain exists.
+  The test of `--mutate-workers` also runs in such a child, because it
+  spawns its workers.
   `runtime/` holds the suites over the runtime's modules:
   `test_coverage` and `test_mutate`, each with a child executable (for
   the at_exit dump and for a registration that runs before any window

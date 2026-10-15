@@ -276,6 +276,11 @@
   forks. When only such a process evaluated the site and no test failed
   after it, the run ends on
   `mutant survived: only a forked process ran the site, and no test failed after that.`
+- `--mutate-workers` (`WINDTRAP_MUTATE_WORKERS`) lets a stateful test
+  on several domains spawn its workers under `--mutate` and `--arm`. Then
+  a kill of such a test can depend on a schedule, and each child of the
+  run is a new process. The loop tests one mutant at a time (see
+  [Stateful tests on several domains](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#stateful-tests-on-several-domains)).
 - The dry run finds each test that reaches a mutation site, also when
   the test evaluates the site on several domains at the same time.
 - A mutation run on Windows is refused because the loop needs process

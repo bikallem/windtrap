@@ -40,6 +40,10 @@ val spawn : int -> t
     what a signal handler raises meanwhile, after the workers already spawned
     have been told to exit and joined. Raises [Invalid_argument] if [n < 1]. *)
 
+val spawned : unit -> bool
+(** [spawned ()] is [true] after the first call of {!spawn} in this process with
+    [n >= 1], also when that call raised. *)
+
 exception Stuck of exn * Printexc.raw_backtrace
 (** Raised by {!run} when a job is still running after its grace: the exception
     that interrupted the wait, with its backtrace. *)
