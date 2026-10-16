@@ -432,6 +432,13 @@ val stopped : t -> string list option
 (** [stopped t] is the path of the test after which {!stop} ended the run, and
     [None] when nothing did. *)
 
+val fixture_seconds : t -> float
+(** [fixture_seconds t] is the seconds that the fixtures of [t] used: the sum of
+    the times of each acquisition, also an acquisition that raised, and of the
+    release at the end of the run. The duration of the test that acquired a
+    fixture also has its acquisition. The mutation loop uses this time for the
+    deadline of each child. *)
+
 (** {1:props Properties} *)
 
 val property :

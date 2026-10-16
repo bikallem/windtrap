@@ -534,6 +534,83 @@ let slow =
         is_true (Subject.sub 10 4 < 100));
   ]
 
+(* [beside_slow] has a slow test that reaches no site, and a fast test that
+   blocks when [sub]'s answer changes. The slow test sleeps only in the
+   process that measured the reach map. Thus the dry run takes 3 seconds,
+   and the probe is fast. The child of the mutant of [sub] runs only the
+   fast test. Under MUTATE_HANG_STAMP, the fast test writes the time of the
+   clock to that file before it blocks. *)
+let beside_slow =
+  [
+    test "sleeps in the dry run and reaches no site" (fun () ->
+        if not (in_child ()) then Unix.sleepf 3.0);
+    test "blocks when sub changes" (fun () ->
+        if Subject.sub 10 4 <> 6 then begin
+          (match Sys.getenv_opt "MUTATE_HANG_STAMP" with
+          | None | Some "" -> ()
+          | Some path ->
+              Out_channel.with_open_bin path (fun oc ->
+                  output_string oc
+                    (Printf.sprintf "%.6f" (Unix.gettimeofday ()))));
+          hang ()
+        end;
+        equal int 6 (Subject.sub 10 4));
+  ]
+
+(* [slow_release] has a fixture whose release takes 2 seconds, and a test
+   that holds it and reaches no site. A second test watches [sub] without
+   pinning it. The probe runs the two tests and releases the fixture again.
+   The child of the mutant of [sub] runs only the second test, and acquires
+   no fixture. *)
+let held_slowly = fixture ~teardown:(fun () -> Unix.sleepf 2.0) Fun.id
+
+let slow_release =
+  [
+    test "holds a fixture whose release takes 2 seconds" (fun () ->
+        held_slowly ());
+    test "watches sub without pinning it" (fun () ->
+        is_true (Subject.sub 10 4 < 100));
+  ]
+
+(* [slow_acquire] has a fixture whose acquisition and release each take 1
+   second. The first test acquires it and reaches no site. The second test
+   uses it and watches [sub] without pinning it. The dry run counts the
+   acquisition in the first test. The child of the mutant of [sub] runs only
+   the second test, so it acquires and releases the fixture outside the
+   time that the dry run measured for that test. *)
+let opened_slowly =
+  fixture ~teardown:(fun () -> Unix.sleepf 1.0) (fun () -> Unix.sleepf 1.0)
+
+let slow_acquire =
+  [
+    test "opens a slow fixture" (fun () -> opened_slowly ());
+    test "uses the fixture and watches sub" (fun () ->
+        opened_slowly ();
+        is_true (Subject.sub 10 4 < 100));
+  ]
+
+(* [warm_up] has a table that takes 2.5 seconds to fill, and two tests that
+   use it. The first test fills it and reaches no site. The second test finds
+   it full in the dry run, and watches [sub] without pinning it. In exec mode,
+   a child that runs only the second test fills the table again, in a test
+   that the dry run measured as fast. Under MUTATE_WARM_MARKER, the first test
+   adds a line to that file in each child that runs it. *)
+let table = lazy (Unix.sleepf 2.5)
+
+let warm_up =
+  [
+    test "fills the table and reaches no site" (fun () ->
+        (match Sys.getenv_opt "MUTATE_WARM_MARKER" with
+        | Some path when in_child () ->
+            Out_channel.with_open_gen [ Open_append; Open_creat; Open_wronly ]
+              0o644 path (fun oc -> output_string oc "ran\n")
+        | Some _ | None -> ());
+        Lazy.force table);
+    test "uses the table and watches sub" (fun () ->
+        Lazy.force table;
+        is_true (Subject.sub 10 4 < 100));
+  ]
+
 (* [starved] reaches [sub] and pins nothing about it. Outside the process
    that measured the reach map, in the probe and in the child, its test
    first uses 0.4 seconds of CPU time. The dry run does not, so the
@@ -581,10 +658,10 @@ let spawning =
         is_true (Subject.sub 10 4 < 100));
   ]
 
-(* [burn_then_sleep] is [spawning] with a deadline of about 2.2 seconds,
-   because the dry run sleeps 0.2 seconds. The probe does not sleep and
-   starts no subprocess. The armed child waits for a subprocess that uses
-   0.7 seconds of CPU time, then sleeps 0.9 seconds. *)
+(* [burn_then_sleep] is [spawning] with a deadline of about 2.5 seconds: 0.5
+   seconds plus ten times the 0.2 seconds that the dry run sleeps. The probe
+   does not sleep and starts no subprocess. The armed child waits for a
+   subprocess that uses 0.7 seconds of CPU time, then sleeps 0.9 seconds. *)
 let burn_then_sleep =
   [
     test
@@ -599,16 +676,18 @@ let burn_then_sleep =
   ]
 
 (* [late_burn] is [starved], but then the test waits for a subprocess that
-   uses the CPU ([burn]). The subprocess starts after about 2 seconds, past
-   the deadline of about 1 second. Thus it starts after the first read of
-   the group of the child, and gets a new pid. *)
+   uses the CPU ([burn]). The armed child first uses 0.6 seconds of CPU time.
+   Thus its subprocess starts after about 3 seconds, past the deadline of
+   about 1.5 seconds, after the first read of the group of the child, and
+   gets a new pid. The probe first uses 0.4 seconds, as in [starved], because
+   its deadline is about 1 second. *)
 let late_burn =
   [
     test
       "uses the CPU, then waits for a process that uses the CPU, and pins \
        nothing about sub" (fun () ->
         if in_child () then begin
-          use_cpu 0.4;
+          use_cpu (if Subject.sub 10 4 <> 6 then 0.6 else 0.4);
           burn ()
         end;
         is_true (Subject.sub 10 4 < 100));
@@ -1096,6 +1175,21 @@ let order ~domain =
         is_true (Subject.widen 3 4 <> 0));
   ]
 
+(* [slow_order]'s second test needs the state that the first test sets, and
+   watches [sub] without pinning it. The first test sleeps 3 seconds in each
+   run and reaches no site. In exec mode, the second test fails alone, so
+   the child of the mutant of [sub] runs the two tests. Its deadline must
+   have the time of the first test. *)
+let slow_order =
+  [
+    test "sets the state slowly" (fun () ->
+        Unix.sleepf 3.0;
+        state := true);
+    test "needs the state and watches sub" (fun () ->
+        is_true !state;
+        is_true (Subject.sub 10 4 < 100));
+  ]
+
 (* [order_kill]'s third test does not reach [sub]: it reads what the second
    test stored. In exec mode, the reaching tests fail alone, so the child of
    the mutant of [sub] runs the tests of the dry run up to the last reaching
@@ -1319,6 +1413,11 @@ let () =
   | "pinned" ->
       exit @@ run "calc" [ group "calc" strong; group "pinned" pinned ]
   | "slow" -> exit @@ run "calc" [ group "slow" slow ]
+  | "beside_slow" -> exit @@ run "calc" [ group "beside_slow" beside_slow ]
+  | "slow_release" -> exit @@ run "calc" [ group "slow_release" slow_release ]
+  | "slow_acquire" -> exit @@ run "calc" [ group "slow_acquire" slow_acquire ]
+  | "slow_order" -> exit @@ run "calc" [ group "order" slow_order ]
+  | "warm_up" -> exit @@ run "calc" [ group "warm_up" warm_up ]
   | "starved" -> exit @@ run "calc" [ group "starved" starved ]
   | "spawning" -> exit @@ run "calc" [ group "starved" spawning ]
   | "burn_then_sleep" -> exit @@ run "calc" [ group "starved" burn_then_sleep ]

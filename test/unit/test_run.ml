@@ -1489,6 +1489,30 @@ let cut_acquisition, cut_acquisitions =
   in
   (r, !acquisitions)
 
+(* The seconds of the fixtures of a run: the acquisition one time, also an
+   acquisition that raises, and the release at the end. Four tests use the
+   timed fixture. Thus a run that counted the acquisition for each test
+   gives 0.5 seconds, not 0.2 seconds. *)
+let fixture_time_of tests =
+  Run.fixture_seconds (Recorded.outcome (Recorded.execute tests)).run
+
+let timed_seconds, plain_seconds, raised_seconds =
+  let timed =
+    Run.fixture
+      ~teardown:(fun () -> Unix.sleepf 0.1)
+      (fun () -> Unix.sleepf 0.1)
+  in
+  let raising =
+    Run.fixture (fun () ->
+        Unix.sleepf 0.1;
+        raise No_db)
+  in
+  let use accessor () = try accessor () with No_db -> () in
+  ( fixture_time_of
+      (List.map (fun name -> test name (use timed)) [ "a"; "b"; "c"; "d" ]),
+    fixture_time_of [ test "first" ignore; test "second" ignore ],
+    fixture_time_of [ test "raises" (use raising) ] )
+
 let fixture_names, fixture_line =
   let accessor, line = (Run.fixture ~teardown:ignore ignore, __LINE__) in
   let names = ref [] in
@@ -1550,6 +1574,12 @@ let fixtures =
           needs_timeouts ();
           equal (pair string int) ("pass", 2)
             (Recorded.row cut_acquisition [ "acquires again" ], cut_acquisitions));
+      test "a run counts the seconds of its fixture acquisitions and releases"
+        (fun () ->
+          at_least float_exact ~than:0.2 timed_seconds;
+          less float_exact ~than:0.4 timed_seconds;
+          less float_exact ~than:0.05 plain_seconds;
+          at_least float_exact ~than:0.1 raised_seconds);
       test "a fixture is named after the site where fixture was applied"
         (fun () ->
           equal (list string)

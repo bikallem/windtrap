@@ -867,6 +867,11 @@ type loop = {
   tests : Test_tree.t list;
   reach : reach;
   dry_run_wall : float;
+      (* the seconds of the dry run, for the deadlines of the startup child
+         and of the probe *)
+  fixture_wall : float;
+      (* the seconds of the fixture acquisitions and releases of the dry run
+         ([Run.fixture_seconds]) *)
   exec : bool; (* each child is a new process, not a fork *)
   startup_wall : float;
       (* the seconds that a new process takes before its first test, and [0.]
@@ -885,22 +890,23 @@ type loop = {
 
 let deadline_multiplier = 10.
 
-(* The dry run's wall clock bounds what a child pays before its first test:
-   the fork and a whole process's module initialization. Children that use
-   more CPUs than the host has share them, and their deadlines grow by
-   [share]. The probe runs alone, and its share is [1.]. *)
-let child_deadline loop ~share paths =
-  let took path =
-    Hashtbl.find_opt loop.reach.durations (Test_tree.path_to_string path)
-  in
-  let scheduled =
-    List.fold_left
-      (fun acc path -> acc +. Option.value ~default:0. (took path))
-      0. paths
-  in
+(* The seconds that a child uses outside its tests and its fixtures: the
+   start and the end of its run, and the line that it writes. The clock of a
+   child starts after the fork, or after the start of a new process. The dry
+   run measures this time for no test. *)
+let fork_allowance = 0.5
+
+(* The seconds from the start of a child to its deadline. [fixed] is the time
+   of the child outside its tests. [startup] is the time of the module
+   initialization of a new process, and [0.] for a fork. [scheduled] is the
+   time that the dry run measured for the tests of the child. The child gets
+   ten times ([deadline_multiplier]) [startup] and [scheduled], and at least
+   one second for its tests. Children that use more CPUs than the host has
+   share them, and their deadlines are [share] times longer. *)
+let deadline ~share ~fixed ~startup ~scheduled =
   share
-  *. (loop.dry_run_wall
-     +. (deadline_multiplier *. loop.startup_wall)
+  *. (fixed
+     +. (deadline_multiplier *. startup)
      +. Float.max 1. (deadline_multiplier *. scheduled))
 
 (* The seconds below which [child_cpus] is [1.]. In a shorter time, the
@@ -1397,6 +1403,63 @@ let start_process ~deadline ~share ~cpus ~weight ~log_dir request =
       Unix.close null;
       supervise ~deadline ~share ~cpus ~weight ~removed pid read_fd
 
+(* The tests that the dry run executed, in its order, up to [last]. *)
+let executed_until reach last =
+  let rec from_last = function
+    | [] -> []
+    | path :: rest as executed ->
+        if List.equal String.equal path last then executed else from_last rest
+  in
+  List.rev (from_last reach.executed)
+
+(* The deadline of a child of [paths] ([deadline]). A child acquires again the
+   fixtures that its tests use, also a fixture that the dry run acquired in
+   another test, and releases them. Thus its time outside its tests has the
+   fixture time of the dry run. In exec mode, a child of [full_paths] can run
+   the tests before its reaching tests. These tests are in [paths], so their
+   time is in the deadline.
+
+   In exec mode, a child also gets the time that the dry run took for each
+   test up to its last test ([prefix]). A new process does not have the state
+   that the earlier tests of the dry run made, for example a forced lazy value
+   or a filled table. A test of the child can make this state again, and the
+   dry run counted this time in an earlier test. [prefix] is [0.] in fork
+   mode. Thus a fork that hangs after a slow test expires soon. A fork starts
+   from the state at the end of the dry run, not from the state before its
+   test. The two states can differ in two directions. A later test or a
+   fixture release can remove state, for example when it clears a cache. Then
+   a test of the child makes the state again. A later test can also add
+   state, for example a large heap for a test that calls [Gc.full_major], or
+   a global table that a test walks. Then a test of the child is slower than
+   in the dry run. In the two cases, the deadline has no part for this time,
+   and the child can expire with no test name.
+
+   The probe runs each test that the dry run executed and releases each
+   fixture again. Thus its time outside its tests is the wall time of the dry
+   run. The probe runs alone, and its share is [1.]. *)
+let child_deadline loop ~share ~kind paths =
+  let took path =
+    Hashtbl.find_opt loop.reach.durations (Test_tree.path_to_string path)
+  in
+  let sum =
+    List.fold_left
+      (fun acc path -> acc +. Option.value ~default:0. (took path))
+      0.
+  in
+  let scheduled = sum paths in
+  let prefix =
+    match List.rev paths with
+    | last :: _ when loop.exec -> sum (executed_until loop.reach last)
+    | _ -> 0.
+  in
+  let fixed =
+    match kind with
+    | Probe -> loop.dry_run_wall
+    | Alone | Mutant _ | Startup ->
+        fork_allowance +. loop.fixture_wall +. prefix
+  in
+  deadline ~share ~fixed ~startup:loop.startup_wall ~scheduled
+
 let start_child loop ~share ~log ~bail ~kind ~paths ~siblings =
   let log_dir = Filename.concat loop.scratch log in
   let request =
@@ -1407,7 +1470,7 @@ let start_child loop ~share ~log ~bail ~kind ~paths ~siblings =
       kind;
     }
   in
-  let deadline = child_deadline loop ~share paths in
+  let deadline = child_deadline loop ~share ~kind paths in
   let cpus = child_cpus loop.reach paths in
   let weight = weight loop.reach paths in
   if loop.exec then
@@ -1742,15 +1805,6 @@ let passing_alone loop reached =
         Hashtbl.replace alone_failed paths ())
     fulls;
   { loop with killers; alone_failed }
-
-(* The tests that the dry run executed, in its order, up to [last]. *)
-let executed_until reach last =
-  let rec from_last = function
-    | [] -> []
-    | path :: rest as executed ->
-        if List.equal String.equal path last then executed else from_last rest
-  in
-  List.rev (from_last reach.executed)
 
 (* The tests of a full child: the reaching tests of its mutant. In exec mode,
    a list of reaching tests that does not pass alone ([passing_alone]) gets
@@ -2212,6 +2266,7 @@ let loop renderer ~scope ~jobs ~children ~suite (config : Run.config) tests =
                       tests;
                       reach;
                       dry_run_wall;
+                      fixture_wall = Run.fixture_seconds outcome.run;
                       exec;
                       startup_wall = 0.;
                       scratch;

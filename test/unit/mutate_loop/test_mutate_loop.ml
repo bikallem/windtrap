@@ -8,8 +8,9 @@
    environment and reads what the loop decided from the dry run's summary,
    the outcome line, the survivors it named and the verdict file. How a
    report lays these out is Report_sections'. Only [drain], which reads the
-   pipes of the children, and [next_look], which times the looks at a
-   child, are called in this process ([never_empty], [looks]). *)
+   pipes of the children, [next_look], which times the looks at a child,
+   and [deadline], which holds the formula of the deadline of a child, are
+   called in this process ([never_empty], [looks], [deadline_formula]). *)
 
 open Windtrap
 module Mutate = Windtrap_runtime.Mutate
@@ -1066,7 +1067,7 @@ let budget (k, over) =
     (outcome r.out)
 
 (* The runaway fixture's mutant spins; the hit budget stops it within
-   microseconds, where a kill by the deadline waits out its one-second
+   microseconds, where a kill by the deadline waits out its 1.5-second
    floor. The first launch of a newly built executable can take seconds of
    the system's own, so an untimed run comes first. *)
 let runaway () =
@@ -1286,8 +1287,8 @@ let two_cpus () =
 
 (* [hung] reaches two mutants, so on one CPU 16 jobs give two children,
    which share the CPU, and each child of [hung] blocks until its deadline,
-   two seconds or more. With the 16 jobs of the command line, the deadline
-   would be sixteen seconds or more. *)
+   three seconds or more. With the 16 jobs of the command line, the deadline
+   would be 24 seconds or more. *)
 let on_one_cpu () =
   let taskset = one_cpu () in
   let began = Unix.gettimeofday () in
@@ -1303,17 +1304,17 @@ let on_one_cpu () =
     "mutants: 2 reached by this suite, 2 killed, 2 never reached, 1 filtered, \
      score 100.0%"
     (outcome r.out);
-  at_least float_exact ~than:2.0 elapsed;
+  at_least float_exact ~than:3.0 elapsed;
   less float_exact ~than:8.0 elapsed
 
 (* [spinners] reaches two mutants, and each child uses the CPU until its
-   deadline, about one second for one job. On one CPU, 2 jobs give two
-   children for each CPU. Thus each deadline is two seconds, and each child
-   gets half of the CPU, so it uses about one second of CPU time. The wait
-   of each child for the other one does not move its deadline again: with
-   that wait, each child used two seconds. The loop reaps its children and
-   this test reaps the loop, so [tms_cutime] and [tms_cstime] hold their CPU
-   time. *)
+   deadline, about 1.5 seconds for one job. On one CPU, 2 jobs give two
+   children for each CPU. Thus each deadline is three seconds, and each
+   child gets half of the CPU, so it uses about 1.5 seconds of CPU time. The
+   wait of each child for the other one does not move its deadline again:
+   with that wait, each child used three seconds. The loop reaps its children
+   and this test reaps the loop, so [tms_cutime] and [tms_cstime] hold their
+   CPU time. *)
 let spinning_on_one_cpu () =
   let taskset = one_cpu () in
   let children_cpu () =
@@ -1333,7 +1334,7 @@ let spinning_on_one_cpu () =
     "mutants: 2 reached by this suite, 2 killed, 2 never reached, 1 filtered, \
      score 100.0%"
     (outcome r.out);
-  less float_exact ~than:3.0 used
+  less float_exact ~than:4.5 used
 
 (* [flood] armed is 8 processes that use the CPU. On one CPU, the sum of
    their waits for the CPU grows 7 times as fast as the clock. The credit
@@ -1381,7 +1382,8 @@ let probe_alone () =
 (* [starve fixture] runs [fixture] on one CPU beside 4 processes that use
    it and never stop. Thus its probe and its child wait for the CPU 4 times
    as long as they use it, and end after about 2 seconds, past their
-   deadlines of about 1 second. The time that a child waits for a CPU does
+   deadlines of about 1.5 seconds for the children. The probe keeps a
+   deadline of about 1 second. The time that a child waits for a CPU does
    not count, so the probe agrees and the mutant survives.
 
    With [~two:true], the fixture and the hogs run on two CPUs. [env] goes
@@ -1430,13 +1432,13 @@ let spawning () =
   starve "spawning"
     "waits for a process that uses the CPU and pins nothing about sub"
 
-(* In [burn_then_sleep], the deadline is about 2.2 seconds. The subprocess
+(* In [burn_then_sleep], the deadline is about 2.5 seconds. The subprocess
    of the child waits for the CPU 4 times as long as it uses it, and ends
    after about 3.5 seconds. Then the child sleeps 0.9 seconds, and ends
    after about 4.4 seconds. The loop keeps the wait of the subprocess from
    its last read, and loses the wait after that read. The loop reads at
    least every 0.1 seconds, so it loses little of the wait. A loop that
-   read again only when the wait of its last read was used up read at 2.2
+   read again only when the wait of its last read was used up read at 2.5
    seconds and next at about 4 seconds. It lost about 1 second of wait and
    killed the child in its sleep. But the load of the machine moves these
    reads and the end of the subprocess, and that loop also passed this test
@@ -1515,6 +1517,82 @@ let looks () =
   equal seconds (0.0625, 0.0625) (look ~left:(-0.5) ~waited:(fun () -> 0.5625));
   equal seconds (-0.25, -0.25) (look ~left:(-0.5) ~waited:(fun () -> 0.25))
 
+(* The formula of the deadline of a child. The values are dyadic, so the
+   sums and the products are exact. *)
+let deadline_formula (_, share, fixed, startup, scheduled, expected) =
+  equal float_exact expected
+    (Private.Mutate_loop.deadline ~share ~fixed ~startup ~scheduled)
+
+(* The rows of the sites that [slow_release], [slow_acquire], [slow_order]
+   and [warm_up] do not reach, after the row of [sub]. The tests of these
+   suites use this list, thus a change to one of the suites can change it. *)
+let other_rows =
+  [
+    "subject.ml:18 unreached";
+    "subject.ml:21 unreached";
+    "subject.ml:27 unreached";
+    "subject.ml:38 filtered: zero operand";
+  ]
+
+let one_survivor =
+  "mutants: 1 survived of 1 reached by this suite, 3 never reached, 1 \
+   filtered, score 0.0%"
+
+(* The slow test of [beside_slow] sleeps 3 seconds in the dry run only. The
+   child of the mutant runs the fast test, which writes the time before it
+   blocks. With a deadline of the time of the dry run, the child ends more
+   than 4 seconds after that time. With the minimum deadline of 1.5
+   seconds, it ends near 1.5 seconds. *)
+let hang_beside_slow () =
+  let stamp = Filename.concat (temp_dir ()) "stamp" in
+  let r =
+    finish_within ~what:"the deadline of a hang beside a slow test"
+      (start
+         ~env:[ suite "beside_slow"; ("MUTATE_HANG_STAMP", stamp) ]
+         [ mutate ])
+  in
+  let hung =
+    Unix.gettimeofday () -. float_of_string (String.trim (read stamp))
+  in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal string
+    "mutants: 1 reached by this suite, 1 killed, 3 never reached, 1 filtered, \
+     score 100.0%"
+    (outcome r.out);
+  at_least float_exact ~than:1.0 hung;
+  less float_exact ~than:3.0 hung
+
+(* The fixture of [slow_release] takes 2 seconds to release. The probe
+   releases it again, and the time is outside the tests that the probe
+   runs. A probe deadline of 1.5 seconds refuses the suite. *)
+let probe_slow_release () =
+  let r = spawn ~env:[ suite "slow_release" ] [ mutate ] in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal string one_survivor (outcome r.out);
+  equal
+    (option (list string))
+    (Some
+       ("subject.ml:15 survived by slow_release \u{203a} watches sub without \
+         pinning it" :: other_rows))
+    (rows r)
+
+(* The child of the mutant of [sub] runs the second test of [slow_acquire]
+   only. It acquires the fixture again (1 second) and releases it
+   (1 second), outside the time that the dry run measured for that test. *)
+let child_slow_fixture () =
+  let r =
+    finish_within ~what:"a child with a slow fixture"
+      (start ~env:[ suite "slow_acquire" ] [ mutate ])
+  in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal string one_survivor (outcome r.out);
+  equal
+    (option (list string))
+    (Some
+       ("subject.ml:15 survived by slow_acquire \u{203a} uses the fixture and \
+         watches sub" :: other_rows))
+    (rows r)
+
 let limits =
   group "Limits"
     [
@@ -1535,6 +1613,32 @@ let limits =
         ~name:(fun (k, over) -> strf "%d measured, budget %+d" k over)
         [ (5, 0); (5, 1); (50, 0); (50, 1) ]
         budget;
+      cases
+        "the deadline of a child is its fixed time plus ten times its startup \
+         and its tests, at least one second for the tests, times the share"
+        ~name:(fun (name, _, _, _, _, _) -> name)
+        [
+          ("the minimum of one job", 1., 0.5, 0., 0., 1.5);
+          ("a short test keeps the minimum", 1., 0.5, 0., 0.0625, 1.5);
+          ("ten times the tests", 1., 0.5, 0., 0.25, 3.0);
+          ("ten times the startup", 1., 0.5, 0.125, 0., 2.75);
+          ("two children for each CPU", 2., 0.5, 0., 0., 3.0);
+          ("the fixtures of the dry run", 1., 2.5, 0., 0.0625, 3.5);
+          ("the probe has the dry run", 1., 4., 0., 0.25, 6.5);
+        ]
+        deadline_formula;
+      test
+        "a mutant that hangs a fast test beside a slow test is killed at the \
+         minimum deadline, not after the time of the suite"
+        hang_beside_slow;
+      test
+        "the probe's deadline has the time of the dry run, so a slow fixture \
+         release does not refuse the suite"
+        probe_slow_release;
+      test
+        "a child that acquires and releases a slow fixture of another test is \
+         not killed at its deadline"
+        child_slow_fixture;
       test "a mutant that never terminates is killed by its hit budget" runaway;
       test "a mutant that blocks is killed by its child's deadline"
         deadline_kill;
@@ -1548,10 +1652,10 @@ let limits =
         never_empty;
       test "the loop reads a full pipe of a child that ended to its end at once"
         full_pipe;
-      test "a child's deadline is at least one second" (fun () ->
+      test "a child's deadline is at least 1.5 seconds" (fun () ->
           let b = Lazy.force blocked in
           equal string "exited 0" b.run.status;
-          at_least float_exact ~than:1.0 b.elapsed);
+          at_least float_exact ~than:1.5 b.elapsed);
       test "an expired child's process group dies whole" (fun () ->
           let b = Lazy.force blocked in
           equal int 1 (List.length b.grandchildren);
@@ -3045,7 +3149,7 @@ let past_deadline () =
   let share =
     Float.max 1. (2. /. float_of_int (Domain.recommended_domain_count ()))
   in
-  let r, tmpdir = stalled_report (fun _ _ -> Unix.sleepf (1.5 *. share)) in
+  let r, tmpdir = stalled_report (fun _ _ -> Unix.sleepf (2.5 *. share)) in
   equal (pair string text) ("exited 0", "") (r.status, r.err);
   equal (list string) [ site 15; site 18 ] (survivors r.out);
   equal string stalled_outcome (outcome r.out);
@@ -4077,9 +4181,62 @@ let domains =
           equal (option (list string)) None (rows r));
     ]
 
+(* The second test of [slow_order] needs the state of the first, which
+   sleeps 3 seconds in each run. In exec mode, the child of the mutant runs
+   the two tests, so its deadline must have the time of the first. *)
+let slow_prefix () =
+  let r =
+    finish_within ~seconds:30. ~what:"the child of a slow prefix"
+      (start ~env:[ exec_children; suite "slow_order" ] [ mutate ])
+  in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  contains ~sub:exec_line r.out;
+  equal string one_survivor (outcome r.out);
+  equal
+    (option (list string))
+    (Some
+       ("subject.ml:15 survived by order \u{203a} needs the state and watches \
+         sub" :: other_rows))
+    (rows r)
+
+(* The second test of [warm_up] fills again, in a new process, the table that
+   the first test filled in the dry run. This takes 2.5 seconds, but the dry
+   run measured the second test as fast. The deadline of a child in exec mode
+   has the time of the dry run up to its last test, so the child that runs
+   the second test alone passes. Thus the first test runs in one child, the
+   probe. Without that time, the deadline is about 1.5 seconds, the child
+   expires, and the child of the mutant runs the two tests: two children run
+   the first test. *)
+let warm_up_in_exec () =
+  let marker = Filename.concat (temp_dir ()) "marker" in
+  let r =
+    finish_within ~seconds:30. ~what:"the children of a warm-up"
+      (start
+         ~env:[ exec_children; suite "warm_up"; ("MUTATE_WARM_MARKER", marker) ]
+         [ mutate ])
+  in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  contains ~sub:exec_line r.out;
+  equal string one_survivor (outcome r.out);
+  equal
+    (option (list string))
+    (Some
+       ("subject.ml:15 survived by warm_up \u{203a} uses the table and watches \
+         sub" :: other_rows))
+    (rows r);
+  equal (list string) [ "ran"; "" ] (lines (read marker))
+
 let exec_group =
   group "Exec mode"
     [
+      test
+        "in exec mode, the deadline of the child of a slow test before its \
+         reaching test has the time of that test"
+        slow_prefix;
+      test
+        "in exec mode, the deadline of a child has the time of the dry run up \
+         to its last test"
+        warm_up_in_exec;
       cases "a suite with no domain gives the report of a fork"
         ~name:(fun (name, _, _) -> name)
         exec_fixtures same_in_exec;
