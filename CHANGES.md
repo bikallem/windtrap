@@ -205,6 +205,19 @@
   do not kill its mutant. This is also true for a child on several
   domains (see
   [Testing mutants in parallel](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#testing-mutants-in-parallel)).
+- The deadline of a mutation child does not include the time of the
+  whole dry run. It is 0.5 seconds, plus the time of the fixture
+  acquisitions and releases of the dry run, plus ten times the time that
+  the tests of the child took in the dry run (at least 1 second). Thus
+  with forked children, a mutant that makes a short test hang in a suite
+  without fixtures is killed after about 1.5 seconds, where 0.2.0 waited
+  at least the time of the dry run. In exec mode, the deadline also has
+  ten times the startup time, and the time that the dry run took up to
+  the last test of the child. The determinism probe keeps the time of
+  the dry run in its deadline. A forked child starts from the state at
+  the end of the dry run, which can make its test slower than in the
+  dry run (see
+  [What a mutation run runs](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#what-a-mutation-run-runs)).
 - A mutation child writes no last-failed store. The run removes the
   store with the child, and on a busy file system the write can take
   seconds. This time counted toward the deadline of the child, and a

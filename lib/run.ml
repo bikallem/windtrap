@@ -132,6 +132,8 @@ type t = {
   fixtures : (int, fixture_state) Hashtbl.t; (* by accessor id *)
   mutable held : release list; (* the releases still due, newest first *)
   mutable releasing : string option; (* the fixture whose release runs *)
+  mutable fixture_seconds : float;
+      (* the time of the fixture acquisitions and releases *)
   mutable rev_results : result list;
   mutable interrupted : int option;
       (* a signal that arrived in the runner's own code, acted on at the next
@@ -148,6 +150,7 @@ let create config ~capture ~baselines =
     fixtures = Hashtbl.create 8;
     held = [];
     releasing = None;
+    fixture_seconds = 0.;
     rev_results = [];
     interrupted = None;
     stopped = None;
@@ -158,6 +161,7 @@ let capture t = t.capture
 let baselines t = t.baselines
 let results t = List.rev t.rev_results
 let stopped t = t.stopped
+let fixture_seconds t = t.fixture_seconds
 
 (* Events *)
 
@@ -516,7 +520,10 @@ let fixture : type a. ?teardown:(a -> unit) -> (unit -> a) -> unit -> a =
     | Some (Acquired _) -> assert false (* the id is this accessor's *)
     | Some (Raised c) -> Failure.reraise c
     | None -> (
-        match Failure.catch create with
+        let clock = Os.counter () in
+        let created = Failure.catch create in
+        run.fixture_seconds <- run.fixture_seconds +. Os.count_s clock;
+        match created with
         | Ok value ->
             Hashtbl.replace run.fixtures id (Acquired (Cell.Value value));
             let due teardown =
@@ -541,6 +548,8 @@ let release_failure (release : release) c =
 (* A fixture leaves [t.held] before its teardown runs, so a signal that stops
    a release goes on with the rest and never runs it again. *)
 let release_fixtures t ~announce =
+  let clock = Os.counter () in
+  let counted () = t.fixture_seconds <- t.fixture_seconds +. Os.count_s clock in
   let rec release_all acc =
     match t.held with
     | [] -> List.rev acc
@@ -554,12 +563,16 @@ let release_fixtures t ~announce =
         | Ok () -> release_all acc
         | Error c -> release_all (release_failure release c :: acc))
   in
-  try release_all []
-  with exn ->
-    let backtrace = Printexc.get_raw_backtrace () in
-    t.held <- [];
-    t.releasing <- None;
-    Printexc.raise_with_backtrace exn backtrace
+  match release_all [] with
+  | failures ->
+      counted ();
+      failures
+  | exception exn ->
+      let backtrace = Printexc.get_raw_backtrace () in
+      t.held <- [];
+      t.releasing <- None;
+      counted ();
+      Printexc.raise_with_backtrace exn backtrace
 
 (* Properties *)
 

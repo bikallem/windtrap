@@ -324,12 +324,50 @@ the withheld-correction warning:
   than `hits * 8 + 1000` times, `hits` being the dry run's count, is
   killed, and its mutant counts as killed.
 
+The deadline of a child is 0.5 seconds, plus the time that the fixtures
+took to acquire and to release in the dry run, plus ten times the time
+that the tests of the child took in the dry run. The part for the tests
+is at least 1 second. A child acquires again each fixture that its tests
+use, and releases it at its end. The fixture time of the deadline is for
+these acquisitions and releases. Thus with forked children, a mutant
+that makes a short test hang in a suite without fixtures is killed after
+about 1.5 seconds, also when the suite has slow tests.
+
+In exec mode, the deadline also has ten times the startup time, and the
+time that the dry run took for each test up to the last test of the
+child. A new process does not have the state that the earlier tests of
+the dry run made, for example a forced lazy value or a filled cache. A
+test of the child can make this state again, and the dry run counted
+this time in an earlier test. Thus in exec mode, a hang in a test that
+comes after slow tests is killed later.
+
+The determinism probe has the time of the dry run in place of the 0.5
+seconds and the fixture time. When the children use more CPUs than the
+host has, the deadlines are longer (see
+[Testing mutants in parallel](#testing-mutants-in-parallel)).
+
 A forked child starts from the state the dry run left. When a child passes
 without evaluating its mutant's site, as when the dry run cached the
 site's result in a table or a forced lazy value, the mutant is not
 evaluated and is no survivor. The report lists it under `not evaluated`
 with an `arm:` command, which runs the suite in a new process and ends
 on the mutant's verdict.
+
+The state that the dry run left is not always the state before a test
+of the child. The two states can differ in two directions:
+
+- A later test or a fixture release can remove state that an earlier
+  test made, for example when it clears a cache or closes a connection.
+  Then a test of the forked child makes this state again.
+- A later test can add state that makes a test of the child slower. For
+  example, a test that calls `Gc.full_major` or `Gc.compact` walks the
+  large heap that the later tests left. A test can also walk a global
+  table that the later tests filled.
+
+In the two cases, the deadline has no time for this. Thus the child can
+outrun its deadline, and its mutant counts as killed with no test name.
+Under `--mutate-children=exec`, each child starts in a new process, and
+the deadline has the time of the earlier tests (see above).
 
 Before the first evaluation of its site, a child runs the code of the
 unmutated program. Thus a failure before that evaluation does not kill

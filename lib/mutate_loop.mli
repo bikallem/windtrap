@@ -197,15 +197,11 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     it, and no survivor names it.
 
     {b Limits.} Nothing bounds a whole run. A child that passes its deadline has
-    its process group killed, and the loop goes on. The deadline is the time
-    that the dry run took, read on the monotonic clock ({!Os.val-counter}), plus
-    a share for the tests of the child. The share is ten times
-    ([deadline_multiplier]) what the dry run measured for those tests, and at
-    least one second. In exec mode, each deadline also has ten times the time
-    that the startup child measured. The probe has the same deadline, over every
-    executed test. The startup child has a deadline of 60 seconds plus ten times
-    the dry run. The loop reads each pipe that is ready before it looks at a
-    deadline. Thus a child that exited keeps its verdict, also when a write of
+    its process group killed, and the loop goes on. The loop reads the deadline
+    on the monotonic clock ({!Os.val-counter}). The formula is {!val-deadline}.
+    The startup child has a deadline of 60 seconds plus ten times the time that
+    the dry run took. The loop reads each pipe that is ready before it looks at
+    a deadline. Thus a child that exited keeps its verdict, also when a write of
     the report held the loop for longer than the deadline of the child. The loop
     reads a pipe at most 17 times ([drain_rounds]) before it looks at the
     deadlines and the signal, and keeps the first 64 KiB ([output_limit]) of
@@ -484,6 +480,22 @@ val drain : (Unix.file_descr * Buffer.t) list -> Unix.file_descr list
     exception that the loop reports as a failure of the supervision
     ({{!section-loop}Refusals}). When [read] fails with such an error, it raises
     [Unix.Unix_error]. *)
+
+(** {1:deadlines The deadline of a child} *)
+
+val deadline :
+  share:float -> fixed:float -> startup:float -> scheduled:float -> float
+(** [deadline ~share ~fixed ~startup ~scheduled] is the seconds from the start
+    of a child to its deadline:
+    [share *. (fixed +. (10. *. startup) +. Float.max 1. (10. *. scheduled))].
+    [fixed] is the time of the child outside its tests: 0.5 seconds plus the
+    fixture time of the dry run, and in exec mode plus the time of the dry run
+    up to the last test of the child. For the probe, it is the time of the dry
+    run. [startup] is the time that the startup child measured, and [0.] for a
+    fork. [scheduled] is the sum of the times that the dry run measured for the
+    tests of the child. [share] is the CPUs of the children for each CPU of the
+    host, and [1.] for the probe ({{!section-loop}Limits}). It is here for the
+    unit suite. *)
 
 (** {1:looks The looks at a child} *)
 
