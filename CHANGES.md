@@ -212,19 +212,11 @@
   with forked children, a mutant that makes a short test hang in a suite
   without fixtures is killed after about 1.5 seconds, where 0.2.0 waited
   at least the time of the dry run. In exec mode, the deadline also has
-  ten times the startup time, and the time that the dry run took for
-  each test up to the last test of the child. A new process can make
-  again the state that the earlier tests made, for example a forced lazy
-  value. A forked child gets no such time. Its state is the state at
-  the end of the dry run, and this state can differ from the state
-  before its test in two directions. A later test or a fixture release
-  can remove state, for example a cache, and a test of the child makes
-  it again. A later test can also add state that makes a test of the
-  child slower, for example a large heap for a test that calls
-  `Gc.full_major`. The child can then outrun its deadline, and its
-  mutant counts as killed with no test name. Use
-  `--mutate-children=exec` to prevent this. The determinism
-  probe keeps the time of the dry run in its deadline (see
+  ten times the startup time, and the time that the dry run took up to
+  the last test of the child. The determinism probe keeps the time of
+  the dry run in its deadline. A forked child starts from the state at
+  the end of the dry run, which can make its test slower than in the
+  dry run (see
   [What a mutation run runs](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#what-a-mutation-run-runs)).
 - A mutation child writes no last-failed store. The run removes the
   store with the child, and on a busy file system the write can take

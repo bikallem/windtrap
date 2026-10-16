@@ -198,42 +198,16 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
 
     {b Limits.} Nothing bounds a whole run. A child that passes its deadline has
     its process group killed, and the loop goes on. The loop reads the deadline
-    on the monotonic clock ({!Os.val-counter}). The deadline has a part for the
-    time of the child outside its tests, and a part for its tests
-    ({!val-deadline}). The first part is 0.5 seconds ([fork_allowance]), plus
-    the time of the fixture acquisitions and releases of the dry run
-    ({!Run.val-fixture_seconds}). A child acquires again the fixtures that its
-    tests use, and releases them. The second part is ten times
-    ([deadline_multiplier]) what the dry run measured for the tests of the
-    child, and at least one second. Thus in fork mode, a child that hangs in a
-    short test of a suite without fixtures expires after about 1.5 seconds, also
-    when the suite has slow tests. In exec mode, each deadline also has ten
-    times the time that the startup child measured. A child in exec mode that
-    runs the tests before its reaching tests has these tests in its second part.
-    In exec mode, the first part also has the time that the dry run took for
-    each test up to the last test of the child. A new process does not have the
-    state that the earlier tests of the dry run made, for example a forced lazy
-    value or a filled table, and a test of the child can make this state again.
-    A fork starts from the state at the end of the dry run, and gets no such
-    time. The state at the end of the dry run can differ from the state before a
-    test in two directions. A later test or a fixture release can remove state
-    that an earlier test made, for example when it clears a cache. Then a test
-    of a forked child makes this state again. A later test can also add state,
-    for example a large heap for a test that calls [Gc.full_major], or a global
-    table that a test walks. Then a test of a forked child is slower than in the
-    dry run. In the two cases, the deadline has no part for this time. The child
-    can expire, and the mutant is killed with no test name. Exec mode prevents
-    this. The probe runs every executed test. Its first part is the time that
-    the dry run took, because it releases each fixture again. The startup child
-    has a deadline of 60 seconds plus ten times the time that the dry run took.
-    The loop reads each pipe that is ready before it looks at a deadline. Thus a
-    child that exited keeps its verdict, also when a write of the report held
-    the loop for longer than the deadline of the child. The loop reads a pipe at
-    most 17 times ([drain_rounds]) before it looks at the deadlines and the
-    signal, and keeps the first 64 KiB ([output_limit]) of what a child writes.
-    Thus a child that writes and never stops cannot keep the loop past its
-    deadline, or fill the memory of the loop. When the CPUs that the children
-    use at once outnumber the CPUs of the host
+    on the monotonic clock ({!Os.val-counter}). The formula is {!val-deadline}.
+    The startup child has a deadline of 60 seconds plus ten times the time that
+    the dry run took. The loop reads each pipe that is ready before it looks at
+    a deadline. Thus a child that exited keeps its verdict, also when a write of
+    the report held the loop for longer than the deadline of the child. The loop
+    reads a pipe at most 17 times ([drain_rounds]) before it looks at the
+    deadlines and the signal, and keeps the first 64 KiB ([output_limit]) of
+    what a child writes. Thus a child that writes and never stops cannot keep
+    the loop past its deadline, or fill the memory of the loop. When the CPUs
+    that the children use at once outnumber the CPUs of the host
     ([Domain.recommended_domain_count]), each deadline is multiplied by that
     ratio. The CPUs at once are [jobs], but at most the sum of the CPUs of the
     reached mutants. A mutant counts the most CPUs of one of its reaching tests.
@@ -520,10 +494,8 @@ val deadline :
     run. [startup] is the time that the startup child measured, and [0.] for a
     fork. [scheduled] is the sum of the times that the dry run measured for the
     tests of the child. [share] is the CPUs of the children for each CPU of the
-    host, and [1.] for the probe ({{!section-loop}Limits}).
-
-    The function is in this interface for the unit suite. A test of the loop
-    measures a deadline only on the clock. *)
+    host, and [1.] for the probe ({{!section-loop}Limits}). It is here for the
+    unit suite. *)
 
 (** {1:looks The looks at a child} *)
 

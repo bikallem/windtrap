@@ -890,19 +890,10 @@ type loop = {
 
 let deadline_multiplier = 10.
 
-(* The seconds that a child uses outside its tests and its fixtures: the
-   start and the end of its run, and the line that it writes. The clock of a
-   child starts after the fork, or after the start of a new process. The dry
-   run measures this time for no test. *)
+(* The seconds of a child outside its tests and its fixtures: the start and
+   the end of its run. *)
 let fork_allowance = 0.5
 
-(* The seconds from the start of a child to its deadline. [fixed] is the time
-   of the child outside its tests. [startup] is the time of the module
-   initialization of a new process, and [0.] for a fork. [scheduled] is the
-   time that the dry run measured for the tests of the child. The child gets
-   ten times ([deadline_multiplier]) [startup] and [scheduled], and at least
-   one second for its tests. Children that use more CPUs than the host has
-   share them, and their deadlines are [share] times longer. *)
 let deadline ~share ~fixed ~startup ~scheduled =
   share
   *. (fixed
@@ -1412,31 +1403,11 @@ let executed_until reach last =
   in
   List.rev (from_last reach.executed)
 
-(* The deadline of a child of [paths] ([deadline]). A child acquires again the
-   fixtures that its tests use, also a fixture that the dry run acquired in
-   another test, and releases them. Thus its time outside its tests has the
-   fixture time of the dry run. In exec mode, a child of [full_paths] can run
-   the tests before its reaching tests. These tests are in [paths], so their
-   time is in the deadline.
-
-   In exec mode, a child also gets the time that the dry run took for each
-   test up to its last test ([prefix]). A new process does not have the state
-   that the earlier tests of the dry run made, for example a forced lazy value
-   or a filled table. A test of the child can make this state again, and the
-   dry run counted this time in an earlier test. [prefix] is [0.] in fork
-   mode. Thus a fork that hangs after a slow test expires soon. A fork starts
-   from the state at the end of the dry run, not from the state before its
-   test. The two states can differ in two directions. A later test or a
-   fixture release can remove state, for example when it clears a cache. Then
-   a test of the child makes the state again. A later test can also add
-   state, for example a large heap for a test that calls [Gc.full_major], or
-   a global table that a test walks. Then a test of the child is slower than
-   in the dry run. In the two cases, the deadline has no part for this time,
-   and the child can expire with no test name.
-
-   The probe runs each test that the dry run executed and releases each
-   fixture again. Thus its time outside its tests is the wall time of the dry
-   run. The probe runs alone, and its share is [1.]. *)
+(* A child acquires and releases its fixtures again, so it gets the fixture
+   time of the dry run. A new process must also make again the state of the
+   earlier tests, for example a forced lazy value, so in exec mode it gets the
+   time of the dry run up to its last test ([prefix]). The probe runs every
+   test, so it gets the time of the dry run. *)
 let child_deadline loop ~share ~kind paths =
   let took path =
     Hashtbl.find_opt loop.reach.durations (Test_tree.path_to_string path)
