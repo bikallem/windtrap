@@ -203,6 +203,40 @@ mutants: 4 reached by this suite, «g|3 killed», «y|1 not evaluated», «y|2 n
 
 mutants: 5 reached by this suite, «g|3 killed», «y|2 not evaluated», «y|2 never reached», score 60.0%
 
+=== unstable: one row per mutant, its previous verdict and its verdict, after not evaluated
+«d|─────────────────── not evaluated (1) ────────────────────»
+  Each site ran in the dry run and not in its mutant's child.
+  «b|lib/memo.ml:4:17:sub»  a + b → a - b
+    arm: ./test_memo.exe --arm lib/memo.ml:4:17:sub
+«d|──────────────────────────────────────────────────────────»
+
+«d|────────────────────── unstable (2) ──────────────────────»
+  The source of each mutant did not change, but its verdict did.
+  «b|lib/calc.ml:13:9:sub»    survived → killed
+  «b|lib/calc.ml:22:4:drop»   killed → not evaluated
+«d|──────────────────────────────────────────────────────────»
+
+«d|─────────────────── never reached (2) ────────────────────»
+  «y|2»  lib/calc.ml   lines 40-41
+«d|──────────────────────────────────────────────────────────»
+
+mutants: 4 reached by this suite, «g|3 killed», «y|1 not evaluated», «y|2 never reached», score 75.0%
+
+=== unstable in a merge: the executable first
+────────────────────── unstable (2) ──────────────────────
+  The source of each mutant did not change, but its verdict did.
+  test_calc.exe  lib/calc.ml:13:9:sub    survived → killed
+  test_eval.exe  lib/calc.ml:22:4:drop   killed → not evaluated
+──────────────────────────────────────────────────────────
+
+─────────────────── never reached (7) ────────────────────
+  1  lib/report.ml   line 61
+  2  lib/run.ml      line 40
+  4  lib/text.ml     lines 12-14, 32
+──────────────────────────────────────────────────────────
+
+mutants: 16 reached, 16 killed, 7 never reached, 3 executables, score 100.0%
+
 === evaluated outside tests follows never reached
 ─────────────────── never reached (2) ────────────────────
   2  lib/calc.ml   lines 40-41
@@ -311,6 +345,15 @@ mutants: 3 reached by this suite, 3 killed, 1 evaluated outside tests, score 100
 ──────────────────────────────────────────────────────────
 
 mutants: 3 reached by this suite, 3 killed, 1 filtered, score 100.0%
+
+=== unstable alone, in a loop: a blank line opens it
+
+────────────────────── unstable (1) ──────────────────────
+  The source of each mutant did not change, but its verdict did.
+  lib/calc.ml:13:9:sub   survived → killed
+──────────────────────────────────────────────────────────
+
+mutants: 3 reached by this suite, 3 killed, score 100.0%
 
 === an interrupted loop counts what it did not test
 ──────────────────────────────────────────────────────────

@@ -109,6 +109,14 @@
     identity it is the base name of the file. No reaching test has a location,
     because the command links no test tree.
 
+    {b Unstable verdicts.} The report lists, for each file that is kept, each
+    record whose verdict changed its class
+    ([Windtrap_runtime.Verdicts.changed]), with the label of the file. The rows
+    are sorted by identifier, and then in path order of the files. The list
+    comes from each file before the merge, so it keeps the previous verdict of
+    each executable. Under [--since] it has only the records on the changed
+    lines. It does not change the score or the exit code.
+
     {b Order.} The survivors are sorted by their number of reaching tests, the
     most first, and then in the order of [Windtrap_runtime.Mutate.compare_id].
 
@@ -150,8 +158,8 @@
     others. A change to the meaning of a key increments ["version"].
 
     The document is one object with the keys ["version"], ["summary"],
-    ["executables"], ["mutants"] and ["filtered"]. ["version"] is the number
-    [1].
+    ["executables"], ["mutants"], ["filtered"] and ["unstable"]. ["version"] is
+    the number [1].
 
     ["summary"] is an object with these keys:
     - ["reached"] is the sum of the three counts that follow it.
@@ -192,6 +200,12 @@
     rewriter filtered, in the same order. The object has the keys of an object
     of ["mutants"] from ["id"] to ["after"], and the key ["reason"] in place of
     ["verdict"]. ["reason"] is the reason of the filter, as ["zero operand"].
+
+    ["unstable"] is an array with one object for each row of the unstable
+    section ({{!section-merge}the merge}), in its order. The object has the keys
+    ["id"], ["executable"], the index of the file in ["executables"],
+    ["previous"] and ["verdict"]. The last two are ["killed"], ["survived"] or
+    ["not_evaluated"].
 
     ["tests"] has one object for each reaching test of the survivor in each file
     in which it survived. The objects are sorted by file, and then by the names

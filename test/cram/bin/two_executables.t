@@ -87,7 +87,8 @@ survivor with the tests that ran it in each executable:
         "file": "test/cram/bin/calc.ml", "line": 15, "col": 16, "rewrite": "add",
         "before": "a - b", "after": "a + b",
         "verdict": "unreached" } ],
-    "filtered": [ ] }
+    "filtered": [ ],
+    "unstable": [ ] }
   [1]
 
 With a gate, the score decides the exit code, and the survivor alone does
@@ -111,19 +112,45 @@ The command's identifier, pasted into that executable, arms the survivor:
 
 With --mutate-skip-killed, pins_sub.exe does not test the mutant of add,
 which the verdict file of pins_add.exe gives as killed. The report names
-the verdict file of pins_add.exe and counts the mutant as not tested:
+the verdict file of pins_add.exe and counts the mutant as not tested.
+The mutant of sub on line 12 survived in the run before, so its verdict
+changed class, and the report lists it as unstable:
 
   $ run _build/default/test/pins_sub.exe --mutate=test/cram/bin/calc.ml --mutate-skip-killed > skipped
-  $ grep -e SURVIVED -e '^killed elsewhere' -e '^mutants:' -e '^--- stderr' skipped
+  $ grep -e SURVIVED -e 'unstable (' -e 'survived → killed' -e '^killed elsewhere' -e '^mutants:' -e '^--- stderr' skipped
     SURVIVED  test/cram/bin/calc.ml:14:17:sub  a + b → a - b
+  ────────────────────── unstable (1) ──────────────────────
+    test/cram/bin/calc.ml:12:14:sub   survived → killed
   killed elsewhere: 1 mutant, not tested, from the verdict file of default/test/pins_add.exe (1)
   mutants: 1 survived of 3 reached by this suite, 1 killed, 1 never reached, 1 not tested, score 50.0%
 
-The merge gives the report of the runs without the option:
+The merge gives the survivors and the score of the runs without the option.
+It lists the skipped mutant as unstable, because pins_sub.exe let it
+survive before:
 
-  $ run windtrap mutants > /dev/null
+  $ run windtrap mutants
+  ───────────────────── survivors (1) ──────────────────────
+    SURVIVED  test/cram/bin/calc.ml:14:17:sub  a + b → a - b
+        14 │ let shared a b = a + b
+  
+      2 tests in 2 executables ran this line and none failed:
+        pins_add.exe  shared › shared is nonzero
+        pins_sub.exe  shared › shared is not 99
+  ──────────────────────────────────────────────────────────
+  
+  ────────────────────── unstable (1) ──────────────────────
+    The source of each mutant did not change, but its verdict did.
+    pins_sub.exe  test/cram/bin/calc.ml:12:14:sub   survived → killed
+  ──────────────────────────────────────────────────────────
+  
+  ─────────────────── never reached (1) ────────────────────
+    1  test/cram/bin/calc.ml   line 15
+  ──────────────────────────────────────────────────────────
+  
+  reproduce: dune exec --instrument-with ppx_windtrap.mutate test/pins_add.exe -- --arm test/cram/bin/calc.ml:14:17:sub
+  mutants: 1 survived of 3 reached, 2 killed, 1 never reached, 2 executables, score 66.7%
   [1]
-  $ cmp merged "$bin/out"
+  $ tail -n 1 merged > a && tail -n 1 "$bin/out" > b && cmp a b
 
 A new build of pins_add.exe makes its verdict file stale. pins_sub.exe
 still uses the file, because the source of the mutant did not change:

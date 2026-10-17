@@ -33,6 +33,7 @@ let mutate = "--mutate=" ^ scope
 let mutate_mirror = ("WINDTRAP_MUTATE", scope)
 let jobs n = strf "--mutate-jobs=%d" n
 let suite name = ("MUTATE_FIXTURE", name)
+let exec_children = ("WINDTRAP_MUTATE_CHILDREN", "exec")
 
 (* Under --instrument-with this executable's core catalogues its mutants,
    and so does plain_main's. *)
@@ -99,9 +100,16 @@ let local file =
 let row (r : Verdicts.record) =
   strf "%s:%d %s" (local r.id.file) r.id.line (verdict r.verdict)
 
+(* The same, with the previous verdict of the record in place of the
+   verdict. *)
+let previous_row (r : Verdicts.record) =
+  strf "%s:%d %s" (local r.id.file) r.id.line
+    (match r.previous with None -> "none" | Some v -> verdict v)
+
 type file = {
   raw : string;
   rows : string list;
+  previous : string list; (* The previous verdict of each record. *)
   identity : (string * string) option; (* The writer's path and digest. *)
 }
 
@@ -112,16 +120,17 @@ let saved path =
   else
     let raw = read path in
     match Verdicts.load path with
-    | Ok (t, writer) ->
+    | Ok (t, writer, _) ->
         Some
           {
             raw;
             rows = List.map row (Verdicts.records t);
+            previous = List.map previous_row (Verdicts.records t);
             identity = Option.map identity writer;
           }
     | Error e ->
         let reason = Format.asprintf "unreadable: %a" Verdicts.pp_error e in
-        Some { raw; rows = [ reason ]; identity = None }
+        Some { raw; rows = [ reason ]; previous = []; identity = None }
 
 type ran = {
   status : string;
@@ -131,6 +140,7 @@ type ran = {
 }
 
 let rows r = Option.map (fun (f : file) -> f.rows) r.file
+let previous_rows r = Option.map (fun (f : file) -> f.previous) r.file
 
 (* No test is ever reported slow, so the dry run's report is the same on
    any machine. *)
@@ -438,6 +448,56 @@ let site_id line =
     (Lazy.force catalogue)
 
 let site line = Mutate.id_to_string (site_id line)
+
+(* A run over the verdict file that an earlier run left. *)
+let rerun ?(env = []) args =
+  let r = Child.run ~env:(quiet env) suite_exe args in
+  {
+    status = ended r.Child.status;
+    out = r.Child.out;
+    err = r.Child.err;
+    file = saved (Verdicts.output_file ~exe:suite_exe);
+  }
+
+(* A line of the rule kind: dashes alone. *)
+let is_rule line =
+  line <> ""
+  && String.length line mod 3 = 0
+  && String.equal line
+       (String.concat ""
+          (List.init (String.length line / 3) (fun _ -> "\u{2500}")))
+
+(* The lines of the unstable section of a report, between its opening rule
+   and its closing rule. It is [None] when the report has none. *)
+let unstable out =
+  let rec opened = function
+    | [] -> None
+    | line :: rest ->
+        if Option.is_some (index_of ~sub:"\u{2500}\u{2500} unstable (" line)
+        then Some rest
+        else opened rest
+  in
+  let rec until acc = function
+    | [] -> List.rev acc
+    | line :: _ when is_rule line -> List.rev acc
+    | line :: rest -> until (line :: acc) rest
+  in
+  Option.map (until []) (opened (lines out))
+
+(* The previous verdicts of a file written with no file to compare with. *)
+let none_rows = List.map (strf "subject.ml:%d none") [ 15; 18; 21; 27; 38 ]
+let lead = "  The source of each mutant did not change, but its verdict did."
+
+(* The section with one row for each [(line, change)] of subject.ml: the
+   identifier padded to the widest, then the change. *)
+let listed changes =
+  let ids = List.map (fun (line, _) -> site line) changes in
+  let width = List.fold_left (fun w id -> max w (String.length id)) 0 ids in
+  Some
+    (lead
+    :: List.map2
+         (fun id (_, text) -> strf "  %-*s   %s" width id text)
+         ids changes)
 
 (* The scenarios several tests read. Each runs once, in the first test that
    reads it, and keeps what it saw: a lazy rather than a fixture, since a
@@ -1734,23 +1794,27 @@ let elsewhere =
       { Mutate.file = "elsewhere/other.ml"; line = 1; col = 0; rewrite = "add" };
     before = "a - b";
     after = "a + b";
-    source_digest = None;
+    source_digest = Some (String.make 32 'c');
     verdict = Verdicts.Killed { by = None };
+    previous = Some (Verdicts.survived [ [ "g"; "t" ] ]);
   }
 
-let rerun_over ?identity collection =
+let rerun_over_ran ?identity ?suite collection =
   let path = Verdicts.output_file ~exe:suite_exe in
-  Verdicts.save ?identity path (Verdicts.add collection elsewhere);
-  let r = Child.run ~env:(quiet []) suite_exe [ mutate ] in
-  equal string "exited 0" (ended r.Child.status);
-  equal text "" r.Child.err;
-  Option.map (fun (f : file) -> f.rows) (saved path)
+  Verdicts.save ?identity ?suite path (Verdicts.add collection elsewhere);
+  let r = rerun [ mutate ] in
+  equal string "exited 0" r.status;
+  equal text "" r.err;
+  r
+
+let rerun_over ?identity ?suite collection =
+  rows (rerun_over_ran ?identity ?suite collection)
 
 let kept_by_build () =
   let whole = require_some (Lazy.force green).file in
   let path = Verdicts.output_file ~exe:suite_exe in
   write path whole.raw;
-  let collection, identity =
+  let collection, identity, suite =
     require_ok ~pp:Verdicts.pp_error (Verdicts.load path)
   in
   let other_build =
@@ -1758,15 +1822,25 @@ let kept_by_build () =
       (fun (i : Verdicts.identity) -> { i with digest = String.make 32 '0' })
       identity
   in
+  let r = rerun_over_ran ?identity ?suite collection in
   equal
     (option (list string))
     (Some ("elsewhere/other.ml:1 killed" :: green_rows))
-    (rerun_over ?identity collection);
+    (rows r);
+  (* The planted record has a stale previous verdict, a change in the planted
+     file. The run gives the record its own verdict as its previous verdict,
+     so the change does not stay in the file. *)
+  equal (list string)
+    [ "elsewhere/other.ml:1 killed" ]
+    (List.filter
+       (String.starts_with ~prefix:"elsewhere/")
+       (require_some (previous_rows r)));
+  equal (option (list string)) None (unstable r.out);
   equal
     (option (list string))
     (Some green_rows)
-    (rerun_over ?identity:other_build collection);
-  equal (option (list string)) (Some green_rows) (rerun_over collection)
+    (rerun_over ?identity:other_build ?suite collection);
+  equal (option (list string)) (Some green_rows) (rerun_over ?suite collection)
 
 let failed_run () =
   let log = temp_dir () in
@@ -1835,7 +1909,7 @@ let filtered_in_scope () =
 let killers path =
   match Verdicts.load path with
   | Error _ -> []
-  | Ok (t, _) ->
+  | Ok (t, _, _) ->
       List.filter_map
         (fun (r : Verdicts.record) ->
           match r.verdict with
@@ -1851,11 +1925,19 @@ let killers path =
         (Verdicts.records t)
 
 (* The verdict file of [suite_main.exe] with [change] applied to each
-   record, written by the same build. *)
-let rewrite change =
+   record, written by the same suite and, without [digest], the same build. *)
+let rewrite ?digest change =
   let path = Verdicts.output_file ~exe:suite_exe in
-  let t, identity = require_ok ~pp:Verdicts.pp_error (Verdicts.load path) in
-  Verdicts.save ?identity path
+  let t, identity, suite =
+    require_ok ~pp:Verdicts.pp_error (Verdicts.load path)
+  in
+  let identity =
+    match digest with
+    | None -> identity
+    | Some digest ->
+        Option.map (fun (i : Verdicts.identity) -> { i with digest }) identity
+  in
+  Verdicts.save ?identity ?suite path
     (List.fold_left Verdicts.add Verdicts.empty
        (List.map change (Verdicts.records t)))
 
@@ -1987,7 +2069,11 @@ let unloadable damage () =
     (pair string (list string))
     (ordered_outcome, [ "watches"; "pins" ])
     (ordered_run ());
-  equal (list string) [ pinned_by ] (killers path)
+  equal (list string) [ pinned_by ] (killers path);
+  equal
+    (option (list string))
+    (Some none_rows)
+    (Option.map (fun (f : file) -> f.previous) (saved path))
 
 let history =
   group "History"
@@ -2020,6 +2106,7 @@ let history =
         ~name:fst
         [
           ("a file of 0.2.0", fun _ -> "windtrap-mutants-v3\n");
+          ("a file of the previous format", fun _ -> "windtrap-mutants-v6\n0\n");
           ("bytes after the last record", fun raw -> raw ^ "junk\n");
         ]
         (fun (_, damage) -> unloadable damage ());
@@ -3460,10 +3547,12 @@ let late_interrupt () =
 
 (* [interrupted]'s second child hangs in a session of its own, with a
    grandchild that ignores SIGTERM. *)
-let interrupted_by ?(exe = suite_exe) ?(args = [ mutate ]) ?(env = []) signal =
+let interrupted_by ?(exe = suite_exe) ?(args = [ mutate ]) ?(env = []) ?planted
+    signal =
   let pidfile = Filename.concat (temp_dir ()) "hanging"
   and tmpdir = temp_dir () in
   remove (Verdicts.output_file ~exe);
+  Option.iter (write (Verdicts.output_file ~exe)) planted;
   let run =
     start ~exe ~writer:exe
       ~env:
@@ -3870,7 +3959,6 @@ let effects =
 
 (* Exec mode *)
 
-let exec_children = ("WINDTRAP_MUTATE_CHILDREN", "exec")
 let exec_line = "children: new processes (--mutate-children=exec)"
 
 (* A run in exec mode with no mode line, to compare with a fork. *)
@@ -4476,7 +4564,14 @@ let skip_project ?(plant = true) () =
   { root; exe; data; digest }
 
 let other_record ?source_digest id verdict =
-  { Verdicts.id; before = "b"; after = "a"; source_digest; verdict }
+  {
+    Verdicts.id;
+    before = "b";
+    after = "a";
+    source_digest;
+    verdict;
+    previous = None;
+  }
 
 (* The verdict file [name] of the executable [exe], with a stand-in
    executable. The digest of the file is not the digest of the stand-in, so
@@ -4570,13 +4665,13 @@ let old_name = "windtrap-old.mutants"
 
 (* A verdict file of the previous format. *)
 let plant_old p =
-  write (Filename.concat p.data old_name) "windtrap-mutants-v5\n0\n"
+  write (Filename.concat p.data old_name) "windtrap-mutants-v6\n0\n"
 
 let old_warning p =
   strf
     "windtrap: warning: --mutate-skip-killed ignores %s/%s: not a windtrap \
-     verdict file (expected header \"windtrap-mutants-v6\", found \
-     \"windtrap-mutants-v5\"); files written by other windtrap versions are \
+     verdict file (expected header \"windtrap-mutants-v7\", found \
+     \"windtrap-mutants-v6\"); files written by other windtrap versions are \
      not readable - delete the stale verdict files, then re-run the mutation \
      tests\n"
     p.data old_name
@@ -5012,6 +5107,305 @@ let killed_elsewhere =
         interrupted_skip;
     ]
 
+(* Unstable verdicts *)
+
+let verdict_path () = Verdicts.output_file ~exe:suite_exe
+let flagged = suite "flagged"
+let weak = ("MUTATE_WEAK", "1")
+
+let weak_outcome =
+  "mutants: 1 survived of 1 reached by this suite, 3 never reached, 1 \
+   filtered, score 0.0%"
+
+(* A loop that ran whole: its exit code, its error stream and its outcome
+   line. A section of unstable verdicts changes none of them. *)
+let whole ?(outcome_line = green_outcome) (r : ran) =
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal string outcome_line (outcome r.out)
+
+(* The previous verdict of the records of line [line]. *)
+let previous_of line r =
+  Option.map
+    (List.filter (String.starts_with ~prefix:(strf "subject.ml:%d " line)))
+    (previous_rows r)
+
+(* The verdict file with [verdict] in the records of line [line]. *)
+let at_line line verdict (r : Verdicts.record) =
+  if r.id.line = line then { r with verdict } else r
+
+(* The first run has no file, so it lists nothing and its records have no
+   previous verdict. The second run does not kill [sub] any more, and its
+   file keeps the old verdict. The third run is the same. The fourth run kills
+   again. *)
+let changed_verdict () =
+  remove (verdict_path ());
+  let r1 = rerun ~env:[ flagged ] [ mutate ] in
+  whole ~outcome_line:ordered_outcome r1;
+  equal (option (list string)) None (unstable r1.out);
+  equal (option (list string)) (Some none_rows) (previous_rows r1);
+  let r2 = rerun ~env:[ flagged; weak ] [ mutate ] in
+  whole ~outcome_line:weak_outcome r2;
+  equal
+    (option (list string))
+    (listed [ (15, "killed \u{2192} survived") ])
+    (unstable r2.out);
+  is_true
+    (require_some (index_of ~sub:"\u{2500} unstable (" r2.out)
+    < require_some (index_of ~sub:"never reached (" r2.out));
+  equal
+    (option (list string))
+    (Some
+       [
+         "subject.ml:15 killed";
+         "subject.ml:18 unreached";
+         "subject.ml:21 unreached";
+         "subject.ml:27 unreached";
+         "subject.ml:38 filtered: zero operand";
+       ])
+    (previous_rows r2);
+  let r3 = rerun ~env:[ flagged; weak ] [ mutate ] in
+  whole ~outcome_line:weak_outcome r3;
+  equal (option (list string)) None (unstable r3.out);
+  equal
+    (option (list string))
+    (Some
+       [
+         "subject.ml:15 survived by flagged \u{203a} needs the flag, flagged \
+          \u{203a} raises the flag";
+       ])
+    (previous_of 15 r3);
+  let r4 = rerun ~env:[ flagged ] [ mutate ] in
+  whole ~outcome_line:ordered_outcome r4;
+  equal
+    (option (list string))
+    (listed [ (15, "survived \u{2192} killed") ])
+    (unstable r4.out)
+
+let unchanged_verdict () =
+  remove (verdict_path ());
+  whole (rerun [ mutate ]);
+  let r = rerun [ mutate ] in
+  whole r;
+  equal (option (list string)) None (unstable r.out);
+  equal (option (list string)) (Some green_rows) (previous_rows r)
+
+(* The verdict of [sub] changes between the two runs, but the source digest
+   of the file in between is not the digest of the run. *)
+let new_source () =
+  remove (verdict_path ());
+  ignore (rerun ~env:[ flagged ] [ mutate ]);
+  rewrite (fun r -> { r with source_digest = Some (String.make 32 '0') });
+  let r = rerun ~env:[ flagged; weak ] [ mutate ] in
+  whole ~outcome_line:weak_outcome r;
+  equal (option (list string)) None (unstable r.out);
+  equal (option (list string)) (Some none_rows) (previous_rows r)
+
+let another_killing_test () =
+  remove (verdict_path ());
+  let ordered = suite "ordered" in
+  whole ~outcome_line:ordered_outcome (rerun ~env:[ ordered ] [ mutate ]);
+  rewrite (killed_by [ "ordered"; "watches sub again without pinning it" ]);
+  let r = rerun ~env:[ ordered ] [ mutate ] in
+  whole ~outcome_line:ordered_outcome r;
+  equal (option (list string)) None (unstable r.out);
+  equal
+    (option (list string))
+    (Some [ "subject.ml:15 killed" ]) (previous_of 15 r)
+
+(* Other reaching tests of a survivor, and a change from or to a mutant that
+   no test reached, are not a change of class. *)
+let same_class () =
+  remove (verdict_path ());
+  whole (rerun [ mutate ]);
+  rewrite (at_line 18 (Verdicts.survived [ [ "widen"; "another test" ] ]));
+  let r1 = rerun [ mutate ] in
+  whole r1;
+  equal (option (list string)) None (unstable r1.out);
+  rewrite (fun r ->
+      at_line 18 Verdicts.Unreached
+        (at_line 21 (Verdicts.survived [ [ "widen"; "widen is nonzero" ] ]) r));
+  let r2 = rerun [ mutate ] in
+  whole r2;
+  equal (option (list string)) None (unstable r2.out);
+  equal (list string)
+    [
+      "subject.ml:18 unreached";
+      "subject.ml:21 survived by widen \u{203a} widen is nonzero";
+    ]
+    (List.concat_map
+       (fun line -> require_some (previous_of line r2))
+       [ 18; 21 ])
+
+let killed_elsewhere_rows =
+  let other = Verdicts.Killed_elsewhere { exe = "default/test/other.exe" } in
+  [
+    ("a killed mutant", 15, other, None);
+    ("a survivor", 18, other, listed [ (18, "killed \u{2192} survived") ]);
+  ]
+
+let killed_elsewhere_is_killed (_, line, verdict, expected) =
+  remove (verdict_path ());
+  whole (rerun [ mutate ]);
+  rewrite (at_line line verdict);
+  let r = rerun [ mutate ] in
+  whole r;
+  equal (option (list string)) expected (unstable r.out)
+
+(* The mutant of [widen] is killed in a new process, which evaluates its
+   site, and is not evaluated in a fork, which reads the answer of the dry
+   run. *)
+let memo_orders =
+  [
+    ( "killed, then not evaluated",
+      [ exec_children ],
+      [],
+      listed [ (18, "killed \u{2192} not evaluated") ] );
+    ( "not evaluated, then killed",
+      [],
+      [ exec_children ],
+      listed [ (18, "not evaluated \u{2192} killed") ] );
+  ]
+
+let not_evaluated_class (_, first, second, expected) =
+  remove (verdict_path ());
+  let fixture = suite "memo" in
+  ignore (rerun ~env:(fixture :: first) [ mutate ]);
+  let r = rerun ~env:(fixture :: second) [ mutate ] in
+  equal string "exited 0" r.status;
+  equal (option (list string)) expected (unstable r.out)
+
+let catalogue_order () =
+  let path = verdict_path () in
+  remove path;
+  whole (rerun [ mutate ]);
+  rewrite (fun r ->
+      at_line 15
+        (Verdicts.survived [ [ "calc"; "sub of two positives" ] ])
+        (at_line 18 (Verdicts.Killed { by = None }) r));
+  let planted = read path in
+  let one = rerun [ mutate ] in
+  whole one;
+  write path planted;
+  let four = rerun [ mutate; jobs 4 ] in
+  whole four;
+  equal
+    (option (list string))
+    (listed
+       [ (15, "survived \u{2192} killed"); (18, "killed \u{2192} survived") ])
+    (unstable one.out);
+  equal (option (list string)) (unstable one.out) (unstable four.out)
+
+(* The writer of the file in between is another build. *)
+let other_build () =
+  remove (verdict_path ());
+  whole (rerun [ mutate ]);
+  rewrite ~digest:(String.make 32 '0')
+    (at_line 15 (Verdicts.survived [ [ "calc"; "sub of two positives" ] ]));
+  let r = rerun [ mutate ] in
+  whole r;
+  equal
+    (option (list string))
+    (listed [ (15, "survived \u{2192} killed") ])
+    (unstable r.out)
+
+(* The two calls of [Windtrap.run] in [two_reach] write one file, and only
+   the first suite kills [sub]. *)
+let two_suites () =
+  remove (verdict_path ());
+  let env = [ suite "two_reach"; weak ] in
+  let first = rerun ~env [ mutate ] in
+  let second = rerun ~env [ mutate ] in
+  List.iter
+    (fun (r : ran) ->
+      equal (pair string text) ("exited 0", "") (r.status, r.err);
+      equal (option (list string)) None (unstable r.out))
+    [ first; second ];
+  equal (option (list string)) (Some none_rows) (previous_rows second)
+
+(* The selection kills [sub], so a run that wrote its file would list it. *)
+let narrowed_run () =
+  let path = verdict_path () in
+  remove path;
+  whole (rerun [ mutate ]);
+  rewrite
+    (at_line 15 (Verdicts.survived [ [ "calc"; "sub of two positives" ] ]));
+  let planted = read path in
+  let r = rerun [ mutate; "-f"; "calc" ] in
+  equal (pair string text) ("exited 0", not_saved) (r.status, r.err);
+  equal (option (list string)) None (unstable r.out);
+  equal text planted (read path)
+
+(* [interrupted] commits [sub] as a survivor before the signal. *)
+let stopped_run () =
+  let planted = (require_some (Lazy.force green).file).raw in
+  let r, grandchildren, left = interrupted_by ~planted Sys.sigint in
+  equal string "killed by SIGINT" r.status;
+  equal (option (list string)) None (unstable r.out);
+  equal text planted (read (verdict_path ()));
+  equal (list string) [] left;
+  equal (list string) [ "gone" ] grandchildren
+
+(* The first run kills [sub], and a weak run lets it survive. The second
+   run cannot write into the read-only directory of the file, so it lists
+   nothing. The third run can, and lists the change. *)
+let unwritable_with_prior () =
+  if Unix.geteuid () = 0 then skip ~reason:"root writes any directory" ();
+  let p = skip_project () in
+  let weak_run () =
+    fst (skip_run ~fixture:"flagged" ~env:[ weak ] ~keep:true p [])
+  in
+  equal string "exited 0" (fst (skip_run ~fixture:"flagged" p [])).status;
+  let planted = read (Verdicts.output_file ~exe:p.exe) in
+  Unix.chmod p.data 0o555;
+  let r = Fun.protect ~finally:(fun () -> Unix.chmod p.data 0o755) weak_run in
+  equal string "exited 0" r.status;
+  starts_with ~affix:"windtrap: could not write the verdict file: " r.err;
+  equal (option (list string)) None (unstable r.out);
+  equal text planted (read (Verdicts.output_file ~exe:p.exe));
+  let r = weak_run () in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal
+    (option (list string))
+    (listed [ (15, "killed \u{2192} survived") ])
+    (unstable r.out)
+
+let unstable_verdicts =
+  group "Unstable verdicts"
+    [
+      test
+        "a verdict that changed is listed, and the file keeps the previous \
+         verdict"
+        changed_verdict;
+      test
+        "a verdict that did not change is not listed, and is its own previous \
+         verdict"
+        unchanged_verdict;
+      test "a changed source digest gives no previous verdict" new_source;
+      test "another killing test is not a change" another_killing_test;
+      test
+        "other reaching tests, and a change from or to unreached, are not a \
+         change"
+        same_class;
+      cases "killed elsewhere is killed"
+        ~name:(fun (name, _, _, _) -> name)
+        killed_elsewhere_rows killed_elsewhere_is_killed;
+      cases "not evaluated is a class of its own"
+        ~name:(fun (name, _, _, _) -> name)
+        memo_orders not_evaluated_class;
+      test
+        "the rows are in catalogue order, and the same for each value of jobs"
+        catalogue_order;
+      test "a file of another build gives the previous verdicts" other_build;
+      test "a file of another suite gives no previous verdict" two_suites;
+      test "a narrowed run lists nothing and leaves the file" narrowed_run;
+      test
+        "a run that a signal stopped before its last verdict lists nothing and \
+         leaves the file"
+        stopped_run;
+      test "a run whose file cannot be written lists nothing"
+        unwritable_with_prior;
+    ]
+
 (* The fixtures' verdict files land in the real _build/_mutants, where
    [windtrap mutants] would merge them into the tree's answer, and no rule
    runs these executables but this suite. A forked child ends past
@@ -5037,6 +5431,7 @@ let () =
          limits;
          verdict_file;
          history;
+         unstable_verdicts;
          killed_elsewhere;
          environment;
          refusals;

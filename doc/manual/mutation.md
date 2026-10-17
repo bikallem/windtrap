@@ -734,9 +734,12 @@ mutants: 1 survived of 3 reached by this suite, 1 killed, 1 never reached, 1 not
 ```
 
 `windtrap mutants` counts a mutant that was killed elsewhere as killed,
-so the merge gives the same report as without the option. When no
-verdict file of the merge has the kill, the command gives a note on
-standard error. The note tells which run to do again:
+so the merge gives the same survivors and the same score as without the
+option. After the first run with the option, the report and
+`windtrap mutants` can list the skipped mutants as `survived → killed`
+(see [Unstable verdicts](#unstable-verdicts)). When no verdict file of
+the merge has the kill, the command gives a note on standard error. The
+note tells which run to do again:
 
 - The verdict file of the killer is in the merge, but it does not kill
   the mutant. For example, its tests changed, or it skipped the mutant
@@ -818,16 +821,16 @@ A suite's mutation run gives the score too, and has no gate.
 
 For other tools, `--json` prints the merge as JSON on standard output,
 in place of the report. The document has its version, the counts and the
-score, the executables, each mutant with its verdict, and each filtered
-mutant with its reason. A survivor also has the tests that ran it. A
-test names its executable by its index in `executables`, because two
-executables can have the same name. Under `--min-score` the outcome line
-goes to standard error, and the exit code is that of the gate. Standard
-output can refuse the document, for example on a full disk. The command
-then gives the reason on standard error and exits 1. The gate does not
-run. A later version can add keys. A change to the meaning of a key
-increments `version`. [`bin/mutate_cmd.mli`](../../bin/mutate_cmd.mli)
-gives each key:
+score, the executables, each mutant with its verdict, each filtered
+mutant with its reason, and the mutants whose verdict changed. A
+survivor also has the tests that ran it. A test names its executable by
+its index in `executables`, because two executables can have the same
+name. Under `--min-score` the outcome line goes to standard error, and
+the exit code is that of the gate. Standard output can refuse the
+document, for example on a full disk. The command then gives the reason
+on standard error and exits 1. The gate does not run. A later version
+can add keys. A change to the meaning of a key increments `version`.
+[`bin/mutate_cmd.mli`](../../bin/mutate_cmd.mli) gives each key:
 
 ```
 $ dune exec windtrap -- mutants --json
@@ -879,7 +882,8 @@ $ dune exec windtrap -- mutants --json
       "verdict": "survived",
       "tests": [
         { "executable": 0, "test": ["sign", "is -1 for a negative"] } ] } ],
-  "filtered": [ ] }
+  "filtered": [ ],
+  "unstable": [ ] }
 ```
 
 ## Killing a survivor
@@ -1007,17 +1011,19 @@ executable and a digest of its bytes, and `windtrap mutants` leaves out
 one whose executable was deleted or rebuilt since, with a warning, as
 [`windtrap coverage`](coverage.md#when-a-dump-is-excluded) does a dump.
 
-The verdict file also keeps the test that killed each mutant, and a
-digest of the source file of the mutant. The next run reads them, also
-after a new build. When the digest did not change and the test still
-reaches the mutant, the run first runs the test alone, with no mutant.
-If the test passes, a child then runs the test alone with the mutant.
-If the test kills the mutant again, no other test runs. If it does not,
-a second child runs each reaching test, as without the file. Thus the
-file never gives a verdict without a test that fails, and a changed or
-renamed test cannot keep an old verdict. The file only lets a killed
-mutant run fewer tests. Under `--mutate-skip-killed`, the verdict files
-of the other executables also decide which mutants get a child (see
+The verdict file also keeps the test that killed each mutant, a digest
+of the source file of the mutant, and the previous verdict of each
+mutant (see [Unstable verdicts](#unstable-verdicts)). The next run
+reads them, also after a new build. When the digest did not change and
+the test still reaches the mutant, the run first runs the test alone,
+with no mutant. If the test passes, a child then runs the test alone
+with the mutant. If the test kills the mutant again, no other test
+runs. If it does not, a second child runs each reaching test, as
+without the file. Thus the file never gives a verdict without a test
+that fails, and a changed or renamed test cannot keep an old verdict.
+The file only lets a killed mutant run fewer tests. Under
+`--mutate-skip-killed`, the verdict files of the other executables also
+decide which mutants get a child (see
 [Skipping the mutants that another suite killed](#skipping-the-mutants-that-another-suite-killed)).
 
 A test that runs alone does not run after the tests before it. When a
@@ -1025,6 +1031,79 @@ test passes alone, fails alone with the mutant, but passes with the
 mutant after an earlier test, the verdict file can make a survivor a
 killed mutant. To get the verdicts without the file, delete the verdict
 file before the run.
+
+## Unstable verdicts
+
+A run that writes its verdict file compares the verdict of each mutant
+with the verdict in the file that it replaces. The comparison applies
+only when the source file of the mutant has the same digest in the two
+files. The file of an earlier build also counts, because almost each
+change of a test rebuilds the executable. The file of another suite does
+not count. A main that calls `Windtrap.run` more than one time has one
+verdict file, and each call replaces the file of the call before it.
+Thus a call of such a main shows no section, unless the call before it
+has the same suite name. The inline-test runner of a library with tests
+in more than one file runs one suite for each file, in one executable.
+Thus the section of such a library shows its rows only on some runs.
+
+The report lists, in a section `unstable (N)`, each mutant whose verdict
+changed between killed, survived and not evaluated:
+
+```
+────────────────────── unstable (1) ──────────────────────
+  The source of each mutant did not change, but its verdict did.
+  lib/calc.ml:13:9:sub   survived → killed
+──────────────────────────────────────────────────────────
+```
+
+The list does not show these changes:
+
+- A killed mutant with another killing test.
+- A survivor with other reaching tests.
+- A change between killed and killed elsewhere. A mutant killed
+  elsewhere counts as killed.
+- A change from or to never reached, evaluated outside tests or
+  filtered.
+
+The comparison examines only the source file of the mutant. Thus a
+change of other code, for example a caller, a callee or a dependency,
+can give a correct row while the tests stay the same. When the tests and
+the other code did not change, a row is a sign of a verdict that depends
+on the order of the domains, for example in a stateful test on several
+domains (see
+[Stateful tests on several domains](#stateful-tests-on-several-domains)).
+A deadline of a child on a host under load can also change a verdict. A
+change of `--mutate-children` between `fork` and `exec` can also change
+a verdict between killed and not evaluated. A forked child keeps the
+cache of the dry run, and a new process does not (see
+[What a mutation run runs](#what-a-mutation-run-runs)). When the tests
+changed, a row can show a correct change. The commit tells which.
+
+The section does not change the score, the outcome line or the exit
+code. A run that writes no verdict file shows no section: a narrowed
+run, a run that a signal stopped before its last verdict, and a run
+whose file cannot be written.
+
+`windtrap mutants` gives the same list from the verdict files, with the
+executable of each row. `--json` gives it in `unstable`:
+
+```
+  "unstable": [
+    { "id": "lib/calc.ml:13:9:sub", "executable": 0, "previous": "survived", "verdict": "killed" } ] }
+```
+
+The verdict file keeps only the verdict of the run before. Thus a
+verdict that changes on each run shows a row on each run. A project that
+wants to keep the list, for example as known survivors, copies the rows
+of `--json`.
+
+Under `--mutate-skip-killed`, the first run with the option can list a
+mutant that this suite let survive and another suite killed, as
+`survived → killed`. A run without the option after it can list the
+mutant as `killed → survived`. `windtrap mutants` lists the same row
+from the file.
+
+To start the comparison again, delete the verdict file.
 
 ## Mutation testing without dune
 

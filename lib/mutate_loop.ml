@@ -2005,47 +2005,68 @@ let narrows_suite (config : Run.config) ~focus =
 
 (* Writes [verdicts], the verdicts of the scope, to the verdict file. Under
    a scope, the records of the other files stay when this build wrote them.
-   The result is the note on a file that cannot be written. *)
-let save ~scope verdicts =
+   Each record gets its previous verdict from the file that it replaces, of
+   any build, when [suite] wrote that file: a main that calls [Windtrap.run]
+   more than one time writes one file for all of its suites. The result is
+   the changed records, or the note on a file that cannot be written. *)
+let save ~suite ~scope verdicts =
   let exe = Windtrap_runtime.Instr.executable in
   let path = Verdicts.output_file ~exe in
   let identity = Verdicts.writer_identity ~exe in
+  let loaded = Verdicts.load path in
   let kept =
-    match (identity, Verdicts.load path) with
-    | Some identity, Ok (prior, Some writer) when writer = identity ->
+    match (identity, loaded) with
+    | Some identity, Ok (prior, Some writer, _) when writer = identity ->
         List.filter
           (fun (r : Verdicts.record) -> not (in_scope ~scope r.id))
           (Verdicts.records prior)
     | _ -> []
   in
-  match
-    Verdicts.save ?identity path (List.fold_left Verdicts.add verdicts kept)
-  with
-  | () -> None
+  let prior =
+    match loaded with
+    | Ok (prior, _, Some writer) when String.equal writer suite -> prior
+    | Ok _ | Error _ -> Verdicts.empty
+  in
+  let saved =
+    Verdicts.with_previous ~prior (List.fold_left Verdicts.add verdicts kept)
+  in
+  match Verdicts.save ?identity ~suite path saved with
+  | () ->
+      Ok
+        (List.filter
+           (fun r -> Verdicts.changed r <> None)
+           (Verdicts.records saved))
   | exception Sys_error message ->
-      Some (strf "could not write the verdict file: %s" message)
+      Error (strf "could not write the verdict file: %s" message)
 
-(* What the loop has to say about its verdict file, above the outcome line. *)
-let save_verdicts ~scope ~narrowed ~outside ~unreached ~filtered ~skipped tested
-    =
+(* The changed records of the saved file, and what the loop has to say about
+   its verdict file, above the outcome line. *)
+let save_verdicts ~suite ~scope ~narrowed ~outside ~unreached ~filtered ~skipped
+    tested =
   match tested.stopped with
-  | Some _ -> None
+  | Some _ -> ([], None)
   | None when narrowed ->
-      Some
-        "verdicts not saved: this run's selection narrows the suite, and a \
-         partial run's verdicts would stand in the project merge as the whole."
-  | None ->
+      ( [],
+        Some
+          "verdicts not saved: this run's selection narrows the suite, and a \
+           partial run's verdicts would stand in the project merge as the \
+           whole." )
+  | None -> (
       let recorded verdict = List.map (fun m -> record m verdict) in
-      save ~scope
-        (List.fold_left Verdicts.add tested.verdicts
-           (recorded Verdicts.Outside_tests outside
-           @ recorded Verdicts.Unreached unreached
-           @ List.map
-               (fun (m, reason) -> record m (Verdicts.Filtered reason))
-               filtered
-           @ List.map
-               (fun (m, exe) -> record m (Verdicts.Killed_elsewhere { exe }))
-               skipped))
+      match
+        save ~suite ~scope
+          (List.fold_left Verdicts.add tested.verdicts
+             (recorded Verdicts.Outside_tests outside
+             @ recorded Verdicts.Unreached unreached
+             @ List.map
+                 (fun (m, reason) -> record m (Verdicts.Filtered reason))
+                 filtered
+             @ List.map
+                 (fun (m, exe) -> record m (Verdicts.Killed_elsewhere { exe }))
+                 skipped))
+      with
+      | Ok changed -> (changed, None)
+      | Error note -> ([], Some note))
 
 (* In exec mode, the verdicts follow the rules of a new process, so the
    report tells the mode. *)
@@ -2065,7 +2086,7 @@ let finish renderer ~children ~skipped ~narrowed ~reach ~reached ~outside
       Report.mutation_refused renderer message;
       Reported 1
   | Ok _ when interrupt.signal = Some Sys.sigpipe -> Os.die_by Sys.sigpipe
-  | Ok ({ verdicts; survivors; not_evaluated; stopped }, note) -> (
+  | Ok ({ verdicts; survivors; not_evaluated; stopped }, (changed, note)) -> (
       let records = Verdicts.records verdicts in
       let is_killed (r : Verdicts.record) =
         match r.verdict with
@@ -2082,6 +2103,19 @@ let finish renderer ~children ~skipped ~narrowed ~reach ~reached ~outside
         {
           survivors;
           not_evaluated;
+          unstable =
+            List.filter_map
+              (fun (r : Verdicts.record) ->
+                Option.map
+                  (fun (previous, verdict) : Report_sections.unstable ->
+                    {
+                      id = Mutate.id_to_string r.id;
+                      exe = None;
+                      previous;
+                      verdict;
+                    })
+                  (Verdicts.changed r))
+              changed;
           unreached = lines unreached;
           outside_tests = lines outside;
           filtered = List.map snd filtered;
@@ -2127,7 +2161,7 @@ let history reached =
   (if regular path then
      match Verdicts.load path with
      | Error _ -> ()
-     | Ok (prior, _) ->
+     | Ok (prior, _, _) ->
          List.iter
            (fun (r : Verdicts.record) ->
              match (r.verdict, r.source_digest) with
@@ -2199,10 +2233,10 @@ let killed_elsewhere reached =
         | Error e ->
             ignored (Pp.to_string Verdicts.pp_error e);
             None
-        | Ok (_, None) ->
+        | Ok (_, None, _) ->
             ignored (path ^ ": the file names no executable");
             None
-        | Ok (verdicts, Some { exe; _ }) -> (
+        | Ok (verdicts, Some { exe; _ }, _) -> (
             match Instr.exe_location ~path exe with
             | Some (exe_path, spelled) when not (Sys.file_exists exe_path) ->
                 ignored
@@ -2364,8 +2398,8 @@ let loop renderer ~scope ~jobs ~children ~skip_killed ~suite
                   Result.map
                     (fun tested ->
                       ( tested,
-                        save_verdicts ~scope ~narrowed ~outside ~unreached
-                          ~filtered ~skipped tested ))
+                        save_verdicts ~suite ~scope ~narrowed ~outside
+                          ~unreached ~filtered ~skipped tested ))
                     (fork renderer loop to_test)
                 with
                 | Supervision message -> Error message
@@ -2484,7 +2518,7 @@ let armed renderer ~spec ~suite (config : Run.config) tests =
    gate. As in a loop, the file holds a [Filtered] record for each mutant of
    the scope that the rewriter filtered. No test gives these verdicts, so a
    narrowed selection does not stop the save. *)
-let save_unmutated ~scope reason =
+let save_unmutated ~suite ~scope reason =
   match (reason, scope.since) with
   | (Out_of_scope | All_dismissed), Some _ ->
       let filtered =
@@ -2492,8 +2526,9 @@ let save_unmutated ~scope reason =
           (fun (m, reason) -> record m (Verdicts.Filtered reason))
           (filtered ~scope)
       in
-      Option.iter Os.say
-        (save ~scope (List.fold_left Verdicts.add Verdicts.empty filtered))
+      Result.iter_error Os.say
+        (save ~suite ~scope
+           (List.fold_left Verdicts.add Verdicts.empty filtered))
   | Uninstrumented, _ | (Out_of_scope | All_dismissed), None -> ()
 
 let execute_and_report ~suite (config : Run.config) tests =
@@ -2513,7 +2548,7 @@ let execute_and_report ~suite (config : Run.config) tests =
           match (population ~scope, Run.list_selection config ~suite tests) with
           | Error reason, _ ->
               Os.say (unmutated ~scope reason);
-              save_unmutated ~scope reason;
+              save_unmutated ~suite ~scope reason;
               ordinary ~suite config tests
           | Ok _, Ok [] -> ordinary ~suite config tests
           | Ok _, (Ok (_ :: _) | Error _) ->

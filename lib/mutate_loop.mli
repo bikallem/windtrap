@@ -173,28 +173,28 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     counts. It does not stop at a failure that does not count. If the byte is
     not available, each failure counts.
 
-    A mutant is {!Windtrap_runtime.Verdicts.Killed} when its child had a failure
-    that counts, that of a fixture release included. The verdict names the first
-    test that failed in this way, if a test failed. This test reaches the
-    mutant, except in exec mode, where it can be a test before the last reaching
-    test ({b Exec mode}). It is also killed when its child evaluated the site
-    and recorded no test. It is also killed when its child passed its deadline,
-    did not exit with [0], or left no complete line. Such a child gives no count
-    of evaluations.
+    A mutant is {!Windtrap_runtime.Verdicts.verdict.Killed} when its child had a
+    failure that counts, that of a fixture release included. The verdict names
+    the first test that failed in this way, if a test failed. This test reaches
+    the mutant, except in exec mode, where it can be a test before the last
+    reaching test ({b Exec mode}). It is also killed when its child evaluated
+    the site and recorded no test. It is also killed when its child passed its
+    deadline, did not exit with [0], or left no complete line. Such a child
+    gives no count of evaluations.
 
-    A mutant is {!Windtrap_runtime.Verdicts.Not_evaluated} when no process of
-    its child evaluated the armed site. A test or a fixture release that failed
-    in such a child has a cause of its own. Examples are a schedule of domains,
-    the clock or the tests before it. The report names that failure under the
-    mutant. An exception that escapes the run before the first evaluation also
-    gives [Not_evaluated], and the report names no failure. A fork starts from
-    the state that the dry run left. Thus a child can find the result that the
-    dry run cached for a site, in a table or a forced lazy value. Then the child
-    does not evaluate the site. The report lists such a mutant with the [--arm]
-    command that tests it in a new process, and names it no survivor. In exec
-    mode, a new process has no such cache, and its tests evaluate the site. When
-    its child evaluated the site and had no failure that counts, the mutant is
-    {!Windtrap_runtime.Verdicts.Survived}.
+    A mutant is {!Windtrap_runtime.Verdicts.verdict.Not_evaluated} when no
+    process of its child evaluated the armed site. A test or a fixture release
+    that failed in such a child has a cause of its own. Examples are a schedule
+    of domains, the clock or the tests before it. The report names that failure
+    under the mutant. An exception that escapes the run before the first
+    evaluation also gives [Not_evaluated], and the report names no failure. A
+    fork starts from the state that the dry run left. Thus a child can find the
+    result that the dry run cached for a site, in a table or a forced lazy
+    value. Then the child does not evaluate the site. The report lists such a
+    mutant with the [--arm] command that tests it in a new process, and names it
+    no survivor. In exec mode, a new process has no such cache, and its tests
+    evaluate the site. When its child evaluated the site and had no failure that
+    counts, the mutant is {!Windtrap_runtime.Verdicts.verdict.Survived}.
 
     {b Killed elsewhere.} Under the [skip_killed] of {!Run.Loop}
     ([--mutate-skip-killed]), the loop reads the regular files with the
@@ -203,16 +203,16 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     use a file that does not load, a file that names no executable, or a file
     whose executable no longer exists ({!Windtrap_runtime.Instr.exe_location}).
     It names each such file in a warning on standard error. A reached mutant
-    gets no child when a used file gives it {!Windtrap_runtime.Verdicts.Killed}.
-    This applies only when the source digest of that record is the digest of the
-    source file that the loop reads now. A
-    {!Windtrap_runtime.Verdicts.Killed_elsewhere} record does not skip a mutant.
-    The mutant gets a [Killed_elsewhere] record that names the executable of
-    that file, the smaller one when several files kill it. The report counts the
-    mutant as not tested. A line above the outcome line gives the number of
-    skipped mutants and the executable of each used file. The loop uses the
-    files as they are on disk after the dry run, a file of an earlier build
-    included.
+    gets no child when a used file gives it
+    {!Windtrap_runtime.Verdicts.verdict.Killed}. This applies only when the
+    source digest of that record is the digest of the source file that the loop
+    reads now. A {!Windtrap_runtime.Verdicts.Killed_elsewhere} record does not
+    skip a mutant. The mutant gets a [Killed_elsewhere] record that names the
+    executable of that file, the smaller one when several files kill it. The
+    report counts the mutant as not tested. A line above the outcome line gives
+    the number of skipped mutants and the executable of each used file. The loop
+    uses the files as they are on disk after the dry run, a file of an earlier
+    build included.
 
     {b Tests marked xfail.} A test marked xfail ({!Test_tree.val-xfail}) reaches
     no mutant and kills none. The dry run and the probe run it, no child runs
@@ -269,7 +269,8 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     filter. No child starts for a filtered mutant. The report counts the
     filtered mutants by reason. A skipped mutant has a [Killed_elsewhere]
     record. Each record has the digest of the source file of its mutant, when
-    the loop can read the file. The file is written to
+    the loop can read the file. Each record also has the previous verdict of its
+    mutant ({b Unstable verdicts}). The file is written to
     {!Windtrap_runtime.Verdicts.output_file} of the executable, by
     {!Windtrap_runtime.Verdicts.save}. Under a scope, the records of the mutants
     outside it, under another prefix or on a line that did not change, stay when
@@ -284,6 +285,19 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     writes none and says so on standard error above the outcome line. [filter],
     [exclude], [tags], [exclude_tags], [failed_only], [shard] and an active
     focus narrow the suite. The scope of [--mutate] does not.
+
+    {b Unstable verdicts.} Each record of the file that the loop writes, a kept
+    record too, gets the verdict of its mutant in the file that it replaces,
+    when the two records have the same source digest
+    ({!Windtrap_runtime.Verdicts.with_previous}). The loop reads that file when
+    it saves, in the read that gives the kept records. A file of any build
+    counts, as for the history, but only a file that the same [suite] wrote.
+    When the loop writes its file, the report lists each mutant whose verdict
+    changed its class ({!Windtrap_runtime.Verdicts.changed}), in catalogue
+    order, in the section [unstable] ({!Report_sections.type-unstable}). A run
+    that writes no file lists none: a narrowed run, a run that a signal stopped
+    before its last verdict, and a run whose file cannot be written. The list
+    does not change the score or the result.
 
     {b What the environment asks.} [WINDTRAP_MUTATE] reaches every test
     executable of a project, so an executable that cannot honour it is not in

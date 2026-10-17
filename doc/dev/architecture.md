@@ -76,7 +76,7 @@ report and the aggregate cannot drift apart.
 | `Gen` (with `Gen.Engine.Shrink_tree`), `Property`, `Stateful`, `Workers` | generators; the case loop (examples first, per-case seeds, the discard budget, the shrink search, label tables); commands and programs, compiled into properties, and the judge of a program on several domains; the worker domains that run its branches |
 | `Baseline`, `Source_patch`, `Capture` | the correction registry keyed by site or path, read-only checking, corrections gated per test and written once as `.corrected` files or in place; literal rewriting inside a source file; fd-level capture into per-test log files |
 | `Cli`, `Run`, `Report`, `Report_sections`, `Report_junit` | one declarative item table (flags and flagless settings) resolved once into the one `Run.config`, each mirror declared beside its flag and read through the flag's parser; the run record and the ambient slot, the sequential executor (startup checks, selection, the per-test boundary, SIGALRM timeouts, retries, fixture release, the last-failed store, the exit guard, the exit codes), which prints nothing and emits typed events; the transcript, the GitHub envelope and `Report.run`, execute reported; the failure projection every transport shares and the section vocabulary the coverage and mutation reports project into; the JUnit document and its file |
-| `Mutate_loop`, `Changed_lines` | the dry run and its reach map, the scope applied to the population it forks over (prefixes, and the lines that changed since a git revision, which `Changed_lines` reads from `git diff` for the loop and for `windtrap mutants --since`), the determinism probe, the loop of children (one child per reached mutant, each running only the tests that reach it, the test that killed it last time alone first, their verdicts committed in catalogue order, and children at once on up to `--mutate-jobs` CPUs, where a child counts the most CPUs that one of its tests used at once in the dry run; a child is a fork, or a new process of the executable when the suite spawned a domain or under `--mutate-children=exec`, and that new process reads a request file and serves it from `Windtrap.run`), the verdict file, the kills of the verdict files of the other executables under `--mutate-skip-killed`, the per-executable report. It wraps `Report.run` rather than sitting beside it, because a mutation run must announce an armed mutant before any other output and start its children after the dry run |
+| `Mutate_loop`, `Changed_lines` | the dry run and its reach map, the scope applied to the population it forks over (prefixes, and the lines that changed since a git revision, which `Changed_lines` reads from `git diff` for the loop and for `windtrap mutants --since`), the determinism probe, the loop of children (one child per reached mutant, each running only the tests that reach it, the test that killed it last time alone first, their verdicts committed in catalogue order, and children at once on up to `--mutate-jobs` CPUs, where a child counts the most CPUs that one of its tests used at once in the dry run; a child is a fork, or a new process of the executable when the suite spawned a domain or under `--mutate-children=exec`, and that new process reads a request file and serves it from `Windtrap.run`), the verdict file with the previous verdict of each mutant and the unstable section, the kills of the verdict files of the other executables under `--mutate-skip-killed`, the per-executable report. It wraps `Report.run` rather than sitting beside it, because a mutation run must announce an armed mutant before any other output and start its children after the dry run |
 | `Os`, `Pp`, `Text`, `Loc`, `Seed` | the clock, environment reading and its value vocabularies, atomic files, the project root and build-copy resolution; style-aware `Format` helpers; newline, UTF-8 and substring utilities, and the JSON string literal of the machine formats; `pos` and backtrace-derived attribution; SplitMix64, `s1:` tokens and the `(root, path, index)` derivation |
 
 The rows group by role, not by layer: `Os`, `Pp`, `Text`, `Loc` and
@@ -265,6 +265,18 @@ a lossy `%g` spelling is asked for at the call site.
   mutant, but an earlier test can change the state so that it passes. The
   killing test of a merge is the smaller one, which keeps
   `Verdicts.merge` commutative.
+- Unstable verdicts. A record keeps the previous verdict of its mutant,
+  for the same source digest. The loop takes the previous verdicts from
+  the read of the file at the save, the read that also gives the kept
+  records. A file of any build counts, as for the history: almost each
+  test change rebuilds the executable, and the digest makes sure that
+  the mutant is the same code. Only a file of the same suite counts: the
+  calls of `Windtrap.run` in one main write one file, and two suites can
+  give one mutant two verdicts. The file keeps the field, because
+  `windtrap mutants` reads only the files of the current build and has
+  no earlier run to compare with. The section changes no score, so a
+  verdict that depends on the order of the domains does not fail a
+  build two times.
 - Killed elsewhere. Under `--mutate-skip-killed`, a reached mutant that
   the verdict file of another executable killed, for the same source
   digest, gets no child. Its record is `Killed_elsewhere` and names that

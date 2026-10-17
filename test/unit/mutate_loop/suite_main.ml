@@ -1384,6 +1384,11 @@ let () =
              group "widen" weak;
              group "dismissed" dismissed;
            ]
+  | "two_reach" ->
+      (* Two suites that reach [sub]: the first kills it, and the second does
+         not under MUTATE_WEAK. *)
+      ignore (run "first" [ group "calc" strong ]);
+      exit @@ run "calc" [ group "flagged" flagged ]
   | "child" -> exit @@ run "calc" [ group "child" child ]
   | "catalogue" ->
       List.iter
