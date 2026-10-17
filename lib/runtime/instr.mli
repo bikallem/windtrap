@@ -93,6 +93,15 @@ val exe_identity : exe:string -> string
     none. The build context is part of the result, as in [default/test/t.exe],
     and the build directory is not. *)
 
+val exe_location : path:string -> string -> (string * string) option
+(** [exe_location ~path exe] is the path of the executable whose {!exe_identity}
+    is [exe], for a file at [path] that this executable wrote, and the spelling
+    of that path from the project root. An absolute [exe] is its own path and
+    spelling. A relative [exe] lies below [build_dir ~path], and its spelling
+    starts with the name of that directory, as in [_build/default/test/t.exe].
+    It is [None] when [exe] is relative and [path] lies below no build
+    directory. *)
+
 val data_dir : format -> build_dir:string -> string
 (** [data_dir f ~build_dir] is [<build_dir>/_<f.dir>]. *)
 

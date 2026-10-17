@@ -9,6 +9,7 @@ type reaching_test = string list
 
 type verdict =
   | Killed of { by : reaching_test option }
+  | Killed_elsewhere of { exe : string }
   | Survived of { first : reaching_test; others : reaching_test list }
   | Not_evaluated
   | Outside_tests
@@ -26,7 +27,8 @@ let survived ts =
 
 (* The order in which verdicts outrank one another in a merge. *)
 let rank = function
-  | Killed _ -> 5
+  | Killed _ -> 6
+  | Killed_elsewhere _ -> 5
   | Not_evaluated -> 4
   | Survived _ -> 3
   | Outside_tests -> 2
@@ -38,7 +40,8 @@ let rank = function
    two killing tests, the smaller one stays, so the merge does not depend on
    the order. Two builds of one source with other flags of the rewriter can
    filter a mutant for two reasons, and the smaller reason wins, which keeps
-   the merge commutative. *)
+   the merge commutative. The smaller executable of two skips wins for the
+   same reason. *)
 let merge_verdict a b =
   match (a, b) with
   | Survived x, Survived y ->
@@ -50,10 +53,12 @@ let merge_verdict a b =
   | (Killed _ as k), Killed { by = None } ->
       k
   | Filtered x, Filtered y -> Filtered (min x y)
-  | ( ( Killed _ | Not_evaluated | Survived _ | Outside_tests | Filtered _
-      | Unreached ),
-      ( Killed _ | Not_evaluated | Survived _ | Outside_tests | Filtered _
-      | Unreached ) ) ->
+  | Killed_elsewhere x, Killed_elsewhere y ->
+      Killed_elsewhere { exe = min x.exe y.exe }
+  | ( ( Killed _ | Killed_elsewhere _ | Not_evaluated | Survived _
+      | Outside_tests | Filtered _ | Unreached ),
+      ( Killed _ | Killed_elsewhere _ | Not_evaluated | Survived _
+      | Outside_tests | Filtered _ | Unreached ) ) ->
       if rank a >= rank b then a else b
 
 (* Collections *)
@@ -93,7 +98,9 @@ let add t r =
   let r =
     match r.verdict with
     | Survived s -> { r with verdict = survived (s.first :: s.others) }
-    | Killed _ | Not_evaluated | Outside_tests | Filtered _ | Unreached -> r
+    | Killed _ | Killed_elsewhere _ | Not_evaluated | Outside_tests | Filtered _
+    | Unreached ->
+        r
   in
   Id_map.update r.id
     (function None -> Some r | Some prior -> Some (combine prior r))
@@ -107,7 +114,7 @@ let merge a b = Id_map.union (fun _ a b -> Some (combine a b)) a b
 
 let format =
   {
-    Instr.magic = "windtrap-mutants-v5";
+    Instr.magic = "windtrap-mutants-v6";
     kind = "verdict";
     dir = "mutants";
     ext = "mutants";
@@ -148,7 +155,8 @@ let is_digest s =
    [<source>] is a name: the digest of the source file, or empty when the
    writer could not read the file. [<verdict>] is [unreached],
    [outside_tests], [not_evaluated], [filtered <reason>] with the reason a
-   name, [killed <n>] and then [n] killing tests, [n] being [0] or [1], or
+   name, [killed <n>] and then [n] killing tests, [n] being [0] or [1],
+   [killed_elsewhere <exe>] with the executable a name that is not empty, or
    [survived <n>] and then [n] reaching tests. A test is [<k>] and then its
    [k] names. [load] reads this grammar and nothing else, and refuses a
    rewrite outside [Mutate.rewrites], which no report could render. *)
@@ -165,6 +173,10 @@ let load path =
         | 0 -> Killed { by = None }
         | 1 -> Killed { by = Some (read_test c) }
         | n -> Instr.parse_fail "a mutant has %d killing tests" n)
+    | "killed_elsewhere" ->
+        let exe = Instr.read_name c "killing executable" in
+        if exe = "" then Instr.parse_fail "empty killing executable";
+        Killed_elsewhere { exe }
     | "not_evaluated" -> Not_evaluated
     | "outside_tests" -> Outside_tests
     | "filtered" -> Filtered (Instr.read_name c "filter reason")
@@ -227,6 +239,8 @@ let save ?identity path t =
     | Unreached -> Buffer.add_string b "unreached"
     | Killed { by = None } -> Buffer.add_string b "killed 0"
     | Killed { by = Some test } -> Printf.bprintf b "killed 1 %a" add_test test
+    | Killed_elsewhere { exe } ->
+        Printf.bprintf b "killed_elsewhere %a" add_name exe
     | Not_evaluated -> Buffer.add_string b "not_evaluated"
     | Outside_tests -> Buffer.add_string b "outside_tests"
     | Filtered reason -> Printf.bprintf b "filtered %a" add_name reason

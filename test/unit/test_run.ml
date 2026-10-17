@@ -147,13 +147,14 @@ let color_name = function
 
 let mutation_name = function
   | Run.No_mutation -> "none"
-  | Run.Loop { scope; jobs; since; children } ->
-      strf "loop %s jobs %d%s children %s" (String.concat "," scope) jobs
+  | Run.Loop { scope; jobs; since; children; skip_killed } ->
+      strf "loop %s jobs %d%s children %s%s" (String.concat "," scope) jobs
         (Option.fold ~none:"" ~some:(strf " since %s") since)
         (match children with
         | Run.Auto -> "auto"
         | Run.Fork -> "fork"
         | Run.Exec -> "exec")
+        (if skip_killed then " skip_killed" else "")
   | Run.Armed id -> "armed " ^ id
 
 let broadcast_name (b : Run.broadcast) =
@@ -252,7 +253,13 @@ let parent : Run.config =
     junit = Some "out.xml";
     mutation =
       Run.Loop
-        { scope = [ "lib/" ]; jobs = 4; since = None; children = Run.Exec };
+        {
+          scope = [ "lib/" ];
+          jobs = 4;
+          since = None;
+          children = Run.Exec;
+          skip_killed = false;
+        };
     mutate_workers = true;
     github = true;
     invocation = `Exe "suite.exe";

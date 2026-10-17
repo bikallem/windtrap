@@ -115,6 +115,25 @@ let build_roots =
     ("/w/p/src/lib", None);
   ]
 
+let exe_locations =
+  [
+    ( "a relative executable lies below the build directory",
+      ("/w/_build/_mutants/windtrap-a.mutants", "default/t.exe"),
+      Some ("/w/_build/default/t.exe", "_build/default/t.exe") );
+    ( "a private build directory keeps its name",
+      ("/w/_build_ci/_mutants/windtrap-a.mutants", "default/t.exe"),
+      Some ("/w/_build_ci/default/t.exe", "_build_ci/default/t.exe") );
+    ( "an absolute executable is its own path and spelling",
+      ("/w/_build/_mutants/windtrap-a.mutants", "/opt/t.exe"),
+      Some ("/opt/t.exe", "/opt/t.exe") );
+    ( "a relative executable of a file below no build directory",
+      ("/w/p/windtrap-a.mutants", "default/t.exe"),
+      None );
+    ( "an absolute executable of a file below no build directory",
+      ("/w/p/windtrap-a.mutants", "/opt/t.exe"),
+      Some ("/opt/t.exe", "/opt/t.exe") );
+  ]
+
 let relative_path () =
   let cwd = Filename.concat (temp_dir ()) "_build/default" in
   Sys.mkdir (Filename.dirname cwd) 0o755;
@@ -155,6 +174,16 @@ let build_paths =
           equal (option string) dir (Instr.build_dir ~path));
       test "a relative path is made absolute against the current directory"
         relative_path;
+      cases
+        "exe_location is the path and the spelling of the executable that \
+         wrote a file"
+        ~name:(fun (name, _, _) -> name)
+        exe_locations
+        (fun (_, (path, exe), expected) ->
+          equal
+            (option (pair string string))
+            expected
+            (Instr.exe_location ~path exe));
       cases "build_root is the parent of the build directory" ~name:fst
         build_roots (fun (path, root) ->
           equal (option string) root (Instr.build_root ~path));

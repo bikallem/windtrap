@@ -21,6 +21,7 @@ type mutation =
       jobs : int;
       since : string option;
       children : children;
+      skip_killed : bool;
     }
   | Armed of string
 

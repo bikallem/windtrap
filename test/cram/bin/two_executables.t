@@ -108,4 +108,38 @@ The command's identifier, pasted into that executable, arms the survivor:
   $ run _build/default/test/pins_add.exe --arm "$id" > armed
   $ head -n 1 armed
   mutant test/cram/bin/calc.ml:14:17:sub armed: a + b → a - b
+
+With --mutate-skip-killed, pins_sub.exe does not test the mutant of add,
+which the verdict file of pins_add.exe gives as killed. The report names
+the verdict file of pins_add.exe and counts the mutant as not tested:
+
+  $ run _build/default/test/pins_sub.exe --mutate=test/cram/bin/calc.ml --mutate-skip-killed > skipped
+  $ grep -e SURVIVED -e '^killed elsewhere' -e '^mutants:' -e '^--- stderr' skipped
+    SURVIVED  test/cram/bin/calc.ml:14:17:sub  a + b → a - b
+  killed elsewhere: 1 mutant, not tested, from the verdict file of default/test/pins_add.exe (1)
+  mutants: 1 survived of 3 reached by this suite, 1 killed, 1 never reached, 1 not tested, score 50.0%
+
+The merge gives the report of the runs without the option:
+
+  $ run windtrap mutants > /dev/null
+  [1]
+  $ cmp merged "$bin/out"
+
+A new build of pins_add.exe makes its verdict file stale. pins_sub.exe
+still uses the file, because the source of the mutant did not change:
+
+  $ chmod u+w _build/default/test/pins_add.exe
+  $ printf '\n' >> _build/default/test/pins_add.exe
+  $ run _build/default/test/pins_sub.exe --mutate=test/cram/bin/calc.ml --mutate-skip-killed | grep -e '^killed elsewhere' -e '^--- stderr'
+  killed elsewhere: 1 mutant, not tested, from the verdict file of default/test/pins_add.exe (1)
+
+The merge excludes the stale file, counts the mutant as killed, and tells
+to run pins_add.exe again:
+
+  $ run windtrap mutants > /dev/null
+  [1]
+  $ tail -n 1 "$bin/out"
+  mutants: 1 survived of 3 reached, 2 killed, 1 never reached, 1 executable, score 66.7%
+  $ grep 'counts as killed' "$bin/err"
+  windtrap: 1 mutant counts as killed by default/test/pins_add.exe, but no verdict file of the merge gives this kill: run default/test/pins_add.exe with its mutants, then merge again
   $ cd / && rm -rf "$root"

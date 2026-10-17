@@ -12,10 +12,11 @@
      string escapes, so a session can name any byte.
 
    mkdata mutants OUT [--exe EXE] FILE:LINE:COL:REWRITE:BEFORE:AFTER=VERDICT...
-     VERDICT is killed, killed:TEST, not_evaluated, outside_tests,
-     unreached, filtered:REASON or survived:TESTS, where a TEST is a path
-     of '/'-separated names and TESTS are ';'-separated TESTs. No record
-     has a source digest.
+     VERDICT is killed, killed:TEST, elsewhere:EXE, not_evaluated,
+     outside_tests, unreached, filtered:REASON or survived:TESTS, where a
+     TEST is a path of '/'-separated names, EXE is the identity of the
+     killing executable and TESTS are ';'-separated TESTs. No record has a
+     source digest.
 
    --exe records the identity of the executable at EXE as it is now. *)
 
@@ -76,6 +77,7 @@ let verdict = function
           Verdicts.survived
             (List.map (String.split_on_char '/')
                (String.split_on_char ';' tests))
+      | [ "elsewhere"; exe ] -> Verdicts.Killed_elsewhere { exe }
       | [ "filtered"; reason ] -> Verdicts.Filtered reason
       | _ -> die "%S: not a verdict" v)
 

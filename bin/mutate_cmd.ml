@@ -226,7 +226,9 @@ let survived_in verdicts =
       match r.verdict with
       | Survived { first; others } ->
           Ids.add (Mutate.id_to_string r.id) (first :: others) acc
-      | Killed _ | Not_evaluated | Outside_tests | Filtered _ | Unreached -> acc)
+      | Killed _ | Killed_elsewhere _ | Not_evaluated | Outside_tests
+      | Filtered _ | Unreached ->
+          acc)
     Ids.empty
     (Verdicts.records verdicts)
 
@@ -280,7 +282,8 @@ let merge ~source files merged =
           &&
           match fr.verdict with
           | Not_evaluated -> true
-          | Killed _ | Survived _ | Outside_tests | Filtered _ | Unreached ->
+          | Killed _ | Killed_elsewhere _ | Survived _ | Outside_tests
+          | Filtered _ | Unreached ->
               false)
         (Verdicts.records f.verdicts)
     in
@@ -305,7 +308,8 @@ let merge ~source files merged =
         | Outside_tests ->
             (survivors, missed, unreached, site :: outside, killed)
         | Filtered _ -> (survivors, missed, unreached, outside, killed)
-        | Killed _ -> (survivors, missed, unreached, outside, killed + 1))
+        | Killed _ | Killed_elsewhere _ ->
+            (survivors, missed, unreached, outside, killed + 1))
       (Verdicts.records merged) ([], [], [], [], 0)
   in
   let filtered =
@@ -313,7 +317,8 @@ let merge ~source files merged =
       (fun (r : Verdicts.record) ->
         match r.verdict with
         | Filtered reason -> Some reason
-        | Killed _ | Survived _ | Not_evaluated | Outside_tests | Unreached ->
+        | Killed _ | Killed_elsewhere _ | Survived _ | Not_evaluated
+        | Outside_tests | Unreached ->
             None)
       (Verdicts.records merged)
   in
@@ -359,10 +364,94 @@ let merge ~source files merged =
     },
     invocation )
 
+(* A merged verdict is [Killed_elsewhere] only when no file of the merge
+   kills the mutant directly. Each note names the executable that the skips
+   name, and the run that gives the kill. The records of each file give the
+   holders, because [Verdicts.merge] keeps only the smaller executable of
+   two skips. *)
+let unconfirmed files merged =
+  let key (r : Verdicts.record) = Mutate.id_to_string r.id in
+  let candidates =
+    List.fold_left
+      (fun acc (r : Verdicts.record) ->
+        match r.verdict with
+        | Killed_elsewhere _ -> Ids.add (key r) () acc
+        | Killed _ | Survived _ | Not_evaluated | Outside_tests | Filtered _
+        | Unreached ->
+            acc)
+      Ids.empty (Verdicts.records merged)
+  in
+  (* For each killer: the ids that count for it, and its holders in the
+     reverse order of [files]. *)
+  let killers =
+    List.fold_left
+      (fun acc f ->
+        List.fold_left
+          (fun acc (r : Verdicts.record) ->
+            match r.verdict with
+            | Killed_elsewhere { exe } when Ids.mem (key r) candidates ->
+                let ids, holders =
+                  Option.value (Ids.find_opt exe acc) ~default:(Ids.empty, [])
+                in
+                let holders =
+                  if List.memq f holders then holders else f :: holders
+                in
+                Ids.add exe (Ids.add (key r) () ids, holders) acc
+            | Killed _ | Killed_elsewhere _ | Survived _ | Not_evaluated
+            | Outside_tests | Filtered _ | Unreached ->
+                acc)
+          acc
+          (Verdicts.records f.verdicts))
+      Ids.empty files
+  in
+  let note (killer, (ids, holders)) =
+    let holders = List.rev holders in
+    let n = Ids.cardinal ids in
+    let names =
+      List.fold_left
+        (fun names f ->
+          let name =
+            match f.exe with
+            | Some exe -> exe
+            | None -> "the executable that wrote " ^ f.path
+          in
+          if List.mem name names then names else names @ [ name ])
+        [] holders
+    in
+    let rerun_holders () =
+      strf "run %s again with %s mutants" (String.concat ", " names)
+        (if List.length names = 1 then "its" else "their")
+    in
+    let cause, remedy =
+      if List.exists (fun f -> f.exe = Some killer) files then
+        ( strf "the verdict file of %s in the merge does not kill %s" killer
+            (if n = 1 then "it" else "them"),
+          rerun_holders () )
+      else
+        let gone =
+          match holders with
+          | first :: _ -> (
+              match Instr.exe_location ~path:first.path killer with
+              | Some (exe_path, _) -> not (Sys.file_exists exe_path)
+              | None -> false)
+          | [] -> false
+        in
+        if gone then (strf "%s no longer exists" killer, rerun_holders ())
+        else
+          ( strf "no verdict file of the merge gives %s"
+              (if n = 1 then "this kill" else "these kills"),
+            strf "run %s with its mutants" killer )
+    in
+    strf "%d %s as killed by %s, but %s: %s, then merge again" n
+      (if n = 1 then "mutant counts" else "mutants count")
+      killer cause remedy
+  in
+  List.map note (Ids.bindings killers)
+
 (* The document *)
 
 let verdict_name : Verdicts.verdict -> string = function
-  | Killed _ -> "killed"
+  | Killed _ | Killed_elsewhere _ -> "killed"
   | Survived _ -> "survived"
   | Not_evaluated -> "not_evaluated"
   | Outside_tests -> "outside_tests"
@@ -399,7 +488,9 @@ let json files merged (m : Sections.mutation) =
         in
         strf ",\n      \"tests\": [%s ]"
           (String.concat "," (List.map test tests))
-    | Killed _ | Not_evaluated | Outside_tests | Filtered _ | Unreached -> ""
+    | Killed _ | Killed_elsewhere _ | Not_evaluated | Outside_tests | Filtered _
+    | Unreached ->
+        ""
   in
   let mutant ~key ~value (r : Verdicts.record) =
     strf
@@ -419,7 +510,8 @@ let json files merged (m : Sections.mutation) =
       (fun (r : Verdicts.record) ->
         match r.verdict with
         | Filtered reason -> Either.Left (mutant ~key:"reason" ~value:reason r)
-        | Killed _ | Survived _ | Not_evaluated | Outside_tests | Unreached ->
+        | Killed _ | Killed_elsewhere _ | Survived _ | Not_evaluated
+        | Outside_tests | Unreached ->
             Either.Right
               (mutant ~key:"verdict" ~value:(verdict_name r.verdict) r))
       (Verdicts.records merged)
@@ -607,6 +699,7 @@ let run args =
       match o.since with None -> Ok files | Some rev -> since ~roots rev files
     in
     let merged = merged files in
+    List.iter Os.say (unconfirmed files merged);
     let mutation, invocation = merge ~source:(source ~roots) files merged in
     let* () =
       write

@@ -1543,7 +1543,14 @@ let under_mutation, seen_under_mutation =
         {
           c with
           mutation =
-            Run.Loop { scope = []; jobs = 1; since = None; children = Run.Auto };
+            Run.Loop
+              {
+                scope = [];
+                jobs = 1;
+                since = None;
+                children = Run.Auto;
+                skip_killed = false;
+              };
         })
       [ Stateful.stateful ~count:5 ~domains:2 "sequential" [ where () ] ]
   in
@@ -1561,7 +1568,13 @@ let workers_under_mutation =
               c with
               mutation =
                 Run.Loop
-                  { scope = []; jobs = 1; since = None; children = Run.Auto };
+                  {
+                    scope = [];
+                    jobs = 1;
+                    since = None;
+                    children = Run.Auto;
+                    skip_killed = false;
+                  };
               mutate_workers = true;
             })
           [ Stateful.stateful ~count:5 ~domains:2 "parallel" [ where () ] ]

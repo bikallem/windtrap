@@ -450,9 +450,10 @@ type mutation = {
           in no order. Such a mutant is not reached and not scored. *)
   killed : int;  (** The number of mutants killed. *)
   not_tested : int;
-      (** The number of reached mutants that have no verdict, which are those
-          that an interrupted loop did not finish. It is [0] in every other
-          report. *)
+      (** The number of reached mutants that no child of this run tested: those
+          that an interrupted loop did not finish, and those that the loop
+          skipped because another executable killed them
+          ([--mutate-skip-killed]). It is [0] in a merge. *)
   scope : scope;  (** What the reached count is relative to. *)
 }
 (** The type for a whole mutation report. Its reached count is

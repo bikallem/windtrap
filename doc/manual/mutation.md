@@ -311,14 +311,17 @@ the withheld-correction warning:
   time of the suite.
 - The determinism probe, in a child process, checks that the suite
   passes again.
-- Each reached mutant runs in a child with its reaching tests, up to the
-  first failure in or after the first test that evaluates its site. In
-  exec mode, the child can also run the tests before
-  them (see below). When the verdict file gives the test that killed the
-  mutant before, the source file of the mutant did not change, and the
-  test passes alone with no mutant, a first child runs that test alone.
-  A second child then runs every reaching test only when the first child
-  does not kill the mutant (see
+- Under `--mutate-skip-killed`, a reached mutant that the verdict file
+  of another executable killed gets no child (see
+  [Skipping the mutants that another suite killed](#skipping-the-mutants-that-another-suite-killed)).
+- Each other reached mutant runs in a child with its reaching tests. The
+  child stops at the first failure in or after the first test that
+  evaluates its site. In exec mode, the child can also run the tests
+  before them (see below). When the verdict file gives the test that
+  killed the mutant before, the source file of the mutant did not
+  change, and the test passes alone with no mutant, a first child runs
+  that test alone. A second child then runs every reaching test only
+  when the first child does not kill the mutant (see
   [Where the verdicts are](#where-the-verdicts-are)). A child that
   outruns a deadline taken from the dry run, or evaluates its site more
   than `hits * 8 + 1000` times, `hits` being the dry run's count, is
@@ -699,6 +702,96 @@ can then be fully covered and have no mutant reached. To test those
 mutants, put the tool's entry point in the library, call it from a
 test, and check what it prints with `expect` or `expect_file`.
 
+## Skipping the mutants that another suite killed
+
+`windtrap mutants` counts a mutant as killed when one executable kills
+it. Thus when several suites reach a mutant, a kill in one suite is
+sufficient. The other suites do work that cannot change the report.
+`--mutate-skip-killed` (mirror `WINDTRAP_MUTATE_SKIP_KILLED`) skips such
+a mutant.
+
+After the dry run, the run reads the verdict files of the other
+executables in its verdict directory. A reached mutant gets no child
+when one of these files gives it `killed`. This applies only when the
+digest of the source file in that record is the digest of the source
+file at this time. Only a kill that a child gave counts. A mutant that
+another run skipped does not cause a skip. Only the mutants in the scope
+are candidates, so `--mutate=PREFIX` and `--mutate-since` keep their
+behavior. The run does not use a file that does not load, a file that
+names no executable, or a file whose executable no longer exists. It
+names each such file on standard error.
+
+The verdict file of the run records a skipped mutant as killed
+elsewhere, with the name of the other executable. A line of the report
+names each verdict file that the run used, by its executable. For each
+file, the line gives the number of mutants that the run skipped because
+of that file. The outcome line counts these mutants as not tested, and
+the score of the suite does not count them:
+
+```
+killed elsewhere: 1 mutant, not tested, from the verdict file of default/test/pins_add.exe (1)
+mutants: 1 survived of 3 reached by this suite, 1 killed, 1 never reached, 1 not tested, score 50.0%
+```
+
+`windtrap mutants` counts a mutant that was killed elsewhere as killed,
+so the merge gives the same report as without the option. When no
+verdict file of the merge has the kill, the command gives a note on
+standard error. The note tells which run to do again:
+
+- The verdict file of the killer is in the merge, but it does not kill
+  the mutant. For example, its tests changed, or it skipped the mutant
+  too. Run the suite that skipped the mutant again:
+
+  ```
+  windtrap: 2 mutants count as killed by default/test/a.exe, but the verdict file of default/test/a.exe in the merge does not kill them: run default/test/b.exe again with its mutants, then merge again
+  ```
+
+- The killer no longer exists. Run the suite that skipped the mutant
+  again:
+
+  ```
+  windtrap: 1 mutant counts as killed by default/test/gone.exe, but default/test/gone.exe no longer exists: run default/test/b.exe, default/test/c.exe again with their mutants, then merge again
+  ```
+
+- The verdict file of the killer is not in the merge, because it is
+  stale or because you deleted it. Run the killer again:
+
+  ```
+  windtrap: 1 mutant counts as killed by default/test/pins_add.exe, but no verdict file of the merge gives this kill: run default/test/pins_add.exe with its mutants, then merge again
+  ```
+
+The recommended run can skip the mutant again because of another verdict
+file on disk. For example, that file is stale and the merge does not use
+it. The next merge then gives a note that names that other executable.
+Do what the new note tells.
+
+The option uses only the files on disk at the end of the dry run. A
+parallel `dune runtest` runs the suites at the same time, so the file of
+a fast suite can be missing or from an earlier run. Run the fast suites
+first, then the slow suites with the option.
+
+Do not run two suites with the option at the same time when they reach
+the same mutants. Each suite then reads the file that the other suite
+wrote in an earlier run. As a result, the two suites can skip one mutant
+because of each other. No file then kills the mutant, the merge gives a
+note, and the next parallel run tests the mutant again. Run such suites
+one after the other, for example with `dune runtest -j 1`. In that
+order, the later suite reads the new file of the earlier suite, so the
+two suites cannot skip one mutant because of each other:
+
+```
+$ WINDTRAP_MUTATE=1 dune runtest --force --instrument-with ppx_windtrap.mutate test/core test/sim
+$ WINDTRAP_MUTATE=1 WINDTRAP_MUTATE_SKIP_KILLED=1 dune runtest -j 1 --force --instrument-with ppx_windtrap.mutate test/linux
+$ dune exec windtrap -- mutants
+```
+
+The run uses the file of an earlier build when the digest of the source
+is the same. A test of the other suite can change after that build, so
+the kill can be stale. The merge can leave out the stale file, or the
+other suite can run again and not kill the mutant. In these cases, the
+merge counts the mutant as killed and gives a note. A file of an earlier
+windtrap version does not load, so the run does not use it.
+
 ## Gating on the score
 
 The outcome line gives the mutation score: the percentage of killed
@@ -923,7 +1016,9 @@ If the test kills the mutant again, no other test runs. If it does not,
 a second child runs each reaching test, as without the file. Thus the
 file never gives a verdict without a test that fails, and a changed or
 renamed test cannot keep an old verdict. The file only lets a killed
-mutant run fewer tests.
+mutant run fewer tests. Under `--mutate-skip-killed`, the verdict files
+of the other executables also decide which mutants get a child (see
+[Skipping the mutants that another suite killed](#skipping-the-mutants-that-another-suite-killed)).
 
 A test that runs alone does not run after the tests before it. When a
 test passes alone, fails alone with the mutant, but passes with the

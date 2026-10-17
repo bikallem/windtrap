@@ -148,20 +148,7 @@ let freshness ~path identity =
   match (identity : Instr.identity option) with
   | None -> Fresh
   | Some { exe; digest } -> (
-      (* The executable's path, and its spelling from the project root. *)
-      let located =
-        if not (Filename.is_relative exe) then Some (exe, exe)
-        else
-          (* A relative identity is a path below a build directory; the
-             file's own locates it, the same directory whether the file
-             was discovered or named on the command line. *)
-          Option.map
-            (fun build_dir ->
-              ( Filename.concat build_dir exe,
-                spf "%s/%s" (Filename.basename build_dir) exe ))
-            (Instr.build_dir ~path)
-      in
-      match located with
+      match Instr.exe_location ~path exe with
       | None -> Fresh
       | Some (exe_path, spelled) -> (
           if not (Sys.file_exists exe_path) then Orphan spelled

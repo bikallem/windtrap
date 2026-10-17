@@ -468,6 +468,12 @@ gate. For a pull request, give the commit where its branch started,
 `$(git merge-base origin/main HEAD)`: git compares REV with the work
 tree, so the later changes of the base branch count too.
 
+`--mutate-skip-killed` (`WINDTRAP_MUTATE_SKIP_KILLED=1`) skips a mutant
+that another suite already killed. It reads only the verdict files on
+disk, so run the fast suites first, in a separate `dune runtest`. Two
+suites that use the option at the same time can skip one mutant because
+of each other. Thus run them one after the other (`dune runtest -j 1`).
+
 Mutation testing starts a child process per mutant and is refused on Windows.
 `windtrap coverage --help`, `windtrap mutants --help` and a suite's
 `--help` (`--mutate`, `--arm`) state the flags.

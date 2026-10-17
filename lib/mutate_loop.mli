@@ -62,6 +62,10 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
       module initialization or in a fixture release, is evaluated outside tests
       ({!Windtrap_runtime.Verdicts.Outside_tests}). A site that only tests
       marked xfail evaluated is unreached.
+    + Under [skip_killed], it reads the other verdict files and skips each
+      reached mutant that one of them killed ({b Killed elsewhere} below). A
+      skipped mutant gets no child, and the other reached mutants are the tested
+      mutants.
     + In exec mode ({b Exec mode} below), it runs one child that runs no test.
       Its time is the time that a new process takes before its first test.
     + It runs the determinism probe, which is one unarmed child over the tests
@@ -69,26 +73,26 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
       skipped as many and counted no failure.
     + It runs the unarmed children of {b History} and, in exec mode, of
       {b Exec mode}.
-    + It starts one child per reached mutant, in the order of the catalogue, and
-      never starts one that is unreached or evaluated outside tests. A mutant
-      with a history can have two children ({b History} below). The children at
-      once use at most the [jobs] CPUs of {!Run.Loop}. A child uses the most
-      CPUs that one of its tests used at once in the dry run. The loop rounds
-      this value to the nearest integer. The value is at least 1 and at most the
-      CPUs of the host. Tests that took less than 10 ms in all count as 1. These
-      CPUs are the CPU time of the process in the test over the time of the
-      test. On Linux, the loop also counts the waits of its threads for a CPU
-      ([child_cpus]). Thus a child of a test on several domains counts as
-      several jobs, also when other load held the CPUs in the dry run. The loop
-      does not get the wait of a domain that a test spawns and joins. The
-      workers of a stateful test are an exception. Thus other load can make the
-      count smaller for a test whose thread sleeps while such domains work. A
-      child that uses more than [jobs] CPUs runs alone. A child that does not
-      fit waits for other children to end, and no child after it starts before
-      it. The verdict of a mutant is kept until each mutant before it in the
-      catalogue has a verdict. Then it is committed, and the block of a survivor
-      printed ({!Report.mutation_survivor}). Thus the report and the verdict
-      file are the same for every value of [jobs].
+    + It starts one child per reached mutant that it does not skip, in the order
+      of the catalogue. It never starts one for a mutant that is unreached or
+      evaluated outside tests. A mutant with a history can have two children
+      ({b History} below). The children at once use at most the [jobs] CPUs of
+      {!Run.Loop}. A child uses the most CPUs that one of its tests used at once
+      in the dry run. The loop rounds this value to the nearest integer. The
+      value is at least 1 and at most the CPUs of the host. Tests that took less
+      than 10 ms in all count as 1. These CPUs are the CPU time of the process
+      in the test over the time of the test. On Linux, the loop also counts the
+      waits of its threads for a CPU ([child_cpus]). Thus a child of a test on
+      several domains counts as several jobs, also when other load held the CPUs
+      in the dry run. The loop does not get the wait of a domain that a test
+      spawns and joins. The workers of a stateful test are an exception. Thus
+      other load can make the count smaller for a test whose thread sleeps while
+      such domains work. A child that uses more than [jobs] CPUs runs alone. A
+      child that does not fit waits for other children to end, and no child
+      after it starts before it. The verdict of a mutant is kept until each
+      mutant before it in the catalogue has a verdict. Then it is committed, and
+      the block of a survivor printed ({!Report.mutation_survivor}). Thus the
+      report and the verdict file are the same for every value of [jobs].
     + When the last child has ended it writes the verdict file.
 
     {b Children.} A child runs {!Run.execute} over {!Run.for_subset} of
@@ -192,6 +196,24 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     its child evaluated the site and had no failure that counts, the mutant is
     {!Windtrap_runtime.Verdicts.Survived}.
 
+    {b Killed elsewhere.} Under the [skip_killed] of {!Run.Loop}
+    ([--mutate-skip-killed]), the loop reads the regular files with the
+    extension [.mutants] in the directory of
+    {!Windtrap_runtime.Verdicts.output_file}, except its own file. It does not
+    use a file that does not load, a file that names no executable, or a file
+    whose executable no longer exists ({!Windtrap_runtime.Instr.exe_location}).
+    It names each such file in a warning on standard error. A reached mutant
+    gets no child when a used file gives it {!Windtrap_runtime.Verdicts.Killed}.
+    This applies only when the source digest of that record is the digest of the
+    source file that the loop reads now. A
+    {!Windtrap_runtime.Verdicts.Killed_elsewhere} record does not skip a mutant.
+    The mutant gets a [Killed_elsewhere] record that names the executable of
+    that file, the smaller one when several files kill it. The report counts the
+    mutant as not tested. A line above the outcome line gives the number of
+    skipped mutants and the executable of each used file. The loop uses the
+    files as they are on disk after the dry run, a file of an earlier build
+    included.
+
     {b Tests marked xfail.} A test marked xfail ({!Test_tree.val-xfail}) reaches
     no mutant and kills none. The dry run and the probe run it, no child runs
     it, and no survivor names it.
@@ -210,7 +232,7 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     that the children use at once outnumber the CPUs of the host
     ([Domain.recommended_domain_count]), each deadline is multiplied by that
     ratio. The CPUs at once are [jobs], but at most the sum of the CPUs of the
-    reached mutants. A mutant counts the most CPUs of one of its reaching tests.
+    tested mutants. A mutant counts the most CPUs of one of its reaching tests.
     In exec mode, it counts the most CPUs of one of the tests up to its last
     reaching test. The probe runs alone, before the children of the mutants, and
     its deadline is not multiplied. On Linux, the time that a child or the probe
@@ -245,8 +267,9 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     one [Unreached] record per unreached one, and one [Filtered] record per
     mutant of the scope that the rewriter filtered, with the reason of the
     filter. No child starts for a filtered mutant. The report counts the
-    filtered mutants by reason. Each record has the digest of the source file of
-    its mutant, when the loop can read the file. It is written to
+    filtered mutants by reason. A skipped mutant has a [Killed_elsewhere]
+    record. Each record has the digest of the source file of its mutant, when
+    the loop can read the file. The file is written to
     {!Windtrap_runtime.Verdicts.output_file} of the executable, by
     {!Windtrap_runtime.Verdicts.save}. Under a scope, the records of the mutants
     outside it, under another prefix or on a line that did not change, stay when
@@ -534,7 +557,10 @@ val next_look : left:float -> waited:(unit -> float) -> float * float
     ends, a second signal excepted. For the source line of a survivor and the
     digest of each record it reads the recorded file of the mutant, under
     {!Os.project_root} first and then as given. It reads the verdict file of the
-    executable before the first child.
+    executable before the first child. Under [skip_killed], it lists the
+    directory of its verdict file after the dry run. It reads the other regular
+    files with the extension [.mutants] in it and looks for the executable that
+    each file names.
 
     At module initialization, the module reads the status of its executable file
     ([stat]) and the environment variable [WINDTRAP_MUTATE_CHILD]. If the

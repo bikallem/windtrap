@@ -49,6 +49,7 @@ type mutation =
       jobs : int;
       since : string option;
       children : children;
+      skip_killed : bool;
     }
       (** [--mutate[=PREFIX,…]]: the mutation loop, over the mutants whose
           recorded source path starts with one of the prefixes of [scope]. The
@@ -57,7 +58,9 @@ type mutation =
           once. It is from [1] to [256]. [since] is [--mutate-since]: a git
           revision, and the loop then keeps only the mutants on a line that
           changed since that revision ({!Changed_lines.of_git}). [children] is
-          [--mutate-children]. *)
+          [--mutate-children]. [skip_killed] is [--mutate-skip-killed]: the loop
+          starts no child for a reached mutant that the verdict file of another
+          executable killed. *)
   | Armed of string
       (** [--arm ID]: one ordinary run with the mutant [ID] armed. The
           identifier is kept as typed, and its grammar is that of
@@ -130,8 +133,8 @@ type config = {
       (** [--junit]: a file, or a directory, where a JUnit report is written
           too. [None] writes none. *)
   mutation : mutation;
-      (** [--mutate], [--mutate-jobs], [--mutate-since], [--mutate-children] and
-          [--arm]. *)
+      (** [--mutate], [--mutate-jobs], [--mutate-since], [--mutate-children],
+          [--mutate-skip-killed] and [--arm]. *)
   mutate_workers : bool;
       (** [--mutate-workers]: under [--mutate] and [--arm], a stateful test on
           several domains spawns its worker domains, as it does without mutation

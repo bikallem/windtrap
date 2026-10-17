@@ -247,15 +247,31 @@
 - `windtrap mutants --since REV` reports and gates on only the mutants
   on the lines that changed since `REV` (see
   [Testing the changed lines](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#testing-the-changed-lines)).
+- `--mutate-skip-killed` and its mirror `WINDTRAP_MUTATE_SKIP_KILLED`
+  let a mutation run skip a reached mutant that the verdict file of
+  another executable killed. The skip applies only when the source file
+  of the mutant has the same digest. The verdict file records the mutant
+  as killed elsewhere, with the name of that executable. The report
+  names each verdict file that the run used, and the outcome line counts
+  the mutants as not tested. `windtrap mutants` counts them as killed.
+  When no verdict file of the merge has the kill, it gives a note on
+  standard error that tells which run to do again. The run uses only the
+  files on disk after its dry run, so run the fast suites first, for
+  example in a first `dune runtest`. Two suites with the option that run
+  at the same time can skip one mutant because of each other. Thus run
+  them one after the other, for example with `dune runtest -j 1` (see
+  [Skipping the mutants that another suite killed](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#skipping-the-mutants-that-another-suite-killed)).
 - A mutation run first runs the test that killed a mutant in the
   previous run, alone, when the source file of the mutant did not
   change and the test passes alone with no mutant, and runs every
   reaching test only when that test does not kill it (see
   [Where the verdicts are](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#where-the-verdicts-are)).
-- (breaking) A verdict file starts with `windtrap-mutants-v5` and keeps
+- (breaking) A verdict file starts with `windtrap-mutants-v6`. It keeps
   the test that killed each mutant, a digest of its source file and the
-  reason of each filtered mutant; `windtrap mutants` refuses a file of
-  an earlier version, so run the suites with their mutants again.
+  reason of each filtered mutant. It also keeps the executable that
+  killed a mutant that the run skipped. `windtrap mutants` refuses a
+  file of an earlier version, so run the suites with their mutants
+  again.
 - A suite that spawns a domain gets a full mutation run and a verdict
   file. OCaml refuses `Unix.fork` in a process that spawned a domain, so
   in such a process each child of the loop is a new process of the
