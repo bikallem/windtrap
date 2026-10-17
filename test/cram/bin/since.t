@@ -86,7 +86,7 @@ and gates on them:
   { "version": 1,
     "summary": { "reached": 1, "killed": 0, "survived": 1,
       "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
-      "filtered": 0, "score": 0.00 },
+      "filtered": 0, "flaky": 0, "score": 0.00 },
     "executables": [
       { "name": "pins_add.exe", "path": "default/test/pins_add.exe" } ],
     "mutants": [
@@ -98,6 +98,7 @@ and gates on them:
         "tests": [
           { "executable": 0, "test": ["sub", "sub is nonzero"] } ] } ],
     "filtered": [ ],
+    "flaky": [ ],
     "unstable": [ ] }
   --- stderr
   windtrap: mutants: 1 survived of 1 reached, 1 executable, score 0.0%, minimum 0%: ok

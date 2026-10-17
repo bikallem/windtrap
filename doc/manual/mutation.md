@@ -328,6 +328,9 @@ the withheld-correction warning:
   outruns a deadline taken from the dry run, or evaluates its site more
   than `hits * 8 + 1000` times, `hits` being the dry run's count, is
   killed, and its mutant counts as killed.
+- In a process that spawned a domain, each kill that names a test gets
+  a check: up to 3 runs of the tests of its child, with no mutant (see
+  [Flaky kills](#flaky-kills)).
 
 The deadline of a child is 0.5 seconds, plus the time that the fixtures
 took to acquire and to release in the dry run, plus ten times the time
@@ -433,6 +436,8 @@ share. It has these costs:
 - A child that runs such a test does about 50 times more work.
 - A kill can depend on a schedule. A mutant that a run kills can
   survive the next run, and an `--arm` run of the same mutant can pass.
+  Each kill that names a test gets the check of
+  [Flaky kills](#flaky-kills).
 
 A failure before the first evaluation of the site of a mutant does not
 kill the mutant (see [What a mutation run runs](#what-a-mutation-run-runs)).
@@ -484,9 +489,10 @@ adds its runs two times.
 A retry makes a false survivor less probable. It does not make a
 verdict deterministic. For example, a mutant that 1 order in 10 kills
 survives 3 runs in about 73 of 100 mutation runs. The loop does not run
-a killed mutant again, so a kill that only some orders give stays a
-kill. An `--arm` run runs the suite one time. Thus it can kill a
-survivor of 3 runs.
+a killed mutant again with its mutant, so a kill that only some orders
+give stays a kill. A kill in a retry gets the check of
+[Flaky kills](#flaky-kills). An `--arm` run runs the suite one time.
+Thus it can kill a survivor of 3 runs.
 
 A kill in a retry does not give a row in the `unstable` section. The
 verdict file keeps only the verdict of the mutant, not the verdict of
@@ -499,6 +505,79 @@ this change less probable. For a mutant that few orders kill, a small
 probable. For example, take a mutant that 1 order in 10 kills. With no
 retry, its verdict changes in about 18 of 100 pairs of runs. With 2
 retries, it changes in about 40 of 100 pairs.
+
+## Flaky kills
+
+In a suite that spawns domains, the operating system decides the order
+of the domains. A test can fail with no mutant in some of these orders.
+When such a test fails in the child of a mutant, the child kills a
+mutant that no test can see.
+
+When the process spawned a domain, before or in the dry run, the run
+does a check of each kill that names a test. The check runs the tests
+of the child up to and with the killing test, with no mutant, in a new
+process. A failure of an earlier test does not stop this run. The check
+does this run up to 3 times:
+
+- If the killing test fails in a run, the verdict of the mutant is
+  flaky and not killed, and the check stops.
+- If the killing test does not fail in the 3 runs, the mutant stays
+  killed.
+
+A run that passes its deadline, or that ends with no result, does not
+give a failure of the test. The check also applies to a kill in a retry
+(see [Running a survivor again](#running-a-survivor-again)) and to a
+kill of a first child (see [Where the verdicts are](#where-the-verdicts-are)).
+A kill that names no test gets no check, for example a kill at a
+deadline, after a crash or after a failed fixture release. A suite that
+spawns no domain gets no check, also under `--mutate-children=exec`.
+An `--arm` run does no check.
+
+The report lists each flaky mutant in a section `flaky (N)`, with the
+killing test and its failure in the run with no mutant:
+
+```
+─────────────────────── flaky (1) ────────────────────────
+  A test killed each mutant, and then failed in a run with no mutant.
+  The score does not count these mutants.
+  lib/calc.ml:13:9:sub  a - b → a + b
+    test: calc › subtracts on two domains
+    failure with no mutant: expected 6, got 5
+──────────────────────────────────────────────────────────
+```
+
+The failure is the first failure of the test in that run, on one line.
+After 80 characters, the run cuts the failure and adds an ellipsis
+(`…`). A flaky mutant is reached, but it is not part of the score. The
+outcome line counts it as `1 flaky`. When each reached mutant is flaky,
+the outcome line gives no score, and the gate of `windtrap mutants`
+reads such a merge as 100 (see [Gating on the score](#gating-on-the-score)).
+To get a verdict for the mutant, make the test deterministic, and then
+run the suite again.
+
+The run does the check one time for each different list of tests, also
+when the list killed more than one mutant. Each run of the check is a
+new process. It uses the jobs of `--mutate-jobs` that a child of a
+mutant with the same tests uses (see [Testing mutants in
+parallel](#testing-mutants-in-parallel)). It has the deadline of that
+child. Thus each different list of a kill costs up to 3 more children.
+The live line shows a run of a check as a child of the mutant that
+started the check. It counts each mutant one time, when the mutant has
+its verdict. The determinism probe does not change.
+
+Three runs with no failure do not prove that a test is not flaky. For
+example, a test that fails in 1 run of 10 passes 3 runs in about 73 of
+100 checks, and its mutant then stays killed. A flaky verdict also does
+not prove that the mutant is not killed. The mutant can make the test
+fail in each run, and the test can also fail with no mutant.
+
+The verdict file keeps the test and the failure of each flaky mutant.
+The next run does not run that test alone first, as it does for a
+killed mutant (see [Where the verdicts are](#where-the-verdicts-are)).
+Under `--mutate-skip-killed`, a flaky mutant in the verdict file of
+another executable does not cause a skip. `windtrap mutants` gives a
+mutant as flaky when no executable killed it and one executable gave it
+as flaky. It names that executable before the test.
 
 ## Testing mutants in parallel
 
@@ -696,10 +775,12 @@ where `1` is the bare flag, `0` its absence, and a value that spells no
 boolean the prefixes. A suite with no mutant to test, such as a suite
 over another library, runs as usual and says why on standard error. A
 mutant killed by one executable is killed. A mutant that no executable
-killed and one did not evaluate is not evaluated. The command exits 1
-when a mutant survived every executable that reached it, listing the
-most reached first, unless a gate on the score is given (see
-[Gating on the score](#gating-on-the-score)).
+killed, and that one executable gave as flaky, is flaky. A mutant that
+no executable killed or gave as flaky, and that one executable did not
+evaluate, is not evaluated. The command exits 1 when a mutant survived
+every executable that reached it, listing the most reached first, unless
+a gate on the score is given (see [Gating on the
+score](#gating-on-the-score)).
 
 Dune does not track `WINDTRAP_MUTATE`. A suite that ran without it
 does not run again when it is set, unless its build changed, and the
@@ -775,11 +856,12 @@ executables in its verdict directory. A reached mutant gets no child
 when one of these files gives it `killed`. This applies only when the
 digest of the source file in that record is the digest of the source
 file at this time. Only a kill that a child gave counts. A mutant that
-another run skipped does not cause a skip. Only the mutants in the scope
-are candidates, so `--mutate=PREFIX` and `--mutate-since` keep their
-behavior. The run does not use a file that does not load, a file that
-names no executable, or a file whose executable no longer exists. It
-names each such file on standard error.
+another run skipped does not cause a skip. A flaky mutant also does not
+cause a skip. Only the mutants in the scope are candidates, so
+`--mutate=PREFIX` and `--mutate-since` keep their behavior. The run does
+not use a file that does not load, a file that names no executable, or a
+file whose executable no longer exists. It names each such file on
+standard error.
 
 The verdict file of the run records a skipped mutant as killed
 elsewhere, with the name of the other executable. A line of the report
@@ -860,7 +942,8 @@ windtrap version does not load, so the run does not use it.
 The outcome line gives the mutation score: the percentage of killed
 mutants among the mutants that were killed, survived or were not
 evaluated. A mutant that no test reached, that ran outside every test,
-or that the rewriter filtered, is not part of the score. When no mutant
+that the rewriter filtered, or that is flaky (see
+[Flaky kills](#flaky-kills)), is not part of the score. When no mutant
 is part of it and no gate is given, the line gives no score.
 
 A project can keep a survivor that it does not plan to kill. To gate on
@@ -882,8 +965,11 @@ A suite's mutation run gives the score too, and has no gate.
 For other tools, `--json` prints the merge as JSON on standard output,
 in place of the report. The document has its version, the counts and the
 score, the executables, each mutant with its verdict, each filtered
-mutant with its reason, and the mutants whose verdict changed. A
-survivor also has the number of its runs and the tests that ran it. A
+mutant with its reason, each flaky mutant with its test and the failure
+of that test with no mutant, and the mutants whose verdict changed. A
+survivor also has the number of its runs and the tests that ran it. The
+count `reached` of the document does not count the flaky mutants, so it
+is the count of the mutants of the score. A
 test names its executable by its index in `executables`, because two
 executables can have the same name. Under `--min-score` the outcome
 line goes to standard error, and the exit code is that of the gate.
@@ -898,7 +984,7 @@ $ dune exec windtrap -- mutants --json
 { "version": 1,
   "summary": { "reached": 9, "killed": 7, "survived": 2,
     "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
-    "filtered": 0, "score": 77.78 },
+    "filtered": 0, "flaky": 0, "score": 77.78 },
   "executables": [
     { "name": "test_calc.exe", "path": "default/test_calc.exe" } ],
   "mutants": [
@@ -946,6 +1032,7 @@ $ dune exec windtrap -- mutants --json
       "tests": [
         { "executable": 0, "test": ["sign", "is -1 for a negative"] } ] } ],
   "filtered": [ ],
+  "flaky": [ ],
   "unstable": [ ] }
 ```
 
@@ -1075,19 +1162,20 @@ one whose executable was deleted or rebuilt since, with a warning, as
 [`windtrap coverage`](coverage.md#when-a-dump-is-excluded) does a dump.
 
 The verdict file also keeps the test that killed each mutant, a digest
-of the source file of the mutant, and the previous verdict of each
-mutant (see [Unstable verdicts](#unstable-verdicts)). The next run
-reads them, also after a new build. When the digest did not change and
-the test still reaches the mutant, the run first runs the test alone,
-with no mutant. If the test passes, a child then runs the test alone
-with the mutant. If the test kills the mutant again, no other test
-runs. If it does not, a second child runs each reaching test, as
-without the file. Thus the file never gives a verdict without a test
-that fails, and a changed or renamed test cannot keep an old verdict.
-The file only lets a killed mutant run fewer tests. Under
-`--mutate-skip-killed`, the verdict files of the other executables also
-decide which mutants get a child (see
-[Skipping the mutants that another suite killed](#skipping-the-mutants-that-another-suite-killed)).
+of the source file of the mutant, the previous verdict of each mutant
+(see [Unstable verdicts](#unstable-verdicts)), and the test and the
+failure of each flaky mutant. The next run reads them, also after a new
+build. When the digest did not change and the test still reaches the
+mutant, the run first runs the test alone, with no mutant. If the test
+passes, a child then runs the test alone with the mutant. If the test
+kills the mutant again, no other test runs. If it does not, a second
+child runs each reaching test, as without the file. Thus the file never
+gives a verdict without a test that fails, and a changed or renamed test
+cannot keep an old verdict. The file only lets a killed mutant run fewer
+tests. A flaky mutant gets no first child. Under `--mutate-skip-killed`,
+the verdict files of the other executables also decide which mutants get
+a child (see [Skipping the mutants that another suite
+killed](#skipping-the-mutants-that-another-suite-killed)).
 
 A test that runs alone does not run after the tests before it. When a
 test passes alone, fails alone with the mutant, but passes with the
@@ -1125,8 +1213,9 @@ The list does not show these changes:
 - A survivor with other reaching tests or another number of runs.
 - A change between killed and killed elsewhere. A mutant killed
   elsewhere counts as killed.
-- A change from or to never reached, evaluated outside tests or
-  filtered.
+- A change from or to never reached, evaluated outside tests, filtered
+  or flaky. The `flaky` section lists a flaky mutant in each run that
+  gives it.
 
 The comparison examines only the source file of the mutant. Thus a
 change of other code, for example a caller, a callee or a dependency,
@@ -1182,23 +1271,26 @@ A mutation run starts a child process for each mutant. It is refused on
 Windows. OCaml refuses `fork` in a process that has started a domain, so
 in such a process each child is a new process of the suite executable
 (`--mutate-children`). With `--mutate-children=fork`, the run is refused
-in that process. Under
-`--mutate-since`, it is refused when git cannot give the changed lines,
-for example when `REV` names no commit. `--mutate` and
-`--arm` together are a usage error. `--arm` refuses a mutant that
-`[@mutate off]` dismisses or that the rewriter filtered, and exits 1:
-its site has no guard, so no run can arm it. An interrupt ends the
-run: the running children are killed, the mutants under test are named
-on standard error, and no verdict file is written. When no child runs
-at the interrupt and mutants remain, standard error names the next
-mutant, which no child tested. An interrupt after the last child exits
-stops nothing: the run writes the verdict file and the report as
-usual, and then dies by the signal.
+in that process. Under `--mutate-since`, it is refused when git cannot
+give the changed lines, for example when `REV` names no commit.
+`--mutate` and `--arm` together are a usage error. `--arm` refuses a
+mutant that `[@mutate off]` dismisses or that the rewriter filtered, and
+exits 1: its site has no guard, so no run can arm it. An interrupt ends
+the run: the running children are killed, the mutants under test are
+named on standard error, and no verdict file is written. When no child
+runs at the interrupt and mutants remain, standard error names the first
+mutant with no verdict. A kill that waits for its [check](#flaky-kills)
+gets no verdict. A survivor that waits for a retry gets no verdict too.
+This holds also when its child exited before the interrupt. An interrupt
+after the last child exits stops nothing: the run writes the verdict
+file and the report as usual, and then dies by the signal.
 
 A new process costs more than a fork, because it starts the executable
 and does its module initialization again. The run also has more
 children in exec mode: one child measures the startup time, and one
-child runs each different list of reaching tests with no mutant. This
+child runs each different list of reaching tests with no mutant. In a
+process that spawned a domain, each different list of tests of a kill
+also costs up to 3 children (see [Flaky kills](#flaky-kills)). This
 table shows an example. It gives the mean wall times of 20 runs in a
 shell loop, on Linux with 16 CPUs. The suite is `suite_main.exe`, the
 test suite of the mutation loop, with 2 reached mutants:

@@ -10,6 +10,7 @@ type reaching_test = string list
 type verdict =
   | Killed of { by : reaching_test option }
   | Killed_elsewhere of { exe : string }
+  | Flaky of { test : reaching_test; failure : string }
   | Survived of {
       first : reaching_test;
       others : reaching_test list;
@@ -43,12 +44,13 @@ let scored = function
   | Killed _ | Killed_elsewhere _ -> Some `Killed
   | Survived _ -> Some `Survived
   | Not_evaluated -> Some `Not_evaluated
-  | Outside_tests | Filtered _ | Unreached -> None
+  | Flaky _ | Outside_tests | Filtered _ | Unreached -> None
 
 (* The order in which verdicts outrank one another in a merge. *)
 let rank = function
-  | Killed _ -> 6
-  | Killed_elsewhere _ -> 5
+  | Killed _ -> 7
+  | Killed_elsewhere _ -> 6
+  | Flaky _ -> 5
   | Not_evaluated -> 4
   | Survived _ -> 3
   | Outside_tests -> 2
@@ -61,7 +63,8 @@ let rank = function
    the order. Two builds of one source with other flags of the rewriter can
    filter a mutant for two reasons, and the smaller reason wins, which keeps
    the merge commutative. The smaller executable of two skips wins for the
-   same reason. *)
+   same reason, and so does the smaller pair of test and failure of two
+   flaky verdicts. *)
 let merge_verdict a b =
   match (a, b) with
   | Survived x, Survived y ->
@@ -76,9 +79,14 @@ let merge_verdict a b =
   | Filtered x, Filtered y -> Filtered (min x y)
   | Killed_elsewhere x, Killed_elsewhere y ->
       Killed_elsewhere { exe = min x.exe y.exe }
-  | ( ( Killed _ | Killed_elsewhere _ | Not_evaluated | Survived _
+  | Flaky x, Flaky y ->
+      let c = List.compare String.compare x.test y.test in
+      if c < 0 || (c = 0 && String.compare x.failure y.failure <= 0) then
+        Flaky x
+      else Flaky y
+  | ( ( Killed _ | Killed_elsewhere _ | Flaky _ | Not_evaluated | Survived _
       | Outside_tests | Filtered _ | Unreached ),
-      ( Killed _ | Killed_elsewhere _ | Not_evaluated | Survived _
+      ( Killed _ | Killed_elsewhere _ | Flaky _ | Not_evaluated | Survived _
       | Outside_tests | Filtered _ | Unreached ) ) ->
       if rank a >= rank b then a else b
 
@@ -140,8 +148,8 @@ let combine a b =
    files. *)
 let normal = function
   | Survived s -> sorted ~runs:s.runs (s.first :: s.others)
-  | ( Killed _ | Killed_elsewhere _ | Not_evaluated | Outside_tests | Filtered _
-    | Unreached ) as v ->
+  | ( Killed _ | Killed_elsewhere _ | Flaky _ | Not_evaluated | Outside_tests
+    | Filtered _ | Unreached ) as v ->
       v
 
 let add t r =
@@ -177,7 +185,7 @@ let with_previous ~prior t =
 
 let format =
   {
-    Instr.magic = "windtrap-mutants-v8";
+    Instr.magic = "windtrap-mutants-v9";
     kind = "verdict";
     dir = "mutants";
     ext = "mutants";
@@ -221,9 +229,10 @@ let is_digest s =
    writer could not read the file. [<verdict>] is [unreached],
    [outside_tests], [not_evaluated], [filtered <reason>] with the reason a
    name, [killed <n>] and then [n] killing tests, [n] being [0] or [1],
-   [killed_elsewhere <exe>] with the executable a name that is not empty, or
-   [survived <r> <n>] and then [n] reaching tests, [r] being the runs, [1]
-   or more. A test is [<k>] and then its [k] names. [<previous>] is [none],
+   [killed_elsewhere <exe>] with the executable a name that is not empty,
+   [flaky <test> <failure>] with the failure a name, or
+   [survived <r> <n>] and then [n] reaching tests, [r] being the runs,
+   [1] or more. A test is [<k>] and then its [k] names. [<previous>] is [none],
    or [was] and then a [<verdict>]. [load] reads this grammar and nothing
    else, and refuses a rewrite outside [Mutate.rewrites], which no report
    could render. *)
@@ -244,6 +253,10 @@ let load path =
         let exe = Instr.read_name c "killing executable" in
         if exe = "" then Instr.parse_fail "empty killing executable";
         Killed_elsewhere { exe }
+    | "flaky" ->
+        let test = read_test c in
+        let failure = Instr.read_name c "flaky failure" in
+        Flaky { test; failure }
     | "not_evaluated" -> Not_evaluated
     | "outside_tests" -> Outside_tests
     | "filtered" -> Filtered (Instr.read_name c "filter reason")
@@ -326,6 +339,8 @@ let save ?identity ?suite path t =
     | Killed { by = Some test } -> Printf.bprintf b "killed 1 %a" add_test test
     | Killed_elsewhere { exe } ->
         Printf.bprintf b "killed_elsewhere %a" add_name exe
+    | Flaky { test; failure } ->
+        Printf.bprintf b "flaky %a %a" add_test test add_name failure
     | Not_evaluated -> Buffer.add_string b "not_evaluated"
     | Outside_tests -> Buffer.add_string b "outside_tests"
     | Filtered reason -> Printf.bprintf b "filtered %a" add_name reason

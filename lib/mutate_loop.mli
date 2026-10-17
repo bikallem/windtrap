@@ -101,6 +101,8 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
       is [Survived] with the number of runs. [retry] is [2] when the process
       spawned a domain ({!domain_spawned}), and [0] if not, when no layer gives
       it.
+    + When the process spawned a domain ({!domain_spawned}), a kill that names a
+      test gets a check before it is the verdict ({b Flaky kills} below).
     + When the last child has ended it writes the verdict file.
 
     {b Children.} A child runs {!Run.execute} over {!Run.for_subset} of
@@ -168,7 +170,8 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     suite depend on their order, a first child can kill a mutant that a full
     child lets survive: the test passes alone, but fails alone with the mutant,
     and an earlier test changes the state so that it passes with the mutant. A
-    test that fails alone with no mutant gets no first child.
+    test that fails alone with no mutant gets no first child. A [Flaky] record
+    gives no first child.
 
     {b Verdicts.} A child of a mutant knows if one of its processes evaluated
     the armed site: {!Windtrap_runtime.Mutate.armed_hits} counts the evaluations
@@ -204,6 +207,24 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     evaluate the site. When its child evaluated the site and had no failure that
     counts, the mutant is {!Windtrap_runtime.Verdicts.verdict.Survived}.
 
+    {b Flaky kills.} When the process spawned a domain, the loop does a check of
+    each {!Windtrap_runtime.Verdicts.verdict.Killed} verdict that names a test.
+    The loop is then in exec mode. The verdict can come from a first child, a
+    full child or a retry. The check runs the tests of the child, up to and with
+    that test. It runs them in a new process with no mutant armed
+    ({!kind.Check_kill}), up to 3 times, one run after the other. The first run
+    in which that test has a failure that counts gives
+    {!Windtrap_runtime.Verdicts.verdict.Flaky}, and no other run starts. When no
+    run gives such a failure, the verdict stays [Killed]. A run that passes its
+    deadline, crashes or gives no line gives no failure. A run that gives an
+    [error] line is a refusal, as for a child of a mutant. The loop keeps the
+    result of each list of tests for the rest of the run. Thus a list has at
+    most 3 runs, also when it killed more than one mutant. A run of a check uses
+    job slots and has a deadline, as a child of a mutant with the same tests. It
+    starts before the children of later mutants. A mutant gets its verdict, and
+    the live line counts it, when its check ends. A kill that names no test gets
+    no check.
+
     {b Killed elsewhere.} Under the [skip_killed] of {!Run.Loop}
     ([--mutate-skip-killed]), the loop reads the regular files with the
     extension [.mutants] in the directory of
@@ -214,13 +235,13 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     gets no child when a used file gives it
     {!Windtrap_runtime.Verdicts.verdict.Killed}. This applies only when the
     source digest of that record is the digest of the source file that the loop
-    reads now. A {!Windtrap_runtime.Verdicts.Killed_elsewhere} record does not
-    skip a mutant. The mutant gets a [Killed_elsewhere] record that names the
-    executable of that file, the smaller one when several files kill it. The
-    report counts the mutant as not tested. A line above the outcome line gives
-    the number of skipped mutants and the executable of each used file. The loop
-    uses the files as they are on disk after the dry run, a file of an earlier
-    build included.
+    reads now. A {!Windtrap_runtime.Verdicts.Killed_elsewhere} or a
+    {!Windtrap_runtime.Verdicts.Flaky} record does not skip a mutant. The mutant
+    gets a [Killed_elsewhere] record that names the executable of that file, the
+    smaller one when several files kill it. The report counts the mutant as not
+    tested. A line above the outcome line gives the number of skipped mutants
+    and the executable of each used file. The loop uses the files as they are on
+    disk after the dry run, a file of an earlier build included.
 
     {b Tests marked xfail.} A test marked xfail ({!Test_tree.val-xfail}) reaches
     no mutant and kills none. The dry run and the probe run it, no child runs
@@ -338,9 +359,9 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     - The probe disagrees with the dry run, and the sentence names the tests
       that failed in it, or it passes its deadline, is refused at startup, or
       reports nothing readable.
-    - A child cannot arm its mutant, or is refused at startup. The refusal comes
-      when the verdict of the mutant would be committed, and the children that
-      run then are killed.
+    - A child cannot arm its mutant, or a child or a run of a check is refused
+      at startup. The refusal comes when the verdict of the mutant would be
+      committed, and the children that run then are killed.
     - The supervision fails. The scratch directory cannot be created, which is
       tried before the probe, or [pipe], [fork], [create_process_env], [select]
       or [waitpid] fails for the probe or for a child, or the request file of a
@@ -393,13 +414,17 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     child, and the mutants of those children get no verdict, whatever the
     children reported. A signal sent to the whole process tree also reaches each
     child, and a child that it killed gets no verdict too. The report names
-    these mutants in catalogue order. The children that exited before the signal
-    keep their verdicts, also when the loop did not reap them yet, and the
-    report commits them in catalogue order. The loop starts no child after the
-    signal. When no child runs and mutants remain, the report names the next
-    mutant, which no child tested. The loop then removes its scratch directory
-    and writes no verdict file. It dies by the same signal last, so its parent
-    sees a death by signal and no [at_exit] function runs.
+    these mutants in catalogue order. A signal that stops a run of a check
+    leaves each mutant that waits for that check with no verdict, and the report
+    names these mutants. A kill that waits for its check gets no verdict. A
+    survivor that waits for a retry gets no verdict too. This holds also when
+    its child exited before the signal. The other children that exited before
+    the signal keep their verdicts, also when the loop did not reap them yet,
+    and the report commits them in catalogue order. The loop starts no child
+    after the signal. When no child runs and mutants remain, the report names
+    the first mutant with no verdict. The loop then removes its scratch
+    directory and writes no verdict file. It dies by the same signal last, so
+    its parent sees a death by signal and no [at_exit] function runs.
 
     A signal that arrives once the last child has ended stops nothing. The
     verdict file is written, a second signal excepted, and the report ends as
@@ -447,6 +472,12 @@ type kind =
   | Startup
       (** The child runs no test and gives [ready]. The loop measures the time
           that a new process takes before its first test. *)
+  | Check_kill
+      (** The child runs the tests with no mutant armed, and does not stop at a
+          failure. It gives [flaky <headline>] when the last test of [paths] has
+          a failure that counts, where [<headline>] is
+          {!Report_sections.headline} of its first failure. It gives [steady] if
+          not. *)
 
 type request = {
   suite : string;  (** The name of the suite of the dry run. *)

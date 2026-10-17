@@ -270,6 +270,56 @@ mutants: 4 reached by this suite, «g|3 killed», «y|1 not evaluated», «y|2 n
 
 mutants: 16 reached, 16 killed, 7 never reached, 3 executables, score 100.0%
 
+=== flaky: each mutant with its test and its failure with no mutant, after not evaluated
+«d|─────────────────── not evaluated (1) ────────────────────»
+  Each site ran in the dry run and not in its mutant's child.
+  «b|lib/memo.ml:4:17:sub»  a + b → a - b
+    arm: ./test_memo.exe --arm lib/memo.ml:4:17:sub
+«d|──────────────────────────────────────────────────────────»
+
+«d|─────────────────────── flaky (1) ────────────────────────»
+  A test killed each mutant, and then failed in a run with no mutant.
+  The score does not count these mutants.
+  «b|lib/calc.ml:13:9:sub»  a - b → a + b
+    test: calc › subtracts on two domains
+    «y|failure with no mutant: »expected 6, got 5
+«d|──────────────────────────────────────────────────────────»
+
+«d|─────────────────── never reached (2) ────────────────────»
+  «y|2»  lib/calc.ml   lines 40-41
+«d|──────────────────────────────────────────────────────────»
+
+mutants: 5 reached by this suite, «g|3 killed», «y|1 not evaluated», «y|1 flaky», «y|2 never reached», score 75.0%
+
+=== flaky in a merge: the executable before the test
+─────────────────────── flaky (1) ────────────────────────
+  A test killed each mutant, and then failed in a run with no mutant.
+  The score does not count these mutants.
+  lib/calc.ml:13:9:sub  a - b → a + b
+    test: test_calc.exe  calc › subtracts on two domains
+    failure with no mutant: expected 6, got 5
+──────────────────────────────────────────────────────────
+
+─────────────────── never reached (7) ────────────────────
+  1  lib/report.ml   line 61
+  2  lib/run.ml      line 40
+  4  lib/text.ml     lines 12-14, 32
+──────────────────────────────────────────────────────────
+
+mutants: 17 reached, 16 killed, 1 flaky, 7 never reached, 3 executables, score 100.0%
+
+=== flaky alone, in a loop: a blank line opens it
+
+─────────────────────── flaky (1) ────────────────────────
+  A test killed each mutant, and then failed in a run with no mutant.
+  The score does not count these mutants.
+  lib/calc.ml:13:9:sub  a - b → a + b
+    test: calc › subtracts on two domains
+    failure with no mutant: expected 6, got 5
+──────────────────────────────────────────────────────────
+
+mutants: 4 reached by this suite, 3 killed, 1 flaky, score 100.0%
+
 === evaluated outside tests follows never reached
 ─────────────────── never reached (2) ────────────────────
   2  lib/calc.ml   lines 40-41

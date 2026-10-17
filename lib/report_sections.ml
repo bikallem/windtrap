@@ -1450,6 +1450,13 @@ type not_evaluated = {
   failed : string option;
 }
 
+type flaky = {
+  mutant : mutant;
+  test : string;
+  failure : string;
+  exe : string option;
+}
+
 type scored = [ `Killed | `Survived | `Not_evaluated ]
 
 type unstable = {
@@ -1464,6 +1471,7 @@ type scope = Suite | Selected of int | Executables of int
 type mutation = {
   survivors : survivor list;
   not_evaluated : not_evaluated list;
+  flaky : flaky list;
   unstable : unstable list;
   unreached : (string * int) list;
   outside_tests : (string * int) list;
@@ -1561,7 +1569,11 @@ let mutation_score m = percent ~visited:m.killed ~total:(scored m)
 let mutation_line ~min (m : mutation) =
   let survived = List.length m.survivors in
   let reached =
-    let n = m.killed + survived + List.length m.not_evaluated + m.not_tested in
+    let n =
+      m.killed + survived
+      + List.length m.not_evaluated
+      + List.length m.flaky + m.not_tested
+    in
     match m.scope with
     | Suite -> strf "%d reached by this suite" n
     | Selected tests ->
@@ -1580,6 +1592,8 @@ let mutation_line ~min (m : mutation) =
     @ term m.killed (fun n -> [ styled `Green (strf "%d killed" n) ])
     @ term (List.length m.not_evaluated) (fun n ->
         [ styled `Yellow (strf "%d not evaluated" n) ])
+    @ term (List.length m.flaky) (fun n ->
+        [ styled `Yellow (strf "%d flaky" n) ])
     @ term (List.length m.unreached) (fun n ->
         [ styled `Yellow (strf "%d never reached" n) ])
     @ term (List.length m.outside_tests) (fun n ->
@@ -1660,6 +1674,40 @@ let not_evaluated_section ~selection = function
            ]
       :: failures
       @ List.concat_map mutant not_evaluated
+      @ [ Rule None ]
+
+let flaky_section = function
+  | [] -> []
+  | flaky ->
+      let mutant (f : flaky) =
+        let exe =
+          match f.exe with Some e -> [ plain e; plain "  " ] | None -> []
+        in
+        [
+          Line
+            [
+              plain "  ";
+              styled `Bold f.mutant.id;
+              plain (strf "  %s \u{2192} %s" f.mutant.before f.mutant.after);
+            ];
+          Line ((plain "    test: " :: exe) @ [ plain f.test ]);
+          Line
+            [
+              plain "    ";
+              styled `Yellow "failure with no mutant: ";
+              plain f.failure;
+            ];
+        ]
+      in
+      Rule (Some (strf "flaky (%d)" (List.length flaky)))
+      :: Line
+           [
+             plain
+               "  A test killed each mutant, and then failed in a run with no \
+                mutant.";
+           ]
+      :: Line [ plain "  The score does not count these mutants." ]
+      :: List.concat_map mutant flaky
       @ [ Rule None ]
 
 let unstable_section = function
@@ -1792,6 +1840,7 @@ let mutation_closing ~(config : Run.config) (m : mutation) =
   let sections =
     [
       not_evaluated_section ~selection m.not_evaluated;
+      flaky_section m.flaky;
       unstable_section m.unstable;
       unreached_section m.unreached;
       outside_tests_section m.outside_tests;
@@ -1829,6 +1878,7 @@ let mutation_report ~invocation ~min (m : mutation) =
     [
       survivors;
       not_evaluated_section ~selection:"" m.not_evaluated;
+      flaky_section m.flaky;
       unstable_section m.unstable;
       unreached_section m.unreached;
       outside_tests_section m.outside_tests;

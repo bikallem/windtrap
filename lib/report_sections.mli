@@ -425,6 +425,21 @@ type not_evaluated = {
 (** The type for a reached mutant whose child did not evaluate its site, which
     is no survivor and no kill. *)
 
+type flaky = {
+  mutant : mutant;  (** The mutant that [test] killed. *)
+  test : string;
+      (** The path of the test that killed the mutant, as
+          {!Test_tree.path_to_string} spells it. *)
+  failure : string;
+      (** The first failure of [test] in a run with no mutant, on one line
+          ({!headline}). *)
+  exe : string option;
+      (** The executable that ran [test]. It is [None] in the report of one
+          executable. *)
+}
+(** The type for a mutant that a test killed, when that test also failed in a
+    run with no mutant. *)
+
 type scored = [ `Killed | `Survived | `Not_evaluated ]
 (** The type for the classes of the scored verdicts. *)
 
@@ -455,6 +470,9 @@ type mutation = {
   not_evaluated : not_evaluated list;
       (** Every reached mutant whose child did not evaluate its site, in the
           order in which it prints. *)
+  flaky : flaky list;
+      (** Every flaky mutant, in the order in which it prints. It is reached and
+          not scored. *)
   unstable : unstable list;
       (** Every mutant whose verdict changed its class, in the order in which it
           prints. It changes no count and not the score. *)
@@ -477,15 +495,15 @@ type mutation = {
   scope : scope;  (** What the reached count is relative to. *)
 }
 (** The type for a whole mutation report. Its reached count is
-    [killed + List.length survivors + List.length not_evaluated + not_tested].
-*)
+    [killed + List.length survivors + List.length not_evaluated + List.length
+     flaky + not_tested]. *)
 
 val mutation_score : mutation -> float
 (** [mutation_score m] is the percentage of killed mutants among the scored
     mutants of [m], unrounded. The scored mutants are those killed, those that
-    survived and those not evaluated. A mutant that no test reached and a mutant
-    that has no verdict do not count. It is {!percent} of [m.killed] in their
-    number, and thus [100.] when [m] has none. *)
+    survived and those not evaluated. A mutant that no test reached, a flaky
+    mutant and a mutant that has no verdict do not count. It is {!percent} of
+    [m.killed] in their number, and thus [100.] when [m] has none. *)
 
 val mutation_line : min:float option -> mutation -> span list
 (** [mutation_line ~min m] is the outcome line of a mutation report. It gives
@@ -522,6 +540,12 @@ val mutation_closing : config:Run.config -> mutation -> section list
       [failed] is [Some _]. Then comes the [arm:] command. It runs its
       [invocation] with [--arm] and the selection of [config], as the
       [reproduce:] command that follows does.
+    - when [m.flaky] is not empty, the flaky section, between an opening rule
+      that carries their number and a closing rule. It says in two lines that a
+      test killed each mutant and then failed in a run with no mutant, and that
+      the score does not count them. Then it gives each mutant on one line, its
+      test on a line under it, after the executable when [exe] is [Some _], and
+      the failure on a third line.
     - when [m.unstable] is not empty, the unstable section, between an opening
       rule that carries their number and a closing rule. It says in one line
       that the source did not change and the verdict did. Then it gives one row
@@ -552,9 +576,10 @@ val mutation_report :
     one {!survivor_block} per survivor, between an opening rule that carries
     their number and a closing rule. The executables of all blocks form one
     column, which is absent when no reaching test names an executable. The
-    not-evaluated section, the unstable section, the never-reached section, the
-    section of the mutants evaluated outside tests, the filtered section, the
-    [reproduce:] command and the outcome line follow, as {!mutation_closing}
-    builds them for a run that selects every test, but the outcome line is
-    {!mutation_line} under the gate [min]. The executable of each row of the
-    unstable section comes first, in a column, when a row names one. *)
+    not-evaluated section, the flaky section, the unstable section, the
+    never-reached section, the section of the mutants evaluated outside tests,
+    the filtered section, the [reproduce:] command and the outcome line follow,
+    as {!mutation_closing} builds them for a run that selects every test, but
+    the outcome line is {!mutation_line} under the gate [min]. The executable of
+    each row of the unstable section comes first, in a column, when a row names
+    one. *)

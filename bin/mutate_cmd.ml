@@ -226,7 +226,7 @@ let survived_in verdicts =
       match r.verdict with
       | Survived { first; others; _ } ->
           Ids.add (Mutate.id_to_string r.id) (first :: others) acc
-      | Killed _ | Killed_elsewhere _ | Not_evaluated | Outside_tests
+      | Killed _ | Killed_elsewhere _ | Flaky _ | Not_evaluated | Outside_tests
       | Filtered _ | Unreached ->
           acc)
     Ids.empty
@@ -236,6 +236,22 @@ let merged files =
   List.fold_left
     (fun acc f -> Verdicts.merge acc f.verdicts)
     Verdicts.empty files
+
+(* The index and the file of the first file whose record of [r] has the
+   verdict of [r]. For a merged [Flaky] record, such a file exists, because
+   the merge keeps the pair of one file. *)
+let holder files (r : Verdicts.record) =
+  let holds f =
+    List.exists
+      (fun (fr : Verdicts.record) ->
+        Mutate.compare_id fr.id r.id = 0 && fr.verdict = r.verdict)
+      (Verdicts.records f.verdicts)
+  in
+  let rec find i = function
+    | [] -> assert false
+    | f :: files -> if holds f then (i, f) else find (i + 1) files
+  in
+  find 0 files
 
 (* Each changed record of each file, with the index of its file, by
    identifier and then in the order of [files]. *)
@@ -304,7 +320,7 @@ let merge ~source files merged =
           &&
           match fr.verdict with
           | Not_evaluated -> true
-          | Killed _ | Killed_elsewhere _ | Survived _ | Outside_tests
+          | Killed _ | Killed_elsewhere _ | Flaky _ | Survived _ | Outside_tests
           | Filtered _ | Unreached ->
               false)
         (Verdicts.records f.verdicts)
@@ -329,7 +345,7 @@ let merge ~source files merged =
         | Unreached -> (survivors, missed, site :: unreached, outside, killed)
         | Outside_tests ->
             (survivors, missed, unreached, site :: outside, killed)
-        | Filtered _ -> (survivors, missed, unreached, outside, killed)
+        | Filtered _ | Flaky _ -> (survivors, missed, unreached, outside, killed)
         | Killed _ | Killed_elsewhere _ ->
             (survivors, missed, unreached, outside, killed + 1))
       (Verdicts.records merged) ([], [], [], [], 0)
@@ -339,8 +355,26 @@ let merge ~source files merged =
       (fun (r : Verdicts.record) ->
         match r.verdict with
         | Filtered reason -> Some reason
-        | Killed _ | Killed_elsewhere _ | Survived _ | Not_evaluated
+        | Killed _ | Killed_elsewhere _ | Flaky _ | Survived _ | Not_evaluated
         | Outside_tests | Unreached ->
+            None)
+      (Verdicts.records merged)
+  in
+  let flaky =
+    List.filter_map
+      (fun (r : Verdicts.record) ->
+        match r.verdict with
+        | Flaky { test; failure } ->
+            let _, f = holder files r in
+            Some
+              {
+                Sections.mutant = mutant r;
+                test = Test_tree.path_to_string test;
+                failure;
+                exe = Some f.label;
+              }
+        | Killed _ | Killed_elsewhere _ | Survived _ | Not_evaluated
+        | Outside_tests | Filtered _ | Unreached ->
             None)
       (Verdicts.records merged)
   in
@@ -377,6 +411,7 @@ let merge ~source files merged =
   ( {
       Sections.survivors;
       not_evaluated;
+      flaky;
       unstable =
         List.map
           (fun (id, _, f, previous, verdict) : Sections.unstable ->
@@ -408,8 +443,8 @@ let unconfirmed files merged =
       (fun acc (r : Verdicts.record) ->
         match r.verdict with
         | Killed_elsewhere _ -> Ids.add (key r) () acc
-        | Killed _ | Survived _ | Not_evaluated | Outside_tests | Filtered _
-        | Unreached ->
+        | Killed _ | Flaky _ | Survived _ | Not_evaluated | Outside_tests
+        | Filtered _ | Unreached ->
             acc)
       Ids.empty (Verdicts.records merged)
   in
@@ -429,8 +464,8 @@ let unconfirmed files merged =
                   if List.memq f holders then holders else f :: holders
                 in
                 Ids.add exe (Ids.add (key r) () ids, holders) acc
-            | Killed _ | Killed_elsewhere _ | Survived _ | Not_evaluated
-            | Outside_tests | Filtered _ | Unreached ->
+            | Killed _ | Killed_elsewhere _ | Flaky _ | Survived _
+            | Not_evaluated | Outside_tests | Filtered _ | Unreached ->
                 acc)
           acc
           (Verdicts.records f.verdicts))
@@ -488,6 +523,7 @@ let verdict_name : Verdicts.verdict -> string = function
   | Not_evaluated -> "not_evaluated"
   | Outside_tests -> "outside_tests"
   | Filtered _ -> "filtered"
+  | Flaky _ -> "flaky"
   | Unreached -> "unreached"
 
 (* A reaching test names its executable by its index in ["executables"],
@@ -520,33 +556,51 @@ let json files merged (m : Sections.mutation) =
         in
         strf ",\n      \"runs\": %d,\n      \"tests\": [%s ]" runs
           (String.concat "," (List.map test tests))
-    | Killed _ | Killed_elsewhere _ | Not_evaluated | Outside_tests | Filtered _
-    | Unreached ->
+    | Killed _ | Killed_elsewhere _ | Flaky _ | Not_evaluated | Outside_tests
+    | Filtered _ | Unreached ->
         ""
   in
-  let mutant ~key ~value (r : Verdicts.record) =
+  (* [rest] is the text of the keys after ["after"]. *)
+  let mutant ~rest (r : Verdicts.record) =
     strf
       "\n\
       \    { \"id\": %s,\n\
       \      \"file\": %s, \"line\": %d, \"col\": %d, \"rewrite\": %s,\n\
       \      \"before\": %s, \"after\": %s,\n\
-      \      \"%s\": %s%s }"
+      \      %s }"
       (string (Mutate.id_to_string r.id))
       (string r.id.file) r.id.line r.id.col (string r.id.rewrite)
-      (string r.before) (string r.after) key (string value) (tests r)
+      (string r.before) (string r.after) rest
   in
-  (* A filtered mutant has its own array, so that ["mutants"] keeps the
-     verdicts that version 1 gives it. *)
-  let filtered, tested =
-    List.partition_map
-      (fun (r : Verdicts.record) ->
+  (* A filtered or a flaky mutant has its own array, so that ["mutants"] keeps
+     the verdicts that version 1 gives it. *)
+  let filtered, flaky, tested =
+    List.fold_right
+      (fun (r : Verdicts.record) (filtered, flaky, tested) ->
         match r.verdict with
-        | Filtered reason -> Either.Left (mutant ~key:"reason" ~value:reason r)
+        | Filtered reason ->
+            let rest = "\"reason\": " ^ string reason in
+            (mutant ~rest r :: filtered, flaky, tested)
+        | Flaky { test; failure } ->
+            let i, _ = holder files r in
+            let rest =
+              strf
+                "\"test\": { \"executable\": %d, \"test\": [%s] },\n\
+                \      \"failure\": %s"
+                i
+                (String.concat ", " (List.map string test))
+                (string failure)
+            in
+            (filtered, mutant ~rest r :: flaky, tested)
         | Killed _ | Killed_elsewhere _ | Survived _ | Not_evaluated
         | Outside_tests | Unreached ->
-            Either.Right
-              (mutant ~key:"verdict" ~value:(verdict_name r.verdict) r))
-      (Verdicts.records merged)
+            let rest =
+              strf "\"verdict\": %s%s"
+                (string (verdict_name r.verdict))
+                (tests r)
+            in
+            (filtered, flaky, mutant ~rest r :: tested))
+      (Verdicts.records merged) ([], [], [])
   in
   let survived = List.length m.survivors in
   let not_evaluated = List.length m.not_evaluated in
@@ -567,19 +621,21 @@ let json files merged (m : Sections.mutation) =
     "{ \"version\": 1,\n\
     \  \"summary\": { \"reached\": %d, \"killed\": %d, \"survived\": %d,\n\
     \    \"not_evaluated\": %d, \"outside_tests\": %d, \"unreached\": %d,\n\
-    \    \"filtered\": %d, \"score\": %.2f },\n\
+    \    \"filtered\": %d, \"flaky\": %d, \"score\": %.2f },\n\
     \  \"executables\": [%s ],\n\
     \  \"mutants\": [%s ],\n\
     \  \"filtered\": [%s ],\n\
+    \  \"flaky\": [%s ],\n\
     \  \"unstable\": [%s ] }\n"
     (m.killed + survived + not_evaluated)
     m.killed survived not_evaluated
     (List.length m.outside_tests)
-    (List.length m.unreached) (List.length m.filtered)
+    (List.length m.unreached) (List.length m.filtered) (List.length m.flaky)
     (Sections.mutation_score m)
     (String.concat "," (List.map executable files))
     (String.concat "," tested)
     (String.concat "," filtered)
+    (String.concat "," flaky)
     (String.concat "," unstable)
 
 (* Running *)

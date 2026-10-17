@@ -430,9 +430,14 @@ let count var =
   match Sys.getenv_opt var with
   | None | Some "" -> 0
   | Some path ->
-      Out_channel.with_open_gen [ Open_append; Open_creat; Open_wronly ]
-        0o644 path (fun oc -> output_string oc "run\n");
-      List.length (In_channel.with_open_bin path In_channel.input_lines)
+      let fd = Unix.openfile path [ O_WRONLY; O_APPEND; O_CREAT ] 0o644 in
+      Fun.protect
+        ~finally:(fun () -> Unix.close fd)
+        (fun () ->
+          (* The offset after an appended write is atomic with the write, so
+             two processes never get the same count. *)
+          ignore (Unix.write_substring fd "run\n" 0 4);
+          Unix.lseek fd 0 SEEK_CUR / 4)
 
 let at var n = Sys.getenv_opt var = Some (string_of_int n)
 let skipped_widen = ref false
@@ -450,6 +455,51 @@ let intermittent =
         end);
     test "widen is reached again" (fun () ->
         if not !skipped_widen then is_true (Subject.widen 1 2 <> 99));
+  ]
+
+(* [flaky_kill] reaches [widen] with two tests, and neither pins it. The
+   second test counts its runs in children in the file of
+   MUTATE_CHILD_RUNS, with a mutant or not. It fails at each run in the
+   comma-separated list MUTATE_FAIL_AT, waits at the gate [kill<run>] at
+   each run in the list MUTATE_WAIT_AT, and waits at the gate [hold] at the
+   run MUTATE_HOLD_AT. The first test counts its runs in children in the file
+   of MUTATE_FIRST_RUNS, and fails in each child under MUTATE_FIRST_FAILS.
+   Under MUTATE_FIRST_PINS, the first test pins [widen]. Under
+   MUTATE_KILL_SUB, the two tests also reach [sub], so the children of
+   [sub] and [widen] run the same tests. Under MUTATE_WAIT_ARMED, the second
+   test of a child of [sub] or [widen] waits at the gate of that name. Each
+   new process counts its starts in the file of MUTATE_EXEC_RUNS, and at the
+   start MUTATE_REFUSE_AT it has no second test, so it refuses a request for
+   that test. *)
+let among var n =
+  match Sys.getenv_opt var with
+  | None | Some "" -> false
+  | Some runs -> List.mem (string_of_int n) (String.split_on_char ',' runs)
+
+let flaky_kill =
+  let reach () =
+    if Sys.getenv_opt "MUTATE_KILL_SUB" <> None then
+      is_true (Subject.sub 10 4 < 100);
+    is_true (Subject.widen 3 4 <> 0)
+  in
+  [
+    test "reaches widen" (fun () ->
+        if in_child () then ignore (count "MUTATE_FIRST_RUNS");
+        reach ();
+        if Sys.getenv_opt "MUTATE_FIRST_PINS" <> None then
+          equal int 7 (Subject.widen 3 4);
+        if in_child () && Sys.getenv_opt "MUTATE_FIRST_FAILS" <> None then
+          fail "the first test failed");
+    test "fails at the given child runs" (fun () ->
+        let run = if in_child () then count "MUTATE_CHILD_RUNS" else 0 in
+        reach ();
+        if among "MUTATE_WAIT_AT" run then wait_at ("kill" ^ string_of_int run);
+        if at "MUTATE_HOLD_AT" run then wait_at "hold";
+        if Sys.getenv_opt "MUTATE_WAIT_ARMED" <> None then
+          if Subject.sub 10 4 <> 6 then wait_at "sub"
+          else if Subject.widen 3 4 <> 7 then wait_at "widen";
+        if among "MUTATE_FAIL_AT" run then
+          fail (Printf.sprintf "child run %d" run));
   ]
 
 let count_pipes name =
@@ -1356,7 +1406,7 @@ let child =
   ]
 
 (* Writes the request of a child to the file of MUTATE_REQUEST, as the loop
-   will do in exec mode. MUTATE_REQUEST_KIND is probe, alone or the
+   will do in exec mode. MUTATE_REQUEST_KIND is probe, alone, check or the
    identifier of a mutant. MUTATE_REQUEST_PATHS has one test on each line,
    with "/" between the names of its path. *)
 let write_request () =
@@ -1370,6 +1420,7 @@ let write_request () =
     match env "MUTATE_REQUEST_KIND" with
     | "probe" -> Probe
     | "alone" -> Alone
+    | "check" -> Check_kill
     | id -> (
         match Windtrap_runtime.Mutate.id_of_string id with
         | Ok id -> Mutant { id; budget = 1_000_000 }
@@ -1448,6 +1499,13 @@ let () =
       spawned ()
   | "weak" -> exit @@ run "calc" [ group "widen" weak ]
   | "intermittent" -> exit @@ run "calc" [ group "intermittent" intermittent ]
+  | "flaky_kill" ->
+      let tests =
+        if exec_child && at "MUTATE_REFUSE_AT" (count "MUTATE_EXEC_RUNS") then
+          [ List.hd flaky_kill ]
+        else flaky_kill
+      in
+      exit @@ run "calc" [ group "kill" tests ]
   | "ordered" -> exit @@ run "calc" [ group "ordered" ordered ]
   | "primed" -> exit @@ run "calc" [ group "primed" priming ]
   | "flagged" -> exit @@ run "calc" [ group "flagged" flagged ]
