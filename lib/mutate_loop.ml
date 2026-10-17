@@ -2154,29 +2154,31 @@ let narrows_suite (config : Run.config) ~focus =
   || config.exclude_tags <> [] || config.failed_only || focus
   || config.shard <> None
 
-(* Writes [verdicts], the verdicts of the scope, to the verdict file. Under
-   a scope, the records of the other files stay when this build wrote them.
-   Each record gets its previous verdict from the file that it replaces, of
-   any build, when [suite] wrote that file: a main that calls [Windtrap.run]
-   more than one time writes one file for all of its suites. The result is
-   the changed records, or the note on a file that cannot be written. *)
+(* Writes [verdicts], the verdicts of the scope, to the verdict file of
+   [suite]. Under a scope, the records of the other files stay when this
+   build wrote the file. Each record gets its previous verdict from the file
+   that it replaces, of any build. The result is the changed records, or the
+   note on a file that cannot be written. *)
 let save ~suite ~scope verdicts =
   let exe = Windtrap_runtime.Instr.executable in
-  let path = Verdicts.output_file ~exe in
+  let path = Verdicts.output_file ~exe ~suite in
   let identity = Verdicts.writer_identity ~exe in
-  let loaded = Verdicts.load path in
+  let own =
+    match Verdicts.load path with
+    | Ok (prior, writer, Some s) when String.equal s suite ->
+        Some (prior, writer)
+    | Ok _ | Error _ -> None
+  in
   let kept =
-    match (identity, loaded) with
-    | Some identity, Ok (prior, Some writer, _) when writer = identity ->
+    match (identity, own) with
+    | Some identity, Some (prior, Some writer) when writer = identity ->
         List.filter
           (fun (r : Verdicts.record) -> not (in_scope ~scope r.id))
           (Verdicts.records prior)
     | _ -> []
   in
   let prior =
-    match loaded with
-    | Ok (prior, _, Some writer) when String.equal writer suite -> prior
-    | Ok _ | Error _ -> Verdicts.empty
+    match own with Some (prior, _) -> prior | None -> Verdicts.empty
   in
   let saved =
     Verdicts.with_previous ~prior (List.fold_left Verdicts.add verdicts kept)
@@ -2308,13 +2310,14 @@ let regular path =
    history gives no verdict without a run. A file that is not a regular
    file, or that does not load, gives no history. Only the mutants in
    [reached] have children, and only their sources are read. *)
-let history reached =
+let history ~suite reached =
   let killers = Hashtbl.create 64 in
-  let path = Verdicts.output_file ~exe:Windtrap_runtime.Instr.executable in
+  let path =
+    Verdicts.output_file ~exe:Windtrap_runtime.Instr.executable ~suite
+  in
   (if regular path then
      match Verdicts.load path with
-     | Error _ -> ()
-     | Ok (prior, _, _) ->
+     | Ok (prior, _, Some s) when String.equal s suite ->
          List.iter
            (fun (r : Verdicts.record) ->
              match (r.verdict, r.source_digest) with
@@ -2328,21 +2331,24 @@ let history reached =
                  | Verdicts.Filtered _ | Verdicts.Unreached ),
                  _ ) ->
                  ())
-           (Verdicts.records prior));
+           (Verdicts.records prior)
+     | Ok _ | Error _ -> ());
   killers
 
 (* The executable of another verdict file that killed each mutant of
    [reached], for the source digest of this build, and the executables of
    the files that the loop used. Only a direct kill counts, so a skip never
-   comes from another skip. *)
-let killed_elsewhere reached =
+   comes from another skip. A file is used only when its [Instr.freshness]
+   is [Fresh]. The loop does not use a file whose executable is not a
+   regular file, because [Instr.freshness] reads the executable. *)
+let killed_elsewhere ~suite reached =
   let module Instr = Windtrap_runtime.Instr in
   let wanted = Hashtbl.create 64 in
   List.iter
     (fun ((m : Mutate.mutant), _) -> Hashtbl.replace wanted m.id ())
     reached;
   let killers = Hashtbl.create 64 in
-  let own = Verdicts.output_file ~exe:Instr.executable in
+  let own = Verdicts.output_file ~exe:Instr.executable ~suite in
   let dir = Filename.dirname own in
   let candidates =
     match Sys.readdir dir with
@@ -2379,6 +2385,7 @@ let killed_elsewhere reached =
       (Verdicts.records verdicts);
     Some exe
   in
+  let digests = Hashtbl.create 8 in
   let used =
     List.filter_map
       (fun path ->
@@ -2389,13 +2396,23 @@ let killed_elsewhere reached =
         | Ok (_, None, _) ->
             ignored (path ^ ": the file names no executable");
             None
-        | Ok (verdicts, Some { exe; _ }, _) -> (
+        | Ok (verdicts, (Some { exe; _ } as identity), _) -> (
             match Instr.exe_location ~path exe with
-            | Some (exe_path, spelled) when not (Sys.file_exists exe_path) ->
+            | Some (exe_path, spelled)
+              when Sys.file_exists exe_path && not (regular exe_path) ->
                 ignored
-                  (strf "%s: its executable (%s) no longer exists" path spelled);
+                  (strf "%s: its executable (%s) is not a regular file" path
+                     spelled);
                 None
-            | Some _ | None -> use verdicts exe))
+            | Some _ | None -> (
+                match Instr.freshness ~digests ~path identity with
+                | Fresh -> use verdicts exe
+                | Orphan spelled ->
+                    ignored
+                      (strf "%s: its executable (%s) no longer exists" path
+                         spelled);
+                    None
+                | Stale _ -> None)))
       candidates
   in
   (killers, List.sort_uniq String.compare used)
@@ -2494,7 +2511,7 @@ let loop renderer ~scope ~jobs ~children ~skip_killed ~retry ~suite
               let skipped, to_test, skipped_line =
                 if not skip_killed then ([], reached, None)
                 else
-                  let killers, used = killed_elsewhere reached in
+                  let killers, used = killed_elsewhere ~suite reached in
                   let skipped, to_test =
                     List.partition_map
                       (fun (((m : Mutate.mutant), _) as mutant) ->
@@ -2549,7 +2566,7 @@ let loop renderer ~scope ~jobs ~children ~skip_killed ~retry ~suite
                       scratch;
                       jobs;
                       share;
-                      killers = history reach.sites;
+                      killers = history ~suite reach.sites;
                       alone_failed = Hashtbl.create 0;
                       retry;
                       check_kills = spawned;

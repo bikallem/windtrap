@@ -249,17 +249,20 @@
   [Testing the changed lines](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#testing-the-changed-lines)).
 - `--mutate-skip-killed` and its mirror `WINDTRAP_MUTATE_SKIP_KILLED`
   let a mutation run skip a reached mutant that the verdict file of
-  another executable killed. The skip applies only when the source file
-  of the mutant has the same digest. The verdict file records the mutant
-  as killed elsewhere, with the name of that executable. The report
-  names each verdict file that the run used, and the outcome line counts
-  the mutants as not tested. `windtrap mutants` counts them as killed.
-  When no verdict file of the merge has the kill, it gives a note on
-  standard error that tells which run to do again. The run uses only the
-  files on disk after its dry run, so run the fast suites first, for
-  example in a first `dune runtest`. Two suites with the option that run
-  at the same time can skip one mutant because of each other. Thus run
-  them one after the other, for example with `dune runtest -j 1` (see
+  another suite killed, of the same executable or of another. The skip
+  applies only when the source file of the mutant has the same digest.
+  The run uses only the verdict files that `windtrap mutants` keeps, so
+  a file of an earlier build gives no skip. The verdict file records the
+  mutant as killed elsewhere, with the name of the executable of that
+  file. The report names each verdict file that the run used, and the
+  outcome line counts the mutants as not tested. `windtrap mutants`
+  counts them as killed. When no verdict file of the merge has the kill,
+  it gives a note on standard error that tells which run to do again.
+  The run uses only the files on disk after its dry run, so run the fast
+  suites first, for example in a first `dune runtest`. Two suites with
+  the option that run at the same time can skip one mutant because of
+  each other. Thus run them one after the other, for example with
+  `dune runtest -j 1` (see
   [Skipping the mutants that another suite killed](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#skipping-the-mutants-that-another-suite-killed)).
 - A mutation run lists in a section `unstable (N)` each mutant whose
   verdict changed since the previous run on the same source, as
@@ -271,12 +274,8 @@
   is a sign of a verdict that depends on the order of the domains.
   `windtrap mutants` lists the same mutants from the verdict files, with
   the executable of each, and `--json` gives them in `"unstable"`. The
-  section does not change the score or the exit code. A call of
-  `Windtrap.run` compares only with a verdict file of its own suite.
-  Thus a main that calls it for two different suites shows no section.
-  The inline-test runner of a library with tests in more than one file
-  runs one suite for each file, so its section shows its rows only on
-  some runs (see
+  section does not change the score or the exit code. Each suite
+  compares with its own verdict file (see
   [Unstable verdicts](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#unstable-verdicts)).
 - `--mutate-retry N` and its mirror `WINDTRAP_MUTATE_RETRY` run the
   child of a survivor again, up to `N` more times. The mutant survives
@@ -311,14 +310,28 @@
   change and the test passes alone with no mutant, and runs every
   reaching test only when that test does not kill it (see
   [Where the verdicts are](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#where-the-verdicts-are)).
-- (breaking) A verdict file starts with `windtrap-mutants-v9`. It keeps
+- Each suite writes its own verdict file. The name of the file comes
+  from its executable and its suite. Before, the suite that ran last
+  replaced the one file of its executable. As a result,
+  `windtrap mutants` could call a killed mutant a survivor, or leave
+  out a survivor. This applied to a main that calls `Windtrap.run` with
+  more than one suite name, and to an inline-test library with more
+  than one test file. Two calls with one suite name share one file.
+  `windtrap mutants` counts each executable one time in its outcome
+  line, and `--json` gives the suite of each file in `"suite"`. A file
+  of a suite that no longer runs stays until you delete it. After a new
+  build, `windtrap mutants` leaves it out as stale, and
+  `--mutate-skip-killed` does not use it (see
+  [Where the verdicts are](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#where-the-verdicts-are)).
+- (breaking) A verdict file starts with `windtrap-mutants-v10`. It keeps
   the test that killed each mutant, a digest of its source file, the
   reason of each filtered mutant, the previous verdict of each mutant,
   the runs of each survivor, the test and the failure of each flaky
   mutant, and the suite that wrote it. It also keeps
   the executable that killed a mutant that the run skipped.
-  `windtrap mutants` refuses a file of an earlier version, so run the
-  suites with their mutants again.
+  `windtrap mutants` refuses a file of an earlier version, which has
+  another name that no run replaces: delete `_build/_mutants`, then run
+  the suites with their mutants again.
 - A suite that spawns a domain gets a full mutation run and a verdict
   file. OCaml refuses `Unix.fork` in a process that spawned a domain, so
   in such a process each child of the loop is a new process of the

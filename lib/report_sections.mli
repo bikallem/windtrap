@@ -490,8 +490,8 @@ type mutation = {
   not_tested : int;
       (** The number of reached mutants that no child of this run tested: those
           that an interrupted loop did not finish, and those that the loop
-          skipped because another executable killed them
-          ([--mutate-skip-killed]). It is [0] in a merge. *)
+          skipped because another suite killed them ([--mutate-skip-killed]). It
+          is [0] in a merge. *)
   scope : scope;  (** What the reached count is relative to. *)
 }
 (** The type for a whole mutation report. Its reached count is

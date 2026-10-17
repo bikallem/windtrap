@@ -339,7 +339,7 @@ OPTIONS:
       Test only the mutants on lines changed since git revision REV.
 
   --mutate-skip-killed (env WINDTRAP_MUTATE_SKIP_KILLED)
-      Skip the mutants that the verdict file of another executable killed.
+      Skip the mutants that the verdict file of another suite killed.
 
   --mutate-children=MODE (env WINDTRAP_MUTATE_CHILDREN)
       Test each mutant in a fork, a new process (exec), or auto (default).

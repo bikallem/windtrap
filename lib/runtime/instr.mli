@@ -102,6 +102,39 @@ val exe_location : path:string -> string -> (string * string) option
     It is [None] when [exe] is relative and [path] lies below no build
     directory. *)
 
+(** The type for the freshness of a file, judged from the {!type-identity} that
+    it records. [Orphan] and [Stale] carry the path of the recorded executable
+    relative to the parent of its build directory, as
+    [_build/default/test/t.exe], or its absolute path when it lies below no
+    build directory. *)
+type freshness =
+  | Fresh
+      (** The executable at the recorded path has the recorded digest, or
+          nothing can be judged (see {!val-freshness}). *)
+  | Orphan of string  (** No executable exists at the recorded path. *)
+  | Stale of string
+      (** The executable at the recorded path does not have the recorded digest,
+          so another build wrote the file. *)
+
+val freshness :
+  digests:(string, string option) Hashtbl.t ->
+  path:string ->
+  identity option ->
+  freshness
+(** [freshness ~digests ~path identity] is the freshness of the file at [path],
+    which recorded [identity]. An absolute [identity.exe] is the path of the
+    executable. A relative one is resolved below the build directory of [path]
+    ({!build_dir}). The comparison is by {!file_digest} and never by
+    modification time.
+
+    Three files cannot be judged and are [Fresh]: one that records no identity,
+    which was written by hand or merged, one whose identity is relative and
+    which lies in no build directory, and one whose executable exists and cannot
+    be read.
+
+    [digests] holds the digest of each executable that an earlier call with the
+    same table read, so that a caller reads each executable one time. *)
+
 val data_dir : format -> build_dir:string -> string
 (** [data_dir f ~build_dir] is [<build_dir>/_<f.dir>]. *)
 

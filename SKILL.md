@@ -473,6 +473,7 @@ that another suite already killed. It reads only the verdict files on
 disk, so run the fast suites first, in a separate `dune runtest`. Two
 suites that use the option at the same time can skip one mutant because
 of each other. Thus run them one after the other (`dune runtest -j 1`).
+The test files of an inline-test library are such suites.
 
 `--mutate-retry N` (`WINDTRAP_MUTATE_RETRY=N`) runs the child of a
 survivor again, up to `N` more times. The default is 2 in a suite that

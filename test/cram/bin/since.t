@@ -88,7 +88,7 @@ and gates on them:
       "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
       "filtered": 0, "flaky": 0, "score": 0.00 },
     "executables": [
-      { "name": "pins_add.exe", "path": "default/test/pins_add.exe" } ],
+      { "name": "pins_add.exe", "path": "default/test/pins_add.exe", "suite": "pins_add" } ],
     "mutants": [
       { "id": "test/cram/bin/calc.ml:13:14:add",
         "file": "test/cram/bin/calc.ml", "line": 13, "col": 14, "rewrite": "add",
@@ -157,7 +157,7 @@ report would pass the gate. Thus the command stops:
   $ mkdir "$root/copy" && cp "$root"/_build/_mutants/*.mutants "$root/copy/"
   $ run windtrap mutants --since HEAD --min-score 0 ../../copy
   --- stderr
-  windtrap: --since HEAD: no file of the mutants of ../../copy/windtrap-68af57029dba11636bff61ba3ab2ea94.mutants is under ".", where git runs; run windtrap mutants in the project root, or give the verdict files in its build directory
+  windtrap: --since HEAD: no file of the mutants of ../../copy/windtrap-68af57029dba11636bff61ba3ab2ea94-e86f640beefce54aba652eb18e959633.mutants is under ".", where git runs; run windtrap mutants in the project root, or give the verdict files in its build directory
   [1]
   $ cd "$root"
   $ run windtrap mutants --since HEAD copy | tail -n 1

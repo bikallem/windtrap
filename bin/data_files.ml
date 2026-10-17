@@ -124,7 +124,7 @@ let identity (format : Instr.format) path =
           | exception Instr.Parse_error reason ->
               Error (Instr.Corrupt { path; reason })))
 
-type freshness = Fresh | Orphan of string | Stale of string
+type freshness = Instr.freshness = Fresh | Orphan of string | Stale of string
 
 (* One digest per executable, however many dumps it wrote: every run of
    a cram-driven binary leaves a file naming the same executable, and
@@ -132,30 +132,7 @@ type freshness = Fresh | Orphan of string | Stale of string
    with invocations rather than with executables. The command runs once
    per process, so the memo is never stale. *)
 let digests : (string, string option) Hashtbl.t = Hashtbl.create 64
-
-let exe_digest exe_path =
-  match Hashtbl.find_opt digests exe_path with
-  | Some digest -> digest
-  | None ->
-      let digest = Instr.file_digest exe_path in
-      Hashtbl.replace digests exe_path digest;
-      digest
-
-(* The comparison is by content digest because a modification time proves
-   nothing here: dune's shared cache restores a rebuilt artifact with its
-   original timestamp. *)
-let freshness ~path identity =
-  match (identity : Instr.identity option) with
-  | None -> Fresh
-  | Some { exe; digest } -> (
-      match Instr.exe_location ~path exe with
-      | None -> Fresh
-      | Some (exe_path, spelled) -> (
-          if not (Sys.file_exists exe_path) then Orphan spelled
-          else
-            match exe_digest exe_path with
-            | Some actual when actual <> digest -> Stale spelled
-            | Some _ | None -> Fresh))
+let freshness ~path identity = Instr.freshness ~digests ~path identity
 
 let describe ~path = function
   | Fresh -> assert false

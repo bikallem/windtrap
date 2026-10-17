@@ -267,11 +267,12 @@ dune's cache restores a rebuilt artifact with its original time. No
 option keeps a stale file, since a number computed from another build's
 data describes a program that no longer exists.
 
-`--mutate-skip-killed` is the one exception. A suite reads the verdict
-files of the other executables as they are on disk, a stale one
-included. Its verdict file names the executable of each kill that it
-used. Thus the merge can tell when that kill is not in the merge. The
-suite does not use a file whose executable no longer exists.
+`--mutate-skip-killed` follows the same rule. A suite uses the verdict
+file of another suite only when a report keeps it. A file that no run
+replaces, as the file of a suite that no longer runs, thus cannot cause
+a skip after a build. Its verdict file names the executable of each kill
+that it used. Thus the merge can tell when that kill is not in the
+merge.
 
 ## A suite is its own mutation runner
 

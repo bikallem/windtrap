@@ -185,7 +185,7 @@ let with_previous ~prior t =
 
 let format =
   {
-    Instr.magic = "windtrap-mutants-v9";
+    Instr.magic = "windtrap-mutants-v10";
     kind = "verdict";
     dir = "mutants";
     ext = "mutants";
@@ -210,7 +210,11 @@ let writer_identity ~exe =
     (fun digest -> { exe = Instr.exe_identity ~exe; digest })
     (Instr.file_digest exe)
 
-let output_file ~exe = Instr.output_file format ~exe
+let output_file ~exe ~suite =
+  Printf.sprintf "%s-%s.%s"
+    (Instr.output_dir format ~exe)
+    (Digest.to_hex (Digest.string suite))
+    format.ext
 
 let is_digest s =
   String.length s = 32

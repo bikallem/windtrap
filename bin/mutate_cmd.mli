@@ -26,7 +26,9 @@
     [Windtrap_runtime.Verdicts.format] and the [PATH] arguments. A [PATH] that
     cannot be used fails the command and is never skipped, because a file left
     out can hold the one kill of a mutant, which would then be reported as a
-    survivor.
+    survivor. Each suite of an executable writes its own file
+    ({!Windtrap_runtime.Verdicts.output_file}). Thus the merge can hold several
+    files of one executable.
 
     A file is judged from the identity on its header ({!Data_files.identity})
     before it is loaded: a file of another build is excluded whatever its
@@ -86,7 +88,9 @@
     filtered when no other file has a verdict of a test for it. The counts of
     the report are read off the merged verdicts, and its scope is
     {!Windtrap.Private.Report_sections.scope.Executables} with the number of
-    files kept.
+    executables of the files kept. Two files whose executables have one path
+    ({!Windtrap_runtime.Instr.exe_location}) count one time, and a file that
+    records no executable counts as one.
 
     {b Killed elsewhere.} A verdict [Killed_elsewhere] counts as killed. When
     the merged verdict of a mutant is [Killed_elsewhere], no file of the merge
@@ -96,8 +100,10 @@
     killer is in the merge, the run to do again is the run of the executables
     that skipped the mutants. The same applies if the killer no longer exists
     ({!Windtrap_runtime.Instr.exe_location}). In the other cases, the run to do
-    again is the run of the killer. These notes come before the report and do
-    not change the exit code.
+    again is the run of the killer. When the killer is another suite of the
+    executable of a holder, the file of that holder is in the merge, so the run
+    to do again is the run of that executable. These notes come before the
+    report and do not change the exit code.
 
     {b Reaching tests.} The reaching tests of a survivor are the union of those
     of every file in which the mutant survived. Each is paired with the label of
@@ -120,7 +126,9 @@
     are sorted by identifier, and then in path order of the files. The list
     comes from each file before the merge, so it keeps the previous verdict of
     each executable. Under [--since] it has only the records on the changed
-    lines. It does not change the score or the exit code.
+    lines. It does not change the score or the exit code. A row that is equal to
+    an earlier row, as for two suites of one executable with one change of one
+    mutant, is printed one time. The document keeps an object for each file.
 
     {b Order.} The survivors are sorted by their number of reaching tests, the
     most first, and then in the order of [Windtrap_runtime.Mutate.compare_id].
@@ -182,6 +190,9 @@
     - ["path"] is the executable that the file records, as
       {!Windtrap_runtime.Instr.exe_identity} spells it. It is [null] for a file
       that records none.
+    - ["suite"] is the suite that the file records, the name that the writer
+      gave to [Windtrap.run]. It is [null] for a file that records none. Two
+      objects can have one ["path"].
 
     ["mutants"] is an array with one object for each merged mutant that is not
     filtered or flaky, in the order of [Windtrap_runtime.Mutate.compare_id]. The
@@ -216,11 +227,12 @@
     that killed the mutant in the file that the report names. ["failure"] is the
     first failure of that test in a run with no mutant, on one line.
 
-    ["unstable"] is an array with one object for each row of the unstable
-    section ({{!section-merge}the merge}), in its order. The object has the keys
-    ["id"], ["executable"], the index of the file in ["executables"],
-    ["previous"] and ["verdict"]. The last two are ["killed"], ["survived"] or
-    ["not_evaluated"].
+    ["unstable"] is an array with one object for each record of a file kept
+    whose verdict changed its class, in the order of the unstable section
+    ({{!section-merge}the merge}), also when the section prints the row one
+    time. The object has the keys ["id"], ["executable"], the index of the file
+    in ["executables"], ["previous"] and ["verdict"]. The last two are
+    ["killed"], ["survived"] or ["not_evaluated"].
 
     ["tests"] has one object for each reaching test of the survivor in each file
     in which it survived. The objects are sorted by file, and then by the names

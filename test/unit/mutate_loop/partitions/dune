@@ -1,0 +1,6 @@
+(executable
+ (name partitions_main)
+ (modules partitions_main part_a part_b)
+ (libraries windtrap ppx_windtrap.runtime mutate_loop_subject)
+ (preprocess
+  (pps ppx_windtrap)))

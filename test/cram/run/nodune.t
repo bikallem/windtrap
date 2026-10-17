@@ -146,8 +146,8 @@ The verdict file is the run's, beside the coverage dumps, and the
 installed binary merges it, exiting 1, because a survivor of every
 suite that reached it is the one mutation exit code a build gates on:
 
-  $ find _windtrap/mutants -type f | sed -E 's|windtrap-[0-9a-f]+|windtrap-HASH|'
-  _windtrap/mutants/windtrap-HASH.mutants
+  $ find _windtrap/mutants -type f | sed -E 's|windtrap-[0-9a-f]+-[0-9a-f]+|windtrap-HASH-HASH|'
+  _windtrap/mutants/windtrap-HASH-HASH.mutants
   $ run windtrap mutants
   ───────────────────── survivors (2) ──────────────────────
     SURVIVED  calc.ml:2:16:ge  n > 0 → n >= 0

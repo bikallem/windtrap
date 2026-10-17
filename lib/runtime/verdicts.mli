@@ -4,12 +4,12 @@
   ---------------------------------------------------------------------------*)
 
 (** Mutation verdicts: what a run made of each mutant, and the [.mutants] file
-    that carries the verdicts of one executable to the merge.
+    that carries the verdicts of one suite of an executable to the merge.
 
-    The mutation loop writes one verdict file for each test executable.
-    [windtrap mutants] loads the files of a project and combines them with
-    {!merge}, under which a mutant that is killed anywhere is killed. Nothing
-    here runs when the module loads or when the process exits. *)
+    The mutation loop writes one verdict file for each suite of a test
+    executable. [windtrap mutants] loads the files of a project and combines
+    them with {!merge}, under which a mutant that is killed anywhere is killed.
+    Nothing here runs when the module loads or when the process exits. *)
 
 (** {1:verdicts Verdicts}
 
@@ -35,10 +35,12 @@ type verdict =
           can also run the tests before the reaching tests, and one of them can
           fail. *)
   | Killed_elsewhere of { exe : string }
-      (** No child tested the mutant. The verdict file of the executable [exe]
+      (** No child tested the mutant. A verdict file of the executable [exe]
           gave it {!Killed}, with the source digest of this run. [exe] is the
-          identity on that file ({!Instr.identity}), and it is not [""]. Only a
-          loop under [--mutate-skip-killed] gives it. *)
+          identity on that file ({!Instr.identity}), and it is not [""]. When
+          that file is the file of another suite of the same executable, [exe]
+          is the identity of that executable. Only a loop under
+          [--mutate-skip-killed] gives it. *)
   | Flaky of { test : reaching_test; failure : string }
       (** A child of the mutant had a failure of [test] that counts, as for
           {!Killed}. Then [test] also failed in a run of the same tests with no
@@ -181,9 +183,9 @@ val with_previous : prior:t -> t -> t
 
 (** {1:files Verdict files}
 
-    An executable has one verdict file, at {!output_file}.
+    Each suite of an executable has one verdict file, at {!output_file}.
 
-    The first line of a file is the magic line [windtrap-mutants-v9], which
+    The first line of a file is the magic line [windtrap-mutants-v10], which
     carries the version of the format. A file with another first line is
     refused, never converted, and nothing is promised from one version to the
     next. *)
@@ -212,10 +214,13 @@ val writer_identity : exe:string -> identity option
     [exe], whose [exe] is [Instr.exe_identity ~exe], or [None] when [exe] cannot
     be read. *)
 
-val output_file : exe:string -> string
-(** [output_file ~exe] is [Instr.output_file format ~exe], the one verdict file
-    of the executable at [exe]. An executable that is renamed or moved leaves
-    its previous file behind. *)
+val output_file : exe:string -> suite:string -> string
+(** [output_file ~exe ~suite] is the verdict file of the suite [suite] of the
+    executable at [exe]: [Instr.output_file format ~exe] with [-<hash>] before
+    its extension, where [<hash>] is the hexadecimal MD5 of [suite]. The files
+    of the suites of one executable are in one directory, and their names start
+    with one prefix. An executable that is renamed or moved, and a suite that is
+    renamed, leave the previous file behind. *)
 
 val load : string -> (t * identity option * string option, error) result
 (** [load path] is [Ok (t, identity, suite)] when the file at [path] is a

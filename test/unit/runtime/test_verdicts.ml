@@ -844,7 +844,7 @@ let previous_text () =
   equal string
     (String.concat ""
        [
-         "windtrap-mutants-v9\n0\n5\n";
+         "windtrap-mutants-v10\n0\n5\n";
          "8 lib/a.ml 1 2 3 add 1 b 1 a 0  unreached none\n";
          "8 lib/a.ml 1 3 3 add 1 b 1 a 0  killed 0 was survived 1 1 1 1 t\n";
          "8 lib/a.ml 1 4 3 add 1 b 1 a 0  survived 1 1 2 1 g 1 t was killed 1 \
@@ -879,10 +879,10 @@ let headers =
     ("a coverage file", "windtrap-coverage-v3\n1\n");
     ("an earlier version", "windtrap-mutants-v3\n0\n");
     ("two versions before", "windtrap-mutants-v5\n0\n");
-    ("the previous version", "windtrap-mutants-v8\n0\n");
-    ("a later version", "windtrap-mutants-v10\n0\n");
+    ("the previous version", "windtrap-mutants-v9\n0\n");
+    ("a later version", "windtrap-mutants-v11\n0\n");
     ("the magic in uppercase", "WINDTRAP-MUTANTS-V1\n0\n");
-    ("the magic and a digit", "windtrap-mutants-v90\n0\n");
+    ("the magic and a digit", "windtrap-mutants-v100\n0\n");
     ("plain text", "hello\nworld\n");
   ]
 
@@ -894,26 +894,26 @@ let unknown_format (_, text) =
          | Error (Verdicts.Unknown_format { path; _ }) -> Some path | _ -> None)
        loaded)
 
-let record_prefix = "windtrap-mutants-v9\n0\n1\n8 lib/a.ml "
+let record_prefix = "windtrap-mutants-v10\n0\n1\n8 lib/a.ml "
 
 let corrupt_files =
   [
-    ("the magic line alone", "windtrap-mutants-v9");
-    ("a negative suite count", "windtrap-mutants-v9\n-1\n0\n");
-    ("a suite count of 2", "windtrap-mutants-v9\n2 1 s 1 t\n0\n");
-    ("a suite past the input", "windtrap-mutants-v9\n1 80 s\n0\n");
-    ("no record count", "windtrap-mutants-v9\n0\n");
-    ("a negative record count", "windtrap-mutants-v9\n0\n-1\n");
-    ("a record count past the input", "windtrap-mutants-v9\n0\n99999999\n");
+    ("the magic line alone", "windtrap-mutants-v10");
+    ("a negative suite count", "windtrap-mutants-v10\n-1\n0\n");
+    ("a suite count of 2", "windtrap-mutants-v10\n2 1 s 1 t\n0\n");
+    ("a suite past the input", "windtrap-mutants-v10\n1 80 s\n0\n");
+    ("no record count", "windtrap-mutants-v10\n0\n");
+    ("a negative record count", "windtrap-mutants-v10\n0\n-1\n");
+    ("a record count past the input", "windtrap-mutants-v10\n0\n99999999\n");
     ( "fewer records than the count",
-      "windtrap-mutants-v9\n\
+      "windtrap-mutants-v10\n\
        0\n\
        2\n\
        8 lib/a.ml 1 2 3 add 1 b 1 a 0 unreached none\n" );
     ( "an empty file name",
-      "windtrap-mutants-v9\n0\n1\n0  1 2 3 add 0 0 1 b 1 a 0 unreached\n" );
+      "windtrap-mutants-v10\n0\n1\n0  1 2 3 add 0 0 1 b 1 a 0 unreached\n" );
     ( "a file name past the input",
-      "windtrap-mutants-v9\n0\n1\n80 lib/a.ml 1 2 3 add 1 b 1 a 0 unreached\n"
+      "windtrap-mutants-v10\n0\n1\n80 lib/a.ml 1 2 3 add 1 b 1 a 0 unreached\n"
     );
     ("line 0", record_prefix ^ "0 2 3 add 1 b 1 a 0 unreached\n");
     ("a negative line", record_prefix ^ "-3 2 3 add 1 b 1 a 0 unreached\n");
@@ -965,13 +965,13 @@ let corrupt_files =
     ( "a test name past the input",
       record_prefix ^ "1 2 3 add 1 b 1 a 0 survived 1 1 1 80 g\n" );
     ( "two records of one identifier",
-      "windtrap-mutants-v9\n\
+      "windtrap-mutants-v10\n\
        0\n\
        2\n\
        8 lib/a.ml 1 2 3 add 1 b 1 a 0 unreached none\n\
        8 lib/a.ml 1 2 3 add 1 b 1 a 0 killed 0 none\n" );
     ( "a malformed record after a valid one",
-      "windtrap-mutants-v9\n\
+      "windtrap-mutants-v10\n\
        0\n\
        2\n\
        8 lib/a.ml 1 2 3 add 1 b 1 a 0 killed 0 none\n\
@@ -981,9 +981,9 @@ let corrupt_files =
       record_prefix ^ "1 2 3 add 1 b 1 a 0 unreached maybe\n" );
     ( "a previous survivor with no reaching test",
       record_prefix ^ "1 2 3 add 1 b 1 a 0 unreached was survived 1 0\n" );
-    ("a short identity digest", "windtrap-mutants-v9\nexe abcd 1 a\n0\n");
-    ("an empty identity exe", "windtrap-mutants-v9\nexe " ^ digest ^ " 0 \n0\n");
-    ("bytes after the last record", "windtrap-mutants-v9\n0\n0\nextra\n");
+    ("a short identity digest", "windtrap-mutants-v10\nexe abcd 1 a\n0\n");
+    ("an empty identity exe", "windtrap-mutants-v10\nexe " ^ digest ^ " 0 \n0\n");
+    ("bytes after the last record", "windtrap-mutants-v10\n0\n0\nextra\n");
   ]
 
 let corrupt (_, text) =
@@ -999,14 +999,14 @@ let corrupt_reasons () =
   expect (String.concat "\n" (List.map reason corrupt_files))
   @@ __POS_OF__
        {|
-    the magic line alone: expected suite count at offset 19
+    the magic line alone: expected suite count at offset 20
     a negative suite count: negative suite count
     a suite count of 2: suite count 2 is not 0 or 1
     a suite past the input: truncated suite
-    no record count: expected record count at offset 22
+    no record count: expected record count at offset 23
     a negative record count: negative record count
     a record count past the input: record count exceeds data
-    fewer records than the count: expected file name length at offset 70
+    fewer records than the count: expected file name length at offset 71
     an empty file name: empty file name
     a file name past the input: truncated file name
     line 0: line 0 is not 1-based
@@ -1016,36 +1016,36 @@ let corrupt_reasons () =
     an unknown rewrite: unknown rewrite "plus"
     swap, which no instrumenter emits: unknown rewrite "swap"
     a before past the input: truncated before
-    no rendering: expected before length at offset 45
+    no rendering: expected before length at offset 46
     an after past the input: truncated after
     an unknown verdict: unknown verdict "errored"
-    a filter with no reason: expected filter reason length at offset 64
+    a filter with no reason: expected filter reason length at offset 65
     a filter reason past the input: truncated filter reason
-    no verdict: expected verdict at offset 56
+    no verdict: expected verdict at offset 57
     a killing executable that is empty: empty killing executable
-    no killing executable: expected killing executable length at offset 72
-    no source digest: expected source digest length at offset 53
+    no killing executable: expected killing executable length at offset 73
+    no source digest: expected source digest length at offset 54
     a short source digest: "abc" is not a source digest
     an uppercase source digest: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" is not a source digest
     a killed mutant with two killing tests: a mutant has 2 killing tests
     a killing test past the input: truncated test name
-    a flaky kill with no failure: expected flaky failure length at offset 67
+    a flaky kill with no failure: expected flaky failure length at offset 68
     a flaky failure past the input: truncated flaky failure
     a flaky test name past the input: truncated test name
     a survivor with no run: a survivor has 0 runs
     a survivor with no reaching test: a survivor names no test (survived is not unreached)
     a reaching test count past the input: reaching test count exceeds data
     a negative test path length: negative test path length
-    a test path shorter than its length: expected test path length at offset 74
+    a test path shorter than its length: expected test path length at offset 75
     a test name past the input: truncated test name
     two records of one identifier: duplicate record for lib/a.ml:1:2:add
     a malformed record after a valid one: line 0 is not 1-based
-    no previous verdict: expected previous verdict at offset 65
+    no previous verdict: expected previous verdict at offset 66
     an unknown previous verdict: unknown previous verdict "maybe"
     a previous survivor with no reaching test: a survivor names no test (survived is not unreached)
-    a short identity digest: identity digest is not 32 hex characters at offset 24
+    a short identity digest: identity digest is not 32 hex characters at offset 25
     an empty identity exe: empty executable identity
-    bytes after the last record: trailing data at offset 24
+    bytes after the last record: trailing data at offset 25
     |}
 
 let error_messages () =
@@ -1063,7 +1063,7 @@ let error_messages () =
        ])
   @@ __POS_OF__
        {|
-    f.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v9", found "junk"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
+    f.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v10", found "junk"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
     f.mutants: cannot read verdict file: No such file or directory
     f.mutants: corrupt verdict file: unknown verdict "errored"
     |}
@@ -1079,6 +1079,15 @@ let writer () =
     (Some { Verdicts.exe = Instr.exe_identity ~exe; digest })
     (Verdicts.writer_identity ~exe)
 
+(* The MD5 of the executable identity [default/test/t.exe], then of the suite. *)
+let suite_files =
+  let exe = "windtrap-ecc2455c5e4d1d42c39f8d1631b3c7d5" in
+  [
+    ("calc", exe ^ "-74e338c3d6c13c11b54998028bd1adfb.mutants");
+    ("", exe ^ "-d41d8cd98f00b204e9800998ecf8427e.mutants");
+    ("lib/a.ml", exe ^ "-91b742a1b4614abe2a25a8c7f553e74f.mutants");
+  ]
+
 let files =
   group "Verdict files"
     [
@@ -1086,14 +1095,14 @@ let files =
         "format is the magic line, the mutants directory and extension, and \
          the verdict kind" (fun () ->
           equal (list string)
-            [ "windtrap-mutants-v9"; "mutants"; "mutants"; "verdict" ]
+            [ "windtrap-mutants-v10"; "mutants"; "mutants"; "verdict" ]
             Verdicts.[ format.magic; format.dir; format.ext; format.kind ]);
       test
         "save writes the magic line, the count, then the records by identifier"
         (fun () ->
           expect_exact (saved sample)
           @@ __POS_OF__
-               {|windtrap-mutants-v9
+               {|windtrap-mutants-v10
 0
 9
 8 lib/a.ml 1 2 3 add 5 a - b 5 a + b 0  unreached none
@@ -1110,7 +1119,7 @@ let files =
           expect_exact
             (saved ~identity:{ exe = "test/a.exe"; digest } Verdicts.empty)
           @@ __POS_OF__
-               {|windtrap-mutants-v9
+               {|windtrap-mutants-v10
 exe aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 10 test/a.exe
 0
 0
@@ -1121,7 +1130,7 @@ exe aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 10 test/a.exe
                ~identity:{ exe = "test/a.exe"; digest }
                ~suite:"calc" Verdicts.empty)
           @@ __POS_OF__
-               {|windtrap-mutants-v9
+               {|windtrap-mutants-v10
 exe aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 10 test/a.exe
 1 4 calc
 0
@@ -1158,11 +1167,52 @@ exe aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 10 test/a.exe
                ~ok:(fun _ -> "loaded")
                ~error:error_row (Verdicts.load path)));
       test "pp_error names the file, the fault and what to do" error_messages;
-      test "output_file is Instr.output_file of format" (fun () ->
-          let exe = "/w/p/_build/default/test/t.exe" in
+      cases
+        "output_file puts the MD5 of the suite before the extension of \
+         Instr.output_file"
+        ~name:(fun (suite, _) -> strf "%S" suite)
+        suite_files
+        (fun (suite, file) ->
           equal string
-            (Instr.output_file Verdicts.format ~exe)
-            (Verdicts.output_file ~exe));
+            ("/w/p/_build/_mutants/" ^ file)
+            (Verdicts.output_file ~exe:"/w/p/_build/default/test/t.exe" ~suite));
+      test
+        "the files of two suites of one executable are two files of one \
+         directory, and neither is the file of Instr.output_file" (fun () ->
+          let exe = "/w/p/_build/default/test/t.exe" in
+          let a = Verdicts.output_file ~exe ~suite:"lib/a.ml"
+          and b = Verdicts.output_file ~exe ~suite:"lib/b.ml" in
+          not_equal string a b;
+          equal string (Filename.dirname a) (Filename.dirname b);
+          let plain = Instr.output_file Verdicts.format ~exe in
+          not_equal string plain a;
+          not_equal string plain b);
+      test "one suite of an executable spelled in two ways has one file"
+        (fun () ->
+          let paths =
+            List.map
+              (fun exe -> Verdicts.output_file ~exe ~suite:"calc")
+              [
+                "/w/p/_build/default/test/t.exe";
+                "/w/p/_build/.sandbox/0f/default/test/t.exe";
+                "/w/p/_build/default/test/../test/t.exe";
+              ]
+          in
+          equal (list string) (List.map (fun _ -> List.hd paths) paths) paths);
+      test "the name of a verdict file holds no byte of its suite" (fun () ->
+          let name =
+            Filename.basename
+              (Verdicts.output_file ~exe:"/w/p/_build/default/test/t.exe"
+                 ~suite:"a/b c\n\000")
+          in
+          equal int 82 (String.length name);
+          is_true (String.starts_with ~prefix:"windtrap-" name);
+          is_true (String.ends_with ~suffix:".mutants" name);
+          let hash = String.sub name 9 65 in
+          is_true
+            (String.for_all
+               (function '0' .. '9' | 'a' .. 'f' | '-' -> true | _ -> false)
+               hash));
       test "writer_identity is the executable's identity and digest" writer;
       test "writer_identity is None for a file that cannot be read" (fun () ->
           is_none ~pp:pp_identity

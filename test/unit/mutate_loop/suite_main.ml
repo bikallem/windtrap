@@ -612,7 +612,7 @@ let signal_the_loop_after_its_last_child () =
              Filename.concat tmp scratch;
              string_of_int loop;
              Windtrap_runtime.Verdicts.output_file
-               ~exe:Windtrap_runtime.Instr.executable;
+               ~exe:Windtrap_runtime.Instr.executable ~suite:"calc";
            |]
            Unix.stdin Unix.stdout Unix.stderr)
   | _ -> failwith "TMPDIR holds one entry, the loop's scratch directory"
@@ -1480,6 +1480,11 @@ let () =
       (* Two suites that reach [sub]: the first kills it, and the second does
          not under MUTATE_WEAK. *)
       ignore (run "first" [ group "calc" strong ]);
+      exit @@ run "calc" [ group "flagged" flagged ]
+  | "two_flagged" ->
+      (* Two suites with [flagged]: each kills [sub], and neither does under
+         MUTATE_WEAK. *)
+      ignore (run "first" [ group "flagged" flagged ]);
       exit @@ run "calc" [ group "flagged" flagged ]
   | "child" -> exit @@ run "calc" [ group "child" child ]
   | "catalogue" ->

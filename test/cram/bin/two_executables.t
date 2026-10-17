@@ -65,8 +65,8 @@ survivor with the tests that ran it in each executable:
       "not_evaluated": 0, "outside_tests": 0, "unreached": 1,
       "filtered": 0, "flaky": 0, "score": 66.67 },
     "executables": [
-      { "name": "pins_add.exe", "path": "default/test/pins_add.exe" },
-      { "name": "pins_sub.exe", "path": "default/test/pins_sub.exe" } ],
+      { "name": "pins_add.exe", "path": "default/test/pins_add.exe", "suite": "pins_add" },
+      { "name": "pins_sub.exe", "path": "default/test/pins_sub.exe", "suite": "pins_sub" } ],
     "mutants": [
       { "id": "test/cram/bin/calc.ml:12:14:sub",
         "file": "test/cram/bin/calc.ml", "line": 12, "col": 14, "rewrite": "sub",
@@ -154,21 +154,21 @@ survive before:
   [1]
   $ tail -n 1 merged > a && tail -n 1 "$bin/out" > b && cmp a b
 
-A new build of pins_add.exe makes its verdict file stale. pins_sub.exe
-still uses the file, because the source of the mutant did not change:
+A new build of pins_add.exe makes its verdict file stale. pins_sub.exe no
+longer uses the file, so it tests the mutant of add, and gives no warning:
 
   $ chmod u+w _build/default/test/pins_add.exe
   $ printf '\n' >> _build/default/test/pins_add.exe
   $ run _build/default/test/pins_sub.exe --mutate=test/cram/bin/calc.ml --mutate-skip-killed | grep -e '^killed elsewhere' -e '^--- stderr'
-  killed elsewhere: 1 mutant, not tested, from the verdict file of default/test/pins_add.exe (1)
+  killed elsewhere: 0 mutants, not tested, from no other verdict file
 
-The merge excludes the stale file, counts the mutant as killed, and tells
-to run pins_add.exe again:
+The merge excludes the stale file. pins_sub.exe tested the mutant, so the
+merge gives no note:
 
   $ run windtrap mutants > /dev/null
   [1]
   $ tail -n 1 "$bin/out"
-  mutants: 1 survived of 3 reached, 2 killed, 1 never reached, 1 executable, score 66.7%
+  mutants: 2 survived of 3 reached, 1 killed, 1 never reached, 1 executable, score 33.3%
   $ grep 'counts as killed' "$bin/err"
-  windtrap: 1 mutant counts as killed by default/test/pins_add.exe, but no verdict file of the merge gives this kill: run default/test/pins_add.exe with its mutants, then merge again
+  [1]
   $ cd / && rm -rf "$root"

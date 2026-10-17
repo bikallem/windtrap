@@ -30,6 +30,7 @@ type file = {
   path : string; (* the verdict file *)
   label : string; (* the executable, as the witness column names it *)
   exe : string option; (* the executable, as the file records it *)
+  suite : string option; (* the suite, as the file records it *)
   invocation : Run.invocation; (* how that executable is run again *)
   verdicts : Verdicts.t;
 }
@@ -88,23 +89,24 @@ let remedy excluded =
   let under_build_dir (path, _) = Option.is_some (Instr.build_dir ~path) in
   if List.for_all under_build_dir excluded then
     "re-run every suite with its mutants, then merge again; delete the files \
-     whose executable no longer exists\n\
+     whose executable or suite no longer exists\n\
     \  WINDTRAP_MUTATE=1 dune runtest --force --instrument-with \
      ppx_windtrap.mutate"
   else
     "re-run every suite with its mutants (--mutate, instrumented with \
      ppx_windtrap.mutate, forcing the runs your build tool cached), then merge \
-     again; delete the files whose executable no longer exists"
+     again; delete the files whose executable or suite no longer exists"
 
 let fresh files =
   let load path =
     match Verdicts.load path with
-    | Ok (verdicts, identity, _) ->
+    | Ok (verdicts, identity, suite) ->
         Ok
           {
             path;
             label = label ~path identity;
             exe = Option.map (fun (i : Verdicts.identity) -> i.exe) identity;
+            suite;
             invocation = invocation identity;
             verdicts;
           }
@@ -274,6 +276,19 @@ let scored_name = function
   | `Survived -> "survived"
   | `Not_evaluated -> "not_evaluated"
 
+(* The suites of one executable count as one executable. A file that records
+   no executable counts as one. *)
+let executables files =
+  let key f =
+    match f.exe with
+    | Some exe -> (
+        match Instr.exe_location ~path:f.path exe with
+        | Some (path, _) -> path
+        | None -> exe)
+    | None -> f.path
+  in
+  List.length (List.sort_uniq String.compare (List.map key files))
+
 (* [Verdicts.merge] folds away which executable ran a reaching test, so a
    survivor's reaching tests are read from the files in which it survived. *)
 let merge ~source files merged =
@@ -413,21 +428,25 @@ let merge ~source files merged =
       not_evaluated;
       flaky;
       unstable =
-        List.map
-          (fun (id, _, f, previous, verdict) : Sections.unstable ->
-            {
-              id = Mutate.id_to_string id;
-              exe = Some f.label;
-              previous;
-              verdict;
-            })
-          (unstable files);
+        (* Two suites of one executable can give one mutant the same change. *)
+        List.fold_left
+          (fun rows (id, _, f, previous, verdict) ->
+            let row : Sections.unstable =
+              {
+                id = Mutate.id_to_string id;
+                exe = Some f.label;
+                previous;
+                verdict;
+              }
+            in
+            if List.mem row rows then rows else rows @ [ row ])
+          [] (unstable files);
       unreached;
       outside_tests;
       filtered;
       killed;
       not_tested = 0;
-      scope = Executables (List.length files);
+      scope = Executables (executables files);
     },
     invocation )
 
@@ -491,7 +510,7 @@ let unconfirmed files merged =
     in
     let cause, remedy =
       if List.exists (fun f -> f.exe = Some killer) files then
-        ( strf "the verdict file of %s in the merge does not kill %s" killer
+        ( strf "no verdict file of %s in the merge kills %s" killer
             (if n = 1 then "it" else "them"),
           rerun_holders () )
       else
@@ -535,8 +554,9 @@ let json files merged (m : Sections.mutation) =
   let string = Text.json_string in
   let survivals = List.mapi (fun i f -> (i, survived_in f.verdicts)) files in
   let executable f =
-    strf "\n    { \"name\": %s, \"path\": %s }" (string f.label)
-      (match f.exe with Some exe -> string exe | None -> "null")
+    let optional = function Some s -> string s | None -> "null" in
+    strf "\n    { \"name\": %s, \"path\": %s, \"suite\": %s }" (string f.label)
+      (optional f.exe) (optional f.suite)
   in
   let test (i, path) =
     strf "\n        { \"executable\": %d, \"test\": [%s] }" i

@@ -350,8 +350,8 @@ mutants. A flaky object names its executable by the index in
       "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
       "filtered": 0, "flaky": 3, "score": 100.00 },
     "executables": [
-      { "name": "a.mutants", "path": null },
-      { "name": "b.mutants", "path": null } ],
+      { "name": "a.mutants", "path": null, "suite": null },
+      { "name": "b.mutants", "path": null, "suite": null } ],
     "mutants": [
       { "id": "lib/calc.ml:3:14:lt",
         "file": "lib/calc.ml", "line": 3, "col": 14, "rewrite": "lt",
@@ -433,7 +433,7 @@ once:
   --- stderr
   windtrap: .../b.mutants: its executable (_build/default/test/b.exe) no longer exists; excluding it
   windtrap: .../c.mutants: not written by the executable now at _build/default/test/c.exe (rebuilt since); excluding it
-  windtrap: re-run every suite with its mutants, then merge again; delete the files whose executable no longer exists
+  windtrap: re-run every suite with its mutants, then merge again; delete the files whose executable or suite no longer exists
     WINDTRAP_MUTATE=1 dune runtest --force --instrument-with ppx_windtrap.mutate
   [1]
 
@@ -448,7 +448,7 @@ what invalidates one:
   windtrap: found 1 .mutants file and every one is stale
     A verdict is written only by a run asked to test its mutants, and it is
     invalidated by any later build of the executable that wrote it.
-  windtrap: re-run every suite with its mutants, then merge again; delete the files whose executable no longer exists
+  windtrap: re-run every suite with its mutants, then merge again; delete the files whose executable or suite no longer exists
     WINDTRAP_MUTATE=1 dune runtest --force --instrument-with ppx_windtrap.mutate
   [1]
 
@@ -467,7 +467,7 @@ the remedy names no command:
   windtrap: found 1 .mutants file and every one is orphaned
     A verdict is written only by a run asked to test its mutants, and it is
     invalidated by any later build of the executable that wrote it.
-  windtrap: re-run every suite with its mutants (--mutate, instrumented with ppx_windtrap.mutate, forcing the runs your build tool cached), then merge again; delete the files whose executable no longer exists
+  windtrap: re-run every suite with its mutants (--mutate, instrumented with ppx_windtrap.mutate, forcing the runs your build tool cached), then merge again; delete the files whose executable or suite no longer exists
 
 The executable column names each file by its executable's basename, an
 inline-test runner by its library, and a file with no identity by its own
@@ -670,9 +670,9 @@ its executable by its index in "executables":
       "not_evaluated": 0, "outside_tests": 0, "unreached": 2,
       "filtered": 0, "flaky": 0, "score": 66.67 },
     "executables": [
-      { "name": "windtrap-a.mutants", "path": null },
-      { "name": "windtrap-b.mutants", "path": null },
-      { "name": "windtrap-c.mutants", "path": null } ],
+      { "name": "windtrap-a.mutants", "path": null, "suite": null },
+      { "name": "windtrap-b.mutants", "path": null, "suite": null },
+      { "name": "windtrap-c.mutants", "path": null, "suite": null } ],
     "mutants": [
       { "id": "lib/calc.ml:1:14:add",
         "file": "lib/calc.ml", "line": 1, "col": 14, "rewrite": "add",
@@ -715,8 +715,8 @@ records none:
       "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
       "filtered": 0, "flaky": 0, "score": 0.00 },
     "executables": [
-      { "name": "t.exe", "path": "default/a/t.exe" },
-      { "name": "t.exe", "path": "default/b/t.exe" } ],
+      { "name": "t.exe", "path": "default/a/t.exe", "suite": null },
+      { "name": "t.exe", "path": "default/b/t.exe", "suite": null } ],
     "mutants": [
       { "id": "lib/calc.ml:1:14:add",
         "file": "lib/calc.ml", "line": 1, "col": 14, "rewrite": "add",
@@ -736,9 +736,9 @@ records none:
       "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
       "filtered": 0, "flaky": 0, "score": 0.00 },
     "executables": [
-      { "name": "my_lib_expect", "path": "default/lib/.my_lib_expect.inline-tests/inline-test-runner.exe" },
-      { "name": "plain.mutants", "path": null },
-      { "name": "test_calc.exe", "path": "default/test/test_calc.exe" } ],
+      { "name": "my_lib_expect", "path": "default/lib/.my_lib_expect.inline-tests/inline-test-runner.exe", "suite": null },
+      { "name": "plain.mutants", "path": null, "suite": null },
+      { "name": "test_calc.exe", "path": "default/test/test_calc.exe", "suite": null } ],
     "mutants": [
       { "id": "lib/calc.ml:1:14:add",
         "file": "lib/calc.ml", "line": 1, "col": 14, "rewrite": "add",
@@ -792,7 +792,7 @@ every test, have their verdicts and no tests:
       "not_evaluated": 1, "outside_tests": 1, "unreached": 0,
       "filtered": 0, "flaky": 0, "score": 50.00 },
     "executables": [
-      { "name": "a.mutants", "path": null } ],
+      { "name": "a.mutants", "path": null, "suite": null } ],
     "mutants": [
       { "id": "lib/calc.ml:1:14:add",
         "file": "lib/calc.ml", "line": 1, "col": 14, "rewrite": "add",
@@ -820,8 +820,8 @@ A filtered mutant is in the array "filtered", with its reason, and not in
       "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
       "filtered": 3, "flaky": 0, "score": 100.00 },
     "executables": [
-      { "name": "a.mutants", "path": null },
-      { "name": "b.mutants", "path": null } ],
+      { "name": "a.mutants", "path": null, "suite": null },
+      { "name": "b.mutants", "path": null, "suite": null } ],
     "mutants": [
       { "id": "lib/calc.ml:1:14:add",
         "file": "lib/calc.ml", "line": 1, "col": 14, "rewrite": "add",
@@ -941,7 +941,7 @@ The document counts the mutant as killed, and the note is the same:
       "not_evaluated": 0, "outside_tests": 0, "unreached": 3,
       "filtered": 0, "flaky": 0, "score": 50.00 },
     "executables": [
-      { "name": "b.exe", "path": "default/test/b.exe" } ],
+      { "name": "b.exe", "path": "default/test/b.exe", "suite": null } ],
     "mutants": [
       { "id": "lib/calc.ml:1:14:add",
         "file": "lib/calc.ml", "line": 1, "col": 14, "rewrite": "add",
@@ -1002,7 +1002,7 @@ that skipped the mutant:
   $ run windtrap mutants
   mutants: 1 reached, 1 killed, 2 executables, score 100.0%
   --- stderr
-  windtrap: 1 mutant counts as killed by default/test/a.exe, but the verdict file of default/test/a.exe in the merge does not kill it: run default/test/b.exe again with its mutants, then merge again
+  windtrap: 1 mutant counts as killed by default/test/a.exe, but no verdict file of default/test/a.exe in the merge kills it: run default/test/b.exe again with its mutants, then merge again
 
 Two suites that skipped one mutant because of each other leave no kill.
 Each note names the other suite:
@@ -1015,8 +1015,8 @@ Each note names the other suite:
   $ run windtrap mutants
   mutants: 1 reached, 1 killed, 2 executables, score 100.0%
   --- stderr
-  windtrap: 1 mutant counts as killed by default/test/a.exe, but the verdict file of default/test/a.exe in the merge does not kill it: run default/test/b.exe again with its mutants, then merge again
-  windtrap: 1 mutant counts as killed by default/test/b.exe, but the verdict file of default/test/b.exe in the merge does not kill it: run default/test/a.exe again with its mutants, then merge again
+  windtrap: 1 mutant counts as killed by default/test/a.exe, but no verdict file of default/test/a.exe in the merge kills it: run default/test/b.exe again with its mutants, then merge again
+  windtrap: 1 mutant counts as killed by default/test/b.exe, but no verdict file of default/test/b.exe in the merge kills it: run default/test/a.exe again with its mutants, then merge again
 
 When the killer no longer exists, no run of it can give the kill. The note
 tells to run each suite that skipped the mutant, once:
@@ -1039,6 +1039,122 @@ A file with no identity names no executable, so the note names the file:
   mutants: 1 reached, 1 killed, 1 executable, score 100.0%
   --- stderr
   windtrap: 1 mutant counts as killed by default/test/gone.exe, but default/test/gone.exe no longer exists: run the executable that wrote .../windtrap-b.mutants again with its mutants, then merge again
+
+When the killer is another suite of the same executable, the file of the
+suite that skipped the mutant is a file of that executable in the merge.
+The note tells to run that executable again, and it does not go away when
+the file of the killer is deleted:
+
+  $ plant "$scratch/sibling" && cd "$scratch/sibling" && exes a
+  $ mkdata mutants _build/_mutants/one.mutants --exe _build/default/test/a.exe --suite one "$add=survived:t/adds"
+  $ mkdata mutants _build/_mutants/two.mutants --exe _build/default/test/a.exe --suite two "$add=elsewhere:default/test/a.exe"
+  $ run windtrap mutants
+  mutants: 1 reached, 1 killed, 1 executable, score 100.0%
+  --- stderr
+  windtrap: 1 mutant counts as killed by default/test/a.exe, but no verdict file of default/test/a.exe in the merge kills it: run default/test/a.exe again with its mutants, then merge again
+  $ rm _build/_mutants/one.mutants
+  $ run windtrap mutants
+  mutants: 1 reached, 1 killed, 1 executable, score 100.0%
+  --- stderr
+  windtrap: 1 mutant counts as killed by default/test/a.exe, but no verdict file of default/test/a.exe in the merge kills it: run default/test/a.exe again with its mutants, then merge again
+
+Suites of one executable
+
+Each suite of an executable has its own file. The suites one and two of
+a.exe both reach add and sub. Suite one kills add, and suite two lets it
+survive. Both suites let sub survive, and both killed it in the run before.
+The two rows of the unstable section are equal, so the report prints one:
+
+  $ plant "$scratch/suites" && cd "$scratch/suites" && exes a
+  $ mkdata mutants _build/_mutants/one.mutants --exe _build/default/test/a.exe --suite one \
+  >   "$add=killed:t/adds" "$sub=survived:t/subs@killed" "$lt=unreached" "$or=unreached" "$and=unreached"
+  $ mkdata mutants _build/_mutants/two.mutants --exe _build/default/test/a.exe --suite two \
+  >   "$add=survived:u/adds" "$sub=survived:u/subs@killed" "$lt=unreached" "$or=unreached" "$and=unreached"
+  $ run windtrap mutants
+  ───────────────────── survivors (1) ──────────────────────
+    SURVIVED  lib/calc.ml:2:14:sub  a - b → a + b  (2 runs)
+        2 │ let sub a b = a - b
+  
+      2 tests ran this line and none failed:
+        a.exe  t › subs
+        a.exe  u › subs
+  ──────────────────────────────────────────────────────────
+  
+  ────────────────────── unstable (1) ──────────────────────
+    The source of each mutant did not change, but its verdict did.
+    a.exe  lib/calc.ml:2:14:sub   killed → survived
+  ──────────────────────────────────────────────────────────
+  
+  ─────────────────── never reached (3) ────────────────────
+    1  lib/calc.ml   line 3
+    2  lib/util.ml   lines 1, 3
+  ──────────────────────────────────────────────────────────
+  
+  reproduce: dune exec --instrument-with ppx_windtrap.mutate test/a.exe -- --arm lib/calc.ml:2:14:sub
+  mutants: 1 survived of 2 reached, 1 killed, 3 never reached, 1 executable, score 50.0%
+  [1]
+
+The document gives the suite of each file, and one object of "unstable" for
+each file:
+
+  $ run windtrap mutants --json
+  { "version": 1,
+    "summary": { "reached": 2, "killed": 1, "survived": 1,
+      "not_evaluated": 0, "outside_tests": 0, "unreached": 3,
+      "filtered": 0, "flaky": 0, "score": 50.00 },
+    "executables": [
+      { "name": "a.exe", "path": "default/test/a.exe", "suite": "one" },
+      { "name": "a.exe", "path": "default/test/a.exe", "suite": "two" } ],
+    "mutants": [
+      { "id": "lib/calc.ml:1:14:add",
+        "file": "lib/calc.ml", "line": 1, "col": 14, "rewrite": "add",
+        "before": "a + b", "after": "a - b",
+        "verdict": "killed" },
+      { "id": "lib/calc.ml:2:14:sub",
+        "file": "lib/calc.ml", "line": 2, "col": 14, "rewrite": "sub",
+        "before": "a - b", "after": "a + b",
+        "verdict": "survived",
+        "runs": 2,
+        "tests": [
+          { "executable": 0, "test": ["t", "subs"] },
+          { "executable": 1, "test": ["u", "subs"] } ] },
+      { "id": "lib/calc.ml:3:14:lt",
+        "file": "lib/calc.ml", "line": 3, "col": 14, "rewrite": "lt",
+        "before": "a < b", "after": "a <= b",
+        "verdict": "unreached" },
+      { "id": "lib/util.ml:1:13:or",
+        "file": "lib/util.ml", "line": 1, "col": 13, "rewrite": "or",
+        "before": "p || q", "after": "p && q",
+        "verdict": "unreached" },
+      { "id": "lib/util.ml:3:22:and",
+        "file": "lib/util.ml", "line": 3, "col": 22, "rewrite": "and",
+        "before": "p && q", "after": "p || q",
+        "verdict": "unreached" } ],
+    "filtered": [ ],
+    "flaky": [ ],
+    "unstable": [
+      { "id": "lib/calc.ml:2:14:sub", "executable": 0, "previous": "killed", "verdict": "survived" },
+      { "id": "lib/calc.ml:2:14:sub", "executable": 1, "previous": "killed", "verdict": "survived" } ] }
+  [1]
+
+The outcome line counts executables by their path. Two projects that each
+build test/a.exe give two executables in one merge:
+
+  $ plant "$scratch/root-a" && cd "$scratch/root-a" && exes a
+  $ mkdata mutants _build/_mutants/a.mutants --exe _build/default/test/a.exe --suite one "$add=killed:t/adds"
+  $ plant "$scratch/root-b" && cd "$scratch/root-b" && exes a
+  $ mkdata mutants _build/_mutants/a.mutants --exe _build/default/test/a.exe --suite one "$add=killed:t/adds"
+  $ run windtrap mutants "$scratch/root-a/_build/_mutants" "$scratch/root-b/_build/_mutants"
+  mutants: 1 reached, 1 killed, 2 executables, score 100.0%
+
+A file below no build directory gives no path for a relative identity, and
+the identity counts in its place:
+
+  $ mkdir copies
+  $ mkdata mutants copies/one.mutants --exe _build/default/test/a.exe --suite one "$add=killed:t/adds"
+  $ mkdata mutants copies/two.mutants --exe _build/default/test/a.exe --suite two "$add=killed:u/adds"
+  $ run windtrap mutants copies
+  mutants: 1 reached, 1 killed, 1 executable, score 100.0%
 
 Files that cannot be merged
 
@@ -1070,13 +1186,13 @@ is to delete it, which a coverage dump in the directory shares:
   $ printf 'windtrap-mutants-v0\n1\nsome older payload\n' > _build/_mutants/old.mutants
   $ run windtrap mutants
   --- stderr
-  windtrap: .../old.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v9", found "windtrap-mutants-v0"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
+  windtrap: .../old.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v10", found "windtrap-mutants-v0"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
   [1]
   $ rm _build/_mutants/old.mutants
   $ printf 'windtrap-coverage-v3\n0\n' > _build/_mutants/cov.mutants
   $ run windtrap mutants
   --- stderr
-  windtrap: .../cov.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v9", found "windtrap-coverage-v3"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
+  windtrap: .../cov.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v10", found "windtrap-coverage-v3"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
   [1]
 
 A PATH that cannot be used fails the command, and the files named beside

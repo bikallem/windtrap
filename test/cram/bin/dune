@@ -20,9 +20,18 @@
   (pps ppx_windtrap.coverage ppx_windtrap.mutate)))
 
 (executables
- (names pins_add pins_sub)
- (modules pins_add pins_sub)
+ (names pins_add pins_sub pins_both)
+ (modules pins_add pins_sub pins_both)
  (libraries windtrap bin_calc))
+
+; The inline runner of a library with two test files, for two_suites.t.
+
+(executable
+ (name pins_inline)
+ (modules pins_inline inline_adds inline_subs)
+ (libraries windtrap ppx_windtrap.runtime bin_calc)
+ (preprocess
+  (pps ppx_windtrap)))
 
 ; A second library for since.t, whose only mutants are drop mutants, and
 ; the suite over it.
@@ -52,6 +61,15 @@
  (enabled_if
   (<> %{os_type} Win32))
  (deps pins_add.exe pins_sub.exe calc.ml))
+
+; two_suites.t runs the mutation loop, which Windows refuses for want of fork.
+
+(cram
+ (package ppx_windtrap)
+ (applies_to two_suites)
+ (enabled_if
+  (<> %{os_type} Win32))
+ (deps pins_both.exe pins_inline.exe calc.ml))
 
 ; unreadable.t makes files and directories unreadable with chmod and plants
 ; a dangling symbolic link, which Windows does not do.
