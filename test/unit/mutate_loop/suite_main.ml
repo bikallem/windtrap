@@ -220,7 +220,14 @@ let fatal =
    - [probe_jobs] is [probe_block] beside [stalled], so it reaches two
      mutants, and 16 jobs on one CPU give two children for that CPU. *)
 
+(* Under MUTATE_HANG_STAMP, [hang] first writes the time of the clock to that
+   file. *)
 let hang () =
+  (match Sys.getenv_opt "MUTATE_HANG_STAMP" with
+  | None | Some "" -> ()
+  | Some path ->
+      Out_channel.with_open_bin path (fun oc ->
+          output_string oc (Printf.sprintf "%.6f" (Unix.gettimeofday ()))));
   (match Sys.getenv_opt "MUTATE_GRANDCHILD_PIDFILE" with
   | None | Some "" -> ()
   | Some path ->
@@ -545,15 +552,7 @@ let beside_slow =
     test "sleeps in the dry run and reaches no site" (fun () ->
         if not (in_child ()) then Unix.sleepf 3.0);
     test "blocks when sub changes" (fun () ->
-        if Subject.sub 10 4 <> 6 then begin
-          (match Sys.getenv_opt "MUTATE_HANG_STAMP" with
-          | None | Some "" -> ()
-          | Some path ->
-              Out_channel.with_open_bin path (fun oc ->
-                  output_string oc
-                    (Printf.sprintf "%.6f" (Unix.gettimeofday ()))));
-          hang ()
-        end;
+        if Subject.sub 10 4 <> 6 then hang ();
         equal int 6 (Subject.sub 10 4));
   ]
 
@@ -1342,7 +1341,13 @@ let write_request () =
         (Private.Run.default_config ()) with
         mutation =
           Private.Run.Loop
-            { scope = []; jobs = 1; since = None; children = Private.Run.Auto };
+            {
+              scope = [];
+              jobs = 1;
+              since = None;
+              children = Private.Run.Auto;
+              skip_killed = false;
+            };
       }
       ~log_dir:(env "MUTATE_REQUEST" ^ ".log")
       ~bail:(kind <> Probe)

@@ -2001,16 +2001,42 @@ let mutation_entries () =
             }) );
     ( "the mode of the children prints above the reproduce line",
       rendered ~config:(config ~invocation:loop_invocation ()) (fun r ->
-          Report.mutation_finish ~children:"children: new processes" r
+          Report.mutation_finish
+            ~lines:[ "children: new processes" ]
+            r
             { loop_report with Sections.survivors = [ add_survivor ] }) );
     ( "the mode of the children prints above a lone outcome line",
       rendered (fun r ->
-          Report.mutation_finish ~children:"children: new processes" r
+          Report.mutation_finish
+            ~lines:[ "children: new processes" ]
+            r
             { loop_report with Sections.survivors = []; unreached = [] }) );
     ( "a note on standard error does not move the mode of the children",
       rendered (fun r ->
           Report.mutation_finish ~note:"verdicts not saved"
-            ~children:"children: new processes" r
+            ~lines:[ "children: new processes" ]
+            r
+            { loop_report with Sections.survivors = []; unreached = [] }) );
+    ( "the lines print in order above the reproduce line",
+      rendered ~config:(config ~invocation:loop_invocation ()) (fun r ->
+          Report.mutation_finish
+            ~lines:
+              [
+                "children: new processes";
+                "killed elsewhere: 1 mutant, not tested, from the verdict file \
+                 of default/a.exe (1)";
+              ]
+            r
+            { loop_report with Sections.survivors = [ add_survivor ] }) );
+    ( "an interrupted loop prints its lines",
+      rendered (fun r ->
+          Report.mutation_interrupted
+            ~lines:
+              [
+                "killed elsewhere: 1 mutant, not tested, from the verdict file \
+                 of default/a.exe (1)";
+              ]
+            r (Report.Testing [ "lib/calc.ml:9:12:add" ])
             { loop_report with Sections.survivors = []; unreached = [] }) );
     ( "stopped before a child ended",
       rendered (fun r ->

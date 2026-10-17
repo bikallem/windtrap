@@ -88,6 +88,17 @@
     {!Windtrap.Private.Report_sections.scope.Executables} with the number of
     files kept.
 
+    {b Killed elsewhere.} A verdict [Killed_elsewhere] counts as killed. When
+    the merged verdict of a mutant is [Killed_elsewhere], no file of the merge
+    kills it directly. For each executable that such verdicts name, the command
+    then gives one note on standard error. The note tells how many mutants count
+    as killed by that executable and which run to do again. If the file of the
+    killer is in the merge, the run to do again is the run of the executables
+    that skipped the mutants. The same applies if the killer no longer exists
+    ({!Windtrap_runtime.Instr.exe_location}). In the other cases, the run to do
+    again is the run of the killer. These notes come before the report and do
+    not change the exit code.
+
     {b Reaching tests.} The reaching tests of a survivor are the union of those
     of every file in which the mutant survived. Each is paired with the label of
     its file, and the pairs are sorted by label and then by test, without
@@ -172,7 +183,8 @@
       ["| Add when false -> ..."]. For ["skip"], ["after"] is ["()"], and for
       ["none"], ["None"].
     - ["verdict"] is one of ["killed"], ["survived"], ["not_evaluated"],
-      ["outside_tests"] and ["unreached"].
+      ["outside_tests"] and ["unreached"]. A mutant killed elsewhere is
+      ["killed"].
     - ["tests"] is in the object of a survivor only. It is an array of the tests
       that reached the survivor.
 
@@ -216,6 +228,7 @@ val run : string list -> int
     - It finds the {{!section-files}files}, judges them and loads them.
     - Under [--since], it reads the {{!section-since}changed lines} and keeps
       the records on them.
+    - It says the notes of {{!section-merge}the merge} on standard error.
     - It prints the report or the document of the {{!section-merge}merge} on
       standard output.
     - It runs the gate.

@@ -1849,8 +1849,8 @@ let test_mutants renderer loop reached =
           { mutant = shown mutant; invocation = loop.config.invocation; failed }
         in
         pool.not_evaluated <- missed :: pool.not_evaluated
-    | Verdicts.Killed _ | Verdicts.Outside_tests | Verdicts.Filtered _
-    | Verdicts.Unreached ->
+    | Verdicts.Killed _ | Verdicts.Killed_elsewhere _ | Verdicts.Outside_tests
+    | Verdicts.Filtered _ | Verdicts.Unreached ->
         ());
     pool.verdicts <- Verdicts.add pool.verdicts (record mutant verdict)
   in
@@ -2026,7 +2026,8 @@ let save ~scope verdicts =
       Some (strf "could not write the verdict file: %s" message)
 
 (* What the loop has to say about its verdict file, above the outcome line. *)
-let save_verdicts ~scope ~narrowed ~outside ~unreached ~filtered tested =
+let save_verdicts ~scope ~narrowed ~outside ~unreached ~filtered ~skipped tested
+    =
   match tested.stopped with
   | Some _ -> None
   | None when narrowed ->
@@ -2041,7 +2042,10 @@ let save_verdicts ~scope ~narrowed ~outside ~unreached ~filtered tested =
            @ recorded Verdicts.Unreached unreached
            @ List.map
                (fun (m, reason) -> record m (Verdicts.Filtered reason))
-               filtered))
+               filtered
+           @ List.map
+               (fun (m, exe) -> record m (Verdicts.Killed_elsewhere { exe }))
+               skipped))
 
 (* In exec mode, the verdicts follow the rules of a new process, so the
    report tells the mode. *)
@@ -2054,8 +2058,8 @@ let children_line ~children ~exec =
 
 (* A signal that came once the last child had ended stopped nothing: the
    report ends as usual, and the loop still dies by it. *)
-let finish renderer ~children ~narrowed ~reach ~reached ~outside ~unreached
-    ~filtered forks =
+let finish renderer ~children ~skipped ~narrowed ~reach ~reached ~outside
+    ~unreached ~filtered forks =
   match forks with
   | Error message ->
       Report.mutation_refused renderer message;
@@ -2066,8 +2070,9 @@ let finish renderer ~children ~narrowed ~reach ~reached ~outside ~unreached
       let is_killed (r : Verdicts.record) =
         match r.verdict with
         | Verdicts.Killed _ -> true
-        | Verdicts.Survived _ | Verdicts.Not_evaluated | Verdicts.Outside_tests
-        | Verdicts.Filtered _ | Verdicts.Unreached ->
+        | Verdicts.Killed_elsewhere _ | Verdicts.Survived _
+        | Verdicts.Not_evaluated | Verdicts.Outside_tests | Verdicts.Filtered _
+        | Verdicts.Unreached ->
             false
       in
       let lines =
@@ -2090,32 +2095,36 @@ let finish renderer ~children ~narrowed ~reach ~reached ~outside ~unreached
       in
       match stopped with
       | Some (signal, stopped) ->
-          Report.mutation_interrupted renderer stopped report;
+          Report.mutation_interrupted ~lines:(Option.to_list skipped) renderer
+            stopped report;
           flush_descriptors ();
           Os.die_by signal
       | None -> (
-          Report.mutation_finish ?note ?children renderer report;
+          Report.mutation_finish ?note
+            ~lines:(Option.to_list children @ Option.to_list skipped)
+            renderer report;
           flush_descriptors ();
           match interrupt.signal with
           | Some signal -> Os.die_by signal
           | None -> Reported 0))
 
+(* The loop opens only a regular file, because a read of a FIFO or a
+   device can block. *)
+let regular path =
+  match Unix.stat path with
+  | { Unix.st_kind; _ } -> st_kind = Unix.S_REG
+  | exception Unix.Unix_error _ -> false
+
 (* The test that killed each mutant in the run that wrote the verdict file
    before, for the mutants whose source has the digest that it had then. Any
    build counts, an earlier one included: a child runs the test, so the
-   history gives no verdict without a run. A file that is
-   not a regular file, or that does not load, gives no history. The loop
-   does not open a file of another kind, which can block. Only the mutants
-   in [reached] have children, and only their sources are read. *)
+   history gives no verdict without a run. A file that is not a regular
+   file, or that does not load, gives no history. Only the mutants in
+   [reached] have children, and only their sources are read. *)
 let history reached =
   let killers = Hashtbl.create 64 in
   let path = Verdicts.output_file ~exe:Windtrap_runtime.Instr.executable in
-  let regular =
-    match Unix.stat path with
-    | { Unix.st_kind; _ } -> st_kind = Unix.S_REG
-    | exception Unix.Unix_error _ -> false
-  in
-  (if regular then
+  (if regular path then
      match Verdicts.load path with
      | Error _ -> ()
      | Ok (prior, _) ->
@@ -2126,15 +2135,106 @@ let history reached =
                when Hashtbl.mem reached r.id
                     && source_digest r.id.file = Some digest ->
                  Hashtbl.replace killers r.id test
-             | ( ( Verdicts.Killed _ | Verdicts.Survived _
-                 | Verdicts.Not_evaluated | Verdicts.Outside_tests
-                 | Verdicts.Filtered _ | Verdicts.Unreached ),
+             | ( ( Verdicts.Killed _ | Verdicts.Killed_elsewhere _
+                 | Verdicts.Survived _ | Verdicts.Not_evaluated
+                 | Verdicts.Outside_tests | Verdicts.Filtered _
+                 | Verdicts.Unreached ),
                  _ ) ->
                  ())
            (Verdicts.records prior));
   killers
 
-let loop renderer ~scope ~jobs ~children ~suite (config : Run.config) tests =
+(* The executable of another verdict file that killed each mutant of
+   [reached], for the source digest of this build, and the executables of
+   the files that the loop used. Only a direct kill counts, so a skip never
+   comes from another skip. *)
+let killed_elsewhere reached =
+  let module Instr = Windtrap_runtime.Instr in
+  let wanted = Hashtbl.create 64 in
+  List.iter
+    (fun ((m : Mutate.mutant), _) -> Hashtbl.replace wanted m.id ())
+    reached;
+  let killers = Hashtbl.create 64 in
+  let own = Verdicts.output_file ~exe:Instr.executable in
+  let dir = Filename.dirname own in
+  let candidates =
+    match Sys.readdir dir with
+    | names ->
+        List.filter_map
+          (fun name ->
+            let path = Filename.concat dir name in
+            if
+              Filename.check_suffix name ("." ^ Verdicts.format.ext)
+              && name <> Filename.basename own
+              && regular path
+            then Some path
+            else None)
+          (List.sort String.compare (Array.to_list names))
+    | exception Sys_error _ -> []
+  in
+  let ignored reason = Os.warn ("--mutate-skip-killed ignores " ^ reason) in
+  let use verdicts exe =
+    List.iter
+      (fun (r : Verdicts.record) ->
+        match (r.verdict, r.source_digest) with
+        | Verdicts.Killed _, Some digest
+          when Hashtbl.mem wanted r.id && source_digest r.id.file = Some digest
+          -> (
+            match Hashtbl.find_opt killers r.id with
+            | Some prior when String.compare prior exe <= 0 -> ()
+            | Some _ | None -> Hashtbl.replace killers r.id exe)
+        | ( ( Verdicts.Killed _ | Verdicts.Killed_elsewhere _
+            | Verdicts.Survived _ | Verdicts.Not_evaluated
+            | Verdicts.Outside_tests | Verdicts.Filtered _ | Verdicts.Unreached
+              ),
+            _ ) ->
+            ())
+      (Verdicts.records verdicts);
+    Some exe
+  in
+  let used =
+    List.filter_map
+      (fun path ->
+        match Verdicts.load path with
+        | Error e ->
+            ignored (Pp.to_string Verdicts.pp_error e);
+            None
+        | Ok (_, None) ->
+            ignored (path ^ ": the file names no executable");
+            None
+        | Ok (verdicts, Some { exe; _ }) -> (
+            match Instr.exe_location ~path exe with
+            | Some (exe_path, spelled) when not (Sys.file_exists exe_path) ->
+                ignored
+                  (strf "%s: its executable (%s) no longer exists" path spelled);
+                None
+            | Some _ | None -> use verdicts exe))
+      candidates
+  in
+  (killers, List.sort_uniq String.compare used)
+
+(* The line names each file that the loop used, so that a reader can find
+   a stale kill. *)
+let elsewhere_line ~used skipped =
+  let plural n = if n = 1 then "" else "s" in
+  let n = List.length skipped in
+  let files =
+    match used with
+    | [] -> "no other verdict file"
+    | _ ->
+        strf "the verdict file%s of %s"
+          (plural (List.length used))
+          (String.concat ", "
+             (List.map
+                (fun exe ->
+                  strf "%s (%d)" exe
+                    (List.length (List.filter (fun (_, e) -> e = exe) skipped)))
+                used))
+  in
+  strf "killed elsewhere: %d mutant%s, not tested, from %s" n (plural n) files
+
+let loop renderer ~scope ~jobs ~children ~skip_killed ~suite
+    (config : Run.config) tests =
   let population = population ~scope in
   let filtered = filtered ~scope in
   let reach =
@@ -2199,16 +2299,30 @@ let loop renderer ~scope ~jobs ~children ~suite (config : Run.config) tests =
             if children = Run.Fork && domain_spawned () then
               refuse domain_refusal
             else
+              let skipped, to_test, skipped_line =
+                if not skip_killed then ([], reached, None)
+                else
+                  let killers, used = killed_elsewhere reached in
+                  let skipped, to_test =
+                    List.partition_map
+                      (fun (((m : Mutate.mutant), _) as mutant) ->
+                        match Hashtbl.find_opt killers m.id with
+                        | Some exe -> Either.Left (m, exe)
+                        | None -> Either.Right mutant)
+                      reached
+                  in
+                  (skipped, to_test, Some (elsewhere_line ~used skipped))
+              in
               let forks =
                 try
                   with_interrupts @@ fun () ->
                   let loop =
                     let scratch = scratch_root () in
                     (* The children at once use at most [jobs] CPUs, and at most
-                       the weights of all of the reached mutants. In exec mode,
-                       a full child can run each test that the dry run executed
-                       up to the last reaching test ([full_paths]). That list
-                       gives its weight. *)
+                       the weights of all of the mutants that get a child. In
+                       exec mode, a full child can run each test that the dry
+                       run executed up to the last reaching test
+                       ([full_paths]). That list gives its weight. *)
                     let jobs =
                       (* Each weight is at least 1, so with [jobs] mutants
                          or more the sum is at least [jobs]. *)
@@ -2218,13 +2332,13 @@ let loop renderer ~scope ~jobs ~children ~suite (config : Run.config) tests =
                             weight reach (executed_until reach last)
                         | _ -> weight reach site.tests
                       in
-                      if List.compare_length_with reached jobs >= 0 then jobs
+                      if List.compare_length_with to_test jobs >= 0 then jobs
                       else
                         max 1
                           (min jobs
                              (List.fold_left
                                 (fun sum mutant -> sum + most mutant)
-                                0 reached))
+                                0 to_test))
                     in
                     let share =
                       Float.max 1.
@@ -2251,8 +2365,8 @@ let loop renderer ~scope ~jobs ~children ~suite (config : Run.config) tests =
                     (fun tested ->
                       ( tested,
                         save_verdicts ~scope ~narrowed ~outside ~unreached
-                          ~filtered tested ))
-                    (fork renderer loop reached)
+                          ~filtered ~skipped tested ))
+                    (fork renderer loop to_test)
                 with
                 | Supervision message -> Error message
                 | Sys_error _ when interrupt.signal = Some Sys.sigpipe ->
@@ -2260,7 +2374,8 @@ let loop renderer ~scope ~jobs ~children ~suite (config : Run.config) tests =
               in
               finish renderer
                 ~children:(children_line ~children ~exec)
-                ~narrowed ~reach ~reached ~outside ~unreached ~filtered forks)
+                ~skipped:skipped_line ~narrowed ~reach ~reached ~outside
+                ~unreached ~filtered forks)
 
 (* The armed run *)
 
@@ -2388,12 +2503,12 @@ let execute_and_report ~suite (config : Run.config) tests =
   | Run.Loop _ when Sys.win32 ->
       refuse
         "mutation testing needs process groups, which Windows does not have"
-  | Run.Loop { scope = prefixes; jobs; since; children } -> (
+  | Run.Loop { scope = prefixes; jobs; since; children; skip_killed } -> (
       match resolve_scope ~prefixes ~since with
       | Error message -> refuse message
       | Ok scope when not config.broadcast.mutate ->
-          loop (Report.terminal config) ~scope ~jobs ~children ~suite config
-            tests
+          loop (Report.terminal config) ~scope ~jobs ~children ~skip_killed
+            ~suite config tests
       | Ok scope -> (
           match (population ~scope, Run.list_selection config ~suite tests) with
           | Error reason, _ ->
@@ -2402,5 +2517,5 @@ let execute_and_report ~suite (config : Run.config) tests =
               ordinary ~suite config tests
           | Ok _, Ok [] -> ordinary ~suite config tests
           | Ok _, (Ok (_ :: _) | Error _) ->
-              loop (Report.terminal config) ~scope ~jobs ~children ~suite config
-                tests))
+              loop (Report.terminal config) ~scope ~jobs ~children ~skip_killed
+                ~suite config tests))

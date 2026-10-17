@@ -13,9 +13,9 @@
 
 (** {1:verdicts Verdicts}
 
-    A verdict is one of six cases, and never a boolean or an exit code. A
-    failure to supervise the child that arms a mutant is none of the six, and a
-    caller must record no verdict for it. *)
+    A verdict is one of seven cases, and never a boolean or an exit code. A
+    failure to supervise the child that arms a mutant is none of the seven, and
+    a caller must record no verdict for it. *)
 
 type reaching_test = string list
 (** The type for a test that evaluated a mutant, by its path: the names of its
@@ -34,6 +34,11 @@ type verdict =
           is a reaching test, except in exec mode of the loop: there, a child
           can also run the tests before the reaching tests, and one of them can
           fail. *)
+  | Killed_elsewhere of { exe : string }
+      (** No child tested the mutant. The verdict file of the executable [exe]
+          gave it {!Killed}, with the source digest of this run. [exe] is the
+          identity on that file ({!Instr.identity}), and it is not [""]. Only a
+          loop under [--mutate-skip-killed] gives it. *)
   | Survived of { first : reaching_test; others : reaching_test list }
       (** A process of the child evaluated the armed site. No test failed in or
           after the first test that evaluated it, and no fixture release failed.
@@ -103,14 +108,16 @@ val add : t -> record -> t
     the two verdicts combine into the verdict of a mutant that one executable
     saw one way and another the other way. It is {!Killed} if either is, and its
     killing test is the smaller of the two that are known, if any. Otherwise it
-    is {!Not_evaluated} if either is, then {!Survived} with the reaching tests
-    of both if either is, then {!Outside_tests} if either is, then {!Filtered}
-    with the smaller reason if either is, and {!Unreached} if both are.
+    is {!Killed_elsewhere} if either is, with the smaller [exe]. Otherwise it is
+    {!Not_evaluated} if either is, then {!Survived} with the reaching tests of
+    both if either is, then {!Outside_tests} if either is, then {!Filtered} with
+    the smaller reason if either is, and {!Unreached} if both are.
 
-    [add] checks nothing of [r.id] and [r.source_digest]. It accepts an empty
-    [file], a [line] below [1], a negative [col], a [rewrite] outside
-    {!Mutate.rewrites} and a digest that is not 32 lowercase hexadecimal digits,
-    and {!load} then refuses the file that {!save} writes for the collection. *)
+    [add] checks nothing of [r.id], [r.source_digest] and the [exe] of a
+    {!Killed_elsewhere}. It accepts an empty [file], a [line] below [1], a
+    negative [col], a [rewrite] outside {!Mutate.rewrites}, a digest that is not
+    32 lowercase hexadecimal digits and an empty [exe], and {!load} then refuses
+    the file that {!save} writes for the collection. *)
 
 val records : t -> record list
 (** [records t] is the records of [t], ordered by {!Mutate.compare_id}. *)
@@ -129,7 +136,7 @@ val merge : t -> t -> t
 
     An executable has one verdict file, at {!output_file}.
 
-    The first line of a file is the magic line [windtrap-mutants-v5], which
+    The first line of a file is the magic line [windtrap-mutants-v6], which
     carries the version of the format. A file with another first line is
     refused, never converted, and nothing is promised from one version to the
     next. *)
@@ -174,7 +181,8 @@ val load : string -> (t * identity option, error) result
     - a rewrite outside {!Mutate.rewrites}, or an unknown verdict,
     - a source digest that is not empty and not 32 lowercase hexadecimal digits,
     - a survivor with no reaching test, a killed mutant with more than one
-      killing test, or a second record for one identifier,
+      killing test, an empty killing executable, or a second record for one
+      identifier,
     - a malformed identity line, or bytes after the last record.
 
     Nothing is repaired, and a file with one malformed record is not read at

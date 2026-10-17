@@ -82,6 +82,7 @@ let flags (p : Cli.parsed) =
         some "mutate" words p.mutate;
         some "mutate_jobs" string_of_int p.mutate_jobs;
         some "mutate_since" Fun.id p.mutate_since;
+        switch "mutate_skip_killed" p.mutate_skip_killed;
         some "mutate_children" children_name p.mutate_children;
         switch "mutate_workers" p.mutate_workers;
         some "arm" Fun.id p.arm;
@@ -100,7 +101,7 @@ let parsed args = parsed_argv (Array.of_list ("windtrap-test" :: args))
 
 let mutation_name = function
   | Run.No_mutation -> "none"
-  | Run.Loop { scope; jobs; since; children } ->
+  | Run.Loop { scope; jobs; since; children; skip_killed } ->
       String.concat ""
         [
           "loop ";
@@ -109,6 +110,7 @@ let mutation_name = function
           Option.fold ~none:"" ~some:(strf " since %s") since;
           (if children = Run.Auto then ""
            else " children " ^ children_name children);
+          (if skip_killed then " skip_killed" else "");
         ]
   | Run.Armed id -> "armed " ^ id
 
@@ -308,6 +310,9 @@ let mirrors =
           ("WINDTRAP_STREAM", "yes", "stream");
           ("WINDTRAP_VERBOSE", " OFF ", "defaults");
           ("WINDTRAP_MUTATE_WORKERS", "true", "mutate_workers");
+          ( "WINDTRAP_MUTATE_SKIP_KILLED",
+            "maybe",
+            {|invalid WINDTRAP_MUTATE_SKIP_KILLED "maybe"|} );
           ("WINDTRAP_STREAM", "maybe", {|invalid WINDTRAP_STREAM "maybe"|});
         ];
       test "a boolean mirror refuses another word in Os.bool_expected's words"
@@ -457,15 +462,16 @@ let every_flag () =
      failed_only, list_only, bail, stream, update, seed s1:00000000000000ff, \
      timeout 2.5, slow_threshold 3, prop_count 50, verbose, junit out.xml, \
      color never, log_dir logs, mutate [lib/a.ml; lib/b.ml], mutate_jobs 3, \
-     mutate_since main, mutate_children exec, mutate_workers, arm \
-     lib/a.ml:1:0:add"
+     mutate_since main, mutate_skip_killed, mutate_children exec, \
+     mutate_workers, arm lib/a.ml:1:0:add"
     (parsed
        (String.split_on_char ' '
           "-f pat -e ex --tag a --tag b --exclude-tag c --shard 2/4 --failed \
            -l -x -s -u --seed s1:00000000000000ff --timeout 2.5 \
            --slow-threshold 3 --prop-count 50 -v --junit out.xml --color never \
            -o logs --mutate=lib/a.ml,lib/b.ml --mutate-jobs 3 --mutate-since \
-           main --mutate-children exec --mutate-workers --arm lib/a.ml:1:0:add"))
+           main --mutate-skip-killed --mutate-children exec --mutate-workers \
+           --arm lib/a.ml:1:0:add"))
 
 (* Whole arguments: each valueless flag in both spellings, value flags with a
    good value, and misspellings and separators, so that most vectors parse
@@ -564,6 +570,7 @@ let parsing =
           ([ "--mutate-jobs=256" ], "mutate_jobs 256");
           ([ "--mutate-since"; "origin/main" ], "mutate_since origin/main");
           ([ "--mutate-since=HEAD~2" ], "mutate_since HEAD~2");
+          ([ "--mutate-skip-killed" ], "mutate_skip_killed");
           ([ "--mutate-children"; "fork" ], "mutate_children fork");
           ([ "--mutate-children=EXEC" ], "mutate_children exec");
           ([ "--mutate-children=Auto" ], "mutate_children auto");
@@ -626,6 +633,7 @@ let parsing =
           ([ "--list=x" ], {|invalid --list "x"|});
           ([ "--fail-fast=2" ], {|invalid --fail-fast "2"|});
           ([ "--verbose=1" ], {|invalid --verbose "1"|});
+          ([ "--mutate-skip-killed=1" ], {|invalid --mutate-skip-killed "1"|});
         ];
       test "a flag that takes no value refuses one with expected no argument"
         (fun () ->
@@ -899,6 +907,24 @@ let resolution =
           ([ ("WINDTRAP_MUTATE_CHILDREN", "exec") ], [], "defaults");
           ( [],
             [ "--arm"; "lib/a.ml:9:12:add"; "--mutate-children"; "exec" ],
+            "mutation armed lib/a.ml:9:12:add" );
+        ];
+      resolve_rows
+        "--mutate-skip-killed or its mirror sets the skip_killed of a loop, \
+         and nothing else reads it"
+        [
+          ( [],
+            [ "--mutate"; "--mutate-skip-killed" ],
+            "mutation loop [] skip_killed" );
+          ( [ ("WINDTRAP_MUTATE_SKIP_KILLED", "1") ],
+            [ "--mutate=lib/" ],
+            "mutation loop [lib/] skip_killed" );
+          ( [ ("WINDTRAP_MUTATE_SKIP_KILLED", "0") ],
+            [ "--mutate" ],
+            "mutation loop []" );
+          ([ ("WINDTRAP_MUTATE_SKIP_KILLED", "1") ], [], "defaults");
+          ( [],
+            [ "--arm"; "lib/a.ml:9:12:add"; "--mutate-skip-killed" ],
             "mutation armed lib/a.ml:9:12:add" );
         ];
       resolve_rows

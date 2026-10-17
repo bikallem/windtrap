@@ -930,17 +930,19 @@ let mutation_survivor t survivor =
     @ Sections.survivor_block ~exe_width:None survivor);
   t.survivors <- t.survivors + 1
 
-let mutation_finish ?note ?children t m =
+let mutation_finish ?note ?(lines = []) t m =
   let closing = Sections.mutation_closing ~config:t.config m in
-  (* The line goes above the outcome group, so that [reproduce:] stays
+  (* The lines go above the outcome group, so that [reproduce:] stays
      directly above its outcome line. *)
   let closing =
-    let mode line = Sections.Line [ Sections.plain line ] in
-    match (children, List.rev closing) with
-    | Some line, outcome :: (Sections.Hint _ as reproduce) :: rest ->
-        List.rev (outcome :: reproduce :: mode line :: rest)
-    | Some line, outcome :: rest -> List.rev (outcome :: mode line :: rest)
-    | None, _ | Some _, [] -> closing
+    let lines =
+      List.rev_map (fun line -> Sections.Line [ Sections.plain line ]) lines
+    in
+    match List.rev closing with
+    | outcome :: (Sections.Hint _ as reproduce) :: rest ->
+        List.rev (outcome :: reproduce :: (lines @ rest))
+    | outcome :: rest -> List.rev (outcome :: (lines @ rest))
+    | [] -> closing
   in
   match (note, List.rev closing) with
   | Some note, outcome :: rest ->
@@ -956,14 +958,14 @@ let mutation_refused t message =
 
 type stopped = Startup | Probe | Testing of string list | Before of string
 
-let mutation_interrupted t stopped m =
+let mutation_interrupted ?lines t stopped m =
   mutation_refused t
     (match stopped with
     | Startup -> "interrupted while a new process of the suite started"
     | Probe -> "interrupted during the determinism probe"
     | Testing ids -> "interrupted while testing " ^ String.concat ", " ids
     | Before id -> "interrupted before testing " ^ id);
-  mutation_finish t m
+  mutation_finish ?lines t m
 
 (* Failure projections *)
 

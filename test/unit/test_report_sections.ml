@@ -2305,7 +2305,14 @@ let with_workers c =
   {
     c with
     Run.mutation =
-      Run.Loop { scope = []; jobs = 1; since = None; children = Run.Auto };
+      Run.Loop
+        {
+          scope = [];
+          jobs = 1;
+          since = None;
+          children = Run.Auto;
+          skip_killed = false;
+        };
     mutate_workers = true;
   }
 

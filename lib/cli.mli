@@ -91,6 +91,7 @@ type parsed = {
       (** [--mutate-since REV]: a git revision, as typed. It is not empty and
           does not start with [-], which git reads as an option. That it names a
           commit is checked when the loop reads the changed lines. *)
+  mutate_skip_killed : bool option;  (** [--mutate-skip-killed]. *)
   mutate_children : Run.children option;
       (** [--mutate-children MODE]: [auto], [fork] or [exec], in any case. *)
   mutate_workers : bool option;  (** [--mutate-workers]. *)
@@ -179,15 +180,16 @@ val settings : parsed -> (Run.config, error) result
     - [mutation] is {!Run.Loop} of [mutate], {!Run.Armed} of [arm], or
       {!Run.No_mutation}. The [jobs] of a {!Run.Loop} is [mutate_jobs], and [1]
       when no layer gives it. Its [since] is [mutate_since]. Its [children] is
-      [mutate_children], and {!Run.Auto} when no layer gives it. Outside a
-      {!Run.Loop}, [mutate_jobs], [mutate_since] and [mutate_children] are read
-      and checked, and change nothing. [mutate_workers] is [true] when a layer
-      gives [--mutate-workers], and it changes nothing under {!Run.No_mutation}.
-      Under {!Run.No_mutation}, [unused_since] names the flag or the mirror that
-      gave [mutate_since]. [mutate] and [arm] at once is
-      [Error (Incompatible_flags _)], whichever layer gave each, and it is
-      checked after every mirror. A prefix that spells a boolean cannot go
-      through the variable.
+      [mutate_children], and {!Run.Auto} when no layer gives it. Its
+      [skip_killed] is [true] when a layer gives [--mutate-skip-killed]. Outside
+      a {!Run.Loop}, [mutate_jobs], [mutate_since], [mutate_children] and
+      [mutate_skip_killed] are read and checked, and change nothing.
+      [mutate_workers] is [true] when a layer gives [--mutate-workers], and it
+      changes nothing under {!Run.No_mutation}. Under {!Run.No_mutation},
+      [unused_since] names the flag or the mirror that gave [mutate_since].
+      [mutate] and [arm] at once is [Error (Incompatible_flags _)], whichever
+      layer gave each, and it is checked after every mirror. A prefix that
+      spells a boolean cannot go through the variable.
     - A relative path of [--junit] or [-o] is made absolute, against the working
       directory when the command line gives it and against {!Os.project_root}
       when its mirror does. It is kept as given when that directory cannot be

@@ -89,6 +89,17 @@ let locate exe =
 
 let exe_identity ~exe = snd (locate exe)
 
+(* A relative identity lies below the build directory of the file, so a file
+   that the merge discovers and a file that it names find one executable. *)
+let exe_location ~path exe =
+  if not (Filename.is_relative exe) then Some (exe, exe)
+  else
+    Option.map
+      (fun build_dir ->
+        ( Filename.concat build_dir exe,
+          strf "%s/%s" (Filename.basename build_dir) exe ))
+      (build_dir ~path)
+
 (* The files of a format sit beside the contexts of a build directory, the
    underscore marking them as no context. A tree without one must never grow
    one, so its files go under the project's own [_windtrap]. *)

@@ -380,16 +380,17 @@ val mutation_survivor : t -> Report_sections.survivor -> unit
     survivors. A block has no column of executables. *)
 
 val mutation_finish :
-  ?note:string -> ?children:string -> t -> Report_sections.mutation -> unit
-(** [mutation_finish ?note ?children t m] ends the report of a loop with
+  ?note:string -> ?lines:string list -> t -> Report_sections.mutation -> unit
+(** [mutation_finish ?note ?lines t m] ends the report of a loop with
     {!Report_sections.mutation_closing} of [m] under the configuration of [t],
     flushed. [m.survivors] must be the survivors that {!mutation_survivor} was
     given, in order. The closing rule prints iff that list is not empty,
     whatever [t] committed, and [reproduce:] arms its first. [note] is said on
     standard error ({!Os.say}) after [out] is flushed and before the outcome
-    line, so the outcome line is the last line of the two streams. [children] is
-    a line that tells how the loop started its children. It prints on [out]
-    above the outcome line and its [reproduce:] line, and before [note]. *)
+    line, so the outcome line is the last line of the two streams. [lines] tell
+    how the loop ran: the mode of its children and the mutants that it skipped.
+    They print on [out], in order, above the outcome line and its [reproduce:]
+    line, and before [note]. *)
 
 val mutation_refused : t -> string -> unit
 (** [mutation_refused t message] erases the live line, flushes [out] and says
@@ -405,10 +406,12 @@ type stopped =
   | Before of string
       (** No child ran. The loop stopped before the child of this mutant. *)
 
-val mutation_interrupted : t -> stopped -> Report_sections.mutation -> unit
-(** [mutation_interrupted t stopped m] ends the report of a loop that a signal
-    is stopping. It says on standard error what [stopped] is, then calls
-    {!mutation_finish} over [m]. *)
+val mutation_interrupted :
+  ?lines:string list -> t -> stopped -> Report_sections.mutation -> unit
+(** [mutation_interrupted ?lines t stopped m] ends the report of a loop that a
+    signal is stopping. It says on standard error what [stopped] is, then calls
+    {!mutation_finish} over [m]. [lines] print as {!mutation_finish} prints
+    them. *)
 
 (** {1:projections Failure projections}
 

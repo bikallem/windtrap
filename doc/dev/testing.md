@@ -52,6 +52,12 @@ what is non-obvious.
   name, `runaway/` for the hit-count budget, `inline/` for an armed
   inline partition and `scoped/` for a second file whose one site is
   filtered, which a scope of the other file must not record.
+  The scenarios of `--mutate-skip-killed` run a copy of `suite_main.exe`
+  under a scratch build directory. The reason is that the `_mutants` of
+  the build holds the verdict files of the other fixtures, and
+  `scoped_main.exe` links `subject.ml` too. Each planted verdict file
+  gets a stand-in executable in the scratch build directory, because the
+  loop does not use an orphan file.
   `pty_stubs.c` opens a
   pseudo-terminal, which `Unix` does not do: the loop draws its live
   line only when its standard output is a terminal.
@@ -119,13 +125,15 @@ what is non-obvious.
   coverage and mutants reports (`coverage.t`, `mutants.t`), what they
   cannot read (`unreadable.t`), a standard output that refuses the
   mutants report (`full.t`, on Linux, which alone has `/dev/full`), two
-  executables that disagree about one library (`two_executables.t`), and
-  the loop and the merge under `--mutate-since` and `--since` in a git
-  repository of the session's own (`since.t`), also from a subdirectory,
-  for filtered mutants, for an executable outside any build directory,
-  for verdict files under one root and under two roots, for a project
-  below the root of the repository, under a configuration that changes
-  what `git diff` prints, and for a project in no repository.
+  executables that disagree about one library (`two_executables.t`,
+  which also runs `pins_sub.exe` under `--mutate-skip-killed` after
+  `pins_add.exe`), and the loop and the merge under `--mutate-since` and
+  `--since` in a git repository of the session's own (`since.t`), also
+  from a subdirectory, for filtered mutants, for an executable outside
+  any build directory, for verdict files under one root and under two
+  roots, for a project below the root of the repository, under a
+  configuration that changes what `git diff` prints, and for a project
+  in no repository.
   `test_changed_lines` in `unit/` reads the diffs that it states, and
   runs a script in place of git for the arguments and the errors of git.
   `since.t` pins what git gives.

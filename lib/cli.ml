@@ -28,6 +28,7 @@ type parsed = {
   mutate : string list option;
   mutate_jobs : int option;
   mutate_since : string option;
+  mutate_skip_killed : bool option;
   mutate_children : Run.children option;
   mutate_workers : bool option;
   arm : string option;
@@ -59,6 +60,7 @@ let empty =
     mutate = None;
     mutate_jobs = None;
     mutate_since = None;
+    mutate_skip_killed = None;
     mutate_children = None;
     mutate_workers = None;
     arm = None;
@@ -302,6 +304,12 @@ let entries =
       ~mirror:
         (mirrored "WINDTRAP_MUTATE_SINCE" (fun p -> p.mutate_since = None))
       "Test only the mutants on lines changed since git revision REV.";
+    row "--mutate-skip-killed"
+      (Flag (fun p -> { p with mutate_skip_killed = Some true }))
+      ~mirror:
+        (mirrored "WINDTRAP_MUTATE_SKIP_KILLED" (fun p ->
+             p.mutate_skip_killed = None))
+      "Skip the mutants that the verdict file of another executable killed.";
     row "--mutate-children"
       (value "MODE" children (fun p mode ->
            { p with mutate_children = Some mode }))
@@ -521,6 +529,7 @@ let settings cli =
                jobs = Option.value layered.mutate_jobs ~default:1;
                since = layered.mutate_since;
                children = Option.value layered.mutate_children ~default:Run.Auto;
+               skip_killed = layered.mutate_skip_killed = Some true;
              })
     | None, Some id -> Ok (Run.Armed id)
     | Some _, Some _ -> Error (Incompatible_flags ("--mutate", "--arm"))
