@@ -10,20 +10,32 @@ type reaching_test = string list
 type verdict =
   | Killed of { by : reaching_test option }
   | Killed_elsewhere of { exe : string }
-  | Survived of { first : reaching_test; others : reaching_test list }
+  | Survived of {
+      first : reaching_test;
+      others : reaching_test list;
+      runs : int;
+    }
   | Not_evaluated
   | Outside_tests
   | Filtered of string
   | Unreached
 
 (* A collection builds each survivor it holds here, so its reaching tests
-   are sorted and without duplicates. *)
-let survived ts =
+   are sorted and without duplicates, and it has at least one run. *)
+let sorted ~runs ts =
   match List.sort_uniq (List.compare String.compare) ts with
   | [] ->
       invalid_arg
         "Windtrap_runtime.Verdicts.survived: a survivor names at least one test"
-  | first :: others -> Survived { first; others }
+  | first :: others -> Survived { first; others; runs = Int.max runs 1 }
+
+let survived ?(runs = 1) ts =
+  if runs < 1 then
+    invalid_arg
+      "Windtrap_runtime.Verdicts.survived: a survivor has at least one run";
+  sorted ~runs ts
+
+let sum a b = if a > max_int - b then max_int else a + b
 
 type scored = [ `Killed | `Survived | `Not_evaluated ]
 
@@ -53,7 +65,8 @@ let rank = function
 let merge_verdict a b =
   match (a, b) with
   | Survived x, Survived y ->
-      survived (x.first :: y.first :: (x.others @ y.others))
+      sorted ~runs:(sum x.runs y.runs)
+        (x.first :: y.first :: (x.others @ y.others))
   | Killed { by = Some x }, Killed { by = Some y } ->
       Killed
         { by = Some (if List.compare String.compare x y <= 0 then x else y) }
@@ -123,10 +136,10 @@ let combine a b =
   in
   { kept with verdict = merge_verdict a.verdict b.verdict; previous }
 
-(* A survivor goes through [survived], so equal collections give equal
+(* A survivor goes through [sorted], so equal collections give equal
    files. *)
 let normal = function
-  | Survived s -> survived (s.first :: s.others)
+  | Survived s -> sorted ~runs:s.runs (s.first :: s.others)
   | ( Killed _ | Killed_elsewhere _ | Not_evaluated | Outside_tests | Filtered _
     | Unreached ) as v ->
       v
@@ -164,7 +177,7 @@ let with_previous ~prior t =
 
 let format =
   {
-    Instr.magic = "windtrap-mutants-v7";
+    Instr.magic = "windtrap-mutants-v8";
     kind = "verdict";
     dir = "mutants";
     ext = "mutants";
@@ -209,10 +222,11 @@ let is_digest s =
    [outside_tests], [not_evaluated], [filtered <reason>] with the reason a
    name, [killed <n>] and then [n] killing tests, [n] being [0] or [1],
    [killed_elsewhere <exe>] with the executable a name that is not empty, or
-   [survived <n>] and then [n] reaching tests. A test is [<k>] and then its
-   [k] names. [<previous>] is [none], or [was] and then a [<verdict>].
-   [load] reads this grammar and nothing else, and refuses a rewrite outside
-   [Mutate.rewrites], which no report could render. *)
+   [survived <r> <n>] and then [n] reaching tests, [r] being the runs, [1]
+   or more. A test is [<k>] and then its [k] names. [<previous>] is [none],
+   or [was] and then a [<verdict>]. [load] reads this grammar and nothing
+   else, and refuses a rewrite outside [Mutate.rewrites], which no report
+   could render. *)
 let load path =
   let read_test c =
     List.init (Instr.read_count c "test path length") (fun _ ->
@@ -234,11 +248,15 @@ let load path =
     | "outside_tests" -> Outside_tests
     | "filtered" -> Filtered (Instr.read_name c "filter reason")
     | "survived" ->
+        (* [read_nat]: the runs are not items of the input, so the bound of
+           [read_count] does not apply. *)
+        let runs = Instr.read_nat c "survivor runs" in
+        if runs < 1 then Instr.parse_fail "a survivor has %d runs" runs;
         let n = Instr.read_count c "reaching test count" in
         if n = 0 then
           Instr.parse_fail
             "a survivor names no test (survived is not unreached)";
-        survived (List.init n (fun _ -> read_test c))
+        sorted ~runs (List.init n (fun _ -> read_test c))
     | word -> Instr.parse_fail "unknown verdict %S" word
   in
   let read_previous c =
@@ -313,7 +331,7 @@ let save ?identity ?suite path t =
     | Filtered reason -> Printf.bprintf b "filtered %a" add_name reason
     | Survived s ->
         let tests = s.first :: s.others in
-        Printf.bprintf b "survived %d" (List.length tests);
+        Printf.bprintf b "survived %d %d" s.runs (List.length tests);
         List.iter (Printf.bprintf b " %a" add_test) tests
   in
   let add_previous b = function

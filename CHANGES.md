@@ -278,17 +278,29 @@
   runs one suite for each file, so its section shows its rows only on
   some runs (see
   [Unstable verdicts](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#unstable-verdicts)).
+- `--mutate-retry N` and its mirror `WINDTRAP_MUTATE_RETRY` run the
+  child of a survivor again, up to `N` more times. The mutant survives
+  only when each run lets it survive. The default is 2 in a process that
+  spawned a domain, and 0 if not. The report gives the runs of a
+  survivor after its title, as `(3 runs)`, and the verdict file keeps
+  them. `windtrap mutants` gives their sum over the verdict files, and
+  `--json` gives it in `runs`. One verdict file named two times with
+  different text adds its runs two times. A retry makes a false
+  survivor less probable, but it does not make a verdict deterministic
+  (see
+  [Running a survivor again](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#running-a-survivor-again)).
 - A mutation run first runs the test that killed a mutant in the
   previous run, alone, when the source file of the mutant did not
   change and the test passes alone with no mutant, and runs every
   reaching test only when that test does not kill it (see
   [Where the verdicts are](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#where-the-verdicts-are)).
-- (breaking) A verdict file starts with `windtrap-mutants-v7`. It keeps
+- (breaking) A verdict file starts with `windtrap-mutants-v8`. It keeps
   the test that killed each mutant, a digest of its source file, the
   reason of each filtered mutant, the previous verdict of each mutant,
-  and the suite that wrote it. It also keeps the executable that killed
-  a mutant that the run skipped. `windtrap mutants` refuses a file of an
-  earlier version, so run the suites with their mutants again.
+  the runs of each survivor, and the suite that wrote it. It also keeps
+  the executable that killed a mutant that the run skipped.
+  `windtrap mutants` refuses a file of an earlier version, so run the
+  suites with their mutants again.
 - A suite that spawns a domain gets a full mutation run and a verdict
   file. OCaml refuses `Unix.fork` in a process that spawned a domain, so
   in such a process each child of the loop is a new process of the

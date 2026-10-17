@@ -6,6 +6,13 @@
       sign of a negative  «d|test/test_calc.ml:31»
       sign of a positive  «d|test/test_calc.ml:30»
 
+=== a survivor of three runs: the runs after the title
+  SURVIVED  lib/calc.ml:13:11:add  a - b → a + b  (3 runs)
+      13 │ | Sub -> a - b
+
+    1 test ran this line and did not fail:
+      subtraction › stays positive  test/test_calc.ml:19
+
 === a survivor on line 1
   SURVIVED  a.ml:1:8:add  1 → 2
       1 │ let x = 1
@@ -160,6 +167,32 @@ mutants: 16 reached, 16 killed, 7 never reached, 3 executables, score 100.0%
 
 reproduce: WINDTRAP_MUTATE_ARM=lib/eval.ml:60:24:eq dune runtest --force --instrument-with ppx_windtrap.mutate
 mutants: 2 survived of 18 reached, 16 killed, 3 executables, score 88.9%
+
+=== a merge's survivor of four runs: the runs after the title, the rows unchanged
+───────────────────── survivors (2) ──────────────────────
+  SURVIVED  lib/eval.ml:60:24:eq  eval env b = Int 0 → eval env b <> Int 0  (4 runs)
+      60 │ if eval env b = Int 0 then raise Division_by_zero
+
+    3 tests in 2 executables ran this line and none failed:
+      test_eval.exe     division › divides
+      test_eval.exe     division › rounds toward zero
+      test_printer.exe  round trip › arithmetic
+
+  SURVIVED  lib/parser.ml:102:9:not  at_end p → not (at_end p)
+      102 │ if at_end p then Error (Unexpected_eof p.pos)
+
+    1 test ran this line and did not fail:
+      test_parser.exe   errors › unexpected end of input
+──────────────────────────────────────────────────────────
+
+─────────────────── never reached (7) ────────────────────
+  1  lib/report.ml   line 61
+  2  lib/run.ml      line 40
+  4  lib/text.ml     lines 12-14, 32
+──────────────────────────────────────────────────────────
+
+reproduce: dune exec --instrument-with ppx_windtrap.mutate test/test_eval.exe -- --arm lib/eval.ml:60:24:eq
+mutants: 2 survived of 18 reached, 16 killed, 7 never reached, 3 executables, score 88.9%
 
 === neither: the outcome alone
 mutants: 16 reached, 16 killed, 3 executables, score 100.0%

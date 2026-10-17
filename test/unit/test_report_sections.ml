@@ -2210,6 +2210,7 @@ let add_survivor =
         witness ~file:"test/test_calc.ml" "subtraction \u{203a} stays positive"
           19;
       ];
+    runs = 1;
   }
 
 let ge_survivor =
@@ -2220,6 +2221,7 @@ let ge_survivor =
         witness ~file:"test/test_calc.ml" "sign of a negative" 31;
         witness ~file:"test/test_calc.ml" "sign of a positive" 30;
       ];
+    runs = 1;
   }
 
 let memo_missed =
@@ -2276,6 +2278,7 @@ let eq_survivor =
         witness ~exe:"test_eval.exe" "division \u{203a} rounds toward zero" 0;
         witness ~exe:"test_printer.exe" "round trip \u{203a} arithmetic" 0;
       ];
+    runs = 1;
   }
 
 let not_survivor =
@@ -2291,6 +2294,7 @@ let not_survivor =
         witness ~exe:"test_parser.exe" "errors \u{203a} unexpected end of input"
           0;
       ];
+    runs = 1;
   }
 
 let merge_report =
@@ -2331,6 +2335,7 @@ let with_workers c =
           since = None;
           children = Run.Auto;
           skip_killed = false;
+          retry = None;
         };
     mutate_workers = true;
   }
@@ -2347,6 +2352,10 @@ let mutation_entries () =
     ( "a survivor's block: its rewrite, its source line, the tests that ran it",
       printed ~ansi:true (Sections.survivor_block ~exe_width:None ge_survivor)
     );
+    ( "a survivor of three runs: the runs after the title",
+      printed
+        (Sections.survivor_block ~exe_width:None
+           { add_survivor with Sections.runs = 3 }) );
     ( "a survivor on line 1",
       printed
         (Sections.survivor_block ~exe_width:None
@@ -2354,6 +2363,7 @@ let mutation_entries () =
              Sections.mutant =
                mutant ~source:"let x = 1\n" "a.ml:1:8:add" 1 "1" "2";
              witnesses = [ witness "t" 0 ];
+             runs = 1;
            }) );
     ( "an executable column at least exe_width wide, empty for a test that \
        names none",
@@ -2393,6 +2403,14 @@ let mutation_entries () =
     ( "never reached alone: its rule, its rows, the outcome",
       at_rest { merge_report with Sections.survivors = [] } );
     ("survivors alone", at_rest { merge_report with Sections.unreached = [] });
+    ( "a merge's survivor of four runs: the runs after the title, the rows \
+       unchanged",
+      at_rest ~invocation:merge_invocation
+        {
+          merge_report with
+          Sections.survivors =
+            [ { eq_survivor with Sections.runs = 4 }; not_survivor ];
+        } );
     ( "neither: the outcome alone",
       at_rest { merge_report with Sections.survivors = []; unreached = [] } );
     ( "never reached: one row per file, the count right-aligned",
@@ -2715,6 +2733,20 @@ let exe_column () =
       \                     eval \u{203a} Sub node     test/test_eval.ml:31\n"
     (at_rest [ named; eval_one ])
 
+let runs_suffix () =
+  let title runs =
+    List.nth
+      (lines
+         (printed
+            (Sections.survivor_block ~exe_width:None
+               { add_survivor with Sections.runs })))
+      0
+  in
+  not_contains ~sub:"runs" (title 1);
+  equal string
+    "  SURVIVED  lib/calc.ml:13:11:add  a - b \u{2192} a + b  (3 runs)"
+    (title 3)
+
 let reproduce ?invocation ?config m =
   List.filter
     (String.starts_with ~prefix:"reproduce: ")
@@ -2852,6 +2884,9 @@ let mutation_group =
       test "the reaching tests' names are padded to the widest" padded_names;
       test "the executable column appears when a reaching test names one"
         exe_column;
+      test
+        "the title of a survivor ends with its runs when they are more than 1"
+        runs_suffix;
     ]
 
 let () =

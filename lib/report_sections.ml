@@ -1442,7 +1442,7 @@ type mutant = {
   source : string option;
 }
 
-type survivor = { mutant : mutant; witnesses : witness list }
+type survivor = { mutant : mutant; witnesses : witness list; runs : int }
 
 type not_evaluated = {
   mutant : mutant;
@@ -1492,13 +1492,14 @@ let survivor_block ~exe_width (s : survivor) =
   let m = s.mutant in
   let title =
     Line
-      [
-        plain "  ";
-        styled `Red "SURVIVED";
-        plain "  ";
-        styled `Bold m.id;
-        plain (strf "  %s \u{2192} %s" m.before m.after);
-      ]
+      ([
+         plain "  ";
+         styled `Red "SURVIVED";
+         plain "  ";
+         styled `Bold m.id;
+         plain (strf "  %s \u{2192} %s" m.before m.after);
+       ]
+      @ if s.runs > 1 then [ plain (strf "  (%d runs)" s.runs) ] else [])
   in
   let source =
     match Option.map (fun s -> Array.of_list (Text.split_lines s)) m.source with

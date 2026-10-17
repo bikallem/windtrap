@@ -70,6 +70,10 @@ OPTIONS:
   --mutate-jobs=N (env WINDTRAP_MUTATE_JOBS)
       Test mutants at once on up to N CPUs, or on each CPU for auto (default 1).
 
+  --mutate-retry=N (env WINDTRAP_MUTATE_RETRY)
+      Run the child of a survivor up to N more times (default 0, or 2 when the
+      suite spawned a domain).
+
   --mutate-since=REV (env WINDTRAP_MUTATE_SINCE)
       Test only the mutants on lines changed since git revision REV.
 

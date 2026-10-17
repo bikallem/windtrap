@@ -55,7 +55,7 @@ file, and the mutants no test reached are counted by file:
 
   $ run windtrap mutants
   ───────────────────── survivors (1) ──────────────────────
-    SURVIVED  lib/calc.ml:2:14:sub  a - b → a + b
+    SURVIVED  lib/calc.ml:2:14:sub  a - b → a + b  (2 runs)
         2 │ let sub a b = a - b
   
       2 tests in 2 executables ran this line and none failed:
@@ -93,7 +93,7 @@ the counts as a suite's summary does; the command to reproduce stays plain:
   [1]
   $ esc < coloured
   \e[2m───────────────────── survivors (1) ──────────────────────\e[0m
-    \e[31mSURVIVED\e[0m  \e[1mlib/calc.ml:2:14:sub\e[0m  a - b → a + b
+    \e[31mSURVIVED\e[0m  \e[1mlib/calc.ml:2:14:sub\e[0m  a - b → a + b  (2 runs)
         \e[2m2 │\e[0m let sub a b = a - b
   
       2 tests in 2 executables ran this line and none failed:
@@ -208,7 +208,7 @@ Survivors are ordered by how many tests reached them, then by identifier:
   $ mkdata mutants _build/_mutants/two.mutants "$sub=survived:u/d"
   $ run windtrap mutants
   ───────────────────── survivors (2) ──────────────────────
-    SURVIVED  lib/calc.ml:2:14:sub  a - b → a + b
+    SURVIVED  lib/calc.ml:2:14:sub  a - b → a + b  (2 runs)
         2 │ let sub a b = a - b
   
       3 tests in 2 executables ran this line and none failed:
@@ -418,7 +418,7 @@ comes first:
   $ mkdata mutants _build/_mutants/plain.mutants "$add=survived:hand/written"
   $ run windtrap mutants
   ───────────────────── survivors (1) ──────────────────────
-    SURVIVED  lib/calc.ml:1:14:add  a + b → a - b
+    SURVIVED  lib/calc.ml:1:14:add  a + b → a - b  (3 runs)
         1 │ let add a b = a + b
   
       4 tests in 3 executables ran this line and none failed:
@@ -612,6 +612,7 @@ its executable by its index in "executables":
         "file": "lib/calc.ml", "line": 2, "col": 14, "rewrite": "sub",
         "before": "a - b", "after": "a + b",
         "verdict": "survived",
+        "runs": 2,
         "tests": [
           { "executable": 1, "test": ["cli", "subtracts"] },
           { "executable": 2, "test": ["prop", "sub law"] } ] },
@@ -650,6 +651,7 @@ records none:
         "file": "lib/calc.ml", "line": 1, "col": 14, "rewrite": "add",
         "before": "a + b", "after": "a - b",
         "verdict": "survived",
+        "runs": 1,
         "tests": [
           { "executable": 1, "test": ["calc", "adds"] } ] } ],
     "filtered": [ ],
@@ -670,6 +672,7 @@ records none:
         "file": "lib/calc.ml", "line": 1, "col": 14, "rewrite": "add",
         "before": "a + b", "after": "a - b",
         "verdict": "survived",
+        "runs": 3,
         "tests": [
           { "executable": 0, "test": ["my_lib_expect", "add"] },
           { "executable": 1, "test": ["hand", "written"] },
@@ -693,6 +696,17 @@ report compares the names that it prints, so its order can be different:
         s.mutants  a b
         s.mutants  a › b
         s.mutants  z › b
+
+A survivor that two files let survive has the sum of their runs, after
+its title and in "runs":
+
+  $ plant "$scratch/runs" && cd "$scratch/runs"
+  $ mkdata mutants _build/_mutants/a.mutants "$add=survived:t/a:3"
+  $ mkdata mutants _build/_mutants/b.mutants "$add=survived:t/b"
+  $ run windtrap mutants | grep SURVIVED
+    SURVIVED  lib/calc.ml:1:14:add  a + b → a - b  (4 runs)
+  $ run windtrap mutants --json | grep '"runs"'
+        "runs": 4,
 
 A mutant that a child did not evaluate, and a mutant that ran outside
 every test, have their verdicts and no tests:
@@ -862,6 +876,7 @@ The document counts the mutant as killed, and the note is the same:
         "file": "lib/calc.ml", "line": 2, "col": 14, "rewrite": "sub",
         "before": "a - b", "after": "a + b",
         "verdict": "survived",
+        "runs": 1,
         "tests": [
           { "executable": 0, "test": ["cli", "subs"] } ] },
       { "id": "lib/calc.ml:3:14:lt",
@@ -979,13 +994,13 @@ is to delete it, which a coverage dump in the directory shares:
   $ printf 'windtrap-mutants-v0\n1\nsome older payload\n' > _build/_mutants/old.mutants
   $ run windtrap mutants
   --- stderr
-  windtrap: .../old.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v7", found "windtrap-mutants-v0"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
+  windtrap: .../old.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v8", found "windtrap-mutants-v0"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
   [1]
   $ rm _build/_mutants/old.mutants
   $ printf 'windtrap-coverage-v3\n0\n' > _build/_mutants/cov.mutants
   $ run windtrap mutants
   --- stderr
-  windtrap: .../cov.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v7", found "windtrap-coverage-v3"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
+  windtrap: .../cov.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v8", found "windtrap-coverage-v3"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
   [1]
 
 A PATH that cannot be used fails the command, and the files named beside

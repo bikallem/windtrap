@@ -193,6 +193,8 @@
     - ["verdict"] is one of ["killed"], ["survived"], ["not_evaluated"],
       ["outside_tests"] and ["unreached"]. A mutant killed elsewhere is
       ["killed"].
+    - ["runs"], for a survivor only: the runs of its children that let it
+      survive, summed over the verdict files.
     - ["tests"] is in the object of a survivor only. It is an array of the tests
       that reached the survivor.
 

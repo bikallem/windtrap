@@ -39,7 +39,7 @@ neither reached:
 
   $ run windtrap mutants
   ───────────────────── survivors (1) ──────────────────────
-    SURVIVED  test/cram/bin/calc.ml:14:17:sub  a + b → a - b
+    SURVIVED  test/cram/bin/calc.ml:14:17:sub  a + b → a - b  (2 runs)
         14 │ let shared a b = a + b
   
       2 tests in 2 executables ran this line and none failed:
@@ -80,6 +80,7 @@ survivor with the tests that ran it in each executable:
         "file": "test/cram/bin/calc.ml", "line": 14, "col": 17, "rewrite": "sub",
         "before": "a + b", "after": "a - b",
         "verdict": "survived",
+        "runs": 2,
         "tests": [
           { "executable": 0, "test": ["shared", "shared is nonzero"] },
           { "executable": 1, "test": ["shared", "shared is not 99"] } ] },
@@ -130,7 +131,7 @@ survive before:
 
   $ run windtrap mutants
   ───────────────────── survivors (1) ──────────────────────
-    SURVIVED  test/cram/bin/calc.ml:14:17:sub  a + b → a - b
+    SURVIVED  test/cram/bin/calc.ml:14:17:sub  a + b → a - b  (2 runs)
         14 │ let shared a b = a + b
   
       2 tests in 2 executables ran this line and none failed:

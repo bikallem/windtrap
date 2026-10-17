@@ -81,6 +81,7 @@ let flags (p : Cli.parsed) =
         some "log_dir" Fun.id p.log_dir;
         some "mutate" words p.mutate;
         some "mutate_jobs" string_of_int p.mutate_jobs;
+        some "mutate_retry" string_of_int p.mutate_retry;
         some "mutate_since" Fun.id p.mutate_since;
         switch "mutate_skip_killed" p.mutate_skip_killed;
         some "mutate_children" children_name p.mutate_children;
@@ -101,7 +102,7 @@ let parsed args = parsed_argv (Array.of_list ("windtrap-test" :: args))
 
 let mutation_name = function
   | Run.No_mutation -> "none"
-  | Run.Loop { scope; jobs; since; children; skip_killed } ->
+  | Run.Loop { scope; jobs; since; children; skip_killed; retry } ->
       String.concat ""
         [
           "loop ";
@@ -111,6 +112,7 @@ let mutation_name = function
           (if children = Run.Auto then ""
            else " children " ^ children_name children);
           (if skip_killed then " skip_killed" else "");
+          Option.fold ~none:"" ~some:(strf " retry %d") retry;
         ]
   | Run.Armed id -> "armed " ^ id
 
@@ -266,6 +268,8 @@ let mirrors =
           ("WINDTRAP_MUTATE_JOBS", "--mutate-jobs", "0");
           ("WINDTRAP_MUTATE_JOBS", "--mutate-jobs", "all");
           ("WINDTRAP_MUTATE_JOBS", "--mutate-jobs", "257");
+          ("WINDTRAP_MUTATE_RETRY", "--mutate-retry", "x");
+          ("WINDTRAP_MUTATE_RETRY", "--mutate-retry", "101");
           ("WINDTRAP_MUTATE_SINCE", "--mutate-since", "-HEAD");
           ("WINDTRAP_MUTATE_CHILDREN", "--mutate-children", "spawn");
           ("WINDTRAP_COLOR", "--color", "sometimes");
@@ -378,6 +382,7 @@ let messages () =
         [ "--prop-count"; "0" ];
         [ "--color"; "sometimes" ];
         [ "--mutate-jobs"; "257" ];
+        [ "--mutate-retry"; "101" ];
         [ "--mutate-since=--all" ];
       ]
   in
@@ -404,6 +409,7 @@ let messages () =
     invalid value '0' for --prop-count: expected a positive integer
     invalid value 'sometimes' for --color: expected always, never or auto
     invalid value '257' for --mutate-jobs: expected a positive integer up to 256, or auto
+    invalid value '101' for --mutate-retry: expected a non-negative integer up to 100
     invalid value '--all' for --mutate-since: expected a git revision, which does not start with -
     invalid value '0' for WINDTRAP_PROP_COUNT: expected a positive integer
     |}
@@ -462,16 +468,16 @@ let every_flag () =
      failed_only, list_only, bail, stream, update, seed s1:00000000000000ff, \
      timeout 2.5, slow_threshold 3, prop_count 50, verbose, junit out.xml, \
      color never, log_dir logs, mutate [lib/a.ml; lib/b.ml], mutate_jobs 3, \
-     mutate_since main, mutate_skip_killed, mutate_children exec, \
-     mutate_workers, arm lib/a.ml:1:0:add"
+     mutate_retry 2, mutate_since main, mutate_skip_killed, mutate_children \
+     exec, mutate_workers, arm lib/a.ml:1:0:add"
     (parsed
        (String.split_on_char ' '
           "-f pat -e ex --tag a --tag b --exclude-tag c --shard 2/4 --failed \
            -l -x -s -u --seed s1:00000000000000ff --timeout 2.5 \
            --slow-threshold 3 --prop-count 50 -v --junit out.xml --color never \
-           -o logs --mutate=lib/a.ml,lib/b.ml --mutate-jobs 3 --mutate-since \
-           main --mutate-skip-killed --mutate-children exec --mutate-workers \
-           --arm lib/a.ml:1:0:add"))
+           -o logs --mutate=lib/a.ml,lib/b.ml --mutate-jobs 3 --mutate-retry 2 \
+           --mutate-since main --mutate-skip-killed --mutate-children exec \
+           --mutate-workers --arm lib/a.ml:1:0:add"))
 
 (* Whole arguments: each valueless flag in both spellings, value flags with a
    good value, and misspellings and separators, so that most vectors parse
@@ -568,6 +574,9 @@ let parsing =
           ([ "--mutate-jobs"; "4" ], "mutate_jobs 4");
           ([ "--mutate-jobs=1" ], "mutate_jobs 1");
           ([ "--mutate-jobs=256" ], "mutate_jobs 256");
+          ([ "--mutate-retry"; "3" ], "mutate_retry 3");
+          ([ "--mutate-retry=0" ], "mutate_retry 0");
+          ([ "--mutate-retry=100" ], "mutate_retry 100");
           ([ "--mutate-since"; "origin/main" ], "mutate_since origin/main");
           ([ "--mutate-since=HEAD~2" ], "mutate_since HEAD~2");
           ([ "--mutate-skip-killed" ], "mutate_skip_killed");
@@ -674,6 +683,10 @@ let parsing =
           ("--mutate-jobs", "many");
           ("--mutate-jobs", "autom");
           ("--mutate-jobs", "257");
+          ("--mutate-retry", "-1");
+          ("--mutate-retry", "101");
+          ("--mutate-retry", "many");
+          ("--mutate-retry", "");
           ("--mutate-since", "");
           ("--mutate-since", "-p");
           ("--mutate-children", "");
@@ -888,6 +901,24 @@ let resolution =
           ([ ("WINDTRAP_MUTATE_JOBS", "3") ], [], "defaults");
           ( [],
             [ "--arm"; "lib/a.ml:9:12:add"; "--mutate-jobs"; "4" ],
+            "mutation armed lib/a.ml:9:12:add" );
+        ];
+      resolve_rows
+        "--mutate-retry or its mirror sets the retry of a loop, and nothing \
+         else reads it"
+        [
+          ([], [ "--mutate"; "--mutate-retry"; "2" ], "mutation loop [] retry 2");
+          ([], [ "--mutate"; "--mutate-retry=0" ], "mutation loop [] retry 0");
+          ([], [ "--mutate" ], "mutation loop []");
+          ( [ ("WINDTRAP_MUTATE_RETRY", "5") ],
+            [ "--mutate"; "--mutate-retry=1" ],
+            "mutation loop [] retry 1" );
+          ( [ ("WINDTRAP_MUTATE_RETRY", " 2 ") ],
+            [ "--mutate=lib/" ],
+            "mutation loop [lib/] retry 2" );
+          ([ ("WINDTRAP_MUTATE_RETRY", "1") ], [], "defaults");
+          ( [],
+            [ "--arm"; "lib/a.ml:9:12:add"; "--mutate-retry"; "2" ],
             "mutation armed lib/a.ml:9:12:add" );
         ];
       resolve_rows

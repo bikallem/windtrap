@@ -322,7 +322,9 @@ the withheld-correction warning:
   change, and the test passes alone with no mutant, a first child runs
   that test alone. A second child then runs every reaching test only
   when the first child does not kill the mutant (see
-  [Where the verdicts are](#where-the-verdicts-are)). A child that
+  [Where the verdicts are](#where-the-verdicts-are)). When a full child
+  lets the mutant survive, `--mutate-retry` can run it again (see
+  [Running a survivor again](#running-a-survivor-again)). A child that
   outruns a deadline taken from the dry run, or evaluates its site more
   than `hits * 8 + 1000` times, `hits` being the dry run's count, is
   killed, and its mutant counts as killed.
@@ -439,6 +441,64 @@ The `reproduce:`, `arm:` and `replay:` commands of such a run keep
 `--mutate-workers`. The `reproduce:` line of `windtrap mutants` does
 not keep it, because the verdict file does not record it. Add
 `--mutate-workers` to that command yourself.
+
+## Running a survivor again
+
+In a suite that spawns domains, the operating system decides the order
+of the domains. A mutant that only some orders show can survive one run
+and be killed in the next run.
+
+`--mutate-retry N` (`WINDTRAP_MUTATE_RETRY=N`) runs the child of a
+survivor again, up to `N` more times. Each of these runs is a retry.
+The first run that does not let the mutant survive gives the verdict.
+The mutant survives only when each run lets it survive. `N` is from 0
+to 100.
+
+The default is 2 when the process spawned a domain, before or in the
+dry run, and 0 if not. The order of the domains is the usual cause of a
+verdict that changes from one run to the next. Under
+`--mutate-children=exec`, a suite that spawns no domain also gets 0,
+because each new process runs its tests in the same order. Give
+`--mutate-retry` to a suite whose verdicts change for another cause, for
+example threads or the clock.
+
+A retry has the tests and the deadline of the first run, and it uses
+a job of `--mutate-jobs` as each child does. Only survivors cost more
+time. The live line counts a mutant one time, when it has its verdict.
+The determinism probe runs one time.
+
+The report gives the runs of a survivor after its title, when they are
+more than 1:
+
+```
+  SURVIVED  calc.ml:10:16:ge  n > 0 → n >= 0  (3 runs)
+```
+
+The verdict file keeps the runs. `windtrap mutants` adds the runs of the
+verdict files in which the mutant survived, and `--json` gives the sum
+in `runs`. Thus two executables that each ran a survivor one time give
+`(2 runs)`. If you name one verdict file two times with different
+text, for example `x/a.mutants` and `./x/a.mutants`, `windtrap mutants`
+adds its runs two times.
+
+A retry makes a false survivor less probable. It does not make a
+verdict deterministic. For example, a mutant that 1 order in 10 kills
+survives 3 runs in about 73 of 100 mutation runs. The loop does not run
+a killed mutant again, so a kill that only some orders give stays a
+kill. An `--arm` run runs the suite one time. Thus it can kill a
+survivor of 3 runs.
+
+A kill in a retry does not give a row in the `unstable` section. The
+verdict file keeps only the verdict of the mutant, not the verdict of
+each run.
+
+A retry changes how frequently the verdict of a mutant changes between
+two mutation runs. For a mutant that most orders kill, a retry makes
+this change less probable. For a mutant that few orders kill, a small
+`N` makes this change more probable, and a large `N` makes it less
+probable. For example, take a mutant that 1 order in 10 kills. With no
+retry, its verdict changes in about 18 of 100 pairs of runs. With 2
+retries, it changes in about 40 of 100 pairs.
 
 ## Testing mutants in parallel
 
@@ -823,13 +883,14 @@ For other tools, `--json` prints the merge as JSON on standard output,
 in place of the report. The document has its version, the counts and the
 score, the executables, each mutant with its verdict, each filtered
 mutant with its reason, and the mutants whose verdict changed. A
-survivor also has the tests that ran it. A test names its executable by
-its index in `executables`, because two executables can have the same
-name. Under `--min-score` the outcome line goes to standard error, and
-the exit code is that of the gate. Standard output can refuse the
-document, for example on a full disk. The command then gives the reason
-on standard error and exits 1. The gate does not run. A later version
-can add keys. A change to the meaning of a key increments `version`.
+survivor also has the number of its runs and the tests that ran it. A
+test names its executable by its index in `executables`, because two
+executables can have the same name. Under `--min-score` the outcome
+line goes to standard error, and the exit code is that of the gate.
+Standard output can refuse the document, for example on a full disk.
+The command then gives the reason on standard error and exits 1. The
+gate does not run. A later version can add keys. A change to the
+meaning of a key increments `version`.
 [`bin/mutate_cmd.mli`](../../bin/mutate_cmd.mli) gives each key:
 
 ```
@@ -873,6 +934,7 @@ $ dune exec windtrap -- mutants --json
       "file": "calc.ml", "line": 10, "col": 16, "rewrite": "ge",
       "before": "n > 0", "after": "n >= 0",
       "verdict": "survived",
+      "runs": 1,
       "tests": [
         { "executable": 0, "test": ["sign", "is -1 for a negative"] },
         { "executable": 0, "test": ["sign", "is 1 for a positive"] } ] },
@@ -880,6 +942,7 @@ $ dune exec windtrap -- mutants --json
       "file": "calc.ml", "line": 10, "col": 37, "rewrite": "le",
       "before": "n < 0", "after": "n <= 0",
       "verdict": "survived",
+      "runs": 1,
       "tests": [
         { "executable": 0, "test": ["sign", "is -1 for a negative"] } ] } ],
   "filtered": [ ],
@@ -1059,7 +1122,7 @@ changed between killed, survived and not evaluated:
 The list does not show these changes:
 
 - A killed mutant with another killing test.
-- A survivor with other reaching tests.
+- A survivor with other reaching tests or another number of runs.
 - A change between killed and killed elsewhere. A mutant killed
   elsewhere counts as killed.
 - A change from or to never reached, evaluated outside tests or
@@ -1072,6 +1135,8 @@ the other code did not change, a row is a sign of a verdict that depends
 on the order of the domains, for example in a stateful test on several
 domains (see
 [Stateful tests on several domains](#stateful-tests-on-several-domains)).
+`--mutate-retry` can make such a row more or less probable (see
+[Running a survivor again](#running-a-survivor-again)).
 A deadline of a child on a host under load can also change a verdict. A
 change of `--mutate-children` between `fork` and `exec` can also change
 a verdict between killed and not evaluated. A forked child keeps the
