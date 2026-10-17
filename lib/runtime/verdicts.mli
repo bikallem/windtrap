@@ -69,6 +69,14 @@ val survived : reaching_test list -> verdict
     sorted and without duplicates. Raises [Invalid_argument] if [ts] is empty.
 *)
 
+type scored = [ `Killed | `Survived | `Not_evaluated ]
+(** The type for the classes of the verdicts that a score counts. *)
+
+val scored : verdict -> scored option
+(** [scored v] is the class of [v]: [`Killed] for {!Killed} and
+    {!Killed_elsewhere}, [`Survived] for {!Survived}, [`Not_evaluated] for
+    {!Not_evaluated}, and [None] for the other verdicts. *)
+
 (** {1:collections Collections} *)
 
 type record = {
@@ -83,6 +91,11 @@ type record = {
           later run compares it with the file that it reads, to find out if the
           file changed. *)
   verdict : verdict;  (** What the run made of the mutant. *)
+  previous : verdict option;
+      (** The verdict of the mutant in the verdict file that the run replaced,
+          when that record has the source digest of this record, and the digest
+          is not [None]. It is [None] if not. The run that writes the file sets
+          it. *)
 }
 (** The type for the record of one mutant. A record is self-describing: it
     carries the two renderings that a report draws the mutant with, so a report
@@ -91,8 +104,13 @@ type record = {
 val record_of_mutant :
   ?source_digest:string -> Mutate.mutant -> verdict -> record
 (** [record_of_mutant ?source_digest m v] is the record of [m] with the verdict
-    [v] and the digest [source_digest], [None] by default. [m.dismissed] is
-    dropped. *)
+    [v], the digest [source_digest], [None] by default, and no previous verdict.
+    [m.dismissed] is dropped. *)
+
+val changed : record -> (scored * scored) option
+(** [changed r] is [Some (was, is)] when [r.previous] is [Some p], [scored p] is
+    [Some was], [scored r.verdict] is [Some is], and [was] is not [is]. It is
+    [None] if not. *)
 
 type t
 (** The type for verdict collections: finite maps from {!Mutate.type-id} to
@@ -111,13 +129,16 @@ val add : t -> record -> t
     is {!Killed_elsewhere} if either is, with the smaller [exe]. Otherwise it is
     {!Not_evaluated} if either is, then {!Survived} with the reaching tests of
     both if either is, then {!Outside_tests} if either is, then {!Filtered} with
-    the smaller reason if either is, and {!Unreached} if both are.
+    the smaller reason if either is, and {!Unreached} if both are. The two
+    previous verdicts combine in the same way, and a missing one leaves the
+    other unchanged.
 
     [add] checks nothing of [r.id], [r.source_digest] and the [exe] of a
-    {!Killed_elsewhere}. It accepts an empty [file], a [line] below [1], a
-    negative [col], a [rewrite] outside {!Mutate.rewrites}, a digest that is not
-    32 lowercase hexadecimal digits and an empty [exe], and {!load} then refuses
-    the file that {!save} writes for the collection. *)
+    {!Killed_elsewhere}, in the verdict and in the previous verdict. It accepts
+    an empty [file], a [line] below [1], a negative [col], a [rewrite] outside
+    {!Mutate.rewrites}, a digest that is not 32 lowercase hexadecimal digits and
+    an empty [exe], and {!load} then refuses the file that {!save} writes for
+    the collection. *)
 
 val records : t -> record list
 (** [records t] is the records of [t], ordered by {!Mutate.compare_id}. *)
@@ -130,13 +151,21 @@ val merge : t -> t -> t
     identifier are combined as {!add} does. [merge] is commutative, associative
     and idempotent, {!empty} is its unit, and an {!Unreached} verdict leaves the
     verdict it is combined with unchanged, so merging any number of files in any
-    order gives one answer. *)
+    order gives one answer. The previous verdict of a merged record tells
+    nothing of one executable. [windtrap mutants] reads the previous verdicts of
+    each file before the merge. *)
+
+val with_previous : prior:t -> t -> t
+(** [with_previous ~prior t] is [t] in which the [previous] of each record [r]
+    is [Some p.verdict] when [prior] has a record [p] under [r.id], and
+    [p.source_digest] is [r.source_digest] and is not [None]. It is [None] if
+    not. The [previous] of [p] is not used. *)
 
 (** {1:files Verdict files}
 
     An executable has one verdict file, at {!output_file}.
 
-    The first line of a file is the magic line [windtrap-mutants-v6], which
+    The first line of a file is the magic line [windtrap-mutants-v7], which
     carries the version of the format. A file with another first line is
     refused, never converted, and nothing is promised from one version to the
     next. *)
@@ -170,35 +199,42 @@ val output_file : exe:string -> string
     of the executable at [exe]. An executable that is renamed or moved leaves
     its previous file behind. *)
 
-val load : string -> (t * identity option, error) result
-(** [load path] is [Ok (t, identity)] when the file at [path] is a verdict file,
-    where [identity] is the recorded writer, if any. The file is read with
-    {!Instr.read_file}, and every error names [path]. Otherwise it is the error
-    of the read, [Error (Unknown_format _)] for another first line, or
-    [Error (Corrupt _)] for data that is truncated or invalid:
+val load : string -> (t * identity option * string option, error) result
+(** [load path] is [Ok (t, identity, suite)] when the file at [path] is a
+    verdict file, where [identity] is the recorded writer and [suite] the
+    recorded suite, if any. The file is read with {!Instr.read_file}, and every
+    error names [path]. Otherwise it is the error of the read,
+    [Error (Unknown_format _)] for another first line, or [Error (Corrupt _)]
+    for data that is truncated or invalid:
     - a negative count, or a count larger than the input,
     - an empty file name, a line below [1] or a negative column,
-    - a rewrite outside {!Mutate.rewrites}, or an unknown verdict,
+    - a rewrite outside {!Mutate.rewrites}, an unknown verdict, or a missing or
+      unknown previous verdict,
     - a source digest that is not empty and not 32 lowercase hexadecimal digits,
     - a survivor with no reaching test, a killed mutant with more than one
       killing test, an empty killing executable, or a second record for one
       identifier,
-    - a malformed identity line, or bytes after the last record.
+    - a malformed identity line, a suite count that is not [0] or [1], or bytes
+      after the last record.
+
+    A previous verdict obeys the rules of a verdict.
 
     Nothing is repaired, and a file with one malformed record is not read at
     all. *)
 
-val save : ?identity:identity -> string -> t -> unit
-(** [save ?identity path t] writes [t] to [path] in the format of a verdict
-    file, with {!Instr.write_file}. Records are ordered by {!Mutate.compare_id}
-    and reaching tests are sorted, so equal collections give equal files.
-    [identity] is recorded after the magic line when it is given. A merged
-    collection has no single writer and is written without one.
+val save : ?identity:identity -> ?suite:string -> string -> t -> unit
+(** [save ?identity ?suite path t] writes [t] to [path] in the format of a
+    verdict file, with {!Instr.write_file}. Records are ordered by
+    {!Mutate.compare_id} and reaching tests are sorted, so equal collections
+    give equal files. [identity] is recorded after the magic line when it is
+    given, and then [suite], the name that the writer gave to [Windtrap.run],
+    when it is given. A merged collection has no single writer and is written
+    without the two.
 
-    [load path] is then [Ok (t, identity)] for every [t] whose identifiers
-    {!load} accepts, and [Error (Corrupt _)] for any other (see {!add}). A
-    collection built from the mutants of {!Mutate.val-catalogue} round-trips,
-    unless a source file was registered under the name [""].
+    [load path] is then [Ok (t, identity, suite)] for every [t] whose
+    identifiers {!load} accepts, and [Error (Corrupt _)] for any other (see
+    {!add}). A collection built from the mutants of {!Mutate.val-catalogue}
+    round-trips, unless a source file was registered under the name [""].
 
     Raises [Invalid_argument] before anything is written if [identity.exe] is
     empty or if [identity.digest] is not 32 lowercase hexadecimal digits, and

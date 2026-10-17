@@ -263,6 +263,49 @@ rewrite, with no source line:
   mutants: 1 survived of 1 reached, 1 executable, score 0.0%
   [1]
 
+Unstable verdicts
+
+A record keeps the verdict that the mutant had in the file that the run
+replaced, when the source did not change. The report lists, for each file,
+the mutants whose verdict changed class. Two executables over one library.
+In A, add was survived and is killed, sub was killed and survived, lt was
+killed by another test, and or was reached and is not. In B, add is killed
+as before, sub was not evaluated and is killed, and lt was survived and is
+killed elsewhere:
+
+  $ plant "$scratch/unstable" && cd "$scratch/unstable"
+  $ mkdata mutants _build/_mutants/a.mutants "$add=killed@survived:t/a" \
+  >   "$sub=survived:t/b@killed" "$lt=killed:t/c@killed:t/d" "$or=unreached@survived:t/e"
+  $ mkdata mutants _build/_mutants/b.mutants "$add=killed@killed" \
+  >   "$sub=killed@not_evaluated" "$lt=elsewhere:a.exe@survived:t/f"
+  $ run windtrap mutants
+  ────────────────────── unstable (4) ──────────────────────
+    The source of each mutant did not change, but its verdict did.
+    a.mutants  lib/calc.ml:1:14:add   survived → killed
+    a.mutants  lib/calc.ml:2:14:sub   killed → survived
+    b.mutants  lib/calc.ml:2:14:sub   not evaluated → killed
+    b.mutants  lib/calc.ml:3:14:lt    survived → killed
+  ──────────────────────────────────────────────────────────
+  
+  ─────────────────── never reached (1) ────────────────────
+    1  lib/util.ml   line 1
+  ──────────────────────────────────────────────────────────
+  
+  mutants: 3 reached, 3 killed, 1 never reached, 2 executables, score 100.0%
+
+The rows of one mutant in two executables come one for each executable, in
+the order of the files. A mutant with another killing test, with the same
+class, or that no test reached gives no row. The rows change neither the
+score nor the exit code. The document has the same rows in "unstable", with
+the index of the executable:
+
+  $ run windtrap mutants --json | sed -n '/"unstable"/,$p'
+    "unstable": [
+      { "id": "lib/calc.ml:1:14:add", "executable": 0, "previous": "survived", "verdict": "killed" },
+      { "id": "lib/calc.ml:2:14:sub", "executable": 0, "previous": "killed", "verdict": "survived" },
+      { "id": "lib/calc.ml:2:14:sub", "executable": 1, "previous": "not_evaluated", "verdict": "killed" },
+      { "id": "lib/calc.ml:3:14:lt", "executable": 1, "previous": "survived", "verdict": "killed" } ] }
+
 Executables
 
 A file that records the executable that wrote it names its reaching tests
@@ -584,7 +627,8 @@ its executable by its index in "executables":
         "file": "lib/util.ml", "line": 3, "col": 22, "rewrite": "and",
         "before": "p && q", "after": "p || q",
         "verdict": "unreached" } ],
-    "filtered": [ ] }
+    "filtered": [ ],
+    "unstable": [ ] }
   [1]
   $ cp "$bin/out" json
 
@@ -608,7 +652,8 @@ records none:
         "verdict": "survived",
         "tests": [
           { "executable": 1, "test": ["calc", "adds"] } ] } ],
-    "filtered": [ ] }
+    "filtered": [ ],
+    "unstable": [ ] }
   [1]
   $ cd "$scratch/labels"
   $ run windtrap mutants --json
@@ -630,7 +675,8 @@ records none:
           { "executable": 1, "test": ["hand", "written"] },
           { "executable": 2, "test": ["calc", "adds"] },
           { "executable": 2, "test": ["calc", "adds zero"] } ] } ],
-    "filtered": [ ] }
+    "filtered": [ ],
+    "unstable": [ ] }
   [1]
 
 In one executable, the tests are sorted name by name, the outermost name
@@ -673,7 +719,8 @@ every test, have their verdicts and no tests:
         "file": "lib/calc.ml", "line": 3, "col": 14, "rewrite": "lt",
         "before": "a < b", "after": "a <= b",
         "verdict": "outside_tests" } ],
-    "filtered": [ ] }
+    "filtered": [ ],
+    "unstable": [ ] }
 
 A filtered mutant is in the array "filtered", with its reason, and not in
 "mutants":
@@ -708,7 +755,8 @@ A filtered mutant is in the array "filtered", with its reason, and not in
       { "id": "lib/util.ml:3:22:and",
         "file": "lib/util.ml", "line": 3, "col": 22, "rewrite": "and",
         "before": "p && q", "after": "p || q",
-        "reason": "same operands" } ] }
+        "reason": "same operands" } ],
+    "unstable": [ ] }
 
 Each string is escaped as JSON needs, and bytes that are not UTF-8 become
 the replacement character:
@@ -828,7 +876,8 @@ The document counts the mutant as killed, and the note is the same:
         "file": "lib/util.ml", "line": 3, "col": 22, "rewrite": "and",
         "before": "p && q", "after": "p || q",
         "verdict": "unreached" } ],
-    "filtered": [ ] }
+    "filtered": [ ],
+    "unstable": [ ] }
   --- stderr
   windtrap: 1 mutant counts as killed by default/test/a.exe, but no verdict file of the merge gives this kill: run default/test/a.exe with its mutants, then merge again
   [1]
@@ -917,7 +966,7 @@ A truncated file is corrupt, and nothing is reported:
   $ plant "$scratch/truncated" && cd "$scratch/truncated"
   $ mkdata mutants whole.mutants "$add=killed" "$sub=unreached" "$lt=survived:calc/compares"
   $ mkdir -p _build/_mutants
-  $ head -c $(( $(wc -c < whole.mutants) - 6 )) whole.mutants > _build/_mutants/cut.mutants
+  $ head -c $(( $(wc -c < whole.mutants) - 11 )) whole.mutants > _build/_mutants/cut.mutants
   $ run windtrap mutants
   --- stderr
   windtrap: .../cut.mutants: corrupt verdict file: truncated test name
@@ -930,13 +979,13 @@ is to delete it, which a coverage dump in the directory shares:
   $ printf 'windtrap-mutants-v0\n1\nsome older payload\n' > _build/_mutants/old.mutants
   $ run windtrap mutants
   --- stderr
-  windtrap: .../old.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v6", found "windtrap-mutants-v0"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
+  windtrap: .../old.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v7", found "windtrap-mutants-v0"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
   [1]
   $ rm _build/_mutants/old.mutants
   $ printf 'windtrap-coverage-v3\n0\n' > _build/_mutants/cov.mutants
   $ run windtrap mutants
   --- stderr
-  windtrap: .../cov.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v6", found "windtrap-coverage-v3"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
+  windtrap: .../cov.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v7", found "windtrap-coverage-v3"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
   [1]
 
 A PATH that cannot be used fails the command, and the files named beside

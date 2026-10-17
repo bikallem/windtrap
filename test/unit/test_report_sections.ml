@@ -2232,10 +2232,28 @@ let memo_missed =
     failed = None;
   }
 
+(* The mutants whose verdict changed class, as the producers spell them. *)
+let sub_change =
+  {
+    Sections.id = "lib/calc.ml:13:9:sub";
+    exe = None;
+    previous = `Survived;
+    verdict = `Killed;
+  }
+
+let drop_change =
+  {
+    Sections.id = "lib/calc.ml:22:4:drop";
+    exe = None;
+    previous = `Killed;
+    verdict = `Not_evaluated;
+  }
+
 let loop_report =
   {
     Sections.survivors = [ add_survivor; ge_survivor ];
     not_evaluated = [];
+    unstable = [];
     unreached = [ ("lib/calc.ml", 40); ("lib/calc.ml", 41) ];
     outside_tests = [];
     filtered = [];
@@ -2279,6 +2297,7 @@ let merge_report =
   {
     Sections.survivors = [ eq_survivor; not_survivor ];
     not_evaluated = [];
+    unstable = [];
     unreached =
       List.map (fun line -> ("lib/text.ml", line)) [ 12; 13; 14; 32 ]
       @ [ ("lib/run.ml", 40); ("lib/run.ml", 40); ("lib/report.ml", 61) ];
@@ -2381,6 +2400,7 @@ let mutation_entries () =
         {
           Sections.survivors = [];
           not_evaluated = [];
+          unstable = [];
           unreached =
             List.init 60 (fun i -> ("lib/report.ml", (i * 3) + 10))
             @ List.init 60 (fun i -> ("lib/report.ml", (i * 3) + 10))
@@ -2412,6 +2432,22 @@ let mutation_entries () =
                   { memo_missed.mutant with id = "lib/memo.ml:9:4:add" };
                 failed = None;
               };
+            ];
+        } );
+    ( "unstable: one row per mutant, its previous verdict and its verdict, \
+       after not evaluated",
+      at_rest ~ansi:true
+        { reached_report with Sections.unstable = [ sub_change; drop_change ] }
+    );
+    ( "unstable in a merge: the executable first",
+      at_rest
+        {
+          merge_report with
+          Sections.survivors = [];
+          unstable =
+            [
+              { sub_change with Sections.exe = Some "test_calc.exe" };
+              { drop_change with Sections.exe = Some "test_eval.exe" };
             ];
         } );
     ( "evaluated outside tests follows never reached",
@@ -2492,6 +2528,14 @@ let mutation_entries () =
           unreached = [];
           filtered = [ "same body as the next case" ];
         } );
+    ( "unstable alone, in a loop: a blank line opens it",
+      closing
+        {
+          loop_report with
+          Sections.survivors = [];
+          unreached = [];
+          unstable = [ sub_change ];
+        } );
     ( "an interrupted loop counts what it did not test",
       closing
         ~invocation:
@@ -2506,14 +2550,15 @@ let mutation_entries () =
         } );
   ]
 
-let summary ?(survivors = []) ?(not_evaluated = []) ?(unreached = [])
-    ?(outside_tests = []) ?(filtered = []) ?(not_tested = 0) ?min ~killed scope
-    =
+let summary ?(survivors = []) ?(not_evaluated = []) ?(unstable = [])
+    ?(unreached = []) ?(outside_tests = []) ?(filtered = []) ?(not_tested = 0)
+    ?min ~killed scope =
   last_line
     (at_rest ?min
        {
          Sections.survivors;
          not_evaluated;
+         unstable;
          unreached;
          outside_tests;
          filtered;
@@ -2601,6 +2646,12 @@ let summary_rows =
           Sections.Suite),
       "mutants: 1 survived of 3 reached by this suite, 1 killed, 1 not \
        evaluated, score 33.3%, minimum 33.4%: FAILED" );
+    ( "the unstable rows change no count and not the score",
+      (fun () ->
+        summary
+          ~unstable:[ sub_change; drop_change ]
+          ~survivors:s ~killed:4 Sections.Suite),
+      "mutants: 1 survived of 5 reached by this suite, 4 killed, score 80.0%" );
     ( "a gate met at its bound",
       (fun () -> summary ~survivors:s ~killed:3 ~min:75. Sections.Suite),
       "mutants: 1 survived of 4 reached by this suite, 3 killed, score 75.0%, \
@@ -2776,6 +2827,12 @@ let arm_mirror () =
                  [ { memo_missed with Sections.invocation = `Mirrors } ];
              })))
 
+let unstable_score () =
+  equal float_exact
+    (Sections.mutation_score loop_report)
+    (Sections.mutation_score
+       { loop_report with Sections.unstable = [ sub_change; drop_change ] })
+
 let mutation_group =
   group "Mutation"
     [
@@ -2785,6 +2842,7 @@ let mutation_group =
         reproduce_rows reproduce_row;
       test "a not-evaluated mutant's arm command under a build action"
         arm_mirror;
+      test "the unstable rows change no score" unstable_score;
       cases "the outcome line"
         ~name:(fun (name, _, _) -> name)
         summary_rows

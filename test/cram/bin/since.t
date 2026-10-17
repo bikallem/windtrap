@@ -96,7 +96,8 @@ and gates on them:
         "verdict": "survived",
         "tests": [
           { "executable": 0, "test": ["sub", "sub is nonzero"] } ] } ],
-    "filtered": [ ] }
+    "filtered": [ ],
+    "unstable": [ ] }
   --- stderr
   windtrap: mutants: 1 survived of 1 reached, 1 executable, score 0.0%, minimum 0%: ok
   $ run windtrap mutants --since HEAD~1 | tail -n 1
@@ -120,6 +121,23 @@ one on line 14:
   
   mutants: 0 reached, 1 filtered, 1 executable
   $ rm -r filtered
+
+A mutant whose verdict changed also counts only on a changed line. Here a
+verdict file of the session has one such mutant on the changed line 13, and
+one on line 14:
+
+  $ mkdir unstable
+  $ "$bin/mkdata.exe" mutants unstable/u.mutants \
+  >   'test/cram/bin/calc.ml:13:14:add:a - b:a + b=killed@survived:t/a' \
+  >   'test/cram/bin/calc.ml:14:17:sub:a + b:a - b=survived:t/b@killed'
+  $ run windtrap mutants --since HEAD unstable
+  ────────────────────── unstable (1) ──────────────────────
+    The source of each mutant did not change, but its verdict did.
+    u.mutants  test/cram/bin/calc.ml:13:14:add   survived → killed
+  ──────────────────────────────────────────────────────────
+  
+  mutants: 1 reached, 1 killed, 1 executable, score 100.0%
+  $ rm -r unstable
 
 A verdict file below a build directory has the parent of that directory
 as its root, also when a PATH argument gives it. Git runs in that root,

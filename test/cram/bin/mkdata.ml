@@ -16,7 +16,8 @@
      outside_tests, unreached, filtered:REASON or survived:TESTS, where a
      TEST is a path of '/'-separated names, EXE is the identity of the
      killing executable and TESTS are ';'-separated TESTs. No record has a
-     source digest.
+     source digest. VERDICT@PREVIOUS gives the record the previous verdict
+     PREVIOUS, which has the syntax of VERDICT.
 
    --exe records the identity of the executable at EXE as it is now. *)
 
@@ -83,6 +84,13 @@ let verdict = function
 
 let record spec =
   let mutant, v = split_last '=' spec in
+  let v, previous =
+    match String.index_opt v '@' with
+    | Some i ->
+        ( String.sub v 0 i,
+          Some (verdict (String.sub v (i + 1) (String.length v - i - 1))) )
+    | None -> (v, None)
+  in
   match String.split_on_char ':' mutant with
   | [ file; line; col; rewrite; before; after ] ->
       let id =
@@ -93,7 +101,14 @@ let record spec =
           rewrite;
         }
       in
-      { Verdicts.id; before; after; source_digest = None; verdict = verdict v }
+      {
+        Verdicts.id;
+        before;
+        after;
+        source_digest = None;
+        verdict = verdict v;
+        previous;
+      }
   | _ -> die "%S: not FILE:LINE:COL:REWRITE:BEFORE:AFTER" mutant
 
 let mutants ~identity out specs =

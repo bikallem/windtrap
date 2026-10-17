@@ -99,7 +99,7 @@ let remedy excluded =
 let fresh files =
   let load path =
     match Verdicts.load path with
-    | Ok (verdicts, identity) ->
+    | Ok (verdicts, identity, _) ->
         Ok
           {
             path;
@@ -237,6 +237,27 @@ let merged files =
     (fun acc f -> Verdicts.merge acc f.verdicts)
     Verdicts.empty files
 
+(* Each changed record of each file, with the index of its file, by
+   identifier and then in the order of [files]. *)
+let unstable files =
+  List.stable_sort
+    (fun (a, _, _, _, _) (b, _, _, _, _) -> Mutate.compare_id a b)
+    (List.concat
+       (List.mapi
+          (fun i f ->
+            List.filter_map
+              (fun (r : Verdicts.record) ->
+                Option.map
+                  (fun (was, is) -> (r.id, i, f, was, is))
+                  (Verdicts.changed r))
+              (Verdicts.records f.verdicts))
+          files))
+
+let scored_name = function
+  | `Killed -> "killed"
+  | `Survived -> "survived"
+  | `Not_evaluated -> "not_evaluated"
+
 (* [Verdicts.merge] folds away which executable ran a reaching test, so a
    survivor's reaching tests are read from the files in which it survived. *)
 let merge ~source files merged =
@@ -355,6 +376,16 @@ let merge ~source files merged =
   ( {
       Sections.survivors;
       not_evaluated;
+      unstable =
+        List.map
+          (fun (id, _, f, previous, verdict) : Sections.unstable ->
+            {
+              id = Mutate.id_to_string id;
+              exe = Some f.label;
+              previous;
+              verdict;
+            })
+          (unstable files);
       unreached;
       outside_tests;
       filtered;
@@ -518,6 +549,19 @@ let json files merged (m : Sections.mutation) =
   in
   let survived = List.length m.survivors in
   let not_evaluated = List.length m.not_evaluated in
+  let unstable =
+    List.map
+      (fun (id, i, _, previous, verdict) ->
+        strf
+          "\n\
+          \    { \"id\": %s, \"executable\": %d, \"previous\": %s, \
+           \"verdict\": %s }"
+          (string (Mutate.id_to_string id))
+          i
+          (string (scored_name previous))
+          (string (scored_name verdict)))
+      (unstable files)
+  in
   strf
     "{ \"version\": 1,\n\
     \  \"summary\": { \"reached\": %d, \"killed\": %d, \"survived\": %d,\n\
@@ -525,7 +569,8 @@ let json files merged (m : Sections.mutation) =
     \    \"filtered\": %d, \"score\": %.2f },\n\
     \  \"executables\": [%s ],\n\
     \  \"mutants\": [%s ],\n\
-    \  \"filtered\": [%s ] }\n"
+    \  \"filtered\": [%s ],\n\
+    \  \"unstable\": [%s ] }\n"
     (m.killed + survived + not_evaluated)
     m.killed survived not_evaluated
     (List.length m.outside_tests)
@@ -534,6 +579,7 @@ let json files merged (m : Sections.mutation) =
     (String.concat "," (List.map executable files))
     (String.concat "," tested)
     (String.concat "," filtered)
+    (String.concat "," unstable)
 
 (* Running *)
 

@@ -422,6 +422,20 @@ type not_evaluated = {
 (** The type for a reached mutant whose child did not evaluate its site, which
     is no survivor and no kill. *)
 
+type scored = [ `Killed | `Survived | `Not_evaluated ]
+(** The type for the classes of the scored verdicts. *)
+
+type unstable = {
+  id : string;  (** The identifier of the mutant, spelled by the producer. *)
+  exe : string option;
+      (** The executable whose verdict file records the change. It is [None] in
+          the report of one executable. *)
+  previous : scored;  (** The class of the previous verdict. *)
+  verdict : scored;  (** The class of the verdict of this run. *)
+}
+(** The type for a mutant whose verdict changed its class since the previous
+    run, on the same source. *)
+
 (** The type for what the reached count of a report is relative to. The outcome
     line names it. *)
 type scope =
@@ -438,6 +452,9 @@ type mutation = {
   not_evaluated : not_evaluated list;
       (** Every reached mutant whose child did not evaluate its site, in the
           order in which it prints. *)
+  unstable : unstable list;
+      (** Every mutant whose verdict changed its class, in the order in which it
+          prints. It changes no count and not the score. *)
   unreached : (string * int) list;
       (** The file and the one-based line of each mutant that no test evaluated,
           one pair per mutant, except those of [outside_tests]. *)
@@ -501,6 +518,11 @@ val mutation_closing : config:Run.config -> mutation -> section list
       [failed] is [Some _]. Then comes the [arm:] command. It runs its
       [invocation] with [--arm] and the selection of [config], as the
       [reproduce:] command that follows does.
+    - when [m.unstable] is not empty, the unstable section, between an opening
+      rule that carries their number and a closing rule. It says in one line
+      that the source did not change and the verdict did. Then it gives one row
+      for each mutant: its identifier, then its previous verdict, an arrow and
+      its verdict.
     - when [m.unreached] is not empty, the never-reached section, between an
       opening rule that carries the number of mutants and a closing rule.
     - when [m.outside_tests] is not empty, the section of the mutants evaluated
@@ -526,8 +548,9 @@ val mutation_report :
     one {!survivor_block} per survivor, between an opening rule that carries
     their number and a closing rule. The executables of all blocks form one
     column, which is absent when no reaching test names an executable. The
-    not-evaluated section, the never-reached section, the section of the mutants
-    evaluated outside tests, the filtered section, the [reproduce:] command and
-    the outcome line follow, as {!mutation_closing} builds them for a run that
-    selects every test, but the outcome line is {!mutation_line} under the gate
-    [min]. *)
+    not-evaluated section, the unstable section, the never-reached section, the
+    section of the mutants evaluated outside tests, the filtered section, the
+    [reproduce:] command and the outcome line follow, as {!mutation_closing}
+    builds them for a run that selects every test, but the outcome line is
+    {!mutation_line} under the gate [min]. The executable of each row of the
+    unstable section comes first, in a column, when a row names one. *)

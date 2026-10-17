@@ -58,6 +58,9 @@ what is non-obvious.
   `scoped_main.exe` links `subject.ml` too. Each planted verdict file
   gets a stand-in executable in the scratch build directory, because the
   loop does not use an orphan file.
+  The scenarios of unstable verdicts run the loop two times over one
+  verdict file. A fixture flag or a rewrite of the file changes the
+  verdict, so no scenario depends on the speed of the host.
   `pty_stubs.c` opens a
   pseudo-terminal, which `Unix` does not do: the loop draws its live
   line only when its standard output is a terminal.
