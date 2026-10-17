@@ -15,15 +15,17 @@
 open Windtrap
 module Mutate = Windtrap_runtime.Mutate
 module Verdicts = Windtrap_runtime.Verdicts
+module Instr = Windtrap_runtime.Instr
 module Child = Windtrap_test_support.Child
 
 let strf = Printf.sprintf
-let exe_dir = Filename.dirname Windtrap_runtime.Instr.executable
+let exe_dir = Filename.dirname Instr.executable
 let suite_exe = Filename.concat exe_dir "suite_main.exe"
 let plain_exe = Filename.concat exe_dir "plain_main.exe"
 let runaway_exe = Filename.concat exe_dir "runaway/runaway_main.exe"
 let inline_exe = Filename.concat exe_dir "inline/runner_main.exe"
 let scoped_exe = Filename.concat exe_dir "scoped/scoped_main.exe"
+let partitions_exe = Filename.concat exe_dir "partitions/partitions_main.exe"
 
 (* Under --instrument-with the fixtures link an instrumented core, so every
    loop scenario passes this directory as its scope: the counts below are
@@ -34,6 +36,8 @@ let mutate_mirror = ("WINDTRAP_MUTATE", scope)
 let jobs n = strf "--mutate-jobs=%d" n
 let suite name = ("MUTATE_FIXTURE", name)
 let exec_children = ("WINDTRAP_MUTATE_CHILDREN", "exec")
+let flagged = suite "flagged"
+let weak = ("MUTATE_WEAK", "1")
 
 (* Under --instrument-with this executable's core catalogues its mutants,
    and so does plain_main's. *)
@@ -149,11 +153,38 @@ let previous_rows r = Option.map (fun (f : file) -> f.previous) r.file
    any machine. *)
 let quiet env = ("WINDTRAP_SLOW_THRESHOLD", "0") :: env
 
-(* The executable's verdict file is removed first, so a stale file cannot
-   pass a test the loop failed to write. *)
-let spawn ?(exe = suite_exe) ?cwd ?(env = []) args =
-  let path = Verdicts.output_file ~exe in
-  remove path;
+(* The suite that a fixture executable runs, unless a scenario names one. *)
+let suite_of exe =
+  if exe = inline_exe then "inline_armed"
+  else if exe = runaway_exe then "spin"
+  else if exe = scoped_exe then "scoped"
+  else if exe = plain_exe then "plain"
+  else "calc"
+
+(* The verdict file of the suite [suite] of the executable [exe]. *)
+let verdict_path ?suite exe =
+  let suite = Option.value suite ~default:(suite_of exe) in
+  Verdicts.output_file ~exe ~suite
+
+(* The verdict files of every suite of [exe] in its data directory, sorted. *)
+let suite_files exe =
+  let stem = Instr.output_dir Verdicts.format ~exe in
+  let dir = Filename.dirname stem and prefix = Filename.basename stem ^ "-" in
+  if not (Sys.file_exists dir && Sys.is_directory dir) then []
+  else
+    entries dir
+    |> List.filter (fun name ->
+        String.starts_with ~prefix name
+        && String.ends_with ~suffix:".mutants" name)
+    |> List.map (Filename.concat dir)
+
+let remove_suite_files exe = List.iter remove (suite_files exe)
+
+(* The verdict files of the executable are removed first, so a stale file
+   cannot pass a test the loop failed to write. *)
+let spawn ?(exe = suite_exe) ?suite ?cwd ?(env = []) args =
+  remove_suite_files exe;
+  let path = verdict_path ?suite exe in
   let r = Child.run ?cwd ~env:(quiet env) exe args in
   {
     status = ended r.Child.status;
@@ -168,11 +199,12 @@ let spawn ?(exe = suite_exe) ?cwd ?(env = []) args =
 type started = {
   pid : int;
   writer : string;
+  verdict_file : string;
   out_path : string;
   err_path : string;
 }
 
-let start ?(exe = suite_exe) ?(writer = suite_exe) ?stdout ~env args =
+let start ?(exe = suite_exe) ?(writer = suite_exe) ?suite ?stdout ~env args =
   let dir = temp_dir () in
   let out_path = Filename.concat dir "out"
   and err_path = Filename.concat dir "err" in
@@ -193,7 +225,7 @@ let start ?(exe = suite_exe) ?(writer = suite_exe) ?stdout ~env args =
           (Option.value stdout ~default:out)
           err)
   in
-  { pid; writer; out_path; err_path }
+  { pid; writer; verdict_file = verdict_path ?suite writer; out_path; err_path }
 
 let finish started =
   let _, status = Unix.waitpid [] started.pid in
@@ -201,7 +233,7 @@ let finish started =
     status = ended status;
     out = read started.out_path;
     err = read started.err_path;
-    file = saved (Verdicts.output_file ~exe:started.writer);
+    file = saved started.verdict_file;
   }
 
 (* A process this suite started must not outlive it: a file that never
@@ -273,7 +305,7 @@ let finish_within ?(seconds = 10.) ?(meanwhile = ignore) ~what started =
         status = ended status;
         out = read started.out_path;
         err = read started.err_path;
-        file = saved (Verdicts.output_file ~exe:started.writer);
+        file = saved started.verdict_file;
       }
   | None ->
       (try Unix.kill started.pid Sys.sigterm with Unix.Unix_error _ -> ());
@@ -453,13 +485,13 @@ let site_id line =
 let site line = Mutate.id_to_string (site_id line)
 
 (* A run over the verdict file that an earlier run left. *)
-let rerun ?(env = []) args =
+let rerun ?suite ?(env = []) args =
   let r = Child.run ~env:(quiet env) suite_exe args in
   {
     status = ended r.Child.status;
     out = r.Child.out;
     err = r.Child.err;
-    file = saved (Verdicts.output_file ~exe:suite_exe);
+    file = saved (verdict_path ?suite suite_exe);
   }
 
 (* A line of the rule kind: dashes alone. *)
@@ -472,20 +504,24 @@ let is_rule line =
 
 (* The lines of the section [title] of a report, between its opening rule
    and its closing rule. It is [None] when the report has none. *)
-let section ~title out =
+let sections ~title out =
   let opening = strf "\u{2500}\u{2500} %s (" title in
-  let rec opened = function
-    | [] -> None
-    | line :: rest ->
-        if Option.is_some (index_of ~sub:opening line) then Some rest
-        else opened rest
-  in
   let rec until acc = function
-    | [] -> List.rev acc
-    | line :: _ when is_rule line -> List.rev acc
+    | [] -> (List.rev acc, [])
+    | line :: _ as rest when is_rule line -> (List.rev acc, rest)
     | line :: rest -> until (line :: acc) rest
   in
-  Option.map (until []) (opened (lines out))
+  let rec scan = function
+    | [] -> []
+    | line :: rest when Option.is_some (index_of ~sub:opening line) ->
+        let body, after = until [] rest in
+        body :: scan after
+    | _ :: rest -> scan rest
+  in
+  scan (lines out)
+
+let section ~title out =
+  match sections ~title out with [] -> None | first :: _ -> Some first
 
 let unstable = section ~title:"unstable"
 let flaky_lines = section ~title:"flaky"
@@ -1162,7 +1198,7 @@ type blocked = { run : ran; grandchildren : int list; elapsed : float }
 let blocked =
   lazy
     (let pidfile = Filename.concat (temp_dir ()) "grandchild" in
-     remove (Verdicts.output_file ~exe:suite_exe);
+     remove (verdict_path suite_exe);
      let began = Unix.gettimeofday () in
      let run =
        finish_within ~what:"the blocked child's deadline"
@@ -1216,7 +1252,7 @@ let high_water pid =
    kept all that it read used more than 700 MB, and with 64 KiB of it, 8
    MB. *)
 let flooded () =
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   let run = start ~env:[ suite "flood" ] [ mutate ] in
   let peak = ref 0 in
   let r =
@@ -1337,7 +1373,7 @@ let one_cpu () =
   in
   if pinned.status <> "exited 0" then
     skip ~reason:"taskset cannot hold a process to CPU 0" ();
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   taskset
 
 (* Under [taskset -c 0,1] the loop sees two CPUs, on a host that has two
@@ -1355,7 +1391,7 @@ let two_cpus () =
   in
   if pinned.status <> "exited 0" then
     skip ~reason:"taskset cannot hold a process to CPUs 0 and 1" ();
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   taskset
 
 (* [hung] reaches two mutants, so on one CPU 16 jobs give two children,
@@ -1780,7 +1816,7 @@ let written () =
    would call [widen] unreached over the whole run's survivor. *)
 let narrowed () =
   let whole = require_some (Lazy.force green).file in
-  let path = Verdicts.output_file ~exe:suite_exe in
+  let path = verdict_path suite_exe in
   write path whole.raw;
   let r = Child.run ~env:(quiet []) suite_exe [ mutate; "-f"; "calc" ] in
   equal string "exited 0" (ended r.Child.status);
@@ -1806,7 +1842,7 @@ let elsewhere =
   }
 
 let rerun_over_ran ?identity ?suite collection =
-  let path = Verdicts.output_file ~exe:suite_exe in
+  let path = verdict_path suite_exe in
   Verdicts.save ?identity ?suite path (Verdicts.add collection elsewhere);
   let r = rerun [ mutate ] in
   equal string "exited 0" r.status;
@@ -1818,7 +1854,7 @@ let rerun_over ?identity ?suite collection =
 
 let kept_by_build () =
   let whole = require_some (Lazy.force green).file in
-  let path = Verdicts.output_file ~exe:suite_exe in
+  let path = verdict_path suite_exe in
   write path whole.raw;
   let collection, identity, suite =
     require_ok ~pp:Verdicts.pp_error (Verdicts.load path)
@@ -1846,7 +1882,11 @@ let kept_by_build () =
     (option (list string))
     (Some green_rows)
     (rerun_over ?identity:other_build ?suite collection);
-  equal (option (list string)) (Some green_rows) (rerun_over ?suite collection)
+  equal (option (list string)) (Some green_rows) (rerun_over ?suite collection);
+  equal
+    (option (list string))
+    (Some green_rows)
+    (rerun_over ?identity ~suite:"first" collection)
 
 let failed_run () =
   let log = temp_dir () in
@@ -1931,12 +1971,14 @@ let killers path =
         (Verdicts.records t)
 
 (* The verdict file of [suite_main.exe] with [change] applied to each
-   record, written by the same suite and, without [digest], the same build. *)
-let rewrite ?digest change =
-  let path = Verdicts.output_file ~exe:suite_exe in
+   record, written by the same suite and, without [digest], the same build.
+   With [suite], the file records that suite in place of its own. *)
+let rewrite ?digest ?suite:renamed change =
+  let path = verdict_path suite_exe in
   let t, identity, suite =
     require_ok ~pp:Verdicts.pp_error (Verdicts.load path)
   in
+  let suite = match renamed with None -> suite | Some _ -> renamed in
   let identity =
     match digest with
     | None -> identity
@@ -1967,7 +2009,7 @@ let ordered_outcome =
 let pinned_by = "subject.ml:15 ordered \u{203a} pins sub"
 
 let first_tests_with env () =
-  let path = Verdicts.output_file ~exe:suite_exe in
+  let path = verdict_path suite_exe in
   remove path;
   equal
     (pair string (list string))
@@ -1983,7 +2025,7 @@ let first_tests_with env () =
 let first_tests = first_tests_with []
 
 let changed_source () =
-  let path = Verdicts.output_file ~exe:suite_exe in
+  let path = verdict_path suite_exe in
   remove path;
   ignore (ordered_run ());
   rewrite (fun r -> { r with source_digest = Some (String.make 32 '0') });
@@ -1994,7 +2036,7 @@ let changed_source () =
   equal (list string) [ pinned_by ] (killers path)
 
 let flaky_record () =
-  let path = Verdicts.output_file ~exe:suite_exe in
+  let path = verdict_path suite_exe in
   remove path;
   ignore (ordered_run ());
   rewrite (fun r ->
@@ -2021,7 +2063,7 @@ let killed_by test (r : Verdicts.record) =
       r
 
 let first_test_passes () =
-  let path = Verdicts.output_file ~exe:suite_exe in
+  let path = verdict_path suite_exe in
   remove path;
   ignore (ordered_run ());
   rewrite (killed_by [ "ordered"; "watches sub again without pinning it" ]);
@@ -2033,7 +2075,7 @@ let first_test_passes () =
 
 (* The killing test was renamed: no test of the suite has its path. *)
 let renamed_killer () =
-  let path = Verdicts.output_file ~exe:suite_exe in
+  let path = verdict_path suite_exe in
   remove path;
   ignore (ordered_run ());
   rewrite (killed_by [ "ordered"; "pinned sub" ]);
@@ -2044,7 +2086,7 @@ let renamed_killer () =
   equal (list string) [ pinned_by ] (killers path)
 
 let not_evaluated_first () =
-  let path = Verdicts.output_file ~exe:suite_exe in
+  let path = verdict_path suite_exe in
   let primed = ordered_run ~fixture:"primed" in
   let pinned = "subject.ml:18 primed \u{203a} pins widen once primed" in
   remove path;
@@ -2063,7 +2105,7 @@ let not_evaluated_first () =
    run pins [sub] no more, and only a full child, which runs the first test
    before it, gives the verdict. *)
 let failing_alone () =
-  let path = Verdicts.output_file ~exe:suite_exe in
+  let path = verdict_path suite_exe in
   let flagged = ordered_run ~fixture:"flagged" in
   remove path;
   equal
@@ -2083,7 +2125,7 @@ let failing_alone () =
 (* A verdict file that does not load: [damage] gives its contents from those
    of a file that loads. *)
 let unloadable damage () =
-  let path = Verdicts.output_file ~exe:suite_exe in
+  let path = verdict_path suite_exe in
   remove path;
   ignore (ordered_run ());
   write path (damage (read path));
@@ -2099,6 +2141,17 @@ let unloadable damage () =
     (option (list string))
     (Some none_rows)
     (Option.map (fun (f : file) -> f.previous) (saved path))
+
+let other_suite_history () =
+  let path = verdict_path suite_exe in
+  remove_suite_files suite_exe;
+  ignore (ordered_run ());
+  rewrite ~suite:"other" Fun.id;
+  equal
+    (pair string (list string))
+    (ordered_outcome, [ "watches"; "pins" ])
+    (ordered_run ());
+  equal (list string) [ pinned_by ] (killers path)
 
 let history =
   group "History"
@@ -2127,21 +2180,110 @@ let history =
         "a first test that fails alone with no mutant gets no first child, and \
          every reaching test runs"
         failing_alone;
+      test
+        "a verdict file at the path of the suite that records another suite \
+         gives no history"
+        other_suite_history;
       cases
         "a verdict file that does not load gives no history, and the run \
          replaces it"
         ~name:fst
         [
           ("a file of 0.2.0", fun _ -> "windtrap-mutants-v3\n");
-          ("a file of the previous format", fun _ -> "windtrap-mutants-v8\n0\n");
+          ("a file of the previous format", fun _ -> "windtrap-mutants-v9\n0\n");
           ("bytes after the last record", fun raw -> raw ^ "junk\n");
         ]
         (fun (_, damage) -> unloadable damage ());
     ]
 
+let recorded_suite path =
+  match Verdicts.load path with Ok (_, _, suite) -> suite | Error _ -> None
+
+(* The rows of a suite that kills [sub] alone. *)
+let first_rows =
+  [
+    "subject.ml:15 killed";
+    "subject.ml:18 unreached";
+    "subject.ml:21 unreached";
+    "subject.ml:27 unreached";
+    "subject.ml:38 filtered: zero operand";
+  ]
+
+let two_reach_rows =
+  [
+    "subject.ml:15 survived by flagged \u{203a} needs the flag, flagged \
+     \u{203a} raises the flag";
+    "subject.ml:18 unreached";
+    "subject.ml:21 unreached";
+    "subject.ml:27 unreached";
+    "subject.ml:38 filtered: zero operand";
+  ]
+
+let one_file_for_each_suite () =
+  let r = spawn ~env:[ suite "two_reach"; weak ] [ mutate ] in
+  let first = verdict_path ~suite:"first" suite_exe
+  and calc = verdict_path ~suite:"calc" suite_exe in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal (list string)
+    (List.sort String.compare [ first; calc ])
+    (suite_files suite_exe);
+  equal (option string) (Some "first") (recorded_suite first);
+  equal (option string) (Some "calc") (recorded_suite calc);
+  equal
+    (option (list string))
+    (Some first_rows)
+    (Option.map (fun (f : file) -> f.rows) (saved first));
+  equal
+    (option (list string))
+    (Some two_reach_rows)
+    (Option.map (fun (f : file) -> f.rows) (saved calc));
+  equal bool false
+    (Sys.file_exists (Instr.output_file Verdicts.format ~exe:suite_exe))
+
+(* A file at the name of the earlier version is not read, and no run
+   replaces it. *)
+let earlier_name () =
+  let first = spawn [ mutate ] in
+  equal (pair string text) ("exited 0", "") (first.status, first.err);
+  let calc = verdict_path suite_exe
+  and old = Instr.output_file Verdicts.format ~exe:suite_exe in
+  let t, identity, suite =
+    require_ok ~pp:Verdicts.pp_error (Verdicts.load calc)
+  in
+  let changed =
+    List.fold_left
+      (fun t (r : Verdicts.record) ->
+        Verdicts.add t
+          (if r.id.line = 15 then
+             {
+               r with
+               verdict =
+                 Verdicts.survived [ [ "calc"; "sub of two positives" ] ];
+             }
+           else r))
+      Verdicts.empty (Verdicts.records t)
+  in
+  Fun.protect
+    ~finally:(fun () -> remove old)
+    (fun () ->
+      Verdicts.save ?identity ?suite old changed;
+      let planted = read old in
+      remove calc;
+      let r = rerun [ mutate ] in
+      equal (pair string text) ("exited 0", "") (r.status, r.err);
+      equal (option (list string)) None (unstable r.out);
+      equal (option (list string)) (Some none_rows) (previous_rows r);
+      equal text planted (read old))
+
 let verdict_file =
   group "The verdict file"
     [
+      test "a main with two suites writes one verdict file for each suite"
+        one_file_for_each_suite;
+      test
+        "a verdict file at the name of the earlier version is not read and not \
+         replaced"
+        earlier_name;
       test "a scope records the filtered mutants of its files alone"
         filtered_in_scope;
       test
@@ -3060,7 +3202,7 @@ let streamed () =
   let dir = temp_dir () in
   let began = Filename.concat dir "began"
   and gate = Filename.concat dir "gate" in
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   let run =
     start
       ~env:[ suite "held"; ("MUTATE_STARTED", began); ("MUTATE_GATE", gate) ]
@@ -3083,7 +3225,7 @@ let streamed_with_jobs () =
   let dir = temp_dir () in
   let began = Filename.concat dir "began"
   and gate = Filename.concat dir "gate" in
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   let run =
     start
       ~env:[ suite "held"; ("MUTATE_STARTED", began); ("MUTATE_GATE", gate) ]
@@ -3285,7 +3427,7 @@ let nothing_left () = nothing_left_with ~per_child:1 ()
    loop wrote. *)
 let stalled_report ?(fixture = "stalled") ?(widen_ends = true) meanwhile =
   let gates = temp_dir () and tmpdir = temp_dir () in
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   let reader, writer = Unix.pipe ~cloexec:true () in
   let run =
     start ~stdout:writer
@@ -3332,7 +3474,7 @@ let past_deadline () =
    [widen] waits at its gate. *)
 let abandoned () =
   let gates = temp_dir () and tmpdir = temp_dir () in
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   let reader, writer = Unix.pipe ~cloexec:true () in
   let run =
     start ~exe:"/bin/sh" ~stdout:writer
@@ -3419,7 +3561,7 @@ let live_lines meanwhile =
   let seen = Buffer.create 4096 in
   let master, slave = openpty () in
   Unix.set_nonblock master;
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   let run =
     Fun.protect
       ~finally:(fun () -> Unix.close slave)
@@ -3541,7 +3683,7 @@ let held_at_the_gate ?exe ?(args = [ mutate ]) name =
   let dir = temp_dir () and tmpdir = temp_dir () in
   let began = Filename.concat dir "began"
   and gate = Filename.concat dir "gate" in
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   let reader, writer = Unix.pipe ~cloexec:true () in
   let run =
     start ?exe ~stdout:writer
@@ -3608,7 +3750,7 @@ let late_interrupt () =
   fill writer;
   Unix.close writer;
   open_gate ();
-  let path = Verdicts.output_file ~exe:suite_exe in
+  let path = verdict_path suite_exe in
   await ~what:"the verdict file" run path;
   Unix.sleepf 0.2;
   Unix.kill run.pid Sys.sigint;
@@ -3625,8 +3767,8 @@ let interrupted_by ?(exe = suite_exe) ?(args = [ mutate ]) ?(env = []) ?planted
     signal =
   let pidfile = Filename.concat (temp_dir ()) "hanging"
   and tmpdir = temp_dir () in
-  remove (Verdicts.output_file ~exe);
-  Option.iter (write (Verdicts.output_file ~exe)) planted;
+  remove_suite_files exe;
+  Option.iter (write (verdict_path exe)) planted;
   let run =
     start ~exe ~writer:exe
       ~env:
@@ -3698,7 +3840,7 @@ let probe_interrupted () =
    the loop in the window between its last child and its handlers'
    restoration (see suite_main.ml). *)
 let after_last_child () =
-  let path = Verdicts.output_file ~exe:suite_exe in
+  let path = verdict_path suite_exe in
   remove path;
   Unix.mkfifo path 0o600;
   let tmpdir = temp_dir () in
@@ -3728,7 +3870,7 @@ let after_last_child () =
 let two_interrupted () =
   let pidfile = Filename.concat (temp_dir ()) "hanging"
   and tmpdir = temp_dir () in
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   let run =
     start
       ~env:
@@ -3760,7 +3902,7 @@ let two_interrupted () =
 (* [gap]'s first child hangs, and its second survives and ends. *)
 let over_the_gap () =
   let ended = Filename.concat (temp_dir ()) "ended" and tmpdir = temp_dir () in
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   let run =
     start
       ~env:[ suite "gap"; ("MUTATE_ENDED", ended); ("TMPDIR", tmpdir) ]
@@ -3792,7 +3934,7 @@ let stopped_in_two_waits () =
     skip ~reason:"the system does not show the descriptors of a process" ();
   let closed = Filename.concat (temp_dir ()) "closed"
   and tmpdir = temp_dir () in
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   let run =
     start
       ~env:[ suite "closing"; ("MUTATE_CLOSED", closed); ("TMPDIR", tmpdir) ]
@@ -3865,7 +4007,7 @@ let before_next () =
    that the first child killed nothing, so no child runs and the full child
    of [widen] remains. *)
 let before_full_child () =
-  let path = Verdicts.output_file ~exe:suite_exe in
+  let path = verdict_path suite_exe in
   remove path;
   ignore (spawn ~env:[ suite "retried" ] [ mutate ]);
   rewrite (fun r ->
@@ -4455,7 +4597,7 @@ let exec_group =
           equal string green_outcome (outcome r.out));
       test "a signal stops the startup child" (fun () ->
           let tmpdir = temp_dir () in
-          remove (Verdicts.output_file ~exe:suite_exe);
+          remove (verdict_path suite_exe);
           let run =
             start
               ~env:
@@ -4506,15 +4648,14 @@ let exec_group =
         "in exec mode, reaching tests that need an earlier test run after the \
          tests of the dry run before them" (fun () ->
           let fork = spawn ~env:[ suite "order" ] [ mutate ] in
-          let fork_killers = killers (Verdicts.output_file ~exe:suite_exe) in
+          let fork_killers = killers (verdict_path suite_exe) in
           let exec = spawn ~env:[ exec_children; suite "order" ] [ mutate ] in
           equal seen_witness (seen fork) (seen (without_exec_line exec));
           equal (list string) [ site 18 ] (survivors exec.out);
           equal (list string)
             [ "subject.ml:15 order \u{203a} needs the state and pins sub" ]
-            (killers (Verdicts.output_file ~exe:suite_exe));
-          equal (list string) fork_killers
-            (killers (Verdicts.output_file ~exe:suite_exe)));
+            (killers (verdict_path suite_exe));
+          equal (list string) fork_killers (killers (verdict_path suite_exe)));
       test
         "a suite that spawns a domain and whose tests need earlier tests gets \
          the verdicts of a fork, with one job and with four" (fun () ->
@@ -4534,7 +4675,7 @@ let exec_group =
       test
         "in exec mode, a test before the last reaching test can kill the \
          mutant, and the verdict names it, also in the next run" (fun () ->
-          let path = Verdicts.output_file ~exe:suite_exe in
+          let path = verdict_path suite_exe in
           let fork = spawn ~env:[ suite "order_kill" ] [ mutate ] in
           equal (list string) [ site 15 ] (survivors fork.out);
           let killed_by_reader =
@@ -4553,7 +4694,7 @@ let exec_group =
       test
         "in exec mode, a test marked xfail does not stop the child before the \
          reaching tests after it" (fun () ->
-          let path = Verdicts.output_file ~exe:suite_exe in
+          let path = verdict_path suite_exe in
           let pinned =
             [ "subject.ml:15 order \u{203a} needs the state and pins sub" ]
           in
@@ -4657,40 +4798,46 @@ let other_record ?source_digest id verdict =
   }
 
 (* The verdict file [name] of the executable [exe], with a stand-in
-   executable. The digest of the file is not the digest of the stand-in, so
-   the file is stale, but it is not an orphan. A [digest] replaces the source
+   executable. The file records the digest of the stand-in, so it is fresh,
+   unless [writer] gives another digest. A [digest] replaces the source
    digest of each record, and [records] adds whole records. *)
 let plant_other ?(exe = "default/other.exe") ?(orphan = false) ?(named = true)
-    ?digest ?(records = []) p name verdicts =
+    ?suite ?writer ?digest ?(records = []) p name verdicts =
   let source_digest =
     match digest with None -> p.digest | Some digest -> digest
   in
-  let identity =
-    if named then Some { Verdicts.exe; digest = String.make 32 'f' } else None
+  let build = Filename.dirname p.data in
+  let stand_in = Filename.concat build exe in
+  if named && (not orphan) && not (Sys.file_exists stand_in) then begin
+    ignore (directory build (Filename.dirname exe));
+    write stand_in "an executable\n"
+  end;
+  let writer =
+    match writer with
+    | Some writer -> writer
+    | None ->
+        Option.value (Instr.file_digest stand_in) ~default:(String.make 32 'f')
   in
-  Verdicts.save ?identity
+  let identity =
+    if named then Some { Verdicts.exe; digest = writer } else None
+  in
+  Verdicts.save ?identity ?suite
     (Filename.concat p.data name)
     (List.fold_left Verdicts.add Verdicts.empty
        (List.map
           (fun (line, verdict) ->
             other_record ?source_digest (site_id line) verdict)
           verdicts
-       @ records));
-  let build = Filename.dirname p.data in
-  let stand_in = Filename.concat build exe in
-  if named && (not orphan) && not (Sys.file_exists stand_in) then begin
-    ignore (directory build (Filename.dirname exe));
-    write stand_in "an executable\n"
-  end
+       @ records))
 
 let killed_by_pins = Verdicts.Killed { by = Some [ "ordered"; "pins sub" ] }
 
 (* A run of the copy in the root of its project, with the words that the
-   children of [ordered] wrote. It removes the verdict file of the copy first,
-   unless [keep]. *)
+   children of [ordered] wrote. It removes the verdict file of the suite
+   [calc] of the copy first, unless [keep], and leaves the other files. *)
 let skip_run ?(fixture = "ordered") ?(env = []) ?(keep = false)
     ?(prefix = [ mutate ]) p args =
-  let own = Verdicts.output_file ~exe:p.exe in
+  let own = verdict_path p.exe in
   if not keep then remove own;
   let ran = Filename.concat (temp_dir ()) "ran" in
   let r =
@@ -4753,7 +4900,7 @@ let plant_old p =
 let old_warning p =
   strf
     "windtrap: warning: --mutate-skip-killed ignores %s/%s: not a windtrap \
-     verdict file (expected header \"windtrap-mutants-v9\", found \
+     verdict file (expected header \"windtrap-mutants-v10\", found \
      \"windtrap-mutants-v6\"); files written by other windtrap versions are \
      not readable - delete the stale verdict files, then re-run the mutation \
      tests\n"
@@ -4971,6 +5118,8 @@ let orphan_file () =
       longer exists\n")
     r.err;
   write (Filename.concat p.root "_build/default/gone.exe") "an executable\n";
+  plant_other ~exe:"default/gone.exe" p "windtrap-gone.mutants"
+    [ (15, Verdicts.Killed { by = None }) ];
   let r, words = skip_run p [ skip_killed ] in
   equal (list string) [] words;
   equal text "" r.err;
@@ -4978,11 +5127,34 @@ let orphan_file () =
     (Some (one_skip "default/gone.exe"))
     (elsewhere_line r.out)
 
+(* A loop that read the executable to judge the file would block. *)
+let fifo_executable () =
+  let p = skip_project () in
+  plant_other ~exe:"default/fifo.exe" ~orphan:true p "windtrap-fifo.mutants"
+    [ (15, Verdicts.Killed { by = None }) ];
+  Unix.mkfifo (Filename.concat p.root "_build/default/fifo.exe") 0o644;
+  remove (verdict_path p.exe);
+  let run =
+    start ~exe:p.exe ~writer:p.exe
+      ~env:[ suite "ordered"; ("TMPDIR", temp_dir ()) ]
+      [ mutate; skip_killed ]
+  in
+  let r =
+    finish_within ~seconds:30. ~what:"a verdict file of a FIFO executable" run
+  in
+  equal string "exited 0" r.status;
+  equal (option string) (Some no_file) (elsewhere_line r.out);
+  equal text
+    ("windtrap: warning: --mutate-skip-killed ignores " ^ p.data
+   ^ "/windtrap-fifo.mutants: its executable (_build/default/fifo.exe) is not \
+      a regular file\n")
+    r.err
+
 (* A loop that opened the FIFO would block. *)
 let fifo () =
   let p = skip_project () in
   Unix.mkfifo (Filename.concat p.data "windtrap-fifo.mutants") 0o644;
-  remove (Verdicts.output_file ~exe:p.exe);
+  remove (verdict_path p.exe);
   let run =
     start ~exe:p.exe ~writer:p.exe
       ~env:[ suite "ordered"; ("TMPDIR", temp_dir ()) ]
@@ -5101,7 +5273,7 @@ let share_of_the_skip () =
   let p = skip_project () in
   plant_other p "windtrap-other.mutants" [ (15, Verdicts.Killed { by = None }) ];
   let hung n =
-    remove (Verdicts.output_file ~exe:p.exe);
+    remove (verdict_path p.exe);
     let stamp = Filename.concat (temp_dir ()) "stamp" in
     let r =
       Child.run ~cwd:p.root
@@ -5149,9 +5321,95 @@ let interrupted_skip () =
   equal (list string) [] left;
   equal (list string) [ "gone" ] grandchildren
 
+let killed_elsewhere_lines out =
+  List.filter (String.starts_with ~prefix:"killed elsewhere: ") (lines out)
+
+(* The mutant of [sub] that the first suite of the process killed gets no
+   child in the second suite. The record names the executable, which is the
+   executable of the run. *)
+let sibling_suite_run () =
+  let p = skip_project () in
+  let me = "default/suite_main.exe" in
+  let r, words =
+    skip_run ~fixture:"two_reach" ~env:[ weak ] p [ skip_killed ]
+  in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal (list string) [] words;
+  equal (list string) [ no_file; one_skip me ] (killed_elsewhere_lines r.out);
+  equal
+    (option (list string))
+    (Some [ "subject.ml:15 killed" ])
+    (Option.map
+       (fun (f : file) ->
+         List.filter (String.starts_with ~prefix:"subject.ml:15 ") f.rows)
+       (saved (verdict_path ~suite:"first" p.exe)));
+  equal (option (list string)) (Some (skipped_rows me)) (rows r);
+  equal string skipped_outcome (outcome r.out);
+  p
+
+(* Two suites that skip one mutant because of each other do not: the record
+   of a skip never skips. *)
+let sibling_suites_do_not_chain () =
+  let p = sibling_suite_run () in
+  let me = "default/suite_main.exe" in
+  let r, _ =
+    skip_run ~fixture:"two_reach" ~env:[ weak ] ~keep:true p [ skip_killed ]
+  in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal (list string) [ no_skip me; one_skip me ] (killed_elsewhere_lines r.out);
+  equal
+    (option (list string))
+    (Some [ "subject.ml:15 killed" ])
+    (Option.map
+       (fun (f : file) ->
+         List.filter (String.starts_with ~prefix:"subject.ml:15 ") f.rows)
+       (saved (verdict_path ~suite:"first" p.exe)));
+  equal (option (list string)) (Some (skipped_rows me)) (rows r)
+
+(* A file of another build gives no skip and no warning, for the executable
+   of the run and for another one. Fresh, the same file skips. *)
+let stale_files =
+  let kill = [ (15, killed_by_pins) ] in
+  [
+    ( "of this executable, a suite that no longer runs",
+      "default/suite_main.exe",
+      fun writer p ->
+        plant_other ~exe:"default/suite_main.exe" ~suite:"renamed" ?writer p
+          (Filename.basename (verdict_path ~suite:"renamed" p.exe))
+          kill );
+    ( "of another executable",
+      "default/other.exe",
+      fun writer p -> plant_other ?writer p "windtrap-other.mutants" kill );
+  ]
+
+let another_build (_, killer, plant) =
+  let p = skip_project () in
+  plant (Some (String.make 32 'f')) p;
+  let r, words = skip_run p [ skip_killed ] in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal (list string) [ "watches"; "pins" ] words;
+  equal (option (list string)) (Some ordered_rows) (rows r);
+  equal (option string) (Some no_file) (elsewhere_line r.out);
+  plant None p;
+  let r, words = skip_run p [ skip_killed ] in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal (list string) [] words;
+  equal (option string) (Some (one_skip killer)) (elsewhere_line r.out);
+  equal (option (list string)) (Some (skipped_rows killer)) (rows r)
+
 let killed_elsewhere =
   group "Killed elsewhere"
     [
+      test
+        "a mutant that another suite of the same executable killed gets no \
+         child, and the record names this executable" (fun () ->
+          ignore (sibling_suite_run ()));
+      test
+        "two suites of one process do not skip one mutant because of each other"
+        sibling_suites_do_not_chain;
+      cases "a verdict file of another build gives no skip and no warning"
+        ~name:(fun (name, _, _) -> name)
+        stale_files another_build;
       test
         "a mutant that the verdict file of another executable killed gets no \
          child, and the run records and counts it"
@@ -5176,6 +5434,10 @@ let killed_elsewhere =
         ignored_files;
       test "a file whose executable no longer exists is not used" orphan_file;
       test ~timeout:60. "a FIFO in the data directory is not opened" fifo;
+      test ~timeout:60.
+        "a file whose executable is a FIFO is not used, and the FIFO is not \
+         opened"
+        fifo_executable;
       test "only the reached mutants of the scope are skipped" scope_of_the_skip;
       test "--mutate-since keeps its scope under the option" skipped_since;
       cases "fork and exec give one answer" ~name:Fun.id [ "fork"; "exec" ]
@@ -5192,10 +5454,6 @@ let killed_elsewhere =
     ]
 
 (* Unstable verdicts *)
-
-let verdict_path () = Verdicts.output_file ~exe:suite_exe
-let flagged = suite "flagged"
-let weak = ("MUTATE_WEAK", "1")
 
 let weak_outcome =
   "mutants: 1 survived of 1 reached by this suite, 3 never reached, 1 \
@@ -5222,7 +5480,7 @@ let at_line line verdict (r : Verdicts.record) =
    file keeps the old verdict. The third run is the same. The fourth run kills
    again. *)
 let changed_verdict () =
-  remove (verdict_path ());
+  remove (verdict_path suite_exe);
   let r1 = rerun ~env:[ flagged ] [ mutate ] in
   whole ~outcome_line:ordered_outcome r1;
   equal (option (list string)) None (unstable r1.out);
@@ -5266,7 +5524,7 @@ let changed_verdict () =
     (unstable r4.out)
 
 let unchanged_verdict () =
-  remove (verdict_path ());
+  remove (verdict_path suite_exe);
   whole (rerun [ mutate ]);
   let r = rerun [ mutate ] in
   whole r;
@@ -5276,7 +5534,7 @@ let unchanged_verdict () =
 (* The verdict of [sub] changes between the two runs, but the source digest
    of the file in between is not the digest of the run. *)
 let new_source () =
-  remove (verdict_path ());
+  remove (verdict_path suite_exe);
   ignore (rerun ~env:[ flagged ] [ mutate ]);
   rewrite (fun r -> { r with source_digest = Some (String.make 32 '0') });
   let r = rerun ~env:[ flagged; weak ] [ mutate ] in
@@ -5285,7 +5543,7 @@ let new_source () =
   equal (option (list string)) (Some none_rows) (previous_rows r)
 
 let another_killing_test () =
-  remove (verdict_path ());
+  remove (verdict_path suite_exe);
   let ordered = suite "ordered" in
   whole ~outcome_line:ordered_outcome (rerun ~env:[ ordered ] [ mutate ]);
   rewrite (killed_by [ "ordered"; "watches sub again without pinning it" ]);
@@ -5299,7 +5557,7 @@ let another_killing_test () =
 (* Other reaching tests of a survivor, and a change from or to a mutant that
    no test reached, are not a change of class. *)
 let same_class () =
-  remove (verdict_path ());
+  remove (verdict_path suite_exe);
   whole (rerun [ mutate ]);
   rewrite (at_line 18 (Verdicts.survived [ [ "widen"; "another test" ] ]));
   let r1 = rerun [ mutate ] in
@@ -5328,7 +5586,7 @@ let killed_elsewhere_rows =
   ]
 
 let killed_elsewhere_is_killed (_, line, verdict, expected) =
-  remove (verdict_path ());
+  remove (verdict_path suite_exe);
   whole (rerun [ mutate ]);
   rewrite (at_line line verdict);
   let r = rerun [ mutate ] in
@@ -5351,7 +5609,7 @@ let memo_orders =
   ]
 
 let not_evaluated_class (_, first, second, expected) =
-  remove (verdict_path ());
+  remove (verdict_path suite_exe);
   let fixture = suite "memo" in
   ignore (rerun ~env:(fixture :: first) [ mutate ]);
   let r = rerun ~env:(fixture :: second) [ mutate ] in
@@ -5359,7 +5617,7 @@ let not_evaluated_class (_, first, second, expected) =
   equal (option (list string)) expected (unstable r.out)
 
 let catalogue_order () =
-  let path = verdict_path () in
+  let path = verdict_path suite_exe in
   remove path;
   whole (rerun [ mutate ]);
   rewrite (fun r ->
@@ -5381,7 +5639,7 @@ let catalogue_order () =
 
 (* The writer of the file in between is another build. *)
 let other_build () =
-  remove (verdict_path ());
+  remove (verdict_path suite_exe);
   whole (rerun [ mutate ]);
   rewrite ~digest:(String.make 32 '0')
     (at_line 15 (Verdicts.survived [ [ "calc"; "sub of two positives" ] ]));
@@ -5392,23 +5650,46 @@ let other_build () =
     (listed [ (15, "survived \u{2192} killed") ])
     (unstable r.out)
 
-(* The two calls of [Windtrap.run] in [two_reach] write one file, and only
-   the first suite kills [sub]. *)
+(* The file at the path of the suite records another suite, so the run takes
+   no previous verdict from it. *)
 let two_suites () =
-  remove (verdict_path ());
-  let env = [ suite "two_reach"; weak ] in
+  remove_suite_files suite_exe;
+  let env = [ suite "ordered" ] in
   let first = rerun ~env [ mutate ] in
-  let second = rerun ~env [ mutate ] in
+  equal (pair string text) ("exited 0", "") (first.status, first.err);
+  rewrite ~suite:"other" Fun.id;
+  let r = rerun ~env [ mutate ] in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal (option (list string)) None (unstable r.out);
+  equal (option (list string)) (Some none_rows) (previous_rows r);
+  equal (option string) (Some "calc") (recorded_suite (verdict_path suite_exe))
+
+(* Each suite of a main compares with its own file. *)
+let suites_compare_alone () =
+  remove_suite_files suite_exe;
+  let env = [ suite "two_flagged" ] in
+  let r1 = rerun ~env [ mutate ] in
+  let r2 = rerun ~env:(weak :: env) [ mutate ] in
   List.iter
     (fun (r : ran) ->
-      equal (pair string text) ("exited 0", "") (r.status, r.err);
-      equal (option (list string)) None (unstable r.out))
-    [ first; second ];
-  equal (option (list string)) (Some none_rows) (previous_rows second)
+      equal (pair string text) ("exited 0", "") (r.status, r.err))
+    [ r1; r2 ];
+  equal (list (list string)) [] (sections ~title:"unstable" r1.out);
+  let change = require_some (listed [ (15, "killed \u{2192} survived") ]) in
+  equal
+    (list (list string))
+    [ change; change ]
+    (sections ~title:"unstable" r2.out);
+  List.iter
+    (fun name ->
+      let f = require_some (saved (verdict_path ~suite:name suite_exe)) in
+      equal (list string) [ "subject.ml:15 killed" ]
+        (List.filter (String.starts_with ~prefix:"subject.ml:15 ") f.previous))
+    [ "first"; "calc" ]
 
 (* The selection kills [sub], so a run that wrote its file would list it. *)
 let narrowed_run () =
-  let path = verdict_path () in
+  let path = verdict_path suite_exe in
   remove path;
   whole (rerun [ mutate ]);
   rewrite
@@ -5425,7 +5706,7 @@ let stopped_run () =
   let r, grandchildren, left = interrupted_by ~planted Sys.sigint in
   equal string "killed by SIGINT" r.status;
   equal (option (list string)) None (unstable r.out);
-  equal text planted (read (verdict_path ()));
+  equal text planted (read (verdict_path suite_exe));
   equal (list string) [] left;
   equal (list string) [ "gone" ] grandchildren
 
@@ -5439,19 +5720,130 @@ let unwritable_with_prior () =
     fst (skip_run ~fixture:"flagged" ~env:[ weak ] ~keep:true p [])
   in
   equal string "exited 0" (fst (skip_run ~fixture:"flagged" p [])).status;
-  let planted = read (Verdicts.output_file ~exe:p.exe) in
+  let planted = read (verdict_path p.exe) in
   Unix.chmod p.data 0o555;
   let r = Fun.protect ~finally:(fun () -> Unix.chmod p.data 0o755) weak_run in
   equal string "exited 0" r.status;
   starts_with ~affix:"windtrap: could not write the verdict file: " r.err;
   equal (option (list string)) None (unstable r.out);
-  equal text planted (read (Verdicts.output_file ~exe:p.exe));
+  equal text planted (read (verdict_path p.exe));
   let r = weak_run () in
   equal (pair string text) ("exited 0", "") (r.status, r.err);
   equal
     (option (list string))
     (listed [ (15, "killed \u{2192} survived") ])
     (unstable r.out)
+
+(* The partitions of an inline runner *)
+
+let partition_suite name = "partitions/" ^ name
+let part_a = "part_a.ml"
+let part_b = "part_b.ml"
+
+let partition_file name =
+  verdict_path ~suite:(partition_suite name) partitions_exe
+
+let partition_args name =
+  [ "inline-test-runner"; "partitions"; "-partition"; name ]
+
+(* A partition run in the scratch directory [cwd], with its verdict file. *)
+let partition ?(env = []) ~cwd name =
+  let r =
+    Child.run ~cwd
+      ~env:(quiet (mutate_mirror :: env))
+      partitions_exe (partition_args name)
+  in
+  {
+    status = ended r.Child.status;
+    out = r.Child.out;
+    err = r.Child.err;
+    file = saved (partition_file name);
+  }
+
+let part_a_rows = first_rows
+
+let part_b_rows =
+  [
+    "subject.ml:15 unreached";
+    "subject.ml:18 killed";
+    "subject.ml:21 unreached";
+    "subject.ml:27 unreached";
+    "subject.ml:38 filtered: zero operand";
+  ]
+
+let partition_files () =
+  List.sort String.compare [ partition_file part_a; partition_file part_b ]
+
+(* Three rounds over the two partitions, which dune runs at the same time.
+   Each partition lists its own change, whatever the order of the runs. *)
+let partition_rounds () =
+  remove_suite_files partitions_exe;
+  let cwd = temp_dir () in
+  let round ?env order =
+    let runs = List.map (fun name -> (name, partition ?env ~cwd name)) order in
+    List.iter
+      (fun (_, (r : ran)) ->
+        equal (pair string text) ("exited 0", "") (r.status, r.err))
+      runs;
+    equal (list string) (partition_files ()) (suite_files partitions_exe);
+    equal (list string) [] (entries cwd);
+    fun name -> List.assoc name runs
+  in
+  let r = round [ part_a; part_b ] in
+  equal (option (list string)) None (unstable (r part_a).out);
+  equal (option (list string)) None (unstable (r part_b).out);
+  equal (option (list string)) (Some part_a_rows) (rows (r part_a));
+  equal (option (list string)) (Some part_b_rows) (rows (r part_b));
+  let r = round ~env:[ weak ] [ part_a; part_b ] in
+  equal
+    (option (list string))
+    (listed [ (15, "killed \u{2192} survived") ])
+    (unstable (r part_a).out);
+  equal
+    (option (list string))
+    (listed [ (18, "killed \u{2192} survived") ])
+    (unstable (r part_b).out);
+  let r = round [ part_b; part_a ] in
+  equal
+    (option (list string))
+    (listed [ (15, "survived \u{2192} killed") ])
+    (unstable (r part_a).out);
+  equal
+    (option (list string))
+    (listed [ (18, "survived \u{2192} killed") ])
+    (unstable (r part_b).out)
+
+let concurrent_partitions () =
+  remove_suite_files partitions_exe;
+  let started =
+    List.map
+      (fun name ->
+        start ~exe:partitions_exe ~writer:partitions_exe
+          ~suite:(partition_suite name) ~env:[ mutate_mirror ]
+          (partition_args name))
+      [ part_a; part_b ]
+  in
+  let finished = List.map finish started in
+  List.iter
+    (fun (r : ran) ->
+      equal (pair string text) ("exited 0", "") (r.status, r.err))
+    finished;
+  equal (list string) (partition_files ()) (suite_files partitions_exe);
+  equal
+    (list (option (list string)))
+    [ Some part_a_rows; Some part_b_rows ]
+    (List.map (fun (r : ran) -> rows r) finished)
+
+let suites =
+  group "Suites"
+    [
+      test
+        "the partitions of an inline runner each keep their file and list \
+         their own rows"
+        partition_rounds;
+      test "two partitions that run at the same time each write their file"
+        concurrent_partitions;
+    ]
 
 let unstable_verdicts =
   group "Unstable verdicts"
@@ -5481,6 +5873,10 @@ let unstable_verdicts =
         catalogue_order;
       test "a file of another build gives the previous verdicts" other_build;
       test "a file of another suite gives no previous verdict" two_suites;
+      test
+        "a main with two suites lists the unstable rows of each suite on the \
+         next run"
+        suites_compare_alone;
       test "a narrowed run lists nothing and leaves the file" narrowed_run;
       test
         "a run that a signal stopped before its last verdict lists nothing and \
@@ -5505,7 +5901,7 @@ let intermittent ?(keep = false) ?(env = []) args =
         status = ended c.Child.status;
         out = c.Child.out;
         err = c.Child.err;
-        file = saved (Verdicts.output_file ~exe:suite_exe);
+        file = saved (verdict_path suite_exe);
       }
   in
   (r, if Sys.file_exists runs then List.length (lines (read runs)) - 1 else 0)
@@ -5578,7 +5974,7 @@ let survives_each_run () =
   equal (list string) [ site 18 ] (survivors r.out);
   is_true (String.ends_with ~suffix:"  (3 runs)" (title_of 18 r.out))
 
-let killers_of_the_file () = killers (Verdicts.output_file ~exe:suite_exe)
+let killers_of_the_file () = killers (verdict_path suite_exe)
 
 let killed_in_a_retry () =
   ignore
@@ -5674,7 +6070,7 @@ let not_evaluated_in_a_retry () =
    names no test. *)
 let hanging_retry () =
   let runs = Filename.concat (temp_dir ()) "runs" in
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   let r =
     finish_within ~what:"the deadline of the retry"
       (start
@@ -5693,7 +6089,7 @@ let hanging_retry () =
 (* The first child runs the killing test of the file alone, and is not a
    run. *)
 let first_child_is_no_run () =
-  let path = Verdicts.output_file ~exe:suite_exe in
+  let path = verdict_path suite_exe in
   let kill_by_the_second_test () =
     rewrite (fun r ->
         if r.id = site_id 18 then
@@ -5728,7 +6124,7 @@ let live_line_of_retries () =
   let seen = Buffer.create 4096 in
   let master, slave = openpty () in
   Unix.set_nonblock master;
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   let run =
     Fun.protect
       ~finally:(fun () -> Unix.close slave)
@@ -5753,7 +6149,7 @@ let live_line_of_retries () =
 let interrupted_retry () =
   let gates = temp_dir () and tmpdir = temp_dir () in
   let runs = Filename.concat (temp_dir ()) "runs" in
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   let run =
     start
       ~env:
@@ -6008,7 +6404,7 @@ let one_check_flaky () =
 let two_jobs_one_check () =
   let gates = temp_dir () in
   let b_file = Filename.concat (temp_dir ()) "b-runs" in
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   let run =
     start
       ~env:
@@ -6056,7 +6452,7 @@ let check_through_the_killing_test () =
 let check_past_its_deadline () =
   let dir = temp_dir () in
   let b_file = Filename.concat dir "b-runs" in
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   let r =
     finish_within ~what:"the deadline of a check run"
       (start
@@ -6079,7 +6475,7 @@ let check_past_its_deadline () =
 let interrupted_check () =
   let gates = temp_dir () and tmpdir = temp_dir () in
   let b_file = Filename.concat (temp_dir ()) "b-runs" in
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   let run =
     start
       ~env:
@@ -6112,7 +6508,7 @@ let interrupted_check () =
 let stopped_check stop =
   let gates = temp_dir () and tmpdir = temp_dir () in
   let b_file = Filename.concat (temp_dir ()) "b-runs" in
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   let run =
     start
       ~env:
@@ -6170,7 +6566,7 @@ let interrupted_between_check_runs () =
    child of the mutant, and 5 the first check run. *)
 let refused_check () =
   let exec_file = Filename.concat (temp_dir ()) "exec-runs" in
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   let k =
     kill_run
       ~env:
@@ -6191,14 +6587,14 @@ let refused_check () =
     k.r.err;
   equal int 3 k.b_runs;
   equal int 5 (line_count exec_file);
-  equal bool false (Sys.file_exists (Verdicts.output_file ~exe:suite_exe))
+  equal bool false (Sys.file_exists (verdict_path suite_exe))
 
 let live_line_of_a_check () =
   let seen = Buffer.create 4096 in
   let master, slave = openpty () in
   Unix.set_nonblock master;
   let b_file = Filename.concat (temp_dir ()) "b-runs" in
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdict_path suite_exe);
   let run =
     Fun.protect
       ~finally:(fun () -> Unix.close slave)
@@ -6308,8 +6704,17 @@ let flaky_kills =
 let () =
   at_exit (fun () ->
       List.iter
-        (fun exe -> remove (Verdicts.output_file ~exe))
-        [ suite_exe; inline_exe; runaway_exe; plain_exe; scoped_exe ])
+        (fun exe ->
+          remove_suite_files exe;
+          remove (Instr.output_file Verdicts.format ~exe))
+        [
+          suite_exe;
+          inline_exe;
+          partitions_exe;
+          runaway_exe;
+          plain_exe;
+          scoped_exe;
+        ])
 
 let () =
   exit
@@ -6327,6 +6732,7 @@ let () =
          verdict_file;
          history;
          unstable_verdicts;
+         suites;
          retry;
          flaky_kills;
          killed_elsewhere;

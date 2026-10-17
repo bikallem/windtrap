@@ -11,7 +11,8 @@
      line i + 1 of a source of 10-byte lines. FILE is read with OCaml's
      string escapes, so a session can name any byte.
 
-   mkdata mutants OUT [--exe EXE] FILE:LINE:COL:REWRITE:BEFORE:AFTER=VERDICT...
+   mkdata mutants OUT [--exe EXE] [--suite SUITE]
+       FILE:LINE:COL:REWRITE:BEFORE:AFTER=VERDICT...
      VERDICT is killed, killed:TEST, elsewhere:EXE, not_evaluated,
      outside_tests, unreached, filtered:REASON, flaky:TEST:FAILURE or
      survived:TESTS[:RUNS], where a TEST is a path of '/'-separated names,
@@ -21,7 +22,8 @@
      source digest. VERDICT@PREVIOUS gives the record the previous verdict
      PREVIOUS, which has the syntax of VERDICT.
 
-   --exe records the identity of the executable at EXE as it is now. *)
+   --exe records the identity of the executable at EXE as it is now, and
+   --suite records the suite SUITE. *)
 
 module Coverage = Windtrap_runtime.Coverage
 module Instr = Windtrap_runtime.Instr
@@ -121,8 +123,8 @@ let record spec =
       }
   | _ -> die "%S: not FILE:LINE:COL:REWRITE:BEFORE:AFTER" mutant
 
-let mutants ~identity out specs =
-  Verdicts.save ?identity out
+let mutants ~identity ?suite out specs =
+  Verdicts.save ?identity ?suite out
     (List.fold_left Verdicts.add Verdicts.empty (List.map record specs))
 
 let () =
@@ -133,8 +135,16 @@ let () =
         | "--exe" :: exe :: args -> (Some (identity exe), args)
         | args -> (None, args)
       in
+      let suite, args =
+        match (kind, args) with
+        | "mutants", "--suite" :: suite :: args -> (Some suite, args)
+        | _, args -> (None, args)
+      in
       match kind with
       | "coverage" -> coverage ~identity out args
-      | "mutants" -> mutants ~identity out args
+      | "mutants" -> mutants ~identity ?suite out args
       | kind -> die "%S: not coverage or mutants" kind)
-  | _ -> die "usage: mkdata (coverage | mutants) OUT [--exe EXE] RECORD..."
+  | _ ->
+      die
+        "usage: mkdata (coverage | mutants) OUT [--exe EXE] [--suite SUITE] \
+         RECORD..."

@@ -327,7 +327,7 @@ let entries =
       ~mirror:
         (mirrored "WINDTRAP_MUTATE_SKIP_KILLED" (fun p ->
              p.mutate_skip_killed = None))
-      "Skip the mutants that the verdict file of another executable killed.";
+      "Skip the mutants that the verdict file of another suite killed.";
     row "--mutate-children"
       (value "MODE" children (fun p mode ->
            { p with mutate_children = Some mode }))

@@ -312,7 +312,7 @@ the withheld-correction warning:
 - The determinism probe, in a child process, checks that the suite
   passes again.
 - Under `--mutate-skip-killed`, a reached mutant that the verdict file
-  of another executable killed gets no child (see
+  of another suite killed gets no child (see
   [Skipping the mutants that another suite killed](#skipping-the-mutants-that-another-suite-killed)).
 - Each other reached mutant runs in a child with its reaching tests. The
   child stops at the first failure in or after the first test that
@@ -481,10 +481,10 @@ more than 1:
 
 The verdict file keeps the runs. `windtrap mutants` adds the runs of the
 verdict files in which the mutant survived, and `--json` gives the sum
-in `runs`. Thus two executables that each ran a survivor one time give
-`(2 runs)`. If you name one verdict file two times with different
-text, for example `x/a.mutants` and `./x/a.mutants`, `windtrap mutants`
-adds its runs two times.
+in `runs`. Thus two suites that each ran a survivor one time give
+`(2 runs)`, also when they are suites of one executable. If you name one
+verdict file two times with different text, for example `x/a.mutants`
+and `./x/a.mutants`, `windtrap mutants` adds its runs two times.
 
 A retry makes a false survivor less probable. It does not make a
 verdict deterministic. For example, a mutant that 1 order in 10 kills
@@ -575,7 +575,7 @@ The verdict file keeps the test and the failure of each flaky mutant.
 The next run does not run that test alone first, as it does for a
 killed mutant (see [Where the verdicts are](#where-the-verdicts-are)).
 Under `--mutate-skip-killed`, a flaky mutant in the verdict file of
-another executable does not cause a skip. `windtrap mutants` gives a
+another suite does not cause a skip. `windtrap mutants` gives a
 mutant as flaky when no executable killed it and one executable gave it
 as flaky. It names that executable before the test.
 
@@ -851,21 +851,31 @@ sufficient. The other suites do work that cannot change the report.
 `--mutate-skip-killed` (mirror `WINDTRAP_MUTATE_SKIP_KILLED`) skips such
 a mutant.
 
-After the dry run, the run reads the verdict files of the other
-executables in its verdict directory. A reached mutant gets no child
-when one of these files gives it `killed`. This applies only when the
-digest of the source file in that record is the digest of the source
-file at this time. Only a kill that a child gave counts. A mutant that
-another run skipped does not cause a skip. A flaky mutant also does not
-cause a skip. Only the mutants in the scope are candidates, so
-`--mutate=PREFIX` and `--mutate-since` keep their behavior. The run does
-not use a file that does not load, a file that names no executable, or a
-file whose executable no longer exists. It names each such file on
-standard error.
+After the dry run, the run reads the other verdict files in its verdict
+directory: the files of the other executables, and the files of the
+other suites of its own executable. It does not read the file of its own
+suite. A reached mutant gets no child when one of these files gives it
+`killed`. This applies only when the digest of the source file in that
+record is the digest of the source file at this time. Only a kill that a
+child gave counts. A mutant that another run skipped does not cause a
+skip. A flaky mutant also does not cause a skip. Only the mutants in the
+scope are candidates, so `--mutate=PREFIX` and `--mutate-since` keep
+their behavior. The run does not use a file that does not load, a file
+that names no executable, a file whose executable no longer exists, or
+a file whose executable is not a regular file (for example a FIFO). It
+names each such file on standard error. The run also does not use a
+file that `windtrap mutants` leaves out because another build of its
+executable wrote it (see [Where the verdicts
+are](#where-the-verdicts-are)). This applies to the files of each
+executable. The run gives no warning for such a file, because each build
+makes the files of the suites that did not run again stale. `windtrap
+mutants` names each such file.
 
 The verdict file of the run records a skipped mutant as killed
-elsewhere, with the name of the other executable. A line of the report
-names each verdict file that the run used, by its executable. For each
+elsewhere, with the name of the executable of that file. When another
+suite of the same executable killed the mutant, this name is the
+executable of the run. A line of the report names the executable of each
+verdict file that the run used, one time for each executable. For each
 file, the line gives the number of mutants that the run skipped because
 of that file. The outcome line counts these mutants as not tested, and
 the score of the suite does not count them:
@@ -888,7 +898,7 @@ note tells which run to do again:
   too. Run the suite that skipped the mutant again:
 
   ```
-  windtrap: 2 mutants count as killed by default/test/a.exe, but the verdict file of default/test/a.exe in the merge does not kill them: run default/test/b.exe again with its mutants, then merge again
+  windtrap: 2 mutants count as killed by default/test/a.exe, but no verdict file of default/test/a.exe in the merge kills them: run default/test/b.exe again with its mutants, then merge again
   ```
 
 - The killer no longer exists. Run the suite that skipped the mutant
@@ -905,10 +915,15 @@ note tells which run to do again:
   windtrap: 1 mutant counts as killed by default/test/pins_add.exe, but no verdict file of the merge gives this kill: run default/test/pins_add.exe with its mutants, then merge again
   ```
 
+When another suite of the same executable gave the kill, the note has
+the first form, because the file of the suite that skipped the mutant is
+in the merge. Run that executable again. It runs each of its suites.
+
 The recommended run can skip the mutant again because of another verdict
-file on disk. For example, that file is stale and the merge does not use
-it. The next merge then gives a note that names that other executable.
-Do what the new note tells.
+file on disk. For example, the executable of that file is built again
+after the run, so the merge leaves out the file. The next merge then
+gives a note that names that other executable. Do what the new note
+tells.
 
 The option uses only the files on disk at the end of the dry run. A
 parallel `dune runtest` runs the suites at the same time, so the file of
@@ -922,7 +937,9 @@ because of each other. No file then kills the mutant, the merge gives a
 note, and the next parallel run tests the mutant again. Run such suites
 one after the other, for example with `dune runtest -j 1`. In that
 order, the later suite reads the new file of the earlier suite, so the
-two suites cannot skip one mutant because of each other:
+two suites cannot skip one mutant because of each other. The test files
+of one inline-test library are suites of one executable, and dune runs
+them at the same time:
 
 ```
 $ WINDTRAP_MUTATE=1 dune runtest --force --instrument-with ppx_windtrap.mutate test/core test/sim
@@ -930,12 +947,13 @@ $ WINDTRAP_MUTATE=1 WINDTRAP_MUTATE_SKIP_KILLED=1 dune runtest -j 1 --force --in
 $ dune exec windtrap -- mutants
 ```
 
-The run uses the file of an earlier build when the digest of the source
-is the same. A test of the other suite can change after that build, so
-the kill can be stale. The merge can leave out the stale file, or the
-other suite can run again and not kill the mutant. In these cases, the
-merge counts the mutant as killed and gives a note. A file of an earlier
-windtrap version does not load, so the run does not use it.
+The run uses only the verdict files that `windtrap mutants` keeps at
+that time. Thus the merge usually has each kill that the run used. The
+merge can lose a kill in two cases. The executable of its file is built
+again after the run, or the other suite runs again and does not kill the
+mutant. In these cases, the merge counts the mutant as killed and gives
+a note. A file of an earlier windtrap version does not load, so the run
+does not use it.
 
 ## Gating on the score
 
@@ -964,20 +982,21 @@ A suite's mutation run gives the score too, and has no gate.
 
 For other tools, `--json` prints the merge as JSON on standard output,
 in place of the report. The document has its version, the counts and the
-score, the executables, each mutant with its verdict, each filtered
-mutant with its reason, each flaky mutant with its test and the failure
-of that test with no mutant, and the mutants whose verdict changed. A
-survivor also has the number of its runs and the tests that ran it. The
-count `reached` of the document does not count the flaky mutants, so it
-is the count of the mutants of the score. A
-test names its executable by its index in `executables`, because two
-executables can have the same name. Under `--min-score` the outcome
-line goes to standard error, and the exit code is that of the gate.
-Standard output can refuse the document, for example on a full disk.
-The command then gives the reason on standard error and exits 1. The
-gate does not run. A later version can add keys. A change to the
-meaning of a key increments `version`.
-[`bin/mutate_cmd.mli`](../../bin/mutate_cmd.mli) gives each key:
+score, the executables, each with the suite of its verdict file, each
+mutant with its verdict, each filtered mutant with its reason, each
+flaky mutant with its test and the failure of that test with no mutant,
+and the mutants whose verdict changed. A survivor also has the number of
+its runs and the tests that ran it. The count `reached` of the document
+does not count the flaky mutants, so it is the count of the mutants of
+the score. A test names its executable by its index in `executables`,
+because two executables can have the same name, and one executable has
+an object for each of its suites. Under `--min-score` the outcome line
+goes to standard error, and the exit code is that of the gate. Standard
+output can refuse the document, for example on a full disk. The command
+then gives the reason on standard error and exits 1. The gate does not
+run. A later version can add keys. A change to the meaning of a key
+increments `version`. [`bin/mutate_cmd.mli`](../../bin/mutate_cmd.mli)
+gives each key:
 
 ```
 $ dune exec windtrap -- mutants --json
@@ -986,7 +1005,7 @@ $ dune exec windtrap -- mutants --json
     "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
     "filtered": 0, "flaky": 0, "score": 77.78 },
   "executables": [
-    { "name": "test_calc.exe", "path": "default/test_calc.exe" } ],
+    { "name": "test_calc.exe", "path": "default/test_calc.exe", "suite": "calc" } ],
   "mutants": [
     { "id": "calc.ml:5:4:drop",
       "file": "calc.ml", "line": 5, "col": 4, "rewrite": "drop",
@@ -1151,37 +1170,57 @@ not constants, as `none` does in a generated table
 
 ## Where the verdicts are
 
-A suite's `--mutate` run over the whole suite writes one verdict file
-under `_build/_mutants`, and its next such run replaces it. An
-executable outside any build directory writes under `_windtrap/mutants`
-in its working directory. A run under `--mutate=PREFIX` or
-`--mutate-since=REV` replaces the verdicts in its scope and keeps the
-others, when the same build wrote the file. A verdict file records its
-executable and a digest of its bytes, and `windtrap mutants` leaves out
-one whose executable was deleted or rebuilt since, with a warning, as
+A suite's `--mutate` run over the whole suite writes the verdict file
+of that suite under `_build/_mutants`, and the next such run of the
+suite replaces it. The name of the file is
+`windtrap-<exe>-<suite>.mutants`. `<exe>` is the hexadecimal MD5 of the
+path of the executable in the build directory, for example
+`default/test/calc.exe`. `<suite>` is the hexadecimal MD5 of the suite
+name. Thus each suite name of a main has its own file, and the
+inline-test runner of a library writes one file for each test file. Two
+calls of `Windtrap.run` with one suite name share one file: the later
+call replaces the verdicts of the earlier call, and compares its
+verdicts with them. An executable outside any build directory writes
+under `_windtrap/mutants` in its working directory. A run under
+`--mutate=PREFIX` or `--mutate-since=REV` replaces the verdicts in its
+scope and keeps the others, when the same build of the same suite wrote
+the file. A verdict file records its executable, a digest of its bytes
+and its suite, and `windtrap mutants` leaves out one whose executable
+was deleted or rebuilt since, with a warning, as
 [`windtrap coverage`](coverage.md#when-a-dump-is-excluded) does a dump.
+
+A run does not delete the file of another suite. When a suite no longer
+runs, for example after you rename a test file of an inline-test
+library, its file stays. While the executable is the same build,
+`windtrap mutants` merges the file, and its verdicts are those of the
+tests of that build. After the next build, `windtrap mutants` leaves the
+file out with a warning that names it, and `--mutate-skip-killed` does
+not use it. Delete that file, or delete `_build/_mutants` and run each
+suite again. A verdict file of an earlier windtrap version has another
+name, which no run replaces. `windtrap mutants` refuses it, so delete
+it.
 
 The verdict file also keeps the test that killed each mutant, a digest
 of the source file of the mutant, the previous verdict of each mutant
 (see [Unstable verdicts](#unstable-verdicts)), and the test and the
-failure of each flaky mutant. The next run reads them, also after a new
-build. When the digest did not change and the test still reaches the
-mutant, the run first runs the test alone, with no mutant. If the test
-passes, a child then runs the test alone with the mutant. If the test
-kills the mutant again, no other test runs. If it does not, a second
-child runs each reaching test, as without the file. Thus the file never
-gives a verdict without a test that fails, and a changed or renamed test
-cannot keep an old verdict. The file only lets a killed mutant run fewer
-tests. A flaky mutant gets no first child. Under `--mutate-skip-killed`,
-the verdict files of the other executables also decide which mutants get
-a child (see [Skipping the mutants that another suite
-killed](#skipping-the-mutants-that-another-suite-killed)).
+failure of each flaky mutant. The next run of the suite reads them, also
+after a new build. When the digest did not change and the test still
+reaches the mutant, the run first runs the test alone, with no mutant.
+If the test passes, a child then runs the test alone with the mutant. If
+the test kills the mutant again, no other test runs. If it does not, a
+second child runs each reaching test, as without the file. Thus the file
+never gives a verdict without a test that fails, and a changed or
+renamed test cannot keep an old verdict. The file only lets a killed
+mutant run fewer tests. A flaky mutant gets no first child. Under
+`--mutate-skip-killed`, the verdict files of the other suites also
+decide which mutants get a child (see [Skipping the mutants that another
+suite killed](#skipping-the-mutants-that-another-suite-killed)).
 
 A test that runs alone does not run after the tests before it. When a
 test passes alone, fails alone with the mutant, but passes with the
 mutant after an earlier test, the verdict file can make a survivor a
 killed mutant. To get the verdicts without the file, delete the verdict
-file before the run.
+file of the suite, or `_build/_mutants`, before the run.
 
 ## Unstable verdicts
 
@@ -1189,13 +1228,8 @@ A run that writes its verdict file compares the verdict of each mutant
 with the verdict in the file that it replaces. The comparison applies
 only when the source file of the mutant has the same digest in the two
 files. The file of an earlier build also counts, because almost each
-change of a test rebuilds the executable. The file of another suite does
-not count. A main that calls `Windtrap.run` more than one time has one
-verdict file, and each call replaces the file of the call before it.
-Thus a call of such a main shows no section, unless the call before it
-has the same suite name. The inline-test runner of a library with tests
-in more than one file runs one suite for each file, in one executable.
-Thus the section of such a library shows its rows only on some runs.
+change of a test rebuilds the executable. Each suite has its own verdict
+file, so the comparison uses the file of the same suite.
 
 The report lists, in a section `unstable (N)`, each mutant whose verdict
 changed between killed, survived and not evaluated:
@@ -1239,7 +1273,9 @@ run, a run that a signal stopped before its last verdict, and a run
 whose file cannot be written.
 
 `windtrap mutants` gives the same list from the verdict files, with the
-executable of each row. `--json` gives it in `unstable`:
+executable of each row. When two suites of one executable give one
+mutant the same change, the report shows one row, and `--json` gives one
+object for each suite. `--json` gives the list in `unstable`:
 
 ```
   "unstable": [
@@ -1257,7 +1293,8 @@ mutant that this suite let survive and another suite killed, as
 mutant as `killed → survived`. `windtrap mutants` lists the same row
 from the file.
 
-To start the comparison again, delete the verdict file.
+To start the comparison again, delete the verdict file of the suite, or
+`_build/_mutants`.
 
 ## Mutation testing without dune
 

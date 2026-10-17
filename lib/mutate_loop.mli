@@ -153,18 +153,19 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     is one more child for each different list of reaching tests, and all of the
     tests of a prefix for each of its children.
 
-    {b History.} Before the first child, the loop reads the verdict file of the
-    executable, which an earlier build can have written. A mutant that it
-    records as killed by a test, with the digest of the source file that the
-    loop reads now, can get a first child. The test must reach the mutant, must
-    not be the first test that does, and must pass alone. Before the child of
-    any mutant, each such test runs alone in a child with no mutant armed, up to
-    [jobs] at once. The first child runs that test alone. When the first child
-    kills the mutant, that is the verdict. Otherwise, a full child runs every
-    reaching test, before any mutant after it starts. It gives the verdict, or
-    starts again as the step of [retry] tells. A child runs each test that
-    decides a verdict, so the history gives no verdict without a run. A file
-    that is not a regular file, or that does not load, gives no history.
+    {b History.} Before the first child, the loop reads the verdict file of its
+    suite ({!Windtrap_runtime.Verdicts.output_file}), which an earlier build can
+    have written. A mutant that it records as killed by a test, with the digest
+    of the source file that the loop reads now, can get a first child. The test
+    must reach the mutant, must not be the first test that does, and must pass
+    alone. Before the child of any mutant, each such test runs alone in a child
+    with no mutant armed, up to [jobs] at once. The first child runs that test
+    alone. When the first child kills the mutant, that is the verdict.
+    Otherwise, a full child runs every reaching test, before any mutant after it
+    starts. It gives the verdict, or starts again as the step of [retry] tells.
+    A child runs each test that decides a verdict, so the history gives no
+    verdict without a run. A file that is not a regular file, or that does not
+    load, gives no history. A file that records another suite gives no history.
 
     A first child does not run the tests before its test. When the tests of a
     suite depend on their order, a first child can kill a mutant that a full
@@ -228,11 +229,15 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     {b Killed elsewhere.} Under the [skip_killed] of {!Run.Loop}
     ([--mutate-skip-killed]), the loop reads the regular files with the
     extension [.mutants] in the directory of
-    {!Windtrap_runtime.Verdicts.output_file}, except its own file. It does not
-    use a file that does not load, a file that names no executable, or a file
-    whose executable no longer exists ({!Windtrap_runtime.Instr.exe_location}).
-    It names each such file in a warning on standard error. A reached mutant
-    gets no child when a used file gives it
+    {!Windtrap_runtime.Verdicts.output_file}, except the file of its suite. The
+    files of the other suites of this executable count, as the files of other
+    executables do, and a record from such a file names this executable. It does
+    not use a file that does not load, a file that names no executable, a file
+    whose executable no longer exists ({!Windtrap_runtime.Instr.exe_location}),
+    or a file whose executable is not a regular file (for example a FIFO). It
+    names each such file in a warning on standard error. It also does not use a
+    file whose {!Windtrap_runtime.Instr.val-freshness} is [Stale], and gives no
+    warning for it. A reached mutant gets no child when a used file gives it
     {!Windtrap_runtime.Verdicts.verdict.Killed}. This applies only when the
     source digest of that record is the digest of the source file that the loop
     reads now. A {!Windtrap_runtime.Verdicts.Killed_elsewhere} or a
@@ -241,7 +246,7 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     smaller one when several files kill it. The report counts the mutant as not
     tested. A line above the outcome line gives the number of skipped mutants
     and the executable of each used file. The loop uses the files as they are on
-    disk after the dry run, a file of an earlier build included.
+    disk after the dry run.
 
     {b Tests marked xfail.} A test marked xfail ({!Test_tree.val-xfail}) reaches
     no mutant and kills none. The dry run and the probe run it, no child runs
@@ -300,10 +305,10 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     record. Each record has the digest of the source file of its mutant, when
     the loop can read the file. Each record also has the previous verdict of its
     mutant ({b Unstable verdicts}). The file is written to
-    {!Windtrap_runtime.Verdicts.output_file} of the executable, by
+    {!Windtrap_runtime.Verdicts.output_file} of the executable and the suite, by
     {!Windtrap_runtime.Verdicts.save}. Under a scope, the records of the mutants
     outside it, under another prefix or on a line that did not change, stay when
-    the file there was written by this build
+    the file there was written by this build and this suite
     ({!Windtrap_runtime.Verdicts.writer_identity}), and are dropped otherwise. A
     file that cannot be written ([Sys_error]) is one sentence on standard error
     above the outcome line, and the result is still [Reported 0].
@@ -609,11 +614,12 @@ val next_look : left:float -> waited:(unit -> float) -> float * float
     run under [Filename.get_temp_dir_name ()], and removes it however the loop
     ends, a second signal excepted. For the source line of a survivor and the
     digest of each record it reads the recorded file of the mutant, under
-    {!Os.project_root} first and then as given. It reads the verdict file of the
-    executable before the first child. Under [skip_killed], it lists the
-    directory of its verdict file after the dry run. It reads the other regular
-    files with the extension [.mutants] in it and looks for the executable that
-    each file names.
+    {!Os.project_root} first and then as given. It reads the verdict file of its
+    suite before the first child. Under [skip_killed], it lists the directory of
+    its verdict file after the dry run. It reads the other regular files with
+    the extension [.mutants] in it. For its digest, it reads the executable that
+    each file names, one time for each executable, and only when that executable
+    is a regular file.
 
     At module initialization, the module reads the status of its executable file
     ([stat]) and the environment variable [WINDTRAP_MUTATE_CHILD]. If the

@@ -228,9 +228,9 @@ dune exec windtrap -- mutants
 ```
 
 A run under a prefix keeps the verdicts that an earlier run of the same
-build saved for other files, and the merge counts them. To drop them,
-delete `_build/_mutants` before the run. A coverage report takes no
-prefix. After
+suite and build saved for other files, and the merge counts them. To
+drop them, delete `_build/_mutants` before the run. A coverage report
+takes no prefix. After
 `dune runtest examples/x-blueprint --instrument-with ppx_windtrap.coverage`,
 `dune exec windtrap -- coverage --min 80` lists windtrap's library too
 and fails the 80% minimum.

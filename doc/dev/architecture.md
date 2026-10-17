@@ -76,7 +76,7 @@ report and the aggregate cannot drift apart.
 | `Gen` (with `Gen.Engine.Shrink_tree`), `Property`, `Stateful`, `Workers` | generators; the case loop (examples first, per-case seeds, the discard budget, the shrink search, label tables); commands and programs, compiled into properties, and the judge of a program on several domains; the worker domains that run its branches |
 | `Baseline`, `Source_patch`, `Capture` | the correction registry keyed by site or path, read-only checking, corrections gated per test and written once as `.corrected` files or in place; literal rewriting inside a source file; fd-level capture into per-test log files |
 | `Cli`, `Run`, `Report`, `Report_sections`, `Report_junit` | one declarative item table (flags and flagless settings) resolved once into the one `Run.config`, each mirror declared beside its flag and read through the flag's parser; the run record and the ambient slot, the sequential executor (startup checks, selection, the per-test boundary, SIGALRM timeouts, retries, fixture release, the last-failed store, the exit guard, the exit codes), which prints nothing and emits typed events; the transcript, the GitHub envelope and `Report.run`, execute reported; the failure projection every transport shares and the section vocabulary the coverage and mutation reports project into; the JUnit document and its file |
-| `Mutate_loop`, `Changed_lines` | the dry run and its reach map, the scope applied to the population it forks over (prefixes, and the lines that changed since a git revision, which `Changed_lines` reads from `git diff` for the loop and for `windtrap mutants --since`), the determinism probe, the loop of children (one child per reached mutant, each running only the tests that reach it, the test that killed it last time alone first, the full child of a survivor again up to `--mutate-retry` more times, in a process that spawned a domain, a check of each kill that names a test by up to 3 runs of its tests with no mutant, their verdicts committed in catalogue order, and children at once on up to `--mutate-jobs` CPUs, where a child counts the most CPUs that one of its tests used at once in the dry run; a child is a fork, or a new process of the executable when the suite spawned a domain or under `--mutate-children=exec`, and that new process reads a request file and serves it from `Windtrap.run`), the verdict file with the previous verdict of each mutant and the unstable section, the kills of the verdict files of the other executables under `--mutate-skip-killed`, the per-executable report. It wraps `Report.run` rather than sitting beside it, because a mutation run must announce an armed mutant before any other output and start its children after the dry run |
+| `Mutate_loop`, `Changed_lines` | the dry run and its reach map, the scope applied to the population it forks over (prefixes, and the lines that changed since a git revision, which `Changed_lines` reads from `git diff` for the loop and for `windtrap mutants --since`), the determinism probe, the loop of children (one child per reached mutant, each running only the tests that reach it, the test that killed it last time alone first, the full child of a survivor again up to `--mutate-retry` more times, in a process that spawned a domain, a check of each kill that names a test by up to 3 runs of its tests with no mutant, their verdicts committed in catalogue order, and children at once on up to `--mutate-jobs` CPUs, where a child counts the most CPUs that one of its tests used at once in the dry run; a child is a fork, or a new process of the executable when the suite spawned a domain or under `--mutate-children=exec`, and that new process reads a request file and serves it from `Windtrap.run`), the verdict file of each suite with the previous verdict of each mutant and the unstable section, the kills of the verdict files of the other suites under `--mutate-skip-killed`, the per-executable report. It wraps `Report.run` rather than sitting beside it, because a mutation run must announce an armed mutant before any other output and start its children after the dry run |
 | `Os`, `Pp`, `Text`, `Loc`, `Seed` | the clock, environment reading and its value vocabularies, atomic files, the project root and build-copy resolution; style-aware `Format` helpers; newline, UTF-8 and substring utilities, and the JSON string literal of the machine formats; `pos` and backtrace-derived attribution; SplitMix64, `s1:` tokens and the `(root, path, index)` derivation |
 
 The rows group by role, not by layer: `Os`, `Pp`, `Text`, `Loc` and
@@ -248,6 +248,18 @@ a lossy `%g` spelling is asked for at the call site.
   links; an identifier-only record would give a project report strictly
   worse than the per-executable one, and renderings let a report outlive
   the executable that produced it.
+- One verdict file for each suite. The name of the file has the hash of
+  the executable identity and the hash of the suite name. Thus the
+  calls of `Windtrap.run` with different suite names in one main, and
+  the partitions of an inline-test runner, which dune runs at the same
+  time, never write one file. Two calls with one suite name share one
+  file. The data directory stays flat, so the skip rule and the merge
+  read each file of the directory as before. The loop reads only the
+  file of its suite for the history, the previous verdicts and the kept
+  records, and the suite that the file records is a guard. No loop
+  deletes the file of another suite: the loop does not know the other
+  suites, and a partition could delete the file of another partition
+  before that partition reads its previous verdicts.
 - The history orders children and gives no verdict without a run. A
   record keeps the test that killed its mutant and the digest of its
   source file, and the next loop runs that test alone first when the
@@ -270,13 +282,12 @@ a lossy `%g` spelling is asked for at the call site.
   the read of the file at the save, the read that also gives the kept
   records. A file of any build counts, as for the history: almost each
   test change rebuilds the executable, and the digest makes sure that
-  the mutant is the same code. Only a file of the same suite counts: the
-  calls of `Windtrap.run` in one main write one file, and two suites can
-  give one mutant two verdicts. The file keeps the field, because
-  `windtrap mutants` reads only the files of the current build and has
-  no earlier run to compare with. The section changes no score, so a
-  verdict that depends on the order of the domains does not fail a
-  build two times.
+  the mutant is the same code. Only the file of the same suite counts,
+  because two suites can give one mutant two verdicts. The file keeps
+  the field, because `windtrap mutants` reads only the files of the
+  current build and has no earlier run to compare with. The section
+  changes no score, so a verdict that depends on the order of the
+  domains does not fail a build two times.
 - Survivor runs. The parent counts the runs of a survivor, so the child
   protocol does not change. A retry is a full child that starts again
   from `pool.again`, so it keeps the order of the commits, the job
@@ -297,13 +308,18 @@ a lossy `%g` spelling is asked for at the call site.
   the failure. `Flaky` is not a class of the unstable section. Only a
   direct `Killed` feeds the history and the skips.
 - Killed elsewhere. Under `--mutate-skip-killed`, a reached mutant that
-  the verdict file of another executable killed, for the same source
-  digest, gets no child. Its record is `Killed_elsewhere` and names that
-  executable, not `Killed`. Thus the merge can tell a skip from a kill,
-  and it can tell when no file of the merge has the kill. Only a direct
-  kill skips a mutant, so a skip never comes from another skip. The
-  loop and the merge find the executable of a file with
-  `Instr.exe_location`, as `Data_files.freshness` does.
+  another verdict file killed, of another executable or of another suite
+  of this executable, for the same source digest, gets no child. Its
+  record is `Killed_elsewhere` and names the executable of that file,
+  not `Killed`. Thus the merge can tell a skip from a kill, and it can
+  tell when no file of the merge has the kill. Only a direct kill skips
+  a mutant, so a skip never comes from another skip. The loop uses a
+  file only when `Instr.freshness` gives `Fresh`, the test by which the
+  merge keeps a file. No run replaces the file of a suite that no longer
+  runs. Thus a kill from a stale file would give a note that no run
+  removes. A stale file gives no warning, because each build makes the
+  files of the suites that did not run again stale, and the merge names
+  it.
 
 **The runtime (`Windtrap_runtime.Mutate`, `.Coverage`).**
 

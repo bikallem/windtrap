@@ -160,6 +160,60 @@ let unreadable_cwd () =
     (in_build ~build:"/w/_build" "default/a.exe")
     (Instr.output_file format ~exe:"/w/_build/default/a.exe")
 
+let freshness_witness =
+  Testable.make
+    ~pp:(fun ppf -> function
+      | Instr.Fresh -> Format.pp_print_string ppf "Fresh"
+      | Orphan s -> Format.fprintf ppf "Orphan %S" s
+      | Stale s -> Format.fprintf ppf "Stale %S" s)
+    ~equal:( = )
+
+(* A scratch directory [w] with no component named [_build*], so that the
+   build directory of a file in [w/_build/_mutants] is [w/_build]. *)
+let freshness_fixture () =
+  let w = temp_dir () in
+  let exe = Filename.concat w "_build/default/t.exe" in
+  Sys.mkdir (Filename.concat w "_build") 0o755;
+  Sys.mkdir (Filename.concat w "_build/default") 0o755;
+  Sys.mkdir (Filename.concat w "_build/_mutants") 0o755;
+  write exe "an executable\n";
+  let digest = require_some (Instr.file_digest exe) in
+  (w, exe, digest)
+
+let new_table () : (string, string option) Hashtbl.t = Hashtbl.create 8
+
+let freshness_cases () =
+  let w, _, d = freshness_fixture () in
+  let path = Filename.concat w "_build/_mutants/windtrap-a.mutants" in
+  let other = String.make 32 'f' in
+  let check ?(path = path) identity expected =
+    equal freshness_witness expected
+      (Instr.freshness ~digests:(new_table ()) ~path identity)
+  in
+  check None Instr.Fresh;
+  check (Some { Instr.exe = "default/t.exe"; digest = d }) Fresh;
+  check
+    (Some { Instr.exe = "default/t.exe"; digest = other })
+    (Stale "_build/default/t.exe");
+  check
+    (Some { Instr.exe = "default/gone.exe"; digest = d })
+    (Orphan "_build/default/gone.exe");
+  check
+    ~path:(Filename.concat w "windtrap-a.mutants")
+    (Some { Instr.exe = "default/t.exe"; digest = other })
+    Fresh
+
+let freshness_memo () =
+  let w, exe, d = freshness_fixture () in
+  let path = Filename.concat w "_build/_mutants/windtrap-a.mutants" in
+  let identity = Some { Instr.exe = "default/t.exe"; digest = d } in
+  let digests = new_table () in
+  equal freshness_witness Instr.Fresh (Instr.freshness ~digests ~path identity);
+  write exe "another executable\n";
+  equal freshness_witness Instr.Fresh (Instr.freshness ~digests ~path identity);
+  equal freshness_witness (Instr.Stale "_build/default/t.exe")
+    (Instr.freshness ~digests:(new_table ()) ~path identity)
+
 let build_paths =
   group "Build paths"
     [
@@ -226,6 +280,12 @@ let build_paths =
             (Instr.output_dir format ~exe));
       test "a value that needs an unreadable current directory raises Sys_error"
         unreadable_cwd;
+      test
+        "freshness judges a file by the digest of the executable at its \
+         recorded path"
+        freshness_cases;
+      test "freshness reads the digest of an executable one time for one table"
+        freshness_memo;
     ]
 
 (* Errors and warnings *)

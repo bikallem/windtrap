@@ -39,25 +39,32 @@ what is non-obvious.
   `test_coverage` and `test_mutate`, each with a child executable (for
   the at_exit dump and for a registration that runs before any window
   opens); `test_instr`, what the two file formats share (the header, the
-  build paths, the atomic write); and `test_verdicts`, the verdict
-  lattice and the verdict file. `mutate_loop/` drives the loop of
-  children through a real spawned process (a loop that forks cannot be
-  observed from inside its own image). Only three functions of
-  `Mutate_loop` are called in the suite's own process: `drain`, which
-  reads the pipes of the children, `next_look`, which times the looks at
-  a child, and `deadline`, which holds the formula of the deadline of a
-  child. A test gives `drain` the file `/dev/zero`, which never empties,
-  because a child cannot keep a pipe full with certainty. The suite runs
-  `plain_main.exe` as the zero-mutant control that must be declined by
-  name, `runaway/` for the hit-count budget, `inline/` for an armed
-  inline partition and `scoped/` for a second file whose one site is
-  filtered, which a scope of the other file must not record.
+  build paths and the freshness of a file, the atomic write); and
+  `test_verdicts`, the verdict lattice and the verdict file.
+  `mutate_loop/` drives the loop of children through a real spawned
+  process (a loop that forks cannot be observed from inside its own
+  image). Only three functions of `Mutate_loop` are called in the
+  suite's own process: `drain`, which reads the pipes of the children,
+  `next_look`, which times the looks at a child, and `deadline`, which
+  holds the formula of the deadline of a child. A test gives `drain` the
+  file `/dev/zero`, which never empties, because a child cannot keep a
+  pipe full with certainty. The suite runs `plain_main.exe` as the
+  zero-mutant control that must be declined by name, `runaway/` for the
+  hit-count budget, `inline/` for an armed inline partition,
+  `partitions/` for an inline runner with two test files, run one
+  partition at a time and at the same time, and `scoped/` for a second
+  file whose one site is filtered, which a scope of the other file must
+  not record. The fixture `two_flagged` of `suite_main.exe` runs two
+  suites that kill one mutant. The suite removes every verdict file of
+  its fixture executables at exit, one for each suite, and the file at
+  the name of the earlier version.
   The scenarios of `--mutate-skip-killed` run a copy of `suite_main.exe`
   under a scratch build directory. The reason is that the `_mutants` of
   the build holds the verdict files of the other fixtures, and
   `scoped_main.exe` links `subject.ml` too. Each planted verdict file
-  gets a stand-in executable in the scratch build directory, because the
-  loop does not use an orphan file.
+  gets a stand-in executable in the scratch build directory, and records
+  the digest of the stand-in, because the loop uses only a file that is
+  not an orphan and not stale.
   The scenarios of `--mutate-retry` run the fixture `intermittent`. Its
   test counts the runs of a changed `widen` in a file. At a run that the
   scenario gives, the test fails, hangs, waits at a gate or skips the
@@ -140,13 +147,15 @@ what is non-obvious.
   mutants report (`full.t`, on Linux, which alone has `/dev/full`), two
   executables that disagree about one library (`two_executables.t`,
   which also runs `pins_sub.exe` under `--mutate-skip-killed` after
-  `pins_add.exe`), and the loop and the merge under `--mutate-since` and
-  `--since` in a git repository of the session's own (`since.t`), also
-  from a subdirectory, for filtered mutants, for an executable outside
-  any build directory, for verdict files under one root and under two
-  roots, for a project below the root of the repository, under a
-  configuration that changes what `git diff` prints, and for a project
-  in no repository.
+  `pins_add.exe`), a main with two suites (`pins_both.exe`) and an
+  inline runner with two test files (`pins_inline.exe`), whose merges
+  give the verdicts of each suite (`two_suites.t`), and the loop and the
+  merge under `--mutate-since` and `--since` in a git repository of the
+  session's own (`since.t`), also from a subdirectory, for filtered
+  mutants, for an executable outside any build directory, for verdict
+  files under one root and under two roots, for a project below the root
+  of the repository, under a configuration that changes what `git diff`
+  prints, and for a project in no repository.
   `test_changed_lines` in `unit/` reads the diffs that it states, and
   runs a script in place of git for the arguments and the errors of git.
   `since.t` pins what git gives.

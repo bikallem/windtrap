@@ -73,32 +73,16 @@ val identity :
     [Error (Unknown_format _)] when it does not start with the magic line of
     [format], and [Error (Corrupt _)] when its identity line is malformed. *)
 
-(** The type for the freshness of a file, judged from the
-    {!Windtrap_runtime.Instr.identity} that it records. [Orphan] and [Stale]
-    carry the path of the recorded executable relative to the parent of its
-    build directory, as [_build/default/test/t.exe], or its absolute path when
-    it lies below no build directory. *)
-type freshness =
+(** The freshness of a file ({!Windtrap_runtime.Instr.type-freshness}). *)
+type freshness = Windtrap_runtime.Instr.freshness =
   | Fresh
-      (** The executable at the recorded path has the recorded digest, or
-          nothing can be judged (see {!val-freshness}). *)
-  | Orphan of string  (** No executable exists at the recorded path. *)
+  | Orphan of string
   | Stale of string
-      (** The executable at the recorded path does not have the recorded digest,
-          so another build wrote the file. *)
 
 val freshness :
   path:string -> Windtrap_runtime.Instr.identity option -> freshness
-(** [freshness ~path identity] is the freshness of the file at [path], which
-    recorded [identity]. An absolute [identity.exe] is the path of the
-    executable. A relative one is resolved below the build directory of [path]
-    ({!Windtrap_runtime.Instr.build_dir}). The comparison is by
-    {!Windtrap_runtime.Instr.file_digest} and never by modification time.
-
-    Three files cannot be judged and are [Fresh]: one that records no identity,
-    which was written by hand or merged, one whose identity is relative and
-    which lies in no build directory, and one whose executable exists and cannot
-    be read. *)
+(** [freshness ~path identity] is {!Windtrap_runtime.Instr.val-freshness} with
+    one table of digests for the process. *)
 
 val warnings : (string * freshness) list -> string list
 (** [warnings excluded] is the warning lines for the [excluded] files, each a

@@ -61,8 +61,8 @@ type mutation =
           changed since that revision ({!Changed_lines.of_git}). [children] is
           [--mutate-children]. [skip_killed] is [--mutate-skip-killed]: the loop
           starts no child for a reached mutant that the verdict file of another
-          executable killed. [retry] is [--mutate-retry]: the more runs of the
-          child of a survivor, from [0] to [100]. [None] lets the loop choose
+          suite killed. [retry] is [--mutate-retry]: the more runs of the child
+          of a survivor, from [0] to [100]. [None] lets the loop choose
           ({!Mutate_loop}). *)
   | Armed of string
       (** [--arm ID]: one ordinary run with the mutant [ID] armed. The
