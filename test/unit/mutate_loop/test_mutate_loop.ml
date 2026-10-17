@@ -86,6 +86,8 @@ let verdict = function
       ^ String.concat ", "
           (List.map (String.concat " \u{203a} ") (first :: others))
       ^ if runs > 1 then strf " (%d runs)" runs else ""
+  | Verdicts.Flaky { test; failure } ->
+      strf "flaky by %s: %s" (String.concat " \u{203a} " test) failure
   | Verdicts.Not_evaluated -> "not evaluated"
   | Verdicts.Outside_tests -> "outside tests"
   | Verdicts.Filtered reason -> "filtered: " ^ reason
@@ -468,14 +470,14 @@ let is_rule line =
        (String.concat ""
           (List.init (String.length line / 3) (fun _ -> "\u{2500}")))
 
-(* The lines of the unstable section of a report, between its opening rule
+(* The lines of the section [title] of a report, between its opening rule
    and its closing rule. It is [None] when the report has none. *)
-let unstable out =
+let section ~title out =
+  let opening = strf "\u{2500}\u{2500} %s (" title in
   let rec opened = function
     | [] -> None
     | line :: rest ->
-        if Option.is_some (index_of ~sub:"\u{2500}\u{2500} unstable (" line)
-        then Some rest
+        if Option.is_some (index_of ~sub:opening line) then Some rest
         else opened rest
   in
   let rec until acc = function
@@ -484,6 +486,9 @@ let unstable out =
     | line :: rest -> until (line :: acc) rest
   in
   Option.map (until []) (opened (lines out))
+
+let unstable = section ~title:"unstable"
+let flaky_lines = section ~title:"flaky"
 
 (* The previous verdicts of a file written with no file to compare with. *)
 let none_rows = List.map (strf "subject.ml:%d none") [ 15; 18; 21; 27; 38 ]
@@ -1919,7 +1924,7 @@ let killers path =
                 (strf "%s:%d %s" (local r.id.file) r.id.line
                    (String.concat " \u{203a} " test))
           | Verdicts.Killed { by = None }
-          | Verdicts.Killed_elsewhere _ | Verdicts.Survived _
+          | Verdicts.Killed_elsewhere _ | Verdicts.Flaky _ | Verdicts.Survived _
           | Verdicts.Not_evaluated | Verdicts.Outside_tests
           | Verdicts.Filtered _ | Verdicts.Unreached ->
               None)
@@ -1988,12 +1993,31 @@ let changed_source () =
     (ordered_run ());
   equal (list string) [ pinned_by ] (killers path)
 
+let flaky_record () =
+  let path = Verdicts.output_file ~exe:suite_exe in
+  remove path;
+  ignore (ordered_run ());
+  rewrite (fun r ->
+      if r.id = site_id 15 then
+        {
+          r with
+          verdict =
+            Verdicts.Flaky { test = [ "ordered"; "pins sub" ]; failure = "x" };
+        }
+      else r);
+  equal
+    (pair string (list string))
+    (ordered_outcome, [ "watches"; "pins" ])
+    (ordered_run ());
+  equal (list string) [ pinned_by ] (killers path)
+
 (* The record [r] with [test] as its killing test, when it is killed. *)
 let killed_by test (r : Verdicts.record) =
   match r.verdict with
   | Verdicts.Killed _ -> { r with verdict = Verdicts.Killed { by = Some test } }
-  | Verdicts.Killed_elsewhere _ | Verdicts.Survived _ | Verdicts.Not_evaluated
-  | Verdicts.Outside_tests | Verdicts.Filtered _ | Verdicts.Unreached ->
+  | Verdicts.Killed_elsewhere _ | Verdicts.Flaky _ | Verdicts.Survived _
+  | Verdicts.Not_evaluated | Verdicts.Outside_tests | Verdicts.Filtered _
+  | Verdicts.Unreached ->
       r
 
 let first_test_passes () =
@@ -2085,6 +2109,8 @@ let history =
         first_tests;
       test "a mutant whose source changed runs its reaching tests in order"
         changed_source;
+      test "a flaky record gives no first child, and every reaching test runs"
+        flaky_record;
       test
         "a first test that kills nothing is followed by every reaching test, \
          and the verdict is theirs"
@@ -2107,7 +2133,7 @@ let history =
         ~name:fst
         [
           ("a file of 0.2.0", fun _ -> "windtrap-mutants-v3\n");
-          ("a file of the previous format", fun _ -> "windtrap-mutants-v7\n0\n");
+          ("a file of the previous format", fun _ -> "windtrap-mutants-v8\n0\n");
           ("bytes after the last record", fun raw -> raw ^ "junk\n");
         ]
         (fun (_, damage) -> unloadable damage ());
@@ -2537,6 +2563,33 @@ let requests =
           equal (pair string string)
             ("exited 0", "probe 7 0 0\n")
             (served (request ~kind:"probe" green_paths)));
+      test "a check request gives steady for a last test that passes" (fun () ->
+          equal (pair string string) ("exited 0", "steady\n")
+            (served (request ~kind:"check" [ "calc/sub to zero" ])));
+      test "a check request gives flaky and the headline of the last test"
+        (fun () ->
+          equal (pair string string)
+            ("exited 0", "flaky expected 1, got 2\n")
+            (served ~fixture:"red"
+               (request ~kind:"check" [ "calc/sub to zero"; "calc/always red" ])));
+      test
+        "a check request runs the last test after the failure of an earlier \
+         test" (fun () ->
+          let runs = Filename.concat (temp_dir ()) "runs" in
+          let env fails =
+            ("MUTATE_FIRST_FAILS", "1") :: ("MUTATE_CHILD_RUNS", runs) :: fails
+          in
+          let path =
+            request ~kind:"check"
+              [ "kill/reaches widen"; "kill/fails at the given child runs" ]
+          in
+          equal (pair string string)
+            ("exited 0", "flaky child run 1\n")
+            (served ~fixture:"flaky_kill"
+               ~env:(env [ ("MUTATE_FAIL_AT", "1") ])
+               path);
+          equal (pair string string) ("exited 0", "steady\n")
+            (served ~fixture:"flaky_kill" ~env:(env []) path));
       test "a mutant request arms its mutant, and a test that pins it kills it"
         (fun () ->
           equal (pair string string) ("exited 0", "killed 0\n")
@@ -4700,7 +4753,7 @@ let plant_old p =
 let old_warning p =
   strf
     "windtrap: warning: --mutate-skip-killed ignores %s/%s: not a windtrap \
-     verdict file (expected header \"windtrap-mutants-v8\", found \
+     verdict file (expected header \"windtrap-mutants-v9\", found \
      \"windtrap-mutants-v6\"); files written by other windtrap versions are \
      not readable - delete the stale verdict files, then re-run the mutation \
      tests\n"
@@ -4790,6 +4843,7 @@ let not_a_kill =
     ("outside tests", Verdicts.Outside_tests);
     ("unreached", Verdicts.Unreached);
     ("filtered", Verdicts.Filtered "zero operand");
+    ("flaky", Verdicts.Flaky { test = [ "ordered"; "pins sub" ]; failure = "x" });
   ]
 
 let only_a_kill (_, verdict) =
@@ -5791,6 +5845,462 @@ let retry =
       test "a retry gives no unstable row" retry_and_unstable_rows;
     ]
 
+(* Flaky kills *)
+
+(* The test [B] of [flaky_kill] kills the mutant, and the child run that it
+   fails is the line of its failure. Run 1 is the probe, 2 the alone run of
+   the reaching tests, 3 the child of the mutant, and 4 to 6 the check runs.
+   In fork mode, run 2 is the child. *)
+
+let b = "kill \u{203a} fails at the given child runs"
+let flaky_by n = strf "flaky by %s: child run %d" b n
+let kill_rows = intermittent_rows
+let killed_by_b = [ "subject.ml:18 " ^ b ]
+let one_job = [ jobs 1 ]
+
+let flaky_outcome =
+  "mutants: 1 reached by this suite, 1 flaky, 3 never reached, 1 filtered"
+
+(* The flaky section of the mutant on line 18, with the failure of run [n]. *)
+let widen_flaky n =
+  [
+    "  A test killed each mutant, and then failed in a run with no mutant.";
+    "  The score does not count these mutants.";
+    strf "  %s  a + b \u{2192} a - b" (site 18);
+    "    test: " ^ b;
+    strf "    failure with no mutant: child run %d" n;
+  ]
+
+(* The lines of a file of counts, without the empty line at its end. *)
+let line_count path =
+  if Sys.file_exists path then List.length (lines (read path)) - 1 else 0
+
+type kill_ran = {
+  r : ran;
+  b_runs : int; (* The runs of [B] in children. *)
+  a_runs : int; (* The runs of [A] in children. *)
+}
+
+(* A run of [flaky_kill] with the counters of [A] and [B] in new files. With
+   [~keep:true], the run reads the verdict file of the run before it. *)
+let kill_run ?(keep = false) ?(env = []) args =
+  let dir = temp_dir () in
+  let b_file = Filename.concat dir "b-runs"
+  and a_file = Filename.concat dir "a-runs" in
+  let env =
+    [
+      suite "flaky_kill";
+      ("MUTATE_CHILD_RUNS", b_file);
+      ("MUTATE_FIRST_RUNS", a_file);
+    ]
+    @ env
+  in
+  let r =
+    if keep then rerun ~env (mutate :: args) else spawn ~env (mutate :: args)
+  in
+  { r; b_runs = line_count b_file; a_runs = line_count a_file }
+
+let fail_at runs = ("MUTATE_FAIL_AT", runs)
+
+(* The previous verdict of the record on line 18. *)
+let previous_of_widen r =
+  Option.map
+    (List.filter (String.starts_with ~prefix:"subject.ml:18 "))
+    (previous_rows r)
+
+let flaky_regression () =
+  let k = kill_run ~env:[ domain_init; fail_at "3,5" ] one_job in
+  equal (pair string text) ("exited 0", "") (k.r.status, k.r.err);
+  equal string flaky_outcome (outcome k.r.out);
+  equal int 5 k.b_runs;
+  equal (option (list string)) (kill_rows (flaky_by 5)) (rows k.r);
+  equal (option (list string)) (Some (widen_flaky 5)) (flaky_lines k.r.out);
+  equal (list string) [] (killers_of_the_file ());
+  contains ~sub:("\n" ^ auto_line ^ "\n") k.r.out
+
+let clean_check () =
+  let k = kill_run ~env:[ domain_init; fail_at "3" ] one_job in
+  equal (pair string text) ("exited 0", "") (k.r.status, k.r.err);
+  equal string killed_outcome (outcome k.r.out);
+  equal int 6 k.b_runs;
+  equal (option (list string)) (kill_rows "killed") (rows k.r);
+  equal (list string) killed_by_b (killers_of_the_file ());
+  equal (option (list string)) None (flaky_lines k.r.out)
+
+let first_failing_run_stops () =
+  let k = kill_run ~env:[ domain_init; fail_at "3,4" ] one_job in
+  equal int 4 k.b_runs;
+  equal (option (list string)) (kill_rows (flaky_by 4)) (rows k.r)
+
+let last_run_fails () =
+  let k = kill_run ~env:[ domain_init; fail_at "3,6" ] one_job in
+  equal int 6 k.b_runs;
+  equal (option (list string)) (kill_rows (flaky_by 6)) (rows k.r)
+
+let no_domain_no_check () =
+  let k = kill_run ~env:[ fail_at "2,3,4,5" ] one_job in
+  equal string killed_outcome (outcome k.r.out);
+  equal int 2 k.b_runs;
+  equal (list string) killed_by_b (killers_of_the_file ());
+  not_contains ~sub:auto_line k.r.out
+
+let exec_without_domain_no_check () =
+  let k = kill_run ~env:[ exec_children; fail_at "3,4,5,6" ] one_job in
+  equal string killed_outcome (outcome k.r.out);
+  equal int 3 k.b_runs;
+  contains ~sub:exec_line k.r.out
+
+(* Run 3 is a survivor, run 4 the first retry. *)
+let kill_in_a_retry () =
+  let k = kill_run ~env:[ domain_init; fail_at "4,5" ] one_job in
+  equal int 5 k.b_runs;
+  equal (option (list string)) (kill_rows (flaky_by 5)) (rows k.r);
+  not_contains ~sub:"runs)" k.r.out
+
+let two_killed =
+  Some
+    [
+      "subject.ml:15 killed";
+      "subject.ml:18 killed";
+      "subject.ml:21 unreached";
+      "subject.ml:27 unreached";
+      "subject.ml:38 filtered: zero operand";
+    ]
+
+let two_flaky n =
+  Some
+    [
+      "subject.ml:15 " ^ flaky_by n;
+      "subject.ml:18 " ^ flaky_by n;
+      "subject.ml:21 unreached";
+      "subject.ml:27 unreached";
+      "subject.ml:38 filtered: zero operand";
+    ]
+
+let kill_sub = ("MUTATE_KILL_SUB", "1")
+
+(* Run 3 is the child of [sub], runs 4 to 6 its check, and run 7 the child of
+   [widen], which gets the result of the check. *)
+let one_check_clean () =
+  let k = kill_run ~env:[ domain_init; kill_sub; fail_at "3,7" ] one_job in
+  equal int 7 k.b_runs;
+  equal string
+    "mutants: 2 reached by this suite, 2 killed, 2 never reached, 1 filtered, \
+     score 100.0%"
+    (outcome k.r.out);
+  equal (option (list string)) two_killed (rows k.r);
+  equal (list string)
+    [ "subject.ml:15 " ^ b; "subject.ml:18 " ^ b ]
+    (killers_of_the_file ())
+
+(* Run 4 is the first check run, and run 5 the child of [widen]. *)
+let one_check_flaky () =
+  let k = kill_run ~env:[ domain_init; kill_sub; fail_at "3,4,5" ] one_job in
+  equal int 5 k.b_runs;
+  equal string
+    "mutants: 2 reached by this suite, 2 flaky, 2 never reached, 1 filtered"
+    (outcome k.r.out);
+  equal (option (list string)) (two_flaky 4) (rows k.r)
+
+(* Runs 3 and 4 are the two children, and run 5 is the first check run. The
+   two children wait at their gates before run 3 ends. Run 4 ends while run 5
+   waits at its gate, so its mutant waits for the check. *)
+let two_jobs_one_check () =
+  let gates = temp_dir () in
+  let b_file = Filename.concat (temp_dir ()) "b-runs" in
+  remove (Verdicts.output_file ~exe:suite_exe);
+  let run =
+    start
+      ~env:
+        [
+          suite "flaky_kill";
+          ("MUTATE_CHILD_RUNS", b_file);
+          domain_init;
+          kill_sub;
+          fail_at "3,4,5";
+          ("MUTATE_WAIT_AT", "3,4");
+          ("MUTATE_HOLD_AT", "5");
+          ("MUTATE_GATES", gates);
+        ]
+      [ mutate; jobs 2 ]
+  in
+  let _, open_first = gate ~gates run "kill3" in
+  let second, open_second = gate ~gates run "kill4" in
+  open_first ();
+  let _, open_check = gate ~gates run "hold" in
+  open_second ();
+  reaped ~what:"the reaping of the second child" run second;
+  open_check ();
+  let r = finish_within ~what:"the end of the check" run in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal int 5 (line_count b_file);
+  equal (option (list string)) (two_flaky 5) (rows r)
+
+(* [A] kills the mutant and stops the child. [B] fails if it runs in the child
+   or in the check, but the check runs only [A], so the kill stays. *)
+let check_through_the_killing_test () =
+  let k =
+    kill_run
+      ~env:[ domain_init; ("MUTATE_FIRST_PINS", "1"); fail_at "3,4,5,6" ]
+      one_job
+  in
+  equal (pair string text) ("exited 0", "") (k.r.status, k.r.err);
+  equal string killed_outcome (outcome k.r.out);
+  equal int 2 k.b_runs;
+  equal int 6 k.a_runs;
+  equal (option (list string)) (kill_rows "killed") (rows k.r);
+  equal (list string)
+    [ "subject.ml:18 kill \u{203a} reaches widen" ]
+    (killers_of_the_file ())
+
+let check_past_its_deadline () =
+  let dir = temp_dir () in
+  let b_file = Filename.concat dir "b-runs" in
+  remove (Verdicts.output_file ~exe:suite_exe);
+  let r =
+    finish_within ~what:"the deadline of a check run"
+      (start
+         ~env:
+           [
+             suite "flaky_kill";
+             ("MUTATE_CHILD_RUNS", b_file);
+             domain_init;
+             fail_at "3";
+             ("MUTATE_WAIT_AT", "4");
+             ("MUTATE_GATES", dir);
+           ]
+         [ mutate; jobs 1 ])
+  in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal string killed_outcome (outcome r.out);
+  equal int 6 (line_count b_file);
+  equal (list string) killed_by_b (killers_of_the_file ())
+
+let interrupted_check () =
+  let gates = temp_dir () and tmpdir = temp_dir () in
+  let b_file = Filename.concat (temp_dir ()) "b-runs" in
+  remove (Verdicts.output_file ~exe:suite_exe);
+  let run =
+    start
+      ~env:
+        [
+          suite "flaky_kill";
+          ("MUTATE_CHILD_RUNS", b_file);
+          domain_init;
+          fail_at "3";
+          ("MUTATE_WAIT_AT", "4");
+          ("MUTATE_GATES", gates);
+          ("TMPDIR", tmpdir);
+        ]
+      [ mutate; jobs 1 ]
+  in
+  ignore (gate ~gates run "kill4");
+  Unix.kill run.pid Sys.sigint;
+  let r = finish run in
+  equal string "killed by SIGINT" r.status;
+  equal text (strf "windtrap: interrupted while testing %s\n" (site 18)) r.err;
+  equal string not_tested_outcome (outcome r.out);
+  equal (option (list string)) None (rows r);
+  equal int 4 (line_count b_file);
+  equal (list string) [] (entries tmpdir)
+
+(* Runs 3 and 4 are the children of [sub] and [widen], and run 5 is the
+   first check run, which waits at its gate. The child of [widen] ends first
+   and starts the check. The child of [sub] ends next, so [sub] waits for the
+   check. [stop] gets the pid of the check run and the function that opens
+   its gate, and sends SIGINT. *)
+let stopped_check stop =
+  let gates = temp_dir () and tmpdir = temp_dir () in
+  let b_file = Filename.concat (temp_dir ()) "b-runs" in
+  remove (Verdicts.output_file ~exe:suite_exe);
+  let run =
+    start
+      ~env:
+        [
+          suite "flaky_kill";
+          ("MUTATE_CHILD_RUNS", b_file);
+          domain_init;
+          kill_sub;
+          fail_at "3,4";
+          ("MUTATE_WAIT_ARMED", "1");
+          ("MUTATE_HOLD_AT", "5");
+          ("MUTATE_GATES", gates);
+          ("TMPDIR", tmpdir);
+        ]
+      [ mutate; jobs 2 ]
+  in
+  let _, open_widen = gate ~gates run "widen" in
+  let sub, open_sub = gate ~gates run "sub" in
+  open_widen ();
+  let check, open_check = gate ~gates run "hold" in
+  open_sub ();
+  reaped ~what:"the reaping of the child of sub" run sub;
+  stop run check open_check;
+  let r = finish run in
+  equal string "killed by SIGINT" r.status;
+  equal int 5 (line_count b_file);
+  equal (option (list string)) None (rows r);
+  equal (list string) [] (entries tmpdir);
+  r
+
+let interrupted_shared_check () =
+  let r = stopped_check (fun run _ _ -> Unix.kill run.pid Sys.sigint) in
+  equal text
+    (strf "windtrap: interrupted while testing %s, %s\n" (site 15) (site 18))
+    r.err
+
+(* The first check run ends while the loop is stopped, and the signal comes
+   before the loop reads its end. The next check run of [widen] then never
+   starts, and [sub] is the first mutant with no verdict. *)
+let interrupted_between_check_runs () =
+  let r =
+    stopped_check (fun run check open_check ->
+        Unix.kill run.pid Sys.sigstop;
+        Fun.protect
+          ~finally:(fun () ->
+            try Unix.kill run.pid Sys.sigcont with Unix.Unix_error _ -> ())
+          (fun () ->
+            open_check ();
+            exited ~what:"the end of the first check run" run check;
+            Unix.kill run.pid Sys.sigint))
+  in
+  equal text (strf "windtrap: interrupted before testing %s\n" (site 15)) r.err
+
+(* New process 1 is the startup child, 2 the probe, 3 the alone run, 4 the
+   child of the mutant, and 5 the first check run. *)
+let refused_check () =
+  let exec_file = Filename.concat (temp_dir ()) "exec-runs" in
+  remove (Verdicts.output_file ~exe:suite_exe);
+  let k =
+    kill_run
+      ~env:
+        [
+          domain_init;
+          fail_at "3";
+          ("MUTATE_EXEC_RUNS", exec_file);
+          ("MUTATE_REFUSE_AT", "5");
+        ]
+      one_job
+  in
+  equal string "exited 1" k.r.status;
+  equal text
+    (strf
+       "windtrap: %s: the tests changed after the dry run: this process has no \
+        test \"%s\"\n"
+       (site 18) b)
+    k.r.err;
+  equal int 3 k.b_runs;
+  equal int 5 (line_count exec_file);
+  equal bool false (Sys.file_exists (Verdicts.output_file ~exe:suite_exe))
+
+let live_line_of_a_check () =
+  let seen = Buffer.create 4096 in
+  let master, slave = openpty () in
+  Unix.set_nonblock master;
+  let b_file = Filename.concat (temp_dir ()) "b-runs" in
+  remove (Verdicts.output_file ~exe:suite_exe);
+  let run =
+    Fun.protect
+      ~finally:(fun () -> Unix.close slave)
+      (fun () ->
+        start ~stdout:slave
+          ~env:
+            [
+              ("WINDTRAP_COLOR", "always");
+              suite "flaky_kill";
+              ("MUTATE_CHILD_RUNS", b_file);
+              domain_init;
+              fail_at "3,5";
+            ]
+          [ mutate; jobs 1 ])
+  in
+  let r =
+    finish_within ~what:"the run on a terminal"
+      ~meanwhile:(fun () -> drain master seen)
+      run
+  in
+  drain master seen;
+  Unix.close master;
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal (list string)
+    [ strf "[0/1] %s\u{2026}" (site 18) ]
+    (List.sort_uniq String.compare (mutation_live (Buffer.contents seen)))
+
+(* The first child runs [B] alone, so its check does too. Runs 2 and 3 are the
+   alone runs of [A; B] and [B], run 4 is the first child, and runs 5 and 6
+   are its check runs. *)
+let kill_of_a_first_child () =
+  ignore (kill_run ~env:[ domain_init; fail_at "3" ] one_job);
+  equal (list string) killed_by_b (killers_of_the_file ());
+  let k = kill_run ~keep:true ~env:[ domain_init; fail_at "4,6" ] one_job in
+  equal int 6 k.b_runs;
+  equal int 2 k.a_runs;
+  equal (option (list string)) (kill_rows (flaky_by 6)) (rows k.r);
+  equal (option (list string)) None (unstable k.r.out);
+  equal
+    (option (list string))
+    (Some [ "subject.ml:18 killed" ]) (previous_of_widen k.r)
+
+(* A flaky record gives no first child, so the next run tests the mutant from
+   a full child, and checks again. *)
+let after_a_flaky_verdict () =
+  ignore (kill_run ~env:[ domain_init; fail_at "3,5" ] one_job);
+  let k = kill_run ~keep:true ~env:[ domain_init; fail_at "3" ] one_job in
+  equal string killed_outcome (outcome k.r.out);
+  equal int 6 k.b_runs;
+  equal int 6 k.a_runs;
+  equal (option (list string)) None (unstable k.r.out);
+  equal
+    (option (list string))
+    (Some [ "subject.ml:18 " ^ flaky_by 5 ])
+    (previous_of_widen k.r)
+
+let flaky_kills =
+  group "Flaky kills"
+    [
+      test
+        "a kill by a test that also fails with no mutant is flaky, and the \
+         report lists it"
+        flaky_regression;
+      test "a check with no failure keeps the kill" clean_check;
+      test "the first check run that fails stops the check"
+        first_failing_run_stops;
+      test "a failure in the last check run gives flaky" last_run_fails;
+      test "a suite that spawned no domain gets no check" no_domain_no_check;
+      test "exec mode with no domain gets no check" exec_without_domain_no_check;
+      test "a kill in a retry gets the check" kill_in_a_retry;
+      test "one list of tests has one check, and a clean check keeps each kill"
+        one_check_clean;
+      test
+        "one list of tests has one check, and its failure is flaky for each \
+         mutant"
+        one_check_flaky;
+      test "two jobs share one check" two_jobs_one_check;
+      test "the check runs the tests up to and with the killing test"
+        check_through_the_killing_test;
+      test "a check run that passes its deadline gives no failure"
+        check_past_its_deadline;
+      test "a signal that stops a check leaves its mutant with no verdict"
+        interrupted_check;
+      test
+        "a signal that stops a check leaves each mutant that waits for it with \
+         no verdict"
+        interrupted_shared_check;
+      test
+        "a signal between two runs of a check stops before the first mutant \
+         that waits for it"
+        interrupted_between_check_runs;
+      test "a check run that refuses its request ends the run" refused_check;
+      test "the live line counts a mutant once, with its check"
+        live_line_of_a_check;
+      test "a kill of a first child gets the check over its one test"
+        kill_of_a_first_child;
+      test
+        "after a flaky verdict, the next run tests the mutant from a full \
+         child, and checks again"
+        after_a_flaky_verdict;
+    ]
+
 (* The fixtures' verdict files land in the real _build/_mutants, where
    [windtrap mutants] would merge them into the tree's answer, and no rule
    runs these executables but this suite. A forked child ends past
@@ -5818,6 +6328,7 @@ let () =
          history;
          unstable_verdicts;
          retry;
+         flaky_kills;
          killed_elsewhere;
          environment;
          refusals;

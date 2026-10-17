@@ -478,6 +478,11 @@ of each other. Thus run them one after the other (`dune runtest -j 1`).
 survivor again, up to `N` more times. The default is 2 in a suite that
 spawns domains.
 
+In a suite that spawns domains, each kill gets up to 3 runs with no
+mutant. If its test also fails in one of these runs, the mutant is
+`flaky`, and the score does not count it.
+Make that test deterministic.
+
 Mutation testing starts a child process per mutant and is refused on Windows.
 `windtrap coverage --help`, `windtrap mutants --help` and a suite's
 `--help` (`--mutate`, `--arm`) state the flags.

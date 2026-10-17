@@ -306,6 +306,76 @@ the index of the executable:
       { "id": "lib/calc.ml:2:14:sub", "executable": 1, "previous": "not_evaluated", "verdict": "killed" },
       { "id": "lib/calc.ml:3:14:lt", "executable": 1, "previous": "survived", "verdict": "killed" } ] }
 
+Flaky kills
+
+A record can be flaky: a test killed the mutant, and then failed in a run
+with no mutant. The report lists each flaky mutant with the test and its
+failure, and the score does not count it. Two executables over one
+library. A has add, sub and or flaky. In B, add survived, sub was not
+evaluated, lt was killed, and or is flaky with another failure. Flaky ranks
+over survived and over not evaluated, and under killed. Of two flaky
+records, the smaller failure stays, with the executable that holds it. The
+command still exits 0:
+
+  $ plant "$scratch/flaky" && cd "$scratch/flaky"
+  $ mkdata mutants _build/_mutants/a.mutants "$add=flaky:t/a:child run 5" \
+  >   "$sub=flaky:t/b:child run 4" "$lt=flaky:t/c:child run 6" "$or=flaky:t/d:x"
+  $ mkdata mutants _build/_mutants/b.mutants "$add=survived:u/a" \
+  >   "$sub=not_evaluated" "$lt=killed" "$or=flaky:t/d:w"
+  $ run windtrap mutants
+  ─────────────────────── flaky (3) ────────────────────────
+    A test killed each mutant, and then failed in a run with no mutant.
+    The score does not count these mutants.
+    lib/calc.ml:1:14:add  a + b → a - b
+      test: a.mutants  t › a
+      failure with no mutant: child run 5
+    lib/calc.ml:2:14:sub  a - b → a + b
+      test: a.mutants  t › b
+      failure with no mutant: child run 4
+    lib/util.ml:1:13:or  p || q → p && q
+      test: b.mutants  t › d
+      failure with no mutant: w
+  ──────────────────────────────────────────────────────────
+  
+  mutants: 4 reached, 1 killed, 3 flaky, 2 executables, score 100.0%
+
+The document has the array "flaky", and "mutants" holds no flaky mutant.
+"reached" counts the mutants of the score, so it does not count the flaky
+mutants. A flaky object names its executable by the index in
+"executables":
+
+  $ run windtrap mutants --json
+  { "version": 1,
+    "summary": { "reached": 1, "killed": 1, "survived": 0,
+      "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
+      "filtered": 0, "flaky": 3, "score": 100.00 },
+    "executables": [
+      { "name": "a.mutants", "path": null },
+      { "name": "b.mutants", "path": null } ],
+    "mutants": [
+      { "id": "lib/calc.ml:3:14:lt",
+        "file": "lib/calc.ml", "line": 3, "col": 14, "rewrite": "lt",
+        "before": "a < b", "after": "a <= b",
+        "verdict": "killed" } ],
+    "filtered": [ ],
+    "flaky": [
+      { "id": "lib/calc.ml:1:14:add",
+        "file": "lib/calc.ml", "line": 1, "col": 14, "rewrite": "add",
+        "before": "a + b", "after": "a - b",
+        "test": { "executable": 0, "test": ["t", "a"] },
+        "failure": "child run 5" },
+      { "id": "lib/calc.ml:2:14:sub",
+        "file": "lib/calc.ml", "line": 2, "col": 14, "rewrite": "sub",
+        "before": "a - b", "after": "a + b",
+        "test": { "executable": 0, "test": ["t", "b"] },
+        "failure": "child run 4" },
+      { "id": "lib/util.ml:1:13:or",
+        "file": "lib/util.ml", "line": 1, "col": 13, "rewrite": "or",
+        "before": "p || q", "after": "p && q",
+        "test": { "executable": 1, "test": ["t", "d"] },
+        "failure": "w" } ],
+    "unstable": [ ] }
+
 Executables
 
 A file that records the executable that wrote it names its reaching tests
@@ -598,7 +668,7 @@ its executable by its index in "executables":
   { "version": 1,
     "summary": { "reached": 3, "killed": 2, "survived": 1,
       "not_evaluated": 0, "outside_tests": 0, "unreached": 2,
-      "filtered": 0, "score": 66.67 },
+      "filtered": 0, "flaky": 0, "score": 66.67 },
     "executables": [
       { "name": "windtrap-a.mutants", "path": null },
       { "name": "windtrap-b.mutants", "path": null },
@@ -629,6 +699,7 @@ its executable by its index in "executables":
         "before": "p && q", "after": "p || q",
         "verdict": "unreached" } ],
     "filtered": [ ],
+    "flaky": [ ],
     "unstable": [ ] }
   [1]
   $ cp "$bin/out" json
@@ -642,7 +713,7 @@ records none:
   { "version": 1,
     "summary": { "reached": 1, "killed": 0, "survived": 1,
       "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
-      "filtered": 0, "score": 0.00 },
+      "filtered": 0, "flaky": 0, "score": 0.00 },
     "executables": [
       { "name": "t.exe", "path": "default/a/t.exe" },
       { "name": "t.exe", "path": "default/b/t.exe" } ],
@@ -655,6 +726,7 @@ records none:
         "tests": [
           { "executable": 1, "test": ["calc", "adds"] } ] } ],
     "filtered": [ ],
+    "flaky": [ ],
     "unstable": [ ] }
   [1]
   $ cd "$scratch/labels"
@@ -662,7 +734,7 @@ records none:
   { "version": 1,
     "summary": { "reached": 1, "killed": 0, "survived": 1,
       "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
-      "filtered": 0, "score": 0.00 },
+      "filtered": 0, "flaky": 0, "score": 0.00 },
     "executables": [
       { "name": "my_lib_expect", "path": "default/lib/.my_lib_expect.inline-tests/inline-test-runner.exe" },
       { "name": "plain.mutants", "path": null },
@@ -679,6 +751,7 @@ records none:
           { "executable": 2, "test": ["calc", "adds"] },
           { "executable": 2, "test": ["calc", "adds zero"] } ] } ],
     "filtered": [ ],
+    "flaky": [ ],
     "unstable": [ ] }
   [1]
 
@@ -717,7 +790,7 @@ every test, have their verdicts and no tests:
   { "version": 1,
     "summary": { "reached": 2, "killed": 1, "survived": 0,
       "not_evaluated": 1, "outside_tests": 1, "unreached": 0,
-      "filtered": 0, "score": 50.00 },
+      "filtered": 0, "flaky": 0, "score": 50.00 },
     "executables": [
       { "name": "a.mutants", "path": null } ],
     "mutants": [
@@ -734,6 +807,7 @@ every test, have their verdicts and no tests:
         "before": "a < b", "after": "a <= b",
         "verdict": "outside_tests" } ],
     "filtered": [ ],
+    "flaky": [ ],
     "unstable": [ ] }
 
 A filtered mutant is in the array "filtered", with its reason, and not in
@@ -744,7 +818,7 @@ A filtered mutant is in the array "filtered", with its reason, and not in
   { "version": 1,
     "summary": { "reached": 2, "killed": 2, "survived": 0,
       "not_evaluated": 0, "outside_tests": 0, "unreached": 0,
-      "filtered": 3, "score": 100.00 },
+      "filtered": 3, "flaky": 0, "score": 100.00 },
     "executables": [
       { "name": "a.mutants", "path": null },
       { "name": "b.mutants", "path": null } ],
@@ -770,6 +844,7 @@ A filtered mutant is in the array "filtered", with its reason, and not in
         "file": "lib/util.ml", "line": 3, "col": 22, "rewrite": "and",
         "before": "p && q", "after": "p || q",
         "reason": "same operands" } ],
+    "flaky": [ ],
     "unstable": [ ] }
 
 Each string is escaped as JSON needs, and bytes that are not UTF-8 become
@@ -864,7 +939,7 @@ The document counts the mutant as killed, and the note is the same:
   { "version": 1,
     "summary": { "reached": 2, "killed": 1, "survived": 1,
       "not_evaluated": 0, "outside_tests": 0, "unreached": 3,
-      "filtered": 0, "score": 50.00 },
+      "filtered": 0, "flaky": 0, "score": 50.00 },
     "executables": [
       { "name": "b.exe", "path": "default/test/b.exe" } ],
     "mutants": [
@@ -892,6 +967,7 @@ The document counts the mutant as killed, and the note is the same:
         "before": "p && q", "after": "p || q",
         "verdict": "unreached" } ],
     "filtered": [ ],
+    "flaky": [ ],
     "unstable": [ ] }
   --- stderr
   windtrap: 1 mutant counts as killed by default/test/a.exe, but no verdict file of the merge gives this kill: run default/test/a.exe with its mutants, then merge again
@@ -994,13 +1070,13 @@ is to delete it, which a coverage dump in the directory shares:
   $ printf 'windtrap-mutants-v0\n1\nsome older payload\n' > _build/_mutants/old.mutants
   $ run windtrap mutants
   --- stderr
-  windtrap: .../old.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v8", found "windtrap-mutants-v0"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
+  windtrap: .../old.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v9", found "windtrap-mutants-v0"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
   [1]
   $ rm _build/_mutants/old.mutants
   $ printf 'windtrap-coverage-v3\n0\n' > _build/_mutants/cov.mutants
   $ run windtrap mutants
   --- stderr
-  windtrap: .../cov.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v8", found "windtrap-coverage-v3"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
+  windtrap: .../cov.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v9", found "windtrap-coverage-v3"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
   [1]
 
 A PATH that cannot be used fails the command, and the files named beside

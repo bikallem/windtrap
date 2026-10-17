@@ -289,15 +289,33 @@
   survivor less probable, but it does not make a verdict deterministic
   (see
   [Running a survivor again](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#running-a-survivor-again)).
+- In a process that spawned a domain, a mutation run does a check of
+  each kill that names a test. It runs the tests of the child, up to
+  and with that test, up to 3 times with no mutant, each in a new
+  process. When the test fails in one of these runs, the verdict is
+  `flaky`, not `killed`. The report lists each flaky mutant in a
+  section `flaky (N)`, with its test and the failure with no mutant.
+  The outcome line counts it as `1 flaky`. The score does not count a
+  flaky mutant. Each different list of tests costs at most 3 more
+  children in a run. Three runs with no failure do not prove that a test
+  is not flaky (see
+  [Flaky kills](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#flaky-kills)).
+- `windtrap mutants` gives a mutant as flaky when no executable killed
+  it and one executable gave it as flaky. It lists the mutant with that
+  executable and its test. `--json` gives the count `"flaky"` in
+  `"summary"`, and each flaky mutant with its `"test"` and its
+  `"failure"` in the array `"flaky"`, not in `"mutants"`. `"reached"`
+  does not count the flaky mutants.
 - A mutation run first runs the test that killed a mutant in the
   previous run, alone, when the source file of the mutant did not
   change and the test passes alone with no mutant, and runs every
   reaching test only when that test does not kill it (see
   [Where the verdicts are](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#where-the-verdicts-are)).
-- (breaking) A verdict file starts with `windtrap-mutants-v8`. It keeps
+- (breaking) A verdict file starts with `windtrap-mutants-v9`. It keeps
   the test that killed each mutant, a digest of its source file, the
   reason of each filtered mutant, the previous verdict of each mutant,
-  the runs of each survivor, and the suite that wrote it. It also keeps
+  the runs of each survivor, the test and the failure of each flaky
+  mutant, and the suite that wrote it. It also keeps
   the executable that killed a mutant that the run skipped.
   `windtrap mutants` refuses a file of an earlier version, so run the
   suites with their mutants again.

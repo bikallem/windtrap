@@ -2243,6 +2243,14 @@ let sub_change =
     verdict = `Killed;
   }
 
+let sub_flaky =
+  {
+    Sections.mutant = mutant "lib/calc.ml:13:9:sub" 13 "a - b" "a + b";
+    test = "calc \u{203a} subtracts on two domains";
+    failure = "expected 6, got 5";
+    exe = None;
+  }
+
 let drop_change =
   {
     Sections.id = "lib/calc.ml:22:4:drop";
@@ -2255,6 +2263,7 @@ let loop_report =
   {
     Sections.survivors = [ add_survivor; ge_survivor ];
     not_evaluated = [];
+    flaky = [];
     unstable = [];
     unreached = [ ("lib/calc.ml", 40); ("lib/calc.ml", 41) ];
     outside_tests = [];
@@ -2301,6 +2310,7 @@ let merge_report =
   {
     Sections.survivors = [ eq_survivor; not_survivor ];
     not_evaluated = [];
+    flaky = [];
     unstable = [];
     unreached =
       List.map (fun line -> ("lib/text.ml", line)) [ 12; 13; 14; 32 ]
@@ -2418,6 +2428,7 @@ let mutation_entries () =
         {
           Sections.survivors = [];
           not_evaluated = [];
+          flaky = [];
           unstable = [];
           unreached =
             List.init 60 (fun i -> ("lib/report.ml", (i * 3) + 10))
@@ -2467,6 +2478,25 @@ let mutation_entries () =
               { sub_change with Sections.exe = Some "test_calc.exe" };
               { drop_change with Sections.exe = Some "test_eval.exe" };
             ];
+        } );
+    ( "flaky: each mutant with its test and its failure with no mutant, after \
+       not evaluated",
+      at_rest ~ansi:true { reached_report with Sections.flaky = [ sub_flaky ] }
+    );
+    ( "flaky in a merge: the executable before the test",
+      at_rest
+        {
+          merge_report with
+          Sections.survivors = [];
+          flaky = [ { sub_flaky with Sections.exe = Some "test_calc.exe" } ];
+        } );
+    ( "flaky alone, in a loop: a blank line opens it",
+      closing
+        {
+          loop_report with
+          Sections.survivors = [];
+          unreached = [];
+          flaky = [ sub_flaky ];
         } );
     ( "evaluated outside tests follows never reached",
       at_rest
@@ -2568,14 +2598,15 @@ let mutation_entries () =
         } );
   ]
 
-let summary ?(survivors = []) ?(not_evaluated = []) ?(unstable = [])
-    ?(unreached = []) ?(outside_tests = []) ?(filtered = []) ?(not_tested = 0)
-    ?min ~killed scope =
+let summary ?(survivors = []) ?(not_evaluated = []) ?(flaky = [])
+    ?(unstable = []) ?(unreached = []) ?(outside_tests = []) ?(filtered = [])
+    ?(not_tested = 0) ?min ~killed scope =
   last_line
     (at_rest ?min
        {
          Sections.survivors;
          not_evaluated;
+         flaky;
          unstable;
          unreached;
          outside_tests;
@@ -2658,6 +2689,19 @@ let summary_rows =
       (fun () ->
         summary ~not_evaluated:[ memo_missed ] ~killed:0 Sections.Suite),
       "mutants: 1 reached by this suite, 1 not evaluated, score 0.0%" );
+    ( "a flaky mutant is reached and not scored",
+      (fun () ->
+        summary ~survivors:s ~flaky:[ sub_flaky ] ~killed:2 Sections.Suite),
+      "mutants: 1 survived of 4 reached by this suite, 2 killed, 1 flaky, \
+       score 66.7%" );
+    ( "flaky alone gives no score",
+      (fun () -> summary ~flaky:[ sub_flaky ] ~killed:0 Sections.Suite),
+      "mutants: 1 reached by this suite, 1 flaky" );
+    ( "a gate over flaky alone reads 100",
+      (fun () ->
+        summary ~flaky:[ sub_flaky ] ~killed:0 ~min:50. (Sections.Executables 1)),
+      "mutants: 1 reached, 1 flaky, 1 executable, score 100.0%, minimum 50%: ok"
+    );
     ( "the score is of the killed among the scored, unrounded under a gate",
       (fun () ->
         summary ~survivors:s ~not_evaluated:[ memo_missed ] ~killed:1 ~min:33.4
@@ -2865,6 +2909,12 @@ let unstable_score () =
     (Sections.mutation_score
        { loop_report with Sections.unstable = [ sub_change; drop_change ] })
 
+let flaky_score () =
+  equal float_exact
+    (Sections.mutation_score loop_report)
+    (Sections.mutation_score
+       { loop_report with Sections.flaky = [ sub_flaky ] })
+
 let mutation_group =
   group "Mutation"
     [
@@ -2875,6 +2925,7 @@ let mutation_group =
       test "a not-evaluated mutant's arm command under a build action"
         arm_mirror;
       test "the unstable rows change no score" unstable_score;
+      test "the flaky mutants change no score" flaky_score;
       cases "the outcome line"
         ~name:(fun (name, _, _) -> name)
         summary_rows

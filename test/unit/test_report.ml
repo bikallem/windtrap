@@ -1912,6 +1912,7 @@ let loop_report =
   {
     Sections.survivors = [ add_survivor; ge_survivor ];
     not_evaluated = [];
+    flaky = [];
     unstable = [];
     unreached = [ ("lib/calc.ml", 40); ("lib/calc.ml", 41) ];
     outside_tests = [];

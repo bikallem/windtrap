@@ -109,6 +109,11 @@
     identity it is the base name of the file. No reaching test has a location,
     because the command links no test tree.
 
+    {b Flaky kills.} A merged [Windtrap_runtime.Verdicts.Flaky] verdict has the
+    test and the failure of the smaller pair. The report names the label of the
+    first file kept, in path order, whose record of the mutant has that pair. A
+    flaky mutant is reached and not scored, and it does not fail the command.
+
     {b Unstable verdicts.} The report lists, for each file that is kept, each
     record whose verdict changed its class
     ([Windtrap_runtime.Verdicts.changed]), with the label of the file. The rows
@@ -158,14 +163,15 @@
     others. A change to the meaning of a key increments ["version"].
 
     The document is one object with the keys ["version"], ["summary"],
-    ["executables"], ["mutants"], ["filtered"] and ["unstable"]. ["version"] is
-    the number [1].
+    ["executables"], ["mutants"], ["filtered"], ["flaky"] and ["unstable"].
+    ["version"] is the number [1].
 
     ["summary"] is an object with these keys:
-    - ["reached"] is the sum of the three counts that follow it.
+    - ["reached"] is the sum of the three counts that follow it. It does not
+      count the flaky mutants, which the outcome line counts as reached.
     - ["killed"], ["survived"], ["not_evaluated"], ["outside_tests"],
-      ["unreached"] and ["filtered"] are each the count of the merged mutants
-      that have that verdict.
+      ["unreached"], ["filtered"] and ["flaky"] are each the count of the merged
+      mutants that have that verdict.
     - ["score"] is the score of the {{!section-gate}gate}, with two decimals.
 
     ["executables"] is an array with one object for each file that is kept, in
@@ -178,8 +184,8 @@
       that records none.
 
     ["mutants"] is an array with one object for each merged mutant that is not
-    filtered, in the order of [Windtrap_runtime.Mutate.compare_id]. The object
-    has these keys:
+    filtered or flaky, in the order of [Windtrap_runtime.Mutate.compare_id]. The
+    object has these keys:
     - ["id"] is the identifier, as [Windtrap_runtime.Mutate.id_to_string] spells
       it.
     - ["file"], ["line"], ["col"] and ["rewrite"] are the four parts of the
@@ -202,6 +208,13 @@
     rewriter filtered, in the same order. The object has the keys of an object
     of ["mutants"] from ["id"] to ["after"], and the key ["reason"] in place of
     ["verdict"]. ["reason"] is the reason of the filter, as ["zero operand"].
+
+    ["flaky"] is an array with one object for each merged flaky mutant, in the
+    same order. The object has the keys of an object of ["mutants"] from ["id"]
+    to ["after"], and the keys ["test"] and ["failure"] in place of ["verdict"].
+    ["test"] is an object with the keys of an object of ["tests"], for the test
+    that killed the mutant in the file that the report names. ["failure"] is the
+    first failure of that test in a run with no mutant, on one line.
 
     ["unstable"] is an array with one object for each row of the unstable
     section ({{!section-merge}the merge}), in its order. The object has the keys

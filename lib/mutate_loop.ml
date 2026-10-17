@@ -887,9 +887,14 @@ type loop = {
       (* in exec mode, the lists of reaching tests that did not pass alone in
          a new process ([passing_alone]) *)
   retry : int; (* the more runs of the full child of a survivor *)
+  check_kills : bool;
+      (* the process spawned a domain: a kill with a test gets a check *)
 }
 
 let deadline_multiplier = 10.
+
+(* The most runs of the check of a kill ([check_kill]). *)
+let check_runs = 3
 
 (* The more runs of a survivor's child when no layer gives [--mutate-retry]
    and the process spawned a domain. *)
@@ -1114,15 +1119,30 @@ let alone_line (outcome : Run.outcome) =
   if killed_by outcome || Run.results outcome.run = [] then "fails"
   else "passes"
 
+(* [flaky <headline>] when the last test of [paths] failed and counts. *)
+let check_line ~paths (outcome : Run.outcome) =
+  let last = match List.rev paths with last :: _ -> Some last | [] -> None in
+  match
+    List.find_opt
+      (fun (r : Run.result) ->
+        kills r && Option.equal (List.equal String.equal) (Some r.path) last)
+      (Run.results outcome.run)
+  with
+  | Some { outcome = Failure.Fail (f :: _); _ } ->
+      "flaky " ^ Report_sections.headline f
+  | Some _ | None -> "steady"
+
 (* Requests *)
 
 (* What a child does with the tests of its request. The line that it
-   gives comes from [probe_line], [alone_line] or [verdict_line]. *)
+   gives comes from [probe_line], [alone_line], [verdict_line] or
+   [check_line]. *)
 type kind =
   | Probe
   | Alone
   | Mutant of { id : Mutate.id; budget : int }
   | Startup (* gives [ready] and runs no test *)
+  | Check_kill
 
 (* What the parent asks of a child. It holds only data, and not closures. *)
 type request = {
@@ -1152,6 +1172,9 @@ let serve tests request =
   | Startup -> "ready"
   | Probe -> run request.config (probe_line ~paths:request.paths)
   | Alone -> run request.config alone_line
+  | Check_kill ->
+      (* The killing test runs also when an earlier test fails. *)
+      run { request.config with bail = false } (check_line ~paths:request.paths)
   | Mutant { id; budget } -> (
       let witness = witness () in
       match Mutate.arm ~budget ?on_evaluation:(on_evaluation witness) id with
@@ -1431,7 +1454,7 @@ let child_deadline loop ~share ~kind paths =
   let fixed =
     match kind with
     | Probe -> loop.dry_run_wall
-    | Alone | Mutant _ | Startup ->
+    | Alone | Mutant _ | Startup | Check_kill ->
         fork_allowance +. loop.fixture_wall +. prefix
   in
   deadline ~share ~fixed ~startup:loop.startup_wall ~scheduled
@@ -1573,6 +1596,12 @@ let start_mutant loop ~index ~siblings ~paths ~bail
     ~kind:(Mutant { id = mutant.id; budget = budget_of site.hits })
     ~paths ~siblings
 
+(* [index] is the mutant that started the check. A mutant starts at most one
+   check, so the log name is unique. *)
+let start_check loop ~index ~siblings ~paths =
+  start_child loop ~share:loop.share ~log:(strf "c%d" index) ~bail:false
+    ~kind:Check_kill ~paths ~siblings
+
 (* A diagnostic is a child that could not arm its mutant or was refused at
    startup. [paths] are the tests that the parent handed the child. With a
    verdict comes what failed in a child that did not evaluate the site: a
@@ -1664,22 +1693,28 @@ type tested = {
   verdicts : Verdicts.t; (* of the children that ended *)
   survivors : Report_sections.survivor list; (* as their blocks printed *)
   not_evaluated : Report_sections.not_evaluated list; (* in catalogue order *)
+  flaky : Report_sections.flaky list; (* in catalogue order *)
   stopped : (int * Report.stopped) option;
       (* the signal that stopped the forks, and what it stopped *)
 }
 
-(* The tests that one child of a mutant runs. A first child runs the test
-   that killed the mutant before, alone ([first_test]), and a full child
-   runs every reaching test. *)
+(* The tests that one child runs: a child of a mutant or a run of a check. A
+   first child runs the test that killed the mutant before, alone
+   ([first_test]), and a full child runs every reaching test. *)
 type attempt = {
-  index : int; (* the catalogue index of the mutant *)
+  index : int;
+      (* the catalogue index of the mutant, or of the mutant that started the
+         check *)
   paths : string list list;
       (* the tests of the child, in the order of the run *)
   first : bool;
       (* a first child, which a full child follows when it kills nothing *)
   bail : bool;
       (* the child stops at its first failure that counts ([full_paths]) *)
-  run : int; (* the run of a full child, from [1]; a first child has [1] too *)
+  run : int;
+      (* the run of a full child or of a check, from [1]; a first child has
+         [1] too *)
+  check : bool; (* a check run over [paths], with no mutant *)
 }
 
 (* What the loop committed: the verdicts of the mutants before
@@ -1688,12 +1723,12 @@ type pool = {
   mutable verdicts : Verdicts.t;
   mutable survivors : Report_sections.survivor list; (* newest first *)
   mutable not_evaluated : Report_sections.not_evaluated list; (* newest first *)
+  mutable flaky : Report_sections.flaky list; (* newest first *)
   mutable committed : int;
-  mutable completed : int; (* the mutants whose last child ended *)
+  mutable completed : int; (* the mutants that have their verdict *)
   mutable running : (attempt * running) list; (* in the order of the starts *)
-  mutable again : (int * int) list;
-      (* the mutants whose full child starts next, each with the run of that
-         child, in catalogue order *)
+  mutable again : attempt list;
+      (* the retries and the due check runs, in catalogue order of [index] *)
 }
 
 (* The test that the first child of a mutant runs alone: the test that
@@ -1805,6 +1840,19 @@ let full_paths loop (site : site) =
       (executed_until loop.reach last, false)
   | _ -> (reaching, true)
 
+(* The paths of [paths] up to and with the first path that is [test]. *)
+let rec through test = function
+  | [] -> []
+  | path :: paths ->
+      if List.equal String.equal path test then [ path ]
+      else path :: through test paths
+
+(* The check of one list of tests: the mutants that wait for it, and then
+   what each of these mutants gets in [ended]. *)
+type check =
+  | Checking of int list
+  | Checked of (Verdicts.verdict * string option, string) result
+
 (* Children at once as [fits] lets them, started in catalogue order. A child
    that does not fit waits for a child to end, and no child after it starts
    before it. A verdict is kept by the catalogue index of its mutant until
@@ -1817,7 +1865,10 @@ let full_paths loop (site : site) =
    which runs that test alone. When the first child kills the mutant, that is
    its verdict. When it does not, a full child runs every reaching test,
    before the loop starts the child of a mutant after it. A full child that
-   lets the mutant survive starts again, up to [loop.retry] times.
+   lets the mutant survive starts again, up to [loop.retry] times. When
+   [loop.check_kills], a kill that names a test gets its verdict when the
+   check of its tests ends ([check_kill]), and each run of the check starts
+   from [pool.again], as a retry does.
 
    The loop starts no child after a signal. The signal stops the children that
    run, and a child that exited first keeps its verdict, reaped or not. The
@@ -1838,6 +1889,7 @@ let test_mutants renderer loop reached =
       verdicts = Verdicts.empty;
       survivors = [];
       not_evaluated = [];
+      flaky = [];
       committed = 0;
       completed = 0;
       running = [];
@@ -1856,6 +1908,16 @@ let test_mutants renderer loop reached =
           { mutant = shown mutant; invocation = loop.config.invocation; failed }
         in
         pool.not_evaluated <- missed :: pool.not_evaluated
+    | Verdicts.Flaky { test; failure } ->
+        let flaky : Report_sections.flaky =
+          {
+            mutant = shown mutant;
+            test = Test_tree.path_to_string test;
+            failure;
+            exe = None;
+          }
+        in
+        pool.flaky <- flaky :: pool.flaky
     | Verdicts.Killed _ | Verdicts.Killed_elsewhere _ | Verdicts.Outside_tests
     | Verdicts.Filtered _ | Verdicts.Unreached ->
         ());
@@ -1889,32 +1951,86 @@ let test_mutants renderer loop reached =
       verdicts = pool.verdicts;
       survivors = List.rev pool.survivors;
       not_evaluated = List.rev pool.not_evaluated;
+      flaky = List.rev pool.flaky;
       stopped;
     }
   in
   let id index = Mutate.id_to_string (fst reached.(index)).id in
   let start attempt =
+    let siblings = List.map snd pool.running in
     let child =
-      start_mutant loop ~index:attempt.index
-        ~siblings:(List.map snd pool.running)
-        ~paths:attempt.paths ~bail:attempt.bail reached.(attempt.index)
+      if attempt.check then
+        start_check loop ~index:attempt.index ~siblings ~paths:attempt.paths
+      else
+        start_mutant loop ~index:attempt.index ~siblings ~paths:attempt.paths
+          ~bail:attempt.bail reached.(attempt.index)
     in
     pool.running <- pool.running @ [ (attempt, child) ]
   in
   let full index ~run =
     let paths, bail = full_paths loop (snd reached.(index)) in
-    { index; paths; first = false; bail; run }
+    { index; paths; first = false; bail; run; check = false }
   in
-  let requeue entry =
+  let requeue attempt =
     pool.again <-
-      List.merge (fun (a, _) (b, _) -> Int.compare a b) pool.again [ entry ]
+      List.merge (fun a b -> Int.compare a.index b.index) pool.again [ attempt ]
+  in
+  (* The check of each list of tests in this run, by the list. *)
+  let checked = Hashtbl.create 16 in
+  let settle_one index value =
+    ended.(index) <- Some value;
+    pool.completed <- pool.completed + 1
+  in
+  let waiting paths =
+    match Hashtbl.find_opt checked paths with
+    | Some (Checking waiting) -> waiting
+    | Some (Checked _) | None -> []
+  in
+  let settle paths value =
+    List.iter (fun index -> settle_one index value) (waiting paths);
+    Hashtbl.replace checked paths (Checked value)
+  in
+  let check_kill index paths =
+    match Hashtbl.find_opt checked paths with
+    | Some (Checked value) -> settle_one index value
+    | Some (Checking waiting) ->
+        Hashtbl.replace checked paths (Checking (index :: waiting))
+    | None ->
+        Hashtbl.replace checked paths (Checking [ index ]);
+        requeue
+          { index; paths; first = false; bail = false; run = 1; check = true }
+  in
+  (* Only a [flaky] line gives a failure of the test. *)
+  let check_ended attempt child =
+    let test = List.nth attempt.paths (List.length attempt.paths - 1) in
+    let flaky =
+      match (child.ending, words child.line, child.status) with
+      | Expired, _, _ -> Ok None
+      | _, Error diagnostic, _ -> Error diagnostic
+      | Closed, Ok _, Unix.WEXITED 0
+        when String.starts_with ~prefix:"flaky " child.line ->
+          let prefix = String.length "flaky " in
+          Ok
+            (Some
+               (String.sub child.line prefix
+                  (String.length child.line - prefix)))
+      | _ -> Ok None
+    in
+    match flaky with
+    | Error diagnostic -> settle attempt.paths (Error diagnostic)
+    | Ok (Some failure) ->
+        settle attempt.paths (Ok (Verdicts.Flaky { test; failure }, None))
+    | Ok None when attempt.run < check_runs ->
+        requeue { attempt with run = attempt.run + 1 }
+    | Ok None ->
+        settle attempt.paths (Ok (Verdicts.Killed { by = Some test }, None))
   in
   let rec next index =
     let candidate =
       if Option.is_some interrupt.signal then None
       else
         match pool.again with
-        | (again, run) :: rest -> Some (full again ~run, rest, index)
+        | attempt :: rest -> Some (attempt, rest, index)
         | [] when index < total ->
             let attempt =
               match first_test loop reached.(index) with
@@ -1925,6 +2041,7 @@ let test_mutants renderer loop reached =
                     first = true;
                     bail = true;
                     run = 1;
+                    check = false;
                   }
               | None -> full index ~run:1
             in
@@ -1943,7 +2060,13 @@ let test_mutants renderer loop reached =
     | [], Some signal when index < total || pool.again <> [] ->
         commit_rest ();
         let untested =
-          List.fold_left (fun m (i, _) -> Int.min m i) index pool.again
+          Hashtbl.fold
+            (fun _ check m ->
+              match check with
+              | Checking waiting -> List.fold_left Int.min m waiting
+              | Checked _ -> m)
+            checked
+            (List.fold_left (fun m a -> Int.min m a.index) index pool.again)
         in
         tested (Some (signal, Report.Before (id untested)))
     | [], _ -> tested None
@@ -1964,26 +2087,33 @@ let test_mutants renderer loop reached =
         in
         List.iter
           (fun (attempt, child) ->
-            match
-              verdict_of ~paths:attempt.paths ~runs:attempt.run
-                (snd reached.(attempt.index))
-                child
-            with
-            | Ok ((Verdicts.Survived _ | Verdicts.Not_evaluated), _)
-              when attempt.first ->
-                requeue (attempt.index, 1)
-            | Ok (Verdicts.Survived _, _) when attempt.run <= loop.retry ->
-                requeue (attempt.index, attempt.run + 1)
-            | verdict ->
-                ended.(attempt.index) <- Some verdict;
-                pool.completed <- pool.completed + 1)
+            if attempt.check then check_ended attempt child
+            else
+              match
+                verdict_of ~paths:attempt.paths ~runs:attempt.run
+                  (snd reached.(attempt.index))
+                  child
+              with
+              | Ok ((Verdicts.Survived _ | Verdicts.Not_evaluated), _)
+                when attempt.first ->
+                  requeue (full attempt.index ~run:1)
+              | Ok (Verdicts.Survived _, _) when attempt.run <= loop.retry ->
+                  requeue (full attempt.index ~run:(attempt.run + 1))
+              | Ok (Verdicts.Killed { by = Some test }, _) when loop.check_kills
+                ->
+                  check_kill attempt.index (through test attempt.paths)
+              | verdict -> settle_one attempt.index verdict)
           finished;
         match (interrupt.signal, stopped) with
         | Some signal, _ :: _ ->
             commit_rest ();
             let stopped =
-              List.sort Int.compare
-                (List.map (fun (attempt, _) -> attempt.index) stopped)
+              List.sort_uniq Int.compare
+                (List.concat_map
+                   (fun (attempt, _) ->
+                     if attempt.check then waiting attempt.paths
+                     else [ attempt.index ])
+                   stopped)
             in
             tested (Some (signal, Report.Testing (List.map id stopped)))
         | Some _, [] | None, _ ->
@@ -2003,6 +2133,7 @@ let fork renderer loop reached =
         verdicts = Verdicts.empty;
         survivors = [];
         not_evaluated = [];
+        flaky = [];
         stopped = Some (signal, stage);
       }
   in
@@ -2106,12 +2237,13 @@ let finish renderer ~children ~skipped ~narrowed ~reach ~reached ~outside
       Report.mutation_refused renderer message;
       Reported 1
   | Ok _ when interrupt.signal = Some Sys.sigpipe -> Os.die_by Sys.sigpipe
-  | Ok ({ verdicts; survivors; not_evaluated; stopped }, (changed, note)) -> (
+  | Ok ({ verdicts; survivors; not_evaluated; flaky; stopped }, (changed, note))
+    -> (
       let records = Verdicts.records verdicts in
       let is_killed (r : Verdicts.record) =
         match r.verdict with
         | Verdicts.Killed _ -> true
-        | Verdicts.Killed_elsewhere _ | Verdicts.Survived _
+        | Verdicts.Killed_elsewhere _ | Verdicts.Flaky _ | Verdicts.Survived _
         | Verdicts.Not_evaluated | Verdicts.Outside_tests | Verdicts.Filtered _
         | Verdicts.Unreached ->
             false
@@ -2123,6 +2255,7 @@ let finish renderer ~children ~skipped ~narrowed ~reach ~reached ~outside
         {
           survivors;
           not_evaluated;
+          flaky;
           unstable =
             List.filter_map
               (fun (r : Verdicts.record) ->
@@ -2190,9 +2323,9 @@ let history reached =
                     && source_digest r.id.file = Some digest ->
                  Hashtbl.replace killers r.id test
              | ( ( Verdicts.Killed _ | Verdicts.Killed_elsewhere _
-                 | Verdicts.Survived _ | Verdicts.Not_evaluated
-                 | Verdicts.Outside_tests | Verdicts.Filtered _
-                 | Verdicts.Unreached ),
+                 | Verdicts.Flaky _ | Verdicts.Survived _
+                 | Verdicts.Not_evaluated | Verdicts.Outside_tests
+                 | Verdicts.Filtered _ | Verdicts.Unreached ),
                  _ ) ->
                  ())
            (Verdicts.records prior));
@@ -2237,7 +2370,7 @@ let killed_elsewhere reached =
             match Hashtbl.find_opt killers r.id with
             | Some prior when String.compare prior exe <= 0 -> ()
             | Some _ | None -> Hashtbl.replace killers r.id exe)
-        | ( ( Verdicts.Killed _ | Verdicts.Killed_elsewhere _
+        | ( ( Verdicts.Killed _ | Verdicts.Killed_elsewhere _ | Verdicts.Flaky _
             | Verdicts.Survived _ | Verdicts.Not_evaluated
             | Verdicts.Outside_tests | Verdicts.Filtered _ | Verdicts.Unreached
               ),
@@ -2344,19 +2477,19 @@ let loop renderer ~scope ~jobs ~children ~skip_killed ~retry ~suite
             in
             let dry_run_wall = Float.max 0.01 (Os.count_s started) in
             let narrowed = narrows_suite config ~focus:outcome.focus_active in
+            let spawned = domain_spawned () in
             let exec =
               match children with
               | Run.Exec -> true
               | Run.Fork -> false
-              | Run.Auto -> domain_spawned ()
+              | Run.Auto -> spawned
             in
             let retry =
               match retry with
               | Some n -> n
-              | None -> if domain_spawned () then default_retry else 0
+              | None -> if spawned then default_retry else 0
             in
-            if children = Run.Fork && domain_spawned () then
-              refuse domain_refusal
+            if children = Run.Fork && spawned then refuse domain_refusal
             else
               let skipped, to_test, skipped_line =
                 if not skip_killed then ([], reached, None)
@@ -2419,6 +2552,7 @@ let loop renderer ~scope ~jobs ~children ~skip_killed ~retry ~suite
                       killers = history reach.sites;
                       alone_failed = Hashtbl.create 0;
                       retry;
+                      check_kills = spawned;
                     }
                   in
                   Result.map

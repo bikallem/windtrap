@@ -13,8 +13,8 @@
 
 (** {1:verdicts Verdicts}
 
-    A verdict is one of seven cases, and never a boolean or an exit code. A
-    failure to supervise the child that arms a mutant is none of the seven, and
+    A verdict is one of eight cases, and never a boolean or an exit code. A
+    failure to supervise the child that arms a mutant is none of the eight, and
     a caller must record no verdict for it. *)
 
 type reaching_test = string list
@@ -39,6 +39,13 @@ type verdict =
           gave it {!Killed}, with the source digest of this run. [exe] is the
           identity on that file ({!Instr.identity}), and it is not [""]. Only a
           loop under [--mutate-skip-killed] gives it. *)
+  | Flaky of { test : reaching_test; failure : string }
+      (** A child of the mutant had a failure of [test] that counts, as for
+          {!Killed}. Then [test] also failed in a run of the same tests with no
+          mutant armed. Thus the failure can come from [test] and not from the
+          mutant. [failure] is the first failure of [test] in that run, on one
+          line. [test] is a test of the child, as the [by] of {!Killed}. Only a
+          loop in a process that spawned a domain gives it. *)
   | Survived of {
       first : reaching_test;
       others : reaching_test list;
@@ -134,12 +141,13 @@ val add : t -> record -> t
     of a mutant that one executable saw one way and another the other way. It is
     {!Killed} if either is, and its killing test is the smaller of the two that
     are known, if any. Otherwise it is {!Killed_elsewhere} if either is, with
-    the smaller [exe]. Otherwise it is {!Not_evaluated} if either is, then
-    {!Survived} with the reaching tests of both and the sum of their runs, at
-    most [max_int], if either is, then {!Outside_tests} if either is, then
-    {!Filtered} with the smaller reason if either is, and {!Unreached} if both
-    are. The two previous verdicts combine in the same way, and a missing one
-    leaves the other unchanged.
+    the smaller [exe]. Otherwise it is {!Flaky} if either is, with the smaller
+    pair of test and failure, the test compared first. Otherwise it is
+    {!Not_evaluated} if either is, then {!Survived} with the reaching tests of
+    both and the sum of their runs, at most [max_int], if either is, then
+    {!Outside_tests} if either is, then {!Filtered} with the smaller reason if
+    either is, and {!Unreached} if both are. The two previous verdicts combine
+    in the same way, and a missing one leaves the other unchanged.
 
     [add] checks nothing of [r.id], [r.source_digest] and the [exe] of a
     {!Killed_elsewhere}, in the verdict and in the previous verdict. It accepts
@@ -175,7 +183,7 @@ val with_previous : prior:t -> t -> t
 
     An executable has one verdict file, at {!output_file}.
 
-    The first line of a file is the magic line [windtrap-mutants-v8], which
+    The first line of a file is the magic line [windtrap-mutants-v9], which
     carries the version of the format. A file with another first line is
     refused, never converted, and nothing is promised from one version to the
     next. *)
