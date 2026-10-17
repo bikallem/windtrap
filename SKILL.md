@@ -474,6 +474,10 @@ disk, so run the fast suites first, in a separate `dune runtest`. Two
 suites that use the option at the same time can skip one mutant because
 of each other. Thus run them one after the other (`dune runtest -j 1`).
 
+`--mutate-retry N` (`WINDTRAP_MUTATE_RETRY=N`) runs the child of a
+survivor again, up to `N` more times. The default is 2 in a suite that
+spawns domains.
+
 Mutation testing starts a child process per mutant and is refused on Windows.
 `windtrap coverage --help`, `windtrap mutants --help` and a suite's
 `--help` (`--mutate`, `--arm`) state the flags.

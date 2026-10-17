@@ -412,6 +412,46 @@ let queued =
   stalled
   @ [ test "orphan is nonzero" (fun () -> is_true (Subject.orphan 3 4 <> 0)) ]
 
+(* The fixture of --mutate-retry. Only [widen] is reached, and unarmed it
+   adds, so the dry run, the probe and the children of [passing_alone] count
+   nothing in MUTATE_RUNS.
+
+   - Each run of a changed [widen] appends a line to the file of
+     MUTATE_RUNS, and the number of lines is the run.
+   - At the run MUTATE_GATE_AT it waits at the gate [widen], at
+     MUTATE_HANG_AT it hangs, and at MUTATE_KILL_AT it fails.
+   - Each child appends a line to the file of MUTATE_CHILD_RUNS when it runs
+     the first test. At the line MUTATE_SKIP_AT, the two tests do not run
+     [widen]. *)
+
+(* Appends a line to the file of [var], and gives its number of lines. It
+   gives 0 when [var] is not set. *)
+let count var =
+  match Sys.getenv_opt var with
+  | None | Some "" -> 0
+  | Some path ->
+      Out_channel.with_open_gen [ Open_append; Open_creat; Open_wronly ]
+        0o644 path (fun oc -> output_string oc "run\n");
+      List.length (In_channel.with_open_bin path In_channel.input_lines)
+
+let at var n = Sys.getenv_opt var = Some (string_of_int n)
+let skipped_widen = ref false
+
+let intermittent =
+  [
+    test "widen survives each run that is not the kill" (fun () ->
+        let child = if in_child () then count "MUTATE_CHILD_RUNS" else 0 in
+        skipped_widen := at "MUTATE_SKIP_AT" child;
+        if (not !skipped_widen) && Subject.widen 3 4 <> 7 then begin
+          let run = count "MUTATE_RUNS" in
+          if at "MUTATE_GATE_AT" run then wait_at "widen";
+          if at "MUTATE_HANG_AT" run then Unix.sleep 600;
+          if at "MUTATE_KILL_AT" run then fail "killed at this run"
+        end);
+    test "widen is reached again" (fun () ->
+        if not !skipped_widen then is_true (Subject.widen 1 2 <> 99));
+  ]
+
 let count_pipes name =
   match Sys.getenv_opt "MUTATE_PIPES" with
   | None | Some "" -> ()
@@ -1347,6 +1387,7 @@ let write_request () =
               since = None;
               children = Private.Run.Auto;
               skip_killed = false;
+              retry = None;
             };
       }
       ~log_dir:(env "MUTATE_REQUEST" ^ ".log")
@@ -1406,6 +1447,7 @@ let () =
       Domain.join (Domain.spawn ignore);
       spawned ()
   | "weak" -> exit @@ run "calc" [ group "widen" weak ]
+  | "intermittent" -> exit @@ run "calc" [ group "intermittent" intermittent ]
   | "ordered" -> exit @@ run "calc" [ group "ordered" ordered ]
   | "primed" -> exit @@ run "calc" [ group "primed" priming ]
   | "flagged" -> exit @@ run "calc" [ group "flagged" flagged ]

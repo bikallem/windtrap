@@ -1897,6 +1897,7 @@ let survivor id line before after witnesses =
             exe = None;
           })
         witnesses;
+    runs = 1;
   }
 
 let add_survivor =

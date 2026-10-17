@@ -26,10 +26,11 @@ let quoted names = String.concat " " (List.map (strf "%S") names)
 let verdict_row = function
   | Verdicts.Killed { by = None } -> "killed"
   | Killed { by = Some test } -> "killed by [" ^ quoted test ^ "]"
-  | Survived { first; others } ->
+  | Survived { first; others; runs } ->
       "survived by "
       ^ String.concat ", "
           (List.map (fun t -> "[" ^ quoted t ^ "]") (first :: others))
+      ^ if runs = 1 then "" else strf " (%d runs)" runs
   | Killed_elsewhere { exe } -> strf "killed elsewhere by %S" exe
   | Not_evaluated -> "not evaluated"
   | Outside_tests -> "outside tests"
@@ -85,6 +86,10 @@ let small_verdict =
   let path =
     Gen.list ~size:(Gen.int_range 1 2) (Gen.of_list [ "g"; "t"; "u" ])
   in
+  (* One case in 8 saturates the sum of the runs of a merge. *)
+  let runs =
+    Gen.frequency [ (7, Gen.int_range 1 3); (1, Gen.constant max_int) ]
+  in
   Gen.with_pp pp_verdict
     (Gen.frequency
        [
@@ -95,7 +100,10 @@ let small_verdict =
              (fun exe -> Verdicts.Killed_elsewhere { exe })
              (Gen.of_list [ "x"; "y" ]) );
          (1, Gen.constant Verdicts.Not_evaluated);
-         (3, Gen.map Verdicts.survived (Gen.list ~size:(Gen.int_range 1 3) path));
+         ( 3,
+           Gen.map
+             (fun (runs, ts) -> Verdicts.survived ~runs ts)
+             (Gen.pair runs (Gen.list ~size:(Gen.int_range 1 3) path)) );
          (1, Gen.constant Verdicts.Outside_tests);
          (1, Gen.map (fun r -> Verdicts.Filtered r) (Gen.of_list [ "a"; "b" ]));
          (1, Gen.constant Verdicts.Unreached);
@@ -136,7 +144,10 @@ let any_record =
         Gen.of_list Verdicts.[ killed; Not_evaluated; Outside_tests; Unreached ];
         Gen.map killed_by path;
         Gen.map (fun e -> Verdicts.Killed_elsewhere { exe = "e" ^ e }) name;
-        Gen.map Verdicts.survived (Gen.list ~size:(Gen.int_range 1 3) path);
+        Gen.map
+          (fun (runs, ts) -> Verdicts.survived ~runs ts)
+          (Gen.pair (Gen.int_range 1 3)
+             (Gen.list ~size:(Gen.int_range 1 3) path));
         Gen.map (fun r -> Verdicts.Filtered r) name;
       ]
   in
@@ -178,12 +189,16 @@ let rank = function
   | Filtered _ -> 1
   | Unreached -> 0
 
+(* The sum of two runs, saturated at [max_int]. *)
+let add_runs a b = if a > max_int - b then max_int else a + b
+
 (* The verdict of a mutant that one executable saw as [a] and another as [b],
    as add states it. *)
 let join a b =
   match (a, b) with
   | Verdicts.Survived x, Verdicts.Survived y ->
-      Verdicts.survived ((x.first :: x.others) @ (y.first :: y.others))
+      Verdicts.survived ~runs:(add_runs x.runs y.runs)
+        ((x.first :: x.others) @ (y.first :: y.others))
   | Killed { by = Some x }, Killed { by = Some y } -> killed_by (min x y)
   | Killed { by = None }, Killed { by } | Killed { by }, Killed { by = None } ->
       Killed { by }
@@ -201,7 +216,7 @@ let combined (a, b) =
        (Verdicts.records t))
 
 let reaching = function
-  | Verdicts.Survived { first; others } -> Some (first :: others)
+  | Verdicts.Survived { first; others; _ } -> Some (first :: others)
   | _ -> None
 
 let sorted_names ts =
@@ -231,6 +246,8 @@ let lattice_examples =
       (Unreached, Filtered "a");
       (Filtered "b", Filtered "a");
       (s [ [ "b" ]; [ "a" ] ], s [ [ "c" ]; [ "b" ] ]);
+      (s ~runs:2 [ [ "a" ] ], s ~runs:3 [ [ "b" ] ]);
+      (s ~runs:max_int [ [ "a" ] ], s [ [ "a" ] ]);
       (killed, e "x");
       (killed_by [ "b" ], e "x");
       (e "x", Not_evaluated);
@@ -272,6 +289,20 @@ let verdicts =
         (Gen.list ~size:(Gen.int_range 1 4)
            (Gen.list ~size:(Gen.int_range 0 2) (Gen.of_list [ "a"; "b"; "" ])))
         sorted_names;
+      test "survived has one run by default, and the runs it is given"
+        (fun () ->
+          let runs = function
+            | Verdicts.Survived { runs; _ } -> Some runs
+            | _ -> None
+          in
+          equal (option int) (Some 1) (runs (Verdicts.survived [ [ "t" ] ]));
+          equal (option int) (Some 3)
+            (runs (Verdicts.survived ~runs:3 [ [ "t" ] ])));
+      test "survived raises Invalid_argument on no run" (fun () ->
+          raises
+            (Invalid_argument
+               "Windtrap_runtime.Verdicts.survived: a survivor has at least \
+                one run") (fun () -> Verdicts.survived ~runs:0 [ [ "t" ] ]));
       test "survived raises Invalid_argument on no reaching test" (fun () ->
           raises
             (Invalid_argument
@@ -359,6 +390,10 @@ let changed_cases =
       Some (Verdicts.survived [ [ "a" ] ]),
       Verdicts.survived [ [ "b" ]; [ "c" ] ],
       None );
+    ( "more runs of a survivor",
+      Some (Verdicts.survived ~runs:1 [ [ "t" ] ]),
+      Verdicts.survived ~runs:3 [ [ "t" ] ],
+      None );
     ("unreached to survived", Some Verdicts.Unreached, s, None);
     ("survived to unreached", Some s, Verdicts.Unreached, None);
     ("outside tests to killed", Some Verdicts.Outside_tests, killed, None);
@@ -374,11 +409,11 @@ let source = String.make 32 'a'
 
 (* The collection [with_previous] reads: one survivor that was killed before.
    Its own previous verdict is not the one a record takes. *)
-let prior ?(source_digest = Some source) () =
+let prior ?(source_digest = Some source) ?(runs = 1) () =
   collection
     [
       record ?source_digest ~previous:killed (id "lib/a.ml" 1 0 "lt")
-        (Verdicts.survived [ [ "t" ] ]);
+        (Verdicts.survived ~runs [ [ "t" ] ]);
     ]
 
 let with_previous_cases =
@@ -399,6 +434,10 @@ let with_previous_cases =
       prior (),
       record ~source_digest:other m killed,
       row ~digest:other "" );
+    ( "the runs of the previous survivor",
+      prior ~runs:3 (),
+      record ~source_digest:source m killed,
+      row ~digest:source {| was survived by ["t"] (3 runs)|} );
     ("no digest in the collection", prior (), record m killed, row "");
     ( "no digest in the prior",
       prior ~source_digest:None (),
@@ -454,7 +493,25 @@ let associates (a, b, c) =
     (Verdicts.merge (Verdicts.merge a b) c)
     (Verdicts.merge a (Verdicts.merge b c))
 
-let idempotent a = equal records a (Verdicts.merge a a)
+(* [merge a a] is [a] with the runs of each survivor doubled. *)
+let doubles a =
+  let double = function
+    | Verdicts.Survived s ->
+        Verdicts.Survived { s with runs = add_runs s.runs s.runs }
+    | v -> v
+  in
+  let doubled =
+    collection
+      (List.map
+         (fun (r : Verdicts.record) ->
+           {
+             r with
+             verdict = double r.verdict;
+             previous = Option.map double r.previous;
+           })
+         (Verdicts.records a))
+  in
+  equal records doubled (Verdicts.merge a a)
 
 let empty_is_unit a =
   equal records a (Verdicts.merge a Verdicts.empty);
@@ -472,7 +529,13 @@ let unreached_is_neutral a =
          (fun (r : Verdicts.record) -> { r with verdict = Verdicts.Unreached })
          (Verdicts.records a))
   in
-  equal records a (Verdicts.merge a unreached)
+  let verdicts t =
+    List.map
+      (fun (r : Verdicts.record) ->
+        Mutate.id_to_string r.id ^ " " ^ verdict_row r.verdict)
+      (Verdicts.records t)
+  in
+  equal (list string) (verdicts a) (verdicts (Verdicts.merge a unreached))
 
 let unchecked_ids =
   [
@@ -518,14 +581,16 @@ let collections =
       test "add sorts a survivor's reaching tests and drops duplicates"
         (fun () ->
           let unsorted =
-            Verdicts.Survived { first = [ "b" ]; others = [ [ "a" ]; [ "b" ] ] }
+            Verdicts.Survived
+              { first = [ "b" ]; others = [ [ "a" ]; [ "b" ] ]; runs = 1 }
           in
           equal (list string)
             [ {|"lib/a.ml":1:0:lt "b" -> "a": survived by ["a"], ["b"]|} ]
             (rows (collection [ record (id "lib/a.ml" 1 0 "lt") unsorted ])));
       test "add sorts the reaching tests of a previous survivor" (fun () ->
           let unsorted =
-            Verdicts.Survived { first = [ "b" ]; others = [ [ "a" ]; [ "b" ] ] }
+            Verdicts.Survived
+              { first = [ "b" ]; others = [ [ "a" ]; [ "b" ] ]; runs = 1 }
           in
           equal (list string)
             [
@@ -534,6 +599,82 @@ let collections =
             (rows
                (collection
                   [ record ~previous:unsorted (id "lib/a.ml" 1 0 "lt") killed ])));
+      test "add sums the runs of two survivors of a mutant" (fun () ->
+          let m = id "lib/a.ml" 1 0 "lt" in
+          equal verdict
+            (Verdicts.Survived
+               { first = [ "a" ]; others = [ [ "b" ] ]; runs = 5 })
+            (require_match
+               (function [ r ] -> Some r.Verdicts.verdict | _ -> None)
+               (Verdicts.records
+                  (collection
+                     [
+                       record m (Verdicts.survived ~runs:2 [ [ "a" ] ]);
+                       record m (Verdicts.survived ~runs:3 [ [ "b" ] ]);
+                     ]))));
+      test "merge sums the runs of two survivors of a mutant" (fun () ->
+          let m = id "lib/a.ml" 1 0 "lt" in
+          let one runs ts =
+            collection [ record m (Verdicts.survived ~runs ts) ]
+          in
+          equal verdict
+            (Verdicts.Survived
+               { first = [ "a" ]; others = [ [ "b" ] ]; runs = 5 })
+            (require_match
+               (function [ r ] -> Some r.Verdicts.verdict | _ -> None)
+               (Verdicts.records
+                  (Verdicts.merge (one 2 [ [ "a" ] ]) (one 3 [ [ "b" ] ])))));
+      test "merge sums the runs of two previous survivors of a mutant"
+        (fun () ->
+          let m = id "lib/a.ml" 1 0 "lt" in
+          let one runs =
+            collection
+              [
+                record
+                  ~previous:(Verdicts.survived ~runs [ [ "a" ] ])
+                  m Verdicts.Unreached;
+              ]
+          in
+          equal records
+            (collection
+               [
+                 record
+                   ~previous:(Verdicts.survived ~runs:5 [ [ "a" ] ])
+                   m Verdicts.Unreached;
+               ])
+            (Verdicts.merge (one 2) (one 3)));
+      test "add makes a runs below 1 one run, and merge then commutes"
+        (fun () ->
+          let m = id "lib/a.ml" 1 0 "lt" in
+          let one ts runs =
+            collection
+              [ record m (Verdicts.Survived { first = ts; others = []; runs }) ]
+          in
+          let a = one [ "a" ] 3 and b = one [ "b" ] (-5) in
+          equal records
+            (collection [ record m (Verdicts.survived [ [ "b" ] ]) ])
+            b;
+          equal records (Verdicts.merge a b) (Verdicts.merge b a);
+          equal records
+            (collection
+               [ record m (Verdicts.survived ~runs:4 [ [ "a" ]; [ "b" ] ]) ])
+            (Verdicts.merge a b));
+      test "the sum of the runs stops at max_int" (fun () ->
+          let m = id "lib/a.ml" 1 0 "lt" in
+          let runs_of t =
+            require_match
+              (function
+                | [ { Verdicts.verdict = Verdicts.Survived { runs; _ }; _ } ] ->
+                    Some runs
+                | _ -> None)
+              (Verdicts.records t)
+          in
+          let big = record m (Verdicts.survived ~runs:max_int [ [ "a" ] ]) in
+          let one = record m (Verdicts.survived [ [ "b" ] ]) in
+          equal int max_int (runs_of (collection [ big; one ]));
+          equal int max_int (runs_of (collection [ one; big ]));
+          equal int max_int
+            (runs_of (Verdicts.merge (collection [ big ]) (collection [ one ]))));
       cases
         "changed is the change of class between a previous verdict and a \
          verdict"
@@ -559,7 +700,10 @@ let collections =
       prop "merge is associative"
         (Gen.triple small_collection small_collection small_collection)
         associates;
-      prop "merge is idempotent" small_collection idempotent;
+      prop
+        "merge of a collection with itself doubles the runs of each survivor, \
+         and changes nothing else"
+        small_collection doubles;
       prop "empty is the unit of merge" small_collection empty_is_unit;
       prop "merge combines two records of a mutant as add does"
         (Gen.pair small_collection small_collection)
@@ -583,7 +727,7 @@ let sample =
         (killed_by [ "g"; "t" ]);
       record ~before:"p" ~after:"not p" (id "lib/b.ml" 4 0 "not") killed;
       record ~before:"a || b" ~after:"a && b" (id "lib/b.ml" 5 0 "or")
-        (Verdicts.survived [ [ "y"; "z" ]; [ "x" ] ]);
+        (Verdicts.survived ~runs:3 [ [ "y"; "z" ]; [ "x" ] ]);
       record ~before:"a + b" ~after:"a - b" ~source_digest:digest
         (id "lib/c.ml" 7 1 "sub") Verdicts.Not_evaluated;
       record ~before:"a - b" ~after:"a + b" (id "lib/c.ml" 9 0 "add")
@@ -659,16 +803,19 @@ let previous_text () =
           (id "lib/a.ml" 1 3 "add") killed;
         record ~previous:(killed_by [ "t" ]) (id "lib/a.ml" 1 4 "add")
           (Verdicts.survived [ [ "g"; "t" ] ]);
+        record (id "lib/a.ml" 1 5 "add")
+          (Verdicts.survived ~runs:3 [ [ "g"; "t" ] ]);
       ]
   in
   equal string
     (String.concat ""
        [
-         "windtrap-mutants-v7\n0\n3\n";
+         "windtrap-mutants-v8\n0\n4\n";
          "8 lib/a.ml 1 2 3 add 1 b 1 a 0  unreached none\n";
-         "8 lib/a.ml 1 3 3 add 1 b 1 a 0  killed 0 was survived 1 1 1 t\n";
-         "8 lib/a.ml 1 4 3 add 1 b 1 a 0  survived 1 2 1 g 1 t was killed 1 1 \
-          1 t\n";
+         "8 lib/a.ml 1 3 3 add 1 b 1 a 0  killed 0 was survived 1 1 1 1 t\n";
+         "8 lib/a.ml 1 4 3 add 1 b 1 a 0  survived 1 1 2 1 g 1 t was killed 1 \
+          1 1 t\n";
+         "8 lib/a.ml 1 5 3 add 1 b 1 a 0  survived 3 1 2 1 g 1 t none\n";
        ])
     (saved t)
 
@@ -696,10 +843,10 @@ let headers =
     ("a coverage file", "windtrap-coverage-v3\n1\n");
     ("an earlier version", "windtrap-mutants-v3\n0\n");
     ("two versions before", "windtrap-mutants-v5\n0\n");
-    ("the previous version", "windtrap-mutants-v6\n0\n");
-    ("a later version", "windtrap-mutants-v8\n0\n");
+    ("the previous version", "windtrap-mutants-v7\n0\n");
+    ("a later version", "windtrap-mutants-v9\n0\n");
     ("the magic in uppercase", "WINDTRAP-MUTANTS-V1\n0\n");
-    ("the magic and a digit", "windtrap-mutants-v70\n0\n");
+    ("the magic and a digit", "windtrap-mutants-v80\n0\n");
     ("plain text", "hello\nworld\n");
   ]
 
@@ -711,26 +858,26 @@ let unknown_format (_, text) =
          | Error (Verdicts.Unknown_format { path; _ }) -> Some path | _ -> None)
        loaded)
 
-let record_prefix = "windtrap-mutants-v7\n0\n1\n8 lib/a.ml "
+let record_prefix = "windtrap-mutants-v8\n0\n1\n8 lib/a.ml "
 
 let corrupt_files =
   [
-    ("the magic line alone", "windtrap-mutants-v7");
-    ("a negative suite count", "windtrap-mutants-v7\n-1\n0\n");
-    ("a suite count of 2", "windtrap-mutants-v7\n2 1 s 1 t\n0\n");
-    ("a suite past the input", "windtrap-mutants-v7\n1 80 s\n0\n");
-    ("no record count", "windtrap-mutants-v7\n0\n");
-    ("a negative record count", "windtrap-mutants-v7\n0\n-1\n");
-    ("a record count past the input", "windtrap-mutants-v7\n0\n99999999\n");
+    ("the magic line alone", "windtrap-mutants-v8");
+    ("a negative suite count", "windtrap-mutants-v8\n-1\n0\n");
+    ("a suite count of 2", "windtrap-mutants-v8\n2 1 s 1 t\n0\n");
+    ("a suite past the input", "windtrap-mutants-v8\n1 80 s\n0\n");
+    ("no record count", "windtrap-mutants-v8\n0\n");
+    ("a negative record count", "windtrap-mutants-v8\n0\n-1\n");
+    ("a record count past the input", "windtrap-mutants-v8\n0\n99999999\n");
     ( "fewer records than the count",
-      "windtrap-mutants-v7\n\
+      "windtrap-mutants-v8\n\
        0\n\
        2\n\
        8 lib/a.ml 1 2 3 add 1 b 1 a 0 unreached none\n" );
     ( "an empty file name",
-      "windtrap-mutants-v7\n0\n1\n0  1 2 3 add 0 0 1 b 1 a 0 unreached\n" );
+      "windtrap-mutants-v8\n0\n1\n0  1 2 3 add 0 0 1 b 1 a 0 unreached\n" );
     ( "a file name past the input",
-      "windtrap-mutants-v7\n0\n1\n80 lib/a.ml 1 2 3 add 1 b 1 a 0 unreached\n"
+      "windtrap-mutants-v8\n0\n1\n80 lib/a.ml 1 2 3 add 1 b 1 a 0 unreached\n"
     );
     ("line 0", record_prefix ^ "0 2 3 add 1 b 1 a 0 unreached\n");
     ("a negative line", record_prefix ^ "-3 2 3 add 1 b 1 a 0 unreached\n");
@@ -763,24 +910,26 @@ let corrupt_files =
       record_prefix ^ "1 2 3 add 1 b 1 a 0 killed 2 1 1 g 1 1 h\n" );
     ( "a killing test past the input",
       record_prefix ^ "1 2 3 add 1 b 1 a 0 killed 1 1 80 g\n" );
+    ( "a survivor with no run",
+      record_prefix ^ "1 2 3 add 1 b 1 a 0 survived 0 1 1 1 t none\n" );
     ( "a survivor with no reaching test",
-      record_prefix ^ "1 2 3 add 1 b 1 a 0 survived 0\n" );
+      record_prefix ^ "1 2 3 add 1 b 1 a 0 survived 1 0\n" );
     ( "a reaching test count past the input",
-      record_prefix ^ "1 2 3 add 1 b 1 a 0 survived 99999999\n" );
+      record_prefix ^ "1 2 3 add 1 b 1 a 0 survived 1 99999999\n" );
     ( "a negative test path length",
-      record_prefix ^ "1 2 3 add 1 b 1 a 0 survived 1 -1\n" );
+      record_prefix ^ "1 2 3 add 1 b 1 a 0 survived 1 1 -1\n" );
     ( "a test path shorter than its length",
-      record_prefix ^ "1 2 3 add 1 b 1 a 0 survived 2 1 1 g\n" );
+      record_prefix ^ "1 2 3 add 1 b 1 a 0 survived 1 2 1 1 g\n" );
     ( "a test name past the input",
-      record_prefix ^ "1 2 3 add 1 b 1 a 0 survived 1 1 80 g\n" );
+      record_prefix ^ "1 2 3 add 1 b 1 a 0 survived 1 1 1 80 g\n" );
     ( "two records of one identifier",
-      "windtrap-mutants-v7\n\
+      "windtrap-mutants-v8\n\
        0\n\
        2\n\
        8 lib/a.ml 1 2 3 add 1 b 1 a 0 unreached none\n\
        8 lib/a.ml 1 2 3 add 1 b 1 a 0 killed 0 none\n" );
     ( "a malformed record after a valid one",
-      "windtrap-mutants-v7\n\
+      "windtrap-mutants-v8\n\
        0\n\
        2\n\
        8 lib/a.ml 1 2 3 add 1 b 1 a 0 killed 0 none\n\
@@ -789,10 +938,10 @@ let corrupt_files =
     ( "an unknown previous verdict",
       record_prefix ^ "1 2 3 add 1 b 1 a 0 unreached maybe\n" );
     ( "a previous survivor with no reaching test",
-      record_prefix ^ "1 2 3 add 1 b 1 a 0 unreached was survived 0\n" );
-    ("a short identity digest", "windtrap-mutants-v7\nexe abcd 1 a\n0\n");
-    ("an empty identity exe", "windtrap-mutants-v7\nexe " ^ digest ^ " 0 \n0\n");
-    ("bytes after the last record", "windtrap-mutants-v7\n0\n0\nextra\n");
+      record_prefix ^ "1 2 3 add 1 b 1 a 0 unreached was survived 1 0\n" );
+    ("a short identity digest", "windtrap-mutants-v8\nexe abcd 1 a\n0\n");
+    ("an empty identity exe", "windtrap-mutants-v8\nexe " ^ digest ^ " 0 \n0\n");
+    ("bytes after the last record", "windtrap-mutants-v8\n0\n0\nextra\n");
   ]
 
 let corrupt (_, text) =
@@ -838,10 +987,11 @@ let corrupt_reasons () =
     an uppercase source digest: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" is not a source digest
     a killed mutant with two killing tests: a mutant has 2 killing tests
     a killing test past the input: truncated test name
+    a survivor with no run: a survivor has 0 runs
     a survivor with no reaching test: a survivor names no test (survived is not unreached)
     a reaching test count past the input: reaching test count exceeds data
     a negative test path length: negative test path length
-    a test path shorter than its length: expected test path length at offset 72
+    a test path shorter than its length: expected test path length at offset 74
     a test name past the input: truncated test name
     two records of one identifier: duplicate record for lib/a.ml:1:2:add
     a malformed record after a valid one: line 0 is not 1-based
@@ -868,7 +1018,7 @@ let error_messages () =
        ])
   @@ __POS_OF__
        {|
-    f.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v7", found "junk"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
+    f.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v8", found "junk"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
     f.mutants: cannot read verdict file: No such file or directory
     f.mutants: corrupt verdict file: unknown verdict "errored"
     |}
@@ -891,20 +1041,20 @@ let files =
         "format is the magic line, the mutants directory and extension, and \
          the verdict kind" (fun () ->
           equal (list string)
-            [ "windtrap-mutants-v7"; "mutants"; "mutants"; "verdict" ]
+            [ "windtrap-mutants-v8"; "mutants"; "mutants"; "verdict" ]
             Verdicts.[ format.magic; format.dir; format.ext; format.kind ]);
       test
         "save writes the magic line, the count, then the records by identifier"
         (fun () ->
           expect_exact (saved sample)
           @@ __POS_OF__
-               {|windtrap-mutants-v7
+               {|windtrap-mutants-v8
 0
 8
 8 lib/a.ml 1 2 3 add 5 a - b 5 a + b 0  unreached none
 8 lib/b.ml 3 4 3 not 6 p && q 12 not (p && q) 0  killed 1 2 1 g 1 t none
 8 lib/b.ml 4 0 3 not 1 p 5 not p 0  killed 0 none
-8 lib/b.ml 5 0 2 or 6 a || b 6 a && b 0  survived 2 1 1 x 2 1 y 1 z none
+8 lib/b.ml 5 0 2 or 6 a || b 6 a && b 0  survived 3 2 1 1 x 2 1 y 1 z none
 8 lib/c.ml 7 1 3 sub 5 a + b 5 a - b 32 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa not_evaluated none
 8 lib/c.ml 9 0 3 add 5 a - b 5 a + b 0  outside_tests none
 8 lib/d.ml 2 3 3 sub 5 x + 0 5 x - 0 0  filtered 12 zero operand none
@@ -914,7 +1064,7 @@ let files =
           expect_exact
             (saved ~identity:{ exe = "test/a.exe"; digest } Verdicts.empty)
           @@ __POS_OF__
-               {|windtrap-mutants-v7
+               {|windtrap-mutants-v8
 exe aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 10 test/a.exe
 0
 0
@@ -925,7 +1075,7 @@ exe aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 10 test/a.exe
                ~identity:{ exe = "test/a.exe"; digest }
                ~suite:"calc" Verdicts.empty)
           @@ __POS_OF__
-               {|windtrap-mutants-v7
+               {|windtrap-mutants-v8
 exe aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 10 test/a.exe
 1 4 calc
 0

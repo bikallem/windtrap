@@ -58,6 +58,11 @@ what is non-obvious.
   `scoped_main.exe` links `subject.ml` too. Each planted verdict file
   gets a stand-in executable in the scratch build directory, because the
   loop does not use an orphan file.
+  The scenarios of `--mutate-retry` run the fixture `intermittent`. Its
+  test counts the runs of a changed `widen` in a file. At a run that the
+  scenario gives, the test fails, hangs, waits at a gate or skips the
+  site.
+  Thus no scenario depends on a schedule.
   The scenarios of unstable verdicts run the loop two times over one
   verdict file. A fixture flag or a rewrite of the file changes the
   verdict, so no scenario depends on the speed of the host.

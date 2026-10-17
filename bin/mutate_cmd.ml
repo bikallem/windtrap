@@ -224,7 +224,7 @@ let survived_in verdicts =
   List.fold_left
     (fun acc (r : Verdicts.record) ->
       match r.verdict with
-      | Survived { first; others } ->
+      | Survived { first; others; _ } ->
           Ids.add (Mutate.id_to_string r.id) (first :: others) acc
       | Killed _ | Killed_elsewhere _ | Not_evaluated | Outside_tests
       | Filtered _ | Unreached ->
@@ -271,7 +271,7 @@ let merge ~source files merged =
       source = source r.id.file;
     }
   in
-  let survivor (r : Verdicts.record) : Sections.survivor =
+  let survivor ~runs (r : Verdicts.record) : Sections.survivor =
     let id = Mutate.id_to_string r.id in
     let witnesses =
       List.concat_map
@@ -290,6 +290,7 @@ let merge ~source files merged =
         List.map
           (fun (exe, test) -> { Sections.test; loc = None; exe = Some exe })
           (List.sort_uniq compare witnesses);
+      runs;
     }
   in
   (* The first executable, in the order of [files], that did not evaluate
@@ -321,8 +322,8 @@ let merge ~source files merged =
          ->
         let site = (r.id.file, r.id.line) in
         match r.verdict with
-        | Survived _ ->
-            (survivor r :: survivors, missed, unreached, outside, killed)
+        | Survived { runs; _ } ->
+            (survivor ~runs r :: survivors, missed, unreached, outside, killed)
         | Not_evaluated ->
             (survivors, not_evaluated r :: missed, unreached, outside, killed)
         | Unreached -> (survivors, missed, site :: unreached, outside, killed)
@@ -507,7 +508,7 @@ let json files merged (m : Sections.mutation) =
   in
   let tests (r : Verdicts.record) =
     match r.verdict with
-    | Survived _ ->
+    | Survived { runs; _ } ->
         let id = Mutate.id_to_string r.id in
         let tests =
           List.concat_map
@@ -517,7 +518,7 @@ let json files merged (m : Sections.mutation) =
               | None -> [])
             survivals
         in
-        strf ",\n      \"tests\": [%s ]"
+        strf ",\n      \"runs\": %d,\n      \"tests\": [%s ]" runs
           (String.concat "," (List.map test tests))
     | Killed _ | Killed_elsewhere _ | Not_evaluated | Outside_tests | Filtered _
     | Unreached ->

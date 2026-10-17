@@ -1550,6 +1550,7 @@ let under_mutation, seen_under_mutation =
                 since = None;
                 children = Run.Auto;
                 skip_killed = false;
+                retry = None;
               };
         })
       [ Stateful.stateful ~count:5 ~domains:2 "sequential" [ where () ] ]
@@ -1574,6 +1575,7 @@ let workers_under_mutation =
                     since = None;
                     children = Run.Auto;
                     skip_killed = false;
+                    retry = None;
                   };
               mutate_workers = true;
             })

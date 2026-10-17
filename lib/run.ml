@@ -22,6 +22,7 @@ type mutation =
       since : string option;
       children : children;
       skip_killed : bool;
+      retry : int option;
     }
   | Armed of string
 

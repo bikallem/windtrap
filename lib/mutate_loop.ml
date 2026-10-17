@@ -886,9 +886,14 @@ type loop = {
   alone_failed : (string list list, unit) Hashtbl.t;
       (* in exec mode, the lists of reaching tests that did not pass alone in
          a new process ([passing_alone]) *)
+  retry : int; (* the more runs of the full child of a survivor *)
 }
 
 let deadline_multiplier = 10.
+
+(* The more runs of a survivor's child when no layer gives [--mutate-retry]
+   and the process spawned a domain. *)
+let default_retry = 2
 
 (* The seconds of a child outside its tests and its fixtures: the start and
    the end of its run. *)
@@ -1572,14 +1577,14 @@ let start_mutant loop ~index ~siblings ~paths ~bail
    startup. [paths] are the tests that the parent handed the child. With a
    verdict comes what failed in a child that did not evaluate the site: a
    test, or a fixture release. *)
-let verdict_of ~paths (site : site) child =
+let verdict_of ~paths ~runs (site : site) child =
   let killed = Ok (Verdicts.Killed { by = None }, None) in
   if child.ending = Expired then killed
   else
     match (words child.line, child.status) with
     | Error diagnostic, _ -> Error diagnostic
     | Ok [ "survived" ], Unix.WEXITED 0 ->
-        Ok (Verdicts.survived (List.rev site.tests), None)
+        Ok (Verdicts.survived ~runs (List.rev site.tests), None)
     | Ok [ "not_evaluated" ], Unix.WEXITED 0 -> Ok (Verdicts.Not_evaluated, None)
     | Ok [ "not_evaluated"; "release" ], Unix.WEXITED 0 ->
         Ok (Verdicts.Not_evaluated, Some "a fixture release")
@@ -1647,13 +1652,13 @@ let shown (mutant : Mutate.mutant) : Report_sections.mutant =
     source = read_source mutant.id.file;
   }
 
-let survivor ~locations (mutant : Mutate.mutant) reaching :
+let survivor ~locations ~runs (mutant : Mutate.mutant) reaching :
     Report_sections.survivor =
   let witness path : Report_sections.witness =
     let test = Test_tree.path_to_string path in
     { test; loc = Option.join (Hashtbl.find_opt locations test); exe = None }
   in
-  { mutant = shown mutant; witnesses = List.map witness reaching }
+  { mutant = shown mutant; witnesses = List.map witness reaching; runs }
 
 type tested = {
   verdicts : Verdicts.t; (* of the children that ended *)
@@ -1674,6 +1679,7 @@ type attempt = {
       (* a first child, which a full child follows when it kills nothing *)
   bail : bool;
       (* the child stops at its first failure that counts ([full_paths]) *)
+  run : int; (* the run of a full child, from [1]; a first child has [1] too *)
 }
 
 (* What the loop committed: the verdicts of the mutants before
@@ -1685,8 +1691,9 @@ type pool = {
   mutable committed : int;
   mutable completed : int; (* the mutants whose last child ended *)
   mutable running : (attempt * running) list; (* in the order of the starts *)
-  mutable again : int list;
-      (* the mutants whose first child killed nothing, in catalogue order *)
+  mutable again : (int * int) list;
+      (* the mutants whose full child starts next, each with the run of that
+         child, in catalogue order *)
 }
 
 (* The test that the first child of a mutant runs alone: the test that
@@ -1809,8 +1816,8 @@ let full_paths loop (site : site) =
    A mutant with a [first_test] that [passing_alone] kept has a first child,
    which runs that test alone. When the first child kills the mutant, that is
    its verdict. When it does not, a full child runs every reaching test,
-   before the loop starts the child of a mutant after it, and its verdict is
-   the verdict.
+   before the loop starts the child of a mutant after it. A full child that
+   lets the mutant survive starts again, up to [loop.retry] times.
 
    The loop starts no child after a signal. The signal stops the children that
    run, and a child that exited first keeps its verdict, reaped or not. The
@@ -1840,8 +1847,8 @@ let test_mutants renderer loop reached =
   let commit index (verdict, failed) =
     let mutant, _ = reached.(index) in
     (match verdict with
-    | Verdicts.Survived { first; others } ->
-        let found = survivor ~locations mutant (first :: others) in
+    | Verdicts.Survived { first; others; runs } ->
+        let found = survivor ~locations ~runs mutant (first :: others) in
         Report.mutation_survivor renderer found;
         pool.survivors <- found :: pool.survivors
     | Verdicts.Not_evaluated ->
@@ -1894,22 +1901,32 @@ let test_mutants renderer loop reached =
     in
     pool.running <- pool.running @ [ (attempt, child) ]
   in
-  let full index =
+  let full index ~run =
     let paths, bail = full_paths loop (snd reached.(index)) in
-    { index; paths; first = false; bail }
+    { index; paths; first = false; bail; run }
+  in
+  let requeue entry =
+    pool.again <-
+      List.merge (fun (a, _) (b, _) -> Int.compare a b) pool.again [ entry ]
   in
   let rec next index =
     let candidate =
       if Option.is_some interrupt.signal then None
       else
         match pool.again with
-        | again :: rest -> Some (full again, rest, index)
+        | (again, run) :: rest -> Some (full again ~run, rest, index)
         | [] when index < total ->
             let attempt =
               match first_test loop reached.(index) with
               | Some test ->
-                  { index; paths = [ test ]; first = true; bail = true }
-              | None -> full index
+                  {
+                    index;
+                    paths = [ test ];
+                    first = true;
+                    bail = true;
+                    run = 1;
+                  }
+              | None -> full index ~run:1
             in
             Some (attempt, [], index + 1)
         | [] -> None
@@ -1925,7 +1942,9 @@ let test_mutants renderer loop reached =
     match (pool.running, interrupt.signal) with
     | [], Some signal when index < total || pool.again <> [] ->
         commit_rest ();
-        let untested = List.fold_left Int.min index pool.again in
+        let untested =
+          List.fold_left (fun m (i, _) -> Int.min m i) index pool.again
+        in
         tested (Some (signal, Report.Before (id untested)))
     | [], _ -> tested None
     | running, _ -> (
@@ -1946,14 +1965,15 @@ let test_mutants renderer loop reached =
         List.iter
           (fun (attempt, child) ->
             match
-              verdict_of ~paths:attempt.paths
+              verdict_of ~paths:attempt.paths ~runs:attempt.run
                 (snd reached.(attempt.index))
                 child
             with
             | Ok ((Verdicts.Survived _ | Verdicts.Not_evaluated), _)
               when attempt.first ->
-                pool.again <-
-                  List.merge Int.compare pool.again [ attempt.index ]
+                requeue (attempt.index, 1)
+            | Ok (Verdicts.Survived _, _) when attempt.run <= loop.retry ->
+                requeue (attempt.index, attempt.run + 1)
             | verdict ->
                 ended.(attempt.index) <- Some verdict;
                 pool.completed <- pool.completed + 1)
@@ -2267,7 +2287,7 @@ let elsewhere_line ~used skipped =
   in
   strf "killed elsewhere: %d mutant%s, not tested, from %s" n (plural n) files
 
-let loop renderer ~scope ~jobs ~children ~skip_killed ~suite
+let loop renderer ~scope ~jobs ~children ~skip_killed ~retry ~suite
     (config : Run.config) tests =
   let population = population ~scope in
   let filtered = filtered ~scope in
@@ -2329,6 +2349,11 @@ let loop renderer ~scope ~jobs ~children ~skip_killed ~suite
               | Run.Exec -> true
               | Run.Fork -> false
               | Run.Auto -> domain_spawned ()
+            in
+            let retry =
+              match retry with
+              | Some n -> n
+              | None -> if domain_spawned () then default_retry else 0
             in
             if children = Run.Fork && domain_spawned () then
               refuse domain_refusal
@@ -2393,6 +2418,7 @@ let loop renderer ~scope ~jobs ~children ~skip_killed ~suite
                       share;
                       killers = history reach.sites;
                       alone_failed = Hashtbl.create 0;
+                      retry;
                     }
                   in
                   Result.map
@@ -2538,12 +2564,13 @@ let execute_and_report ~suite (config : Run.config) tests =
   | Run.Loop _ when Sys.win32 ->
       refuse
         "mutation testing needs process groups, which Windows does not have"
-  | Run.Loop { scope = prefixes; jobs; since; children; skip_killed } -> (
+  | Run.Loop { scope = prefixes; jobs; since; children; skip_killed; retry }
+    -> (
       match resolve_scope ~prefixes ~since with
       | Error message -> refuse message
       | Ok scope when not config.broadcast.mutate ->
           loop (Report.terminal config) ~scope ~jobs ~children ~skip_killed
-            ~suite config tests
+            ~retry ~suite config tests
       | Ok scope -> (
           match (population ~scope, Run.list_selection config ~suite tests) with
           | Error reason, _ ->
@@ -2553,4 +2580,4 @@ let execute_and_report ~suite (config : Run.config) tests =
           | Ok _, Ok [] -> ordinary ~suite config tests
           | Ok _, (Ok (_ :: _) | Error _) ->
               loop (Report.terminal config) ~scope ~jobs ~children ~skip_killed
-                ~suite config tests))
+                ~retry ~suite config tests))

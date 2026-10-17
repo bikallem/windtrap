@@ -39,7 +39,14 @@ type verdict =
           gave it {!Killed}, with the source digest of this run. [exe] is the
           identity on that file ({!Instr.identity}), and it is not [""]. Only a
           loop under [--mutate-skip-killed] gives it. *)
-  | Survived of { first : reaching_test; others : reaching_test list }
+  | Survived of {
+      first : reaching_test;
+      others : reaching_test list;
+      runs : int;
+          (** The runs of the child of the mutant that gave this verdict, [1] or
+              more. Each run let the mutant survive. A merge adds the runs
+              ({!add}). *)
+    }
       (** A process of the child evaluated the armed site. No test failed in or
           after the first test that evaluated it, and no fixture release failed.
           A test that failed before that test does not count. [first] and
@@ -64,10 +71,10 @@ type verdict =
       (** No test reached the site, and the dry run did not evaluate it outside
           every test either. The loop forks no child for the mutant. *)
 
-val survived : reaching_test list -> verdict
-(** [survived ts] is the {!Survived} verdict whose reaching tests are [ts],
-    sorted and without duplicates. Raises [Invalid_argument] if [ts] is empty.
-*)
+val survived : ?runs:int -> reaching_test list -> verdict
+(** [survived ?runs ts] is the {!Survived} verdict whose reaching tests are
+    [ts], sorted and without duplicates, with [runs] runs, [1] by default.
+    Raises [Invalid_argument] if [ts] is empty or if [runs] is below [1]. *)
 
 type scored = [ `Killed | `Survived | `Not_evaluated ]
 (** The type for the classes of the verdicts that a score counts. *)
@@ -121,17 +128,18 @@ val empty : t
 
 val add : t -> record -> t
 (** [add t r] is [t] with [r] recorded. A {!Survived} verdict is sorted on its
-    way in. When [t] already holds a record under [r.id], the smaller
-    [(before, after, source_digest)] triple in lexicographic order is kept, and
-    the two verdicts combine into the verdict of a mutant that one executable
-    saw one way and another the other way. It is {!Killed} if either is, and its
-    killing test is the smaller of the two that are known, if any. Otherwise it
-    is {!Killed_elsewhere} if either is, with the smaller [exe]. Otherwise it is
-    {!Not_evaluated} if either is, then {!Survived} with the reaching tests of
-    both if either is, then {!Outside_tests} if either is, then {!Filtered} with
-    the smaller reason if either is, and {!Unreached} if both are. The two
-    previous verdicts combine in the same way, and a missing one leaves the
-    other unchanged.
+    way in, and a [runs] below [1] becomes [1]. When [t] already holds a record
+    under [r.id], the smaller [(before, after, source_digest)] triple in
+    lexicographic order is kept, and the two verdicts combine into the verdict
+    of a mutant that one executable saw one way and another the other way. It is
+    {!Killed} if either is, and its killing test is the smaller of the two that
+    are known, if any. Otherwise it is {!Killed_elsewhere} if either is, with
+    the smaller [exe]. Otherwise it is {!Not_evaluated} if either is, then
+    {!Survived} with the reaching tests of both and the sum of their runs, at
+    most [max_int], if either is, then {!Outside_tests} if either is, then
+    {!Filtered} with the smaller reason if either is, and {!Unreached} if both
+    are. The two previous verdicts combine in the same way, and a missing one
+    leaves the other unchanged.
 
     [add] checks nothing of [r.id], [r.source_digest] and the [exe] of a
     {!Killed_elsewhere}, in the verdict and in the previous verdict. It accepts
@@ -148,12 +156,14 @@ val filter : (record -> bool) -> t -> t
 
 val merge : t -> t -> t
 (** [merge a b] is the union of [a] and [b], where two records that share an
-    identifier are combined as {!add} does. [merge] is commutative, associative
-    and idempotent, {!empty} is its unit, and an {!Unreached} verdict leaves the
+    identifier are combined as {!add} does. [merge] is commutative and
+    associative, {!empty} is its unit, and an {!Unreached} verdict leaves the
     verdict it is combined with unchanged, so merging any number of files in any
-    order gives one answer. The previous verdict of a merged record tells
-    nothing of one executable. [windtrap mutants] reads the previous verdicts of
-    each file before the merge. *)
+    order gives one answer. [merge a a] is [a] with the runs of each survivor
+    doubled, at most [max_int], in the verdict and in the previous verdict. Thus
+    a merge must not get one file two times. The previous verdict of a merged
+    record tells nothing of one executable. [windtrap mutants] reads the
+    previous verdicts of each file before the merge. *)
 
 val with_previous : prior:t -> t -> t
 (** [with_previous ~prior t] is [t] in which the [previous] of each record [r]
@@ -165,7 +175,7 @@ val with_previous : prior:t -> t -> t
 
     An executable has one verdict file, at {!output_file}.
 
-    The first line of a file is the magic line [windtrap-mutants-v7], which
+    The first line of a file is the magic line [windtrap-mutants-v8], which
     carries the version of the format. A file with another first line is
     refused, never converted, and nothing is promised from one version to the
     next. *)
@@ -211,9 +221,9 @@ val load : string -> (t * identity option * string option, error) result
     - a rewrite outside {!Mutate.rewrites}, an unknown verdict, or a missing or
       unknown previous verdict,
     - a source digest that is not empty and not 32 lowercase hexadecimal digits,
-    - a survivor with no reaching test, a killed mutant with more than one
-      killing test, an empty killing executable, or a second record for one
-      identifier,
+    - a survivor with no reaching test or with fewer than one run, a killed
+      mutant with more than one killing test, an empty killing executable, or a
+      second record for one identifier,
     - a malformed identity line, a suite count that is not [0] or [1], or bytes
       after the last record.
 

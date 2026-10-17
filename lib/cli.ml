@@ -27,6 +27,7 @@ type parsed = {
   log_dir : string option;
   mutate : string list option;
   mutate_jobs : int option;
+  mutate_retry : int option;
   mutate_since : string option;
   mutate_skip_killed : bool option;
   mutate_children : Run.children option;
@@ -59,6 +60,7 @@ let empty =
     log_dir = None;
     mutate = None;
     mutate_jobs = None;
+    mutate_retry = None;
     mutate_since = None;
     mutate_skip_killed = None;
     mutate_children = None;
@@ -147,6 +149,16 @@ let jobs value =
     | Ok n when n <= max_jobs -> Ok n
     | Ok _ | Error _ ->
         Error (Printf.sprintf "a positive integer up to %d, or auto" max_jobs)
+
+(* A large N is more likely a typing error than a wish to run each survivor
+   for hours. *)
+let max_retry = 100
+
+let retry value =
+  match int_of_string_opt value with
+  | Some n when 0 <= n && n <= max_retry -> Ok n
+  | Some _ | None ->
+      Error (Printf.sprintf "a non-negative integer up to %d" max_retry)
 
 let children value =
   match String.lowercase_ascii value with
@@ -299,6 +311,12 @@ let entries =
       ~mirror:(mirrored "WINDTRAP_MUTATE_JOBS" (fun p -> p.mutate_jobs = None))
       "Test mutants at once on up to N CPUs, or on each CPU for auto (default \
        1).";
+    row "--mutate-retry"
+      (value "N" retry (fun p n -> { p with mutate_retry = Some n }))
+      ~mirror:
+        (mirrored "WINDTRAP_MUTATE_RETRY" (fun p -> p.mutate_retry = None))
+      "Run the child of a survivor up to N more times (default 0, or 2 when \
+       the suite spawned a domain).";
     row "--mutate-since"
       (value "REV" revision (fun p rev -> { p with mutate_since = Some rev }))
       ~mirror:
@@ -530,6 +548,7 @@ let settings cli =
                since = layered.mutate_since;
                children = Option.value layered.mutate_children ~default:Run.Auto;
                skip_killed = layered.mutate_skip_killed = Some true;
+               retry = layered.mutate_retry;
              })
     | None, Some id -> Ok (Run.Armed id)
     | Some _, Some _ -> Error (Incompatible_flags ("--mutate", "--arm"))

@@ -94,6 +94,7 @@ and gates on them:
         "file": "test/cram/bin/calc.ml", "line": 13, "col": 14, "rewrite": "add",
         "before": "a - b", "after": "a + b",
         "verdict": "survived",
+        "runs": 1,
         "tests": [
           { "executable": 0, "test": ["sub", "sub is nonzero"] } ] } ],
     "filtered": [ ],

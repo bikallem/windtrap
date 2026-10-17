@@ -75,24 +75,32 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
       {b Exec mode}.
     + It starts one child per reached mutant that it does not skip, in the order
       of the catalogue. It never starts one for a mutant that is unreached or
-      evaluated outside tests. A mutant with a history can have two children
-      ({b History} below). The children at once use at most the [jobs] CPUs of
-      {!Run.Loop}. A child uses the most CPUs that one of its tests used at once
-      in the dry run. The loop rounds this value to the nearest integer. The
-      value is at least 1 and at most the CPUs of the host. Tests that took less
-      than 10 ms in all count as 1. These CPUs are the CPU time of the process
-      in the test over the time of the test. On Linux, the loop also counts the
-      waits of its threads for a CPU ([child_cpus]). Thus a child of a test on
-      several domains counts as several jobs, also when other load held the CPUs
-      in the dry run. The loop does not get the wait of a domain that a test
-      spawns and joins. The workers of a stateful test are an exception. Thus
-      other load can make the count smaller for a test whose thread sleeps while
-      such domains work. A child that uses more than [jobs] CPUs runs alone. A
-      child that does not fit waits for other children to end, and no child
-      after it starts before it. The verdict of a mutant is kept until each
-      mutant before it in the catalogue has a verdict. Then it is committed, and
-      the block of a survivor printed ({!Report.mutation_survivor}). Thus the
-      report and the verdict file are the same for every value of [jobs].
+      evaluated outside tests. A mutant with a history can have a first child
+      ({b History} below), and a survivor can have more full children (the next
+      step). The children at once use at most the [jobs] CPUs of {!Run.Loop}. A
+      child uses the most CPUs that one of its tests used at once in the dry
+      run. The loop rounds this value to the nearest integer. The value is at
+      least 1 and at most the CPUs of the host. Tests that took less than 10 ms
+      in all count as 1. These CPUs are the CPU time of the process in the test
+      over the time of the test. On Linux, the loop also counts the waits of its
+      threads for a CPU ([child_cpus]). Thus a child of a test on several
+      domains counts as several jobs, also when other load held the CPUs in the
+      dry run. The loop does not get the wait of a domain that a test spawns and
+      joins. The workers of a stateful test are an exception. Thus other load
+      can make the count smaller for a test whose thread sleeps while such
+      domains work. A child that uses more than [jobs] CPUs runs alone. A child
+      that does not fit waits for other children to end, and no child after it
+      starts before it. The verdict of a mutant is kept until each mutant before
+      it in the catalogue has a verdict. Then it is committed, and the block of
+      a survivor printed ({!Report.mutation_survivor}). Thus the report and the
+      verdict file are the same for every value of [jobs].
+    + When the full child of a mutant gives
+      {!Windtrap_runtime.Verdicts.verdict.Survived}, the loop starts the same
+      child again, up to [retry] more times ([--mutate-retry], {!Run.Loop}). The
+      first verdict that is not [Survived] is the verdict, and else the verdict
+      is [Survived] with the number of runs. [retry] is [2] when the process
+      spawned a domain ({!domain_spawned}), and [0] if not, when no layer gives
+      it.
     + When the last child has ended it writes the verdict file.
 
     {b Children.} A child runs {!Run.execute} over {!Run.for_subset} of
@@ -150,11 +158,11 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
     not be the first test that does, and must pass alone. Before the child of
     any mutant, each such test runs alone in a child with no mutant armed, up to
     [jobs] at once. The first child runs that test alone. When the first child
-    kills the mutant, that is the verdict. Otherwise, a child runs every
-    reaching test, before any mutant after it starts, and gives the verdict. A
-    child runs each test that decides a verdict, so the history gives no verdict
-    without a run. A file that is not a regular file, or that does not load,
-    gives no history.
+    kills the mutant, that is the verdict. Otherwise, a full child runs every
+    reaching test, before any mutant after it starts. It gives the verdict, or
+    starts again as the step of [retry] tells. A child runs each test that
+    decides a verdict, so the history gives no verdict without a run. A file
+    that is not a regular file, or that does not load, gives no history.
 
     A first child does not run the tests before its test. When the tests of a
     suite depend on their order, a first child can kill a mutant that a full

@@ -147,14 +147,15 @@ let color_name = function
 
 let mutation_name = function
   | Run.No_mutation -> "none"
-  | Run.Loop { scope; jobs; since; children; skip_killed } ->
-      strf "loop %s jobs %d%s children %s%s" (String.concat "," scope) jobs
+  | Run.Loop { scope; jobs; since; children; skip_killed; retry } ->
+      strf "loop %s jobs %d%s children %s%s%s" (String.concat "," scope) jobs
         (Option.fold ~none:"" ~some:(strf " since %s") since)
         (match children with
         | Run.Auto -> "auto"
         | Run.Fork -> "fork"
         | Run.Exec -> "exec")
         (if skip_killed then " skip_killed" else "")
+        (Option.fold ~none:"" ~some:(strf " retry %d") retry)
   | Run.Armed id -> "armed " ^ id
 
 let broadcast_name (b : Run.broadcast) =
@@ -259,6 +260,7 @@ let parent : Run.config =
           since = None;
           children = Run.Exec;
           skip_killed = false;
+          retry = None;
         };
     mutate_workers = true;
     github = true;

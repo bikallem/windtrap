@@ -406,6 +406,9 @@ type survivor = {
       (** The reaching tests of [mutant]. The list must not be empty, because a
           mutant that no test evaluated is never reached and is no survivor. It
           is never truncated. *)
+  runs : int;
+      (** The runs of the child of [mutant] that let it survive, [1] or more. In
+          a merge, the sum over the verdict files. *)
 }
 (** The type for a survived mutant. *)
 
@@ -495,7 +498,8 @@ val mutation_line : min:float option -> mutation -> span list
 
 val survivor_block : exe_width:int option -> survivor -> section list
 (** [survivor_block ~exe_width s] is the block of [s]. It holds, in this order:
-    - the title.
+    - the title, which ends with the number of runs in parentheses when [runs]
+      is more than 1.
     - the mutated source line, as {!pp_failure} prints a source line, when
       [source] is known and holds the line.
     - the sentence that counts the reaching tests, and their executables when

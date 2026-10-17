@@ -13,9 +13,10 @@
 
    mkdata mutants OUT [--exe EXE] FILE:LINE:COL:REWRITE:BEFORE:AFTER=VERDICT...
      VERDICT is killed, killed:TEST, elsewhere:EXE, not_evaluated,
-     outside_tests, unreached, filtered:REASON or survived:TESTS, where a
-     TEST is a path of '/'-separated names, EXE is the identity of the
-     killing executable and TESTS are ';'-separated TESTs. No record has a
+     outside_tests, unreached, filtered:REASON or survived:TESTS[:RUNS],
+     where a TEST is a path of '/'-separated names, EXE is the identity of
+     the killing executable, TESTS are ';'-separated TESTs and RUNS is the
+     runs of the survivor, 1 by default. No record has a
      source digest. VERDICT@PREVIOUS gives the record the previous verdict
      PREVIOUS, which has the syntax of VERDICT.
 
@@ -74,8 +75,14 @@ let verdict = function
       match String.split_on_char ':' v with
       | [ "killed"; test ] ->
           Verdicts.Killed { by = Some (String.split_on_char '/' test) }
-      | [ "survived"; tests ] ->
-          Verdicts.survived
+      | "survived" :: tests :: runs ->
+          let runs =
+            match runs with
+            | [] -> 1
+            | [ runs ] -> int_of_string runs
+            | _ -> die "%S: not a verdict" v
+          in
+          Verdicts.survived ~runs
             (List.map (String.split_on_char '/')
                (String.split_on_char ';' tests))
       | [ "elsewhere"; exe ] -> Verdicts.Killed_elsewhere { exe }
