@@ -122,8 +122,9 @@
 
 (** {2:arid Arid code}
 
-    Some literals and statements carry no mutant, because no test should tell
-    the mutant from the original, or no test can run it:
+    Some sites carry no mutant, because no test should tell the mutant from the
+    original, or no test can run it. An arid site has no record, no index and no
+    guard, and the sites inside it keep their mutants:
     - [del] skips a resource release: a call of a function named [close],
       [close_in], [close_out], [close_noerr], [close_in_noerr],
       [close_out_noerr] or [closedir], qualified or not, also under [ignore] or
@@ -145,6 +146,50 @@
       reads a variable of the [let rec]. This applies to a [let rec] of a
       structure, of an expression and of a class.
     - [bool] skips the argument of a [~cloexec] or [?cloexec] label, an OS flag.
+    - [ari] skips [x + 0] and [x - 0], where [0] is an integer literal without a
+      suffix, as [0] or [0x0]. The two are equal on every [int]. [0 + x] keeps
+      its mutant, and so does [x +. 0.], because [-0. +. 0.] is [0.] and
+      [-0. -. 0.] is [-0.].
+    - [con] skips [a && a] and [a || a] when the two operands are one expression
+      and [a] is an identifier, a constructor without an argument, as [true], or
+      a field of such an expression, with or without a type constraint. Such an
+      operand gives one value each time and does nothing else.
+    - [neg] and [cmp] skip the condition of [if c then e1 else e2] when [e1] and
+      [e2] are one expression. [con] keeps its mutant there, because it also
+      changes which operand runs.
+    - Each rewrite skips the sites in the arguments of a logging function:
+      [Logs.app], [Logs.err], [Logs.warn], [Logs.info], [Logs.debug] and
+      [Logs.msg], as the source spells them. The list is fixed. A printing
+      function, as [Printf.printf], is no logging function, because a test can
+      read what it prints.
+    - [int] and [bool] skip a literal in the arguments of [failwith] or
+      [invalid_arg], with or without [Stdlib.]. A file that binds one of these
+      names loses this rule. A literal in the argument of [raise] keeps its
+      mutant, because a test can compare the exception.
+
+    The arguments of [f] are those of [f x], of [f @@ x], of [x |> f], and of
+    [Printf.ksprintf f] and [Format.kasprintf f] applied to a format. A
+    statement in the arguments of a logging function, of [failwith] or of
+    [invalid_arg] keeps its mutants, with the sites inside it, because it acts
+    on the state of the program. A statement is the left operand of a sequence
+    or the expression of [let () = e in]. A logging call that is a statement
+    keeps its own [del] mutant. These two rules do not see other effects, for
+    example of a function that the message calls.
+
+    Two expressions are one expression when their parsetrees are equal without
+    their locations. An expression whose value can depend on its location is one
+    expression with no other: an expression that holds [assert], [__LOC__],
+    [__LINE__], [__POS__], [__LOC_OF__], [__LINE_OF__] or [__POS_OF__] under any
+    path, as [Stdlib.__LOC__], a [match], a [function] with cases, a pattern
+    that can fail to match, or an extension node. The rewriter does not see the
+    location that a backtrace gives for a call.
+
+    An arid site ends the chain of its operator. In [a + b + 0] the outermost
+    site is arid, so [a + b] carries its own mutant.
+
+    A [[@mutate off]] on a site that one of the last five rules skips records
+    the site as dismissed, as on any other site. The other rules make the
+    expression no site, so a [[@mutate off]] there records nothing.
 
     These rules read the syntax alone, as [ari]'s chains do. *)
 
@@ -163,7 +208,7 @@
       application alone is a site. The rule reads the tree and not the layout,
       so [(a + b) + c] and [f (a + b + c)] carry one mutant too. [a + b - c]
       carries two, because [sub] and [add] are two rewrites, and so does
-      [a + b + (c + d)].
+      [a + b + (c + d)]. An {{!section-arid}arid} site ends the chain.
     - A guard binds its operands under the names [__windtrap_mut_<i>_<role>],
       where [<i>] is the index of the site and [<role>] is [p], [l] or [r]. *)
 

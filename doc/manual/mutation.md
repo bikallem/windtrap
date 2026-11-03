@@ -513,6 +513,28 @@ When the head of a `tail` site written as `h :: t` is a list, as in
 site and has no `tail` mutant of its own, since one identifier names one
 site.
 
+The rewriter also gives no mutant where the syntax shows the mutant
+equivalent to the original, or where the mutant changes a log message
+or a failure message alone:
+
+- `x + 0` and `x - 0`, with an integer `0`. `0 + x` keeps its mutant.
+- `a && a` and `a || a`, when `a` is a name, a constructor without an
+  argument or a field.
+- The condition of `if c then e else e`, when the two branches are the
+  same code. Code that can give its location, as `__LOC__`, `assert` or
+  a `match`, is never the same code as its copy.
+- Each site in the arguments of `Logs.app`, `Logs.err`, `Logs.warn`,
+  `Logs.info`, `Logs.debug` and `Logs.msg`, as the source spells them.
+  This list is fixed, and no flag adds a name.
+- An integer or boolean literal in the arguments of `failwith` or
+  `invalid_arg`. A literal in the argument of `raise` keeps its mutant,
+  because a test can compare the exception.
+
+A statement in these arguments keeps its mutants, because it acts on the
+state of the program. In `a + b + 0` the outermost `+` has no mutant, so
+`a + b` carries the mutant of the chain. A `[@mutate off]` on such a
+site records it as dismissed, as on any other site.
+
 A comparison outside a condition, as in `let ok = a < b`, carries no
 mutant, and neither does an `assert`. In a chain of one operator, as
 `a + b + c`, the outermost application alone is a site. Inline tests
