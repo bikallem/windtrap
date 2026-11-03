@@ -89,13 +89,25 @@ type entry = {
 type state = {
   mutable registry : entry list; (* newest first *)
   mutable epoch : int;
-  mutable marked : (entry * int) list; (* newest first *)
+  marked : (entry * int) list Atomic.t; (* newest first *)
   mutable armed : entry list; (* the registrations of the armed file *)
   mutable budget : int;
 }
 
 let state =
-  { registry = []; epoch = 1; marked = []; armed = []; budget = max_int }
+  {
+    registry = [];
+    epoch = 1;
+    marked = Atomic.make [];
+    armed = [];
+    budget = max_int;
+  }
+
+(* A compare-and-set loses no push of another domain. *)
+let rec push_mark mark =
+  let marks = Atomic.get state.marked in
+  if not (Atomic.compare_and_set state.marked marks (mark :: marks)) then
+    push_mark mark
 
 exception Runaway of { id : id; hits : int; budget : int }
 
@@ -173,7 +185,7 @@ let register ~file ~sites =
           entry.seen.(i) <- state.epoch;
           if entry.base.(i) < 0 then begin
             entry.base.(i) <- hits - 1;
-            state.marked <- (entry, i) :: state.marked
+            push_mark (entry, i)
           end
         end;
         if i <> entry.armed_index then false
@@ -314,14 +326,21 @@ type reached = { mutant : mutant; hits : int }
 
 let next_epoch () = state.epoch <- state.epoch + 1
 
+(* Guards on several domains can write [reach.(i)] and [base.(i)] out of
+   order. A marked site has at least one evaluation. Thus the count is at
+   least 1. Two domains can push one site. Then the first pair of the site
+   takes the mark, and [drain] skips the other pair. *)
 let drain () =
-  let marked = state.marked in
-  state.marked <- [];
-  let reached (entry, i) =
-    let hits = entry.reach.(i) - entry.base.(i) in
-    entry.base.(i) <- -1;
-    { mutant = site_mutant entry i; hits }
+  let take acc (entry, i) =
+    let base = entry.base.(i) in
+    if base < 0 then acc
+    else begin
+      entry.base.(i) <- -1;
+      let hits = max 1 (entry.reach.(i) - base) in
+      { mutant = site_mutant entry i; hits } :: acc
+    end
   in
+  let marked = List.fold_left take [] (Atomic.exchange state.marked []) in
   (* Each registration of a file marks its own copy of a mutant. *)
   let merge acc r =
     match acc with
@@ -330,17 +349,17 @@ let drain () =
     | acc -> r :: acc
   in
   let by_mutant a b = compare_mutant a.mutant b.mutant in
-  List.rev
-    (List.fold_left merge []
-       (List.sort by_mutant (List.rev_map reached marked)))
+  List.rev (List.fold_left merge [] (List.sort by_mutant marked))
 
+(* The list empties before the fill, so that no site keeps a mark without a
+   pair in the list. *)
 let reset_reach () =
+  Atomic.set state.marked [];
   List.iter
     (fun entry ->
       Array.fill entry.reach 0 (Array.length entry.reach) 0;
       Array.fill entry.base 0 (Array.length entry.base) (-1))
     state.registry;
-  state.marked <- [];
   next_epoch ()
 
 let () =

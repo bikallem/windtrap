@@ -8,6 +8,16 @@
   path as U+FFFD, and DEL as `\u007f`, as the `--json` document of a run
   does. Thus the document is always valid JSON.
 
+### Mutation testing
+
+- The dry run finds each test that reaches a mutation site, also when
+  the test evaluates the site on several domains at the same time. The
+  test must synchronize with these domains when it starts and when it
+  finishes, as a domain that the test spawns and joins does. Before, the
+  dry run could give such a mutant a count of 0 or below, or a count
+  that included the evaluations of earlier tests, and thus an incorrect
+  budget.
+
 ## v0.3.1 2026-11-01
 
 Windtrap 0.3.1 fixes two bugs that failed tests that were not at fault:
