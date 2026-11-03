@@ -442,7 +442,7 @@ before and after, and the reason of a dismissed site.
          (if Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 1
           then __windtrap_mut_1_l - __windtrap_mut_1_r
           else __windtrap_mut_1_l + __windtrap_mut_1_r))
-    else None
+    else ((None)[@ocaml.warning "-18-41-42"])
   let push x xs =
     if
       Stdlib.not (Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 2)
@@ -551,8 +551,13 @@ before and after, and the reason of a dismissed site.
     0: 3:18-3:79 "tail" "x :: (match y with | Some z -> [z])" -> "match y with | Some z -> [z]"
     1: 3:49-3:54 "tail" "[z]" -> "[]"
     2: 4:17-4:74 "tail" "[x; (match y with | Some z -> z)]" -> "[(match y with | Some z -> z)]"
-    3: 8:24-8:41 "tail" "(x :: cur) :: acc" -> "acc"
-    4: 9:19-9:31 "tail" "[x] :: acc" -> "acc"
+    3: 10:24-10:41 "tail" "(x :: cur) :: acc" -> "acc"
+    4: 11:19-11:31 "tail" "[x] :: acc" -> "acc"
+    5: 12:21-12:38 "tail" "y :: [x] :: acc" -> "[x] :: acc"
+    6: 12:26-12:31 "tail" "[x]" -> "[]"
+    7: 13:17-13:33 "tail" "[[x]; [y]]" -> "[[y]]"
+    8: 13:19-13:24 "tail" "[x]" -> "[]"
+    9: 13:26-13:31 "tail" "[y]" -> "[]"
   let partial x y =
     if
       Stdlib.not
@@ -586,6 +591,34 @@ before and after, and the reason of a dismissed site.
         (Windtrap_mut_________fixture_ret_edges___ml.___windtrap_armed___ 4)
     then [x] :: acc
     else acc
+  let middle x y acc =
+    if
+      Stdlib.not
+        (Windtrap_mut_________fixture_ret_edges___ml.___windtrap_armed___ 5)
+    then y ::
+      ((if
+          Stdlib.not
+            (Windtrap_mut_________fixture_ret_edges___ml.___windtrap_armed___ 6)
+        then [x]
+        else []))
+      :: acc
+    else [x] :: acc
+  let nested x y =
+    if
+      Stdlib.not
+        (Windtrap_mut_________fixture_ret_edges___ml.___windtrap_armed___ 7)
+    then
+      [(if
+          Stdlib.not
+            (Windtrap_mut_________fixture_ret_edges___ml.___windtrap_armed___ 8)
+        then [x]
+        else []);
+      (if
+         Stdlib.not
+           (Windtrap_mut_________fixture_ret_edges___ml.___windtrap_armed___ 9)
+       then [y]
+       else [])]
+    else [[y]]
 
   $ mut --impl ./fixture_assert.ml | ../elide.exe
   mutation sites of "./fixture_assert.ml" in Windtrap_mut_________fixture_assert___ml, with type 'a operands:

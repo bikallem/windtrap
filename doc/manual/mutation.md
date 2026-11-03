@@ -508,8 +508,9 @@ top-level `let limit = 64` or `let () = setup (); main ()`, since no run
 can judge it. `none` and `tail` also leave alone the right-hand side of
 a `let rec` outside its functions and `lazy` bodies, as
 `let rec ones = 1 :: ones`, which the compiler accepts only as written.
-A head that is a list, as in `[x] :: acc`, starts at the byte of the
-outer `::` and has no `tail` mutant, since one identifier names one
+When the head of a `tail` site written as `h :: t` is a list, as in
+`[x] :: acc` or `(x :: cur) :: acc`, it starts at the first byte of the
+site and has no `tail` mutant of its own, since one identifier names one
 site.
 
 A comparison outside a condition, as in `let ok = a < b`, carries no

@@ -454,10 +454,13 @@ let branch ~loc ~module_name ~index e app left right =
 
 (* [none] and [tail] keep the original first, so that the type-checker reads
    it as in the original: [None] then takes the type of [Some e], and the
-   copy [t'] that of [h :: t]. *)
+   copy [t'] that of [h :: t]. [None] gets that type by type-directed
+   disambiguation when a [None] of another type is in scope, which the source
+   does not do, so the guard turns off the warnings of disambiguation. *)
 let none ~loc ~module_name ~index value =
   [%expr
-    if Stdlib.not [%e armed ~loc ~module_name index] then [%e value] else None]
+    if Stdlib.not [%e armed ~loc ~module_name index] then [%e value]
+    else None [@ocaml.warning "-18-41-42"]]
 
 (* [t'] is [t] as the source wrote it, without guards: when [t'] runs, its own
    site is the armed one. Its locations are ghost, as generated code has, so

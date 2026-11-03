@@ -988,7 +988,7 @@ dune builds for a stanza naming both backends:
       Stdlib.not
         (Windtrap_mut_________fixture_guards___ml.___windtrap_armed___ 13)
     then (___windtrap_visit___ 21; Some (___windtrap_post_visit___ 20 (f x)))
-    else None
+    else ((None)[@ocaml.warning "-18-41-42"])
   let push f g x xs =
     if
       Stdlib.not

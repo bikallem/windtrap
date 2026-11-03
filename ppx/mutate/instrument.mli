@@ -35,14 +35,16 @@
     a type in scope redeclares one of the two constructors without the other.
 
     [none] names the constructor [None] unqualified, after the original
-    [Some e], so [None] gets the type of the original. The armed arm of [tail]
-    is a copy of [t] in [h :: t], and gets the type of the original. A file that
-    declares a constructor [Some], [None] or [(::)], in a type or as an
-    extension constructor, loses the two rewrites. A constructor that an [open]
-    or type-directed disambiguation takes from another module is not seen. Thus
-    a [Some e] of a type that has no constructor [None], or an [h :: t] whose
-    [t] has another type, fails to compile under instrumentation.
-    [[@mutate off]] on the expression is the way out.
+    [Some e], so [None] gets the type of the original. When a [None] of another
+    type is in scope, [None] gets that type by type-directed disambiguation, so
+    it carries [[@ocaml.warning "-18-41-42"]]. The armed arm of [tail] is a copy
+    of [t] in [h :: t], and gets the type of the original. A file that declares
+    a constructor [Some], [None] or [(::)], in a type or as an extension
+    constructor, loses the two rewrites. A constructor that an [open] or
+    type-directed disambiguation takes from another module is not seen. Thus a
+    [Some e] of a type that has no constructor [None], or an [h :: t] whose [t]
+    has another type, fails to compile under instrumentation. [[@mutate off]] on
+    the expression is the way out.
 
     [ari] is the one exception, because [a + b] cannot become [a - b] without
     naming [-]. A file that rebinds an operator where the rewriter can see it
@@ -249,9 +251,10 @@
     as a list literal where it can, so [x :: [y]] is recorded as [[x; y]], and
     its [tail] mutant as [[y]]. The [after] text of a [none] site is [None].
 
-    A head that is a list, as in [(x :: t) :: acc] or [[x] :: acc], starts at
-    the byte of the outer [tail] site. It would have the identifier of that
-    site, so it carries no [tail] site, and the outer site alone is recorded. *)
+    When the head of a [tail] site written as [h :: t] is a list, as in
+    [[x] :: acc] or [(x :: cur) :: acc], it starts at the first byte of the
+    site. It would have the identifier of the site, so it has no [tail] site of
+    its own. *)
 
 (** {1:generated Generated code}
 

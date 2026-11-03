@@ -22,6 +22,16 @@
  (preprocess
   (pps ppx_windtrap.mutate)))
 
+; A [None] of another type in scope, under fatal warnings and -principal.
+
+(library
+ (name windtrap_mutate_principal)
+ (modules levels opened_levels)
+ (flags
+  (:standard -principal -w +a-70 -warn-error +a))
+ (preprocess
+  (pps ppx_windtrap.mutate)))
+
 ; test_registration lists it, calling nothing in it, so that runtest builds
 ; it at all.
 
@@ -42,4 +52,5 @@
   windtrap.runtime
   windtrap_mutate_forced
   windtrap_mutate_disambiguate
+  windtrap_mutate_principal
   windtrap_mutate_both))

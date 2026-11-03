@@ -3,7 +3,11 @@
 let partial x y = ((x :: (match y with Some z -> [ z ])) [@ocaml.warning "-8"])
 let listed x y = ([ x; (match y with Some z -> z) ] [@ocaml.warning "-8"])
 
-(* A head that is a list starts at the byte of the outer site. It would have
-   the identifier of that site, so it carries no [tail] site. *)
+(* When the head of a site written as [h :: t] is a list, it starts at the
+   first byte of the site. It would have the identifier of the site, so it
+   has no [tail] site of its own. A list head in a list literal or in the
+   middle of a chain keeps its own site. *)
 let grouped x cur acc = (x :: cur) :: acc
 let single x acc = [ x ] :: acc
+let middle x y acc = y :: [ x ] :: acc
+let nested x y = [ [ x ]; [ y ] ]
