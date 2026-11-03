@@ -9,48 +9,52 @@
     under a {{!type-fn}signature}: which arguments are drawn, which are values
     of {{!type-abstract}abstract types} that earlier calls made, and how the two
     outcomes compare. A {{!type-program}program} is a drawn sequence of calls.
-    {!execute} runs it and records what ran, and the record is what the program
-    prints. {!Property} and the renderers know a program only as that table and
+    {!execute} runs it and records what ran, and a failing run raises its
+    {{!type-record}record} with its failure ({!Property.Run_failure}).
+    {!Property} and the renderers know a failing program only as that table and
     its one-line {!summary}, so seeds, replay, [--prop-count], the shrink
     budget, labels, tags and timeouts are those of any property.
 
     {b Drawing is structural.} No reference runs while a program is drawn. A
-    command is drawn only when every abstract type it takes has a value that an
-    earlier drawn call makes, for an {!among} type a value of the type it lists.
-    An abstract argument is drawn as one of the earlier calls that make its
-    type, and an element as a position. The shrink tree is
-    [Gen.Engine.Shrink_tree.list] over the drawn calls, with no repair. A
-    candidate deletes calls, reduces one argument or one choice, or moves a
-    parallel call out of its branch, and never turns one command into another.
+    program is parsed from a sequence of choices (see {!Choice}), as every
+    generator is. Each call is one span: a choice to go on, the command's
+    position in the list, then its arguments. A command is drawn only when every
+    abstract type it takes has a value that an earlier call makes, for an
+    {!among} type a value of the type it lists. An abstract argument is drawn as
+    the [k]th newest of the earlier calls that make its type, and an element as
+    a position. The reducer of {!Shrink} shrinks a program as any value:
+    deleting a span deletes a call, lowering a choice reduces an argument, turns
+    a command into an earlier one of the list, or, on several domains, moves a
+    parallel call out of its branch. A deletion lowers the [k] of each later
+    abstract argument by the makers it deleted among the [k] newer, so the
+    argument keeps its value. Nothing repairs a parse.
 
     {b Legality is decided when the program runs.} {!execute} resolves each
     call's abstract arguments among the values that the calls before it made,
     takes its elements, and asks the call's [pre] of the reference as the run
     left it. A call that does not resolve, whose value lists no element or whose
-    [pre] fails is skipped on both sides and is absent from the record. A
-    candidate can therefore run the calls its parent ran, and {!Property.run},
-    which compares failures and never programs, accepts it as a step. Every
-    accepted step descends one level of a tree that is finite in depth when the
-    argument trees are, except below an element, where every candidate takes an
-    earlier index than its parent or is discarded (see [^->]); the shrink budget
-    ends that search.
-
-    {b Values.} Only a call whose signature ends in {!makes} makes a value, when
-    its system returns. A value holds the reference's side and the system's. It
-    is named by its type's prefix and a count per prefix, from [1], in the order
-    of the calls that ran. A run starts with no value.
+    [pre] fails is skipped on both sides and is absent from the record. Every
+    sequence parses, so every edit of the reducer is a program, and
+    {!Property.run}, which compares failures and never programs, keeps an edit
+    that fails as its parent did.
 
     {b Several domains.} A program for [n] domains is a prefix, [n] branches and
     a suffix. The branches' calls run at once, on worker domains, and {!execute}
     judges their outcomes against the orders of the calls replayed on the
     reference (see {!judge}). Only the prefix has one reference state, so only
-    the prefix makes values, asks a [pre] and takes elements. *)
+    the prefix makes values, asks a [pre] and takes elements.
+
+    @canonical Windtrap.Private.Stateful *)
+
+(* The facade ([{1:stateful_tests}] in windtrap.mli) states each value's
+   contract for a test's author. The docs here state only what it does not: how
+   a program is drawn and parsed, what a run checks in which order, the failures
+   and the record it builds, and how the body runs the property. *)
 
 (** {1:abstract Abstract types} *)
 
 type ('r, 's) abstract
-(** The type for abstract types of an API, whose values only calls make. A value
-    holds the reference's side ['r] and the system's side ['s]. *)
+(** See the facade's [abstract]. *)
 
 val abstract :
   ?pp:(Format.formatter -> 'r -> unit) ->
@@ -58,98 +62,45 @@ val abstract :
   ?release:('s -> unit) ->
   string ->
   ('r, 's) abstract
-(** [abstract prefix] is a new abstract type, distinct from every other, whose
-    values are named [prefix] and a count.
-    - [pp] prints a reference side in the [reference before] column of a record
-      (see {!execute}).
-    - [invariant r s] runs on the two sides of every value of the type after
-      every call on the test's domain while one reference state exists (see
-      {!execute}).
-    - [release s] releases a system side of the type when a run ends (see
-      {!execute}).
-
-    Nothing is checked here. {!val-program} and {!stateful} raise
-    [Invalid_argument] if [prefix] is not a lowercase OCaml identifier, if it
-    ends with a digit, or if two abstract types of one command list have it. *)
+(** See the facade's [abstract]. Nothing is checked here: {!val-program} raises
+    on the prefixes as {!stateful} does. *)
 
 val among :
   'a Testable.t -> ('r, 's) abstract -> ('r -> 'a list) -> ('a, 'a) abstract
-(** [among w t candidates] is a new abstract type whose values are the elements
-    that a value of [t] lists: [candidates r] of its reference side [r]. A call
-    takes an element with [^->] from a value of [t] of its own signature: the
-    nearest before the element, else the first after it. No call makes one.
-    [candidates] must not change [r]. An element is the same on both sides. It
-    has no name, no invariant and no release, and the record prints it through
-    [w], whose equality is not used.
-
-    Nothing is checked here. {!val-program} and {!stateful} raise
-    [Invalid_argument] if a command makes an element of the type,
-    [Windtrap.stateful: pick makes an element of 'd'; an element is listed by a
-     value, never made], or takes one without a value of [t]:
-    [Windtrap.stateful: get takes an element of 'd' without a value of 'd'; an
-     element is listed by a value its call takes], and [an element of 'd'] in
+(** See the facade's [among]. Nothing is checked here: {!val-program} raises on
+    its rules as {!stateful} does, and the message reads [an element of 'd'] in
     place of [a value of 'd'] when [t] is itself an {!among} type. *)
 
 (** {1:signatures Signatures} *)
 
 type ('r, 's, 'p) fn
-(** The type for signatures. ['r] is the type of the reference's function, ['s]
-    the system's and ['p] the precondition's, the reference's arguments to
-    [bool]. A signature is one or more arrows ended by one result form, and the
-    left operand of an arrow is a generator or an abstract type, so a result
-    form never stands in argument position. *)
+(** See the facade's [fn]. *)
 
 val ( @-> ) : 'a Gen.t -> ('r, 's, 'p) fn -> ('a -> 'r, 'a -> 's, 'a -> 'p) fn
-(** [gen @-> fn] takes an argument drawn from [gen], the same value on both
-    sides and in every run of the program, so neither side may mutate it. It
-    shrinks with [gen], and the record prints it as its sample renders (see
-    {!Gen.Engine.render}), a pre-image included. *)
+(** See the facade's [( @-> )]. The record prints the argument as its sample
+    renders (see [Gen.Engine.render]). *)
 
 val ( ^-> ) :
   ('ra, 'sa) abstract -> ('r, 's, 'p) fn -> ('ra -> 'r, 'sa -> 's, 'ra -> 'p) fn
-(** [t ^-> fn] takes a value of [t]: its reference side for the reference and
-    for [pre], its system side for the system. It is drawn as one of the earlier
-    calls that make a value of [t]. When the call runs, it resolves to the value
-    that this call made, or, when it made none, to the newest value of [t] that
-    the calls before it made. A choice shrinks toward the newest such call.
-    Deleting other calls never moves it off the value its call made. The record
-    prints the value's name.
-
-    When [t] is an {!among} type, [t ^-> fn] takes an element that a value of
-    the call lists (see {!among}), the same on both sides. It is drawn as a
-    position [k] below 2{^ 30}. When the call runs it takes the candidate at
-    [(k * n) lsr 30] of the [n] that the value lists, so deleting another call
-    keeps its relative place. A shrink candidate takes, among the [n] of its own
-    run, one of the first eight indices that its parent's index shrinks through
-    as an integer, or the index before it, and no two candidates take the same
-    one; a candidate that changes the element alone runs with its parent's [n].
-    A candidate left without an index, past those or below index [0], takes
-    nothing, and {!execute} raises [Failure.Control `Discard] at its call, so no
-    candidate takes its parent's index or a sibling's. The record prints the
-    element through its witness, as a drawn argument prints. *)
+(** See the facade's [( ^-> )]. A value is drawn as the [k]th newest maker, as
+    the preamble says, and a deletion of the call that made it leaves [k]. An
+    element is drawn as a position [k] below 2{^ 30}, its choice: when the call
+    runs it takes the candidate at [(k * n) lsr 30] of the [n] that the value
+    lists. *)
 
 val returns : 'a Testable.t -> ('a, 'a, bool) fn
-(** [returns w] ends a signature whose two results compare under [w]. *)
+(** See the facade's [returns]. *)
 
 val makes : ('r, 's) abstract -> ('r, 's, bool) fn
-(** [makes t] ends a signature whose system's result is a new value of [t] when
-    the system returns, and whose reference's result is that value's reference
-    side. *)
+(** See the facade's [makes]. *)
 
 val judges : 'a Testable.t -> (('a, exn) result -> unit, 'a, bool) fn
-(** [judges w] ends a signature whose outcome the reference rules on instead of
-    predicting. The system's outcome, [Ok v] or [Error e], is the reference's
-    last argument. The reference returns to accept it, and rejects it with a
-    verb's failure, a broken contract or the system's own exception raised
-    again, the same value (see {!execute}). The record prints the outcome
-    through [w]. *)
+(** See the facade's [judges]. *)
 
 (** {1:commands Commands} *)
 
 type command
-(** The type for one operation of an API, on the reference and on the system.
-    Its signature is existential, so one list holds commands of every signature.
-*)
+(** See the facade's [command]. Its signature is existential. *)
 
 val command :
   ?__POS__:Loc.pos ->
@@ -159,23 +110,16 @@ val command :
   ('a -> 'r) ->
   ('b -> 's) ->
   command
-(** [command name fn reference system] is the operation [name] of signature
-    [fn], [reference] being the reference's function and [system] the system's.
-    The type demands at least one argument, since the third parameter of every
-    result form is [bool], which is not an arrow.
-    - [pre] is whether a call is legal, over the reference's arguments. It must
-      not change them. Defaults to legal everywhere.
-    - [name] identifies the command in the record, the summary and the label of
-      a failing call. Its newlines become spaces.
-    - [__POS__] is the location of a failure of its calls that recorded none. It
-      defaults to a capture at this call (see {!Loc.resolve}), never at the
-      failure. Nothing is checked at declaration. *)
+(** See the facade's [command]. The type demands at least one argument, since
+    the third parameter of every result form is [bool], which is not an arrow.
+    [name] also names the command in the {!summary}, and [__POS__] is resolved
+    at this call by {!Loc.resolve}. Nothing is checked at declaration. *)
 
 (** {1:programs Programs} *)
 
 type program
-(** The type for drawn programs: the calls of one case, the commands that case
-    draws from, and the record of the program's last run. *)
+(** The type for drawn programs: the calls of one case, and the commands that
+    case draws from. *)
 
 val program : ?steps:int -> ?domains:int -> command list -> program Gen.t
 (** [program commands] generates the programs over [commands]. [steps] is the
@@ -184,96 +128,81 @@ val program : ?steps:int -> ?domains:int -> command list -> program Gen.t
 
     With [domains = n] above [1], a program is a prefix, [n] branches and a
     suffix. The prefix and the suffix hold at most [steps] calls between them.
-    Each branch holds at most five calls for two domains, three for three, two
-    for four and one from five domains. After the prefix a command is drawn only
-    when it makes no value, has no [pre] and takes no element, so a branch and
-    the suffix choose among the prefix's values. A branch call's first
-    candidates move it to the end of the prefix, then to the start of the
-    suffix. How the lengths are drawn is not part of the contract.
+    Each branch holds at most as many calls as the facade's [stateful] says.
+    After the prefix a command is drawn only when it makes no value, has no
+    [pre] and takes no element, so a branch and the suffix choose among the
+    prefix's values. A call after the prefix reads its place first: [0] ends the
+    prefix, [1] starts the suffix and [i + 1] is branch [i], so lowering it
+    moves a parallel call to the end of the prefix, to the start of the suffix
+    or to an earlier branch, and never moves a call of the prefix or of the
+    suffix into a branch. A parse that places a command after the prefix that
+    cannot run there, or one call more than a branch holds, raises
+    [Failure.Control `Discard]. How the lengths are drawn is not part of the
+    contract.
 
     Each case draws from a subset of [commands] (swarm testing). When a command
     of the subset takes an abstract type, every command that makes the type is
-    in the subset. A command listed twice is drawn twice as often, and is one
-    command. Which subset, how a choice is drawn and the order of the candidates
+    in the subset. The subset only steers drawing: it is drawn from the stream
+    and recorded in no choice, so a replay holds every command, and a command
+    appended to the list changes no program. A command listed twice is drawn
+    twice as often, and is one command. Which subset and how a choice is drawn
     are not part of the contract.
 
-    The generator prints a program as its record (see {!execute}), and never as
-    a pre-image. A program that has not run prints [(not run)].
+    The generator prints a program as it was drawn, one call a line,
+    [let v = name a1 … an] for a call that makes a value, a value being named as
+    its maker would name it if every call made one, and a branch's calls after
+    the branch's number, as [1: push q1 0]. A program without calls prints
+    [(no calls)]. The digest of a replay token is of this printing; a failing
+    program's counterexample prints as its record (see {!execute}).
 
-    Sampling raises [Invalid_argument] if [commands] is empty, if [steps] is
-    negative, if [domains] is below [1], if the prefixes break the rules of
-    {!val-abstract} or of {!among}, under [~steps:0] too, or if [domains] is
-    above [1] and every command makes a value, has a [pre] or takes an element:
+    Sampling raises [Invalid_argument] where the facade's [stateful] says its
+    body raises, under [~steps:0] too. On several domains the message reads
     [Windtrap.stateful: on several domains every command makes a value, has a
-     ~pre or takes an element, so no call can run after the prefix]. It raises
-    [Invalid_argument] when an argument's sample has nothing to print, as that
-    of a {!Gen.constant} or a {!Gen.of_list} without [~pp] or {!Gen.with_pp}:
-    [push: argument 2 has no printer; attach one with Gen.with_pp], arguments
-    counted from one, abstract ones included. *)
+     ~pre or takes an element, so no call can run after the prefix]. Sampling
+    also raises it with the facade's [( @-> )] message when an argument's sample
+    has nothing to print, arguments counted from one, abstract ones included. *)
 
-val summary : program -> string option
-(** [summary program] is the record of [program] in one line, as
-    [5 calls, last: elements], or [4 calls, 2 in parallel] for a record with
-    parallel calls, and [None] for a record without calls and for a program that
-    has not run. The last call of a failing run on one domain is the call that
-    failed, or the call after which an invariant failed. *)
+type record
+(** The type for the record of a run: the calls that ran, in order, with what
+    the report prints of each. *)
 
-val execute : ?workers:Workers.t -> program -> unit
-(** [execute program] runs [program] from no value and records what ran in
-    [program], in place of any earlier record. It returns [()] iff no call
-    failed, no invariant failed and no release failed. [workers] run the
-    branches of a program on several domains (see
+val pp_record : Format.formatter -> record -> unit
+(** [pp_record] prints a record as the table that {!execute} describes. *)
+
+val summary : record -> string option
+(** [summary record] is [record] in one line, as [5 calls, last: elements], or
+    [4 calls, 2 in parallel] for a record with parallel calls, and [None] for a
+    record without calls. The last call of a failing run on one domain is the
+    call that failed, or the call after which an invariant failed. *)
+
+val execute : ?workers:Workers.t -> program -> record
+(** [execute program] runs [program] once from no value, and is the record of
+    what ran when no call failed, no invariant failed and no release failed. A
+    run that fails raises {!Property.Run_failure}, its [fault] the failure, its
+    [record] the record printed by {!pp_record} and its [summary] {!summary}'s.
+    A control and a fatal exception leave as they are, with no record. [workers]
+    run the branches of a program on several domains (see
     {{!section-several}several domains}). Without them the branches run one
     after the other on the calling domain. They are ignored on one domain.
 
-    {b A call.} Each drawn call runs in this order, and the first failure ends
-    the run:
-    + Its abstract arguments resolve. A call that does not resolve is skipped.
-    + Its elements are taken, each from the [candidates] of the reference side
-      of the value it reads (see {!among}). A call whose value lists no element
-      is skipped. A shrink candidate whose element is left without an index
-      raises [Failure.Control `Discard] here, once the releases ran (see [^->]).
-    + Its [pre] is asked of the reference's arguments. A call whose [pre] is
-      [false] is skipped.
-    + The reference side of each abstract argument whose type has a [pp] is
-      printed, for the record.
-    + The system runs. Under {!makes}, a system that returns makes a value.
-    + The reference judges the system's outcome. Under {!returns} and {!makes}
-      it runs and the two outcomes compare, and under {!makes} its result is the
-      value's reference side. Under {!judges} it receives the system's outcome
-      and accepts or rejects it.
-    + The invariant of each abstract type runs on every value of the type, in
-      the order the values were made.
+    {b A call} runs as the facade's preamble says, in this order: its values
+    resolve, its elements are taken, its [pre] is asked, the reference sides of
+    its [reference before] cell print, the system runs, the reference judges,
+    and the invariants run, each type's on its values in the order they were
+    made. The first failure ends the run.
 
-    {b Outcomes.} An outcome is a result or a raised exception. Two results
-    compare under the witness, which is applied to the reference's first. Two
-    exceptions are equal iff their constructor names, as [Printexc] gives them,
-    are equal once the module path is removed, so [Stdlib.Queue.Empty] equals
-    [Ring.Empty]. Their payloads are printed and never compared. A result never
-    equals an exception.
-
-    {b Never outcomes.} A verb's failure, [Assert_failure], [Match_failure] and
-    every [Failure.Control] are never outcomes.
-    - From a system function, a verb's failure, a broken contract or a discard
-      fails the run at that call, and the reference does not run.
-    - From a function of the reference, the same breaks the reference, and so
-      does anything that a [pre] or the [candidates] of an {!among} type raise:
-      {!execute} raises {!Property.Oracle_failure}.
-    - From a {!judges} reference, a verb's failure or a broken contract fails
-      the run at that call, and so does the system's own exception raised again,
-      recognised by physical equality, as a [Failure.Raise] failure with the
-      system's exception as [actual] and its backtrace. Any other exception, and
-      a discard, break the reference.
-    - Every other control passes as it is, so a skip, a timeout and an [exit]
-      keep the meaning they have in any law.
-
-    A discard fails with the message
+    {b Outcomes} compare as the facade says, the witness applied to the
+    reference's result first, an exception's constructor name as [Printexc]
+    gives it. Of the never outcomes, a broken reference makes {!execute} raise
+    {!Property.Oracle_failure}, and the system's own exception that a {!judges}
+    reference raises again is a [Failure.Raise] failure with the system's
+    exception as [actual] and its backtrace. A discard fails with the message
     [assume or reject in a command; a call's legality is its ~pre].
 
-    {b Failures.} A failure is raised as a [Failure.Check_failure], or a
-    [Property.Oracle_failure] for a broken reference, whose [msg] starts with a
-    label, followed by the failure's own [msg] after ["; "], flattened to one
-    line:
+    {b Failures.} A failure is the [fault] of a {!Property.Run_failure}:
+    [`Assertion f], or [`Exception (Property.Oracle_failure f, _)] for a broken
+    reference, where [f]'s [msg] starts with a label, followed by the failure's
+    own [msg] after ["; "], flattened to one line:
     - [call 3 of 3: push q1 0] for a call's mismatch, a never-outcome of its
       system, or a rejection by its {!judges} reference;
     - [reference of call 3 of 3: pop q1] for a broken reference function, and
@@ -299,29 +228,24 @@ val execute : ?workers:Workers.t -> program -> unit
     and none when they recorded none. Any other exception of an invariant or a
     release is a [Failure.Raise] failure with its backtrace.
 
-    {b Release.} When the run ends, whether it passed, failed or raised a
-    control, [release] runs once per physically distinct system side of its type
-    that the run made, newest first by the call that first made it. Sides are
-    told apart within a type only, so a system side that two types hold is
-    released by each. Reference sides are never released. A release that fails
-    over a passing run fails it. Over a failing run it is dropped, unless it
-    raises a control, which replaces the failure. A fatal exception, [Sys.Break]
-    or [Out_of_memory], skips the releases and the record, as it skips a
-    teardown.
+    {b Release} runs as the facade's [abstract] says, newest first by the call
+    that first made a side. Over a failing run a release that raises a control
+    is not dropped: the control replaces the failure. A fatal exception,
+    [Sys.Break] or [Out_of_memory], skips the record too.
 
-    {b The record.} The record is a table with one header row: [#], the call's
-    number among the calls that ran, then [reference before] when a row has a
-    cell, then [call]. A call reads [name a1 … an], [let v = name a1 … an] when
-    it made the value [v]. A drawn argument is its sample's rendering on one
-    line, cut at 200 bytes, in parentheses when it holds a space or starts with
-    [-]. An abstract argument is its value's name. An element is its witness's
-    printing, under a drawn argument's rules, [<pp raised EXN>] when the printer
-    raises, and [_] when its call failed before taking it. A [reference before]
-    cell holds the printed reference sides of the call's abstract arguments
-    whose type has a [pp], joined by [", "] and cut at 60 code points. A [pp]
-    that raises costs its own cell, [<pp raised EXN>]. A record of more than 40
-    calls prints its first and last 20. A record without calls prints
-    [(no calls)].
+    {b The record.} A record prints as a table with one header row: [#], the
+    call's number among the calls that ran, then [reference before] when a row
+    has a cell, then [call]. A call reads [name a1 … an], [let v = name a1 … an]
+    when it made the value [v]. A drawn argument is its sample's rendering on
+    one line, cut at 200 bytes, in parentheses when it holds a space or starts
+    with [-]. An abstract argument is its value's name. An element is its
+    witness's printing, under a drawn argument's rules, [<pp raised EXN>] when
+    the printer raises, and [_] when its call failed before taking it. A
+    [reference before] cell holds the printed reference sides of the call's
+    abstract arguments whose type has a [pp], joined by [", "] and cut at 60
+    code points. A [pp] that raises costs its own cell, [<pp raised EXN>]. A
+    record of more than 40 calls prints its first and last 20. A record without
+    calls prints [(no calls)].
 
     A record with a parallel call has two more columns: [domain], before [call],
     the branch of a parallel call and blank for the others, and [result], after
@@ -333,11 +257,7 @@ val execute : ?workers:Workers.t -> program -> unit
 
 (** {2:several Several domains}
 
-    On a program with branches, {!execute} runs the program [50] times with
-    [workers], once without, each run from no value, and it fails at the first
-    run that fails. Each run after the first starts with
-    {!Run.restart_law_output}, so a failure shows the output of the run that
-    failed. A run goes as follows.
+    On a program with branches a run goes as follows.
     + The prefix runs as a program on one domain does, invariants included.
     + {b The branches.} Their calls resolve among the prefix's values, and a
       call that does not is skipped. Branch [i] runs on worker [i]: only the
@@ -350,17 +270,27 @@ val execute : ?workers:Workers.t -> program -> unit
     + {b The suffix.} Its calls resolve among the prefix's values, and only
       their systems run, on the calling domain.
     + {b The judge} (see {!judge}) looks for an order of the calls that ran,
-      each branch in its order, then the suffix, whose replay on the reference
-      gives every outcome the system gave where the reference predicts it, and
-      is accepted where it judges it. A replay starts from a reference replayed
-      along the prefix. A {!judges} reference receives the system's recorded
-      outcome in every replay, and its rejection rules the order out. When no
-      order explains the outcomes, the run fails with
+      each branch in its order and a call whose system returned before another's
+      began first, then the suffix, whose replay on the reference gives every
+      outcome the system gave where the reference predicts it, and is accepted
+      where it judges it. A replay starts from a reference replayed along the
+      prefix. A {!judges} reference receives the system's recorded outcome in
+      every replay, and its rejection rules the order out. When no order
+      explains the outcomes, the run fails with
       [no order of the calls gives these results], then
       [the closest order, 2 then 3, differs at call 4: length q1], naming the
       parallel calls of the order whose first difference comes latest, over that
       difference's own failure. With no parallel call there is one order, and
       the failure reads as a call's does on one domain.
+
+    {b Real time.} Each call records when its system began and returned, on the
+    monotonic clock ({!Os.val-counter}), read on the domain that runs it: no
+    domain writes anything shared to take a stamp. Only a call that returned
+    strictly before another began orders the two, so calls that overlap, or that
+    the clock's resolution cannot tell apart, may come in either order. Two
+    calls of one domain are ordered by that domain's own count of its stamps,
+    which no resolution ties. Without [workers] the branches run one after the
+    other on the test's domain, and real time leaves them that one order.
 
     A replay of the prefix that gives one of its calls another outcome than the
     run's breaks the reference, [reference of call 2 of 5: get m1], with the
@@ -377,9 +307,9 @@ val execute : ?workers:Workers.t -> program -> unit
 
     No invariant runs after the prefix: several orders may explain a run, and no
     one reference state exists after the branches. Labels count in the prefix's
-    run and in one replay of the order the judge accepted in the first run;
-    every other replay of the reference counts nothing ({!Run.without_labels}).
-    The releases run as on one domain.
+    run and in one replay of the order the judge accepted; every other replay of
+    the reference counts nothing ({!Run.without_labels}). The releases run as on
+    one domain.
 
     When the test's limit expires while the branches run, the calling domain
     waits for them at most one more limit ({!Workers.run}'s [grace]). Should a
@@ -403,19 +333,24 @@ type verdict =
 
 val judge :
   fresh:(unit -> 'a) ->
+  precedes:(int -> int -> bool) ->
   branches:(int * ('a -> Failure.t option)) list list ->
   suffix:(int * ('a -> Failure.t option)) list ->
   verdict
-(** [judge ~fresh ~branches ~suffix] looks for an order of the calls of
-    [branches], each branch in its own order, followed by [suffix], in which
-    every call is [None], and is the first found. A call is a number and a
-    function that runs the call on a reference state, and is [None] when the
-    call's outcome is the system's, and its difference otherwise.
+(** [judge ~fresh ~precedes ~branches ~suffix] looks for an order of the calls
+    of [branches], each branch in its own order, in which a call [a] comes
+    before every call [b] of another branch that [precedes a b], followed by
+    [suffix], in which every call is [None], and is the first found. A call is a
+    number and a function that runs the call on a reference state, and is [None]
+    when the call's outcome is the system's, and its difference otherwise.
+    [precedes a b] is whether call [a] returned before call [b] began. It must
+    hold of no two calls of one branch out of their order, and hold of a later
+    call of a branch whenever it holds of an earlier one.
 
-    The search is depth first, over program order and never real time: the first
-    branch's next call is tried first, and a call that differs ends the orders
-    that start with the path to it. The first order of a branch point continues
-    on the state that the call before it left. Every other starts from
+    The search is depth first: the first branch's next call that no other
+    branch's next call precedes is tried first, and a call that differs ends the
+    orders that start with the path to it. The first order of a branch point
+    continues on the state that the call before it left. Every other starts from
     [fresh ()], on which the path is replayed, its calls' results ignored, so a
     state need be neither persistent nor copyable. With [n] calls in two
     branches, at most the binomial [n] choose the first branch's length orders
@@ -425,7 +360,6 @@ val judge :
 
 val stateful :
   ?__POS__:Loc.pos ->
-  ?tags:string list ->
   ?timeout:float ->
   ?count:int ->
   ?steps:int ->
@@ -433,43 +367,30 @@ val stateful :
   string ->
   command list ->
   Test_tree.t
-(** [stateful name commands] is the property test [name] over the programs of
-    [commands]. Its body checks [commands], [steps] and [domains] as
-    {!val-program} does, then runs {!Run.property} over
-    [program ?steps ?domains commands] with [execute ?workers] as its law,
-    {!summary} as its summary and [prints_run], since a program prints the
-    record of its run, then judges the commands never called.
-    - [timeout] and [count] are {!Run.prop}'s, and so is [--prop-count].
-    - [__POS__] is the declaration site, resolved once at this call. It is the
-      site of the test.
-    - ["prop"] and ["stateful"] are always added to [tags], and ["parallel"]
-      when [domains] is above [1].
+(** See the facade's [stateful]. Its body checks [commands], [steps] and
+    [domains] as {!val-program} does, then runs {!Run.property} over
+    [program ?steps ?domains commands] with [execute ?workers] as its law, then
+    judges the commands never called. [timeout] and [count] are {!Run.prop}'s.
+    [__POS__] is the declaration site, resolved once at this call.
 
-    {b Several domains.} With [domains] above [1], the body spawns [domains]
-    workers ({!Workers.spawn}) before the first case, outside the property, and
-    joins them when it ends, however it ends. A spawn that fails fails the test
-    with a [Failure.Check_failure] at the declaration site,
-    [cannot spawn a worker domain: <message>], and no counterexample. Each run
-    of the law costs [50] of the shrink budget ({!Property.run}'s [cost]), and
-    one that discards costs [1]: only an element discards, and it is taken in
-    the prefix of the first repetition. The law is not [deterministic], so a
-    counterexample does not run again. The test takes [~retries:0], so a group's
-    retries do not apply. Under [--mutate] or [--arm] ([config.mutation] is not
-    {!Run.No_mutation}) the body spawns nothing, each program runs once on the
-    test's domain, and a counterexample runs again. With [--mutate-workers]
-    ([config.mutate_workers]), the body spawns its workers as without mutation
-    testing, and a counterexample does not run again.
+    {b Several domains.} With [domains] above [1], the body spawns the workers
+    ({!Workers.spawn}) before the first case, outside the property, and joins
+    them however it ends. A spawn that fails is a [Failure.Check_failure] at the
+    declaration site, with no counterexample. Each case runs [50] times
+    ({!Property.run}'s [runs]) and fails at the first run that fails, so it
+    costs [50] of the shrink budget. The test takes [~retries:0]. Under
+    [--mutate] or [--arm] ([config.mutation] is not {!Run.No_mutation}) the body
+    spawns nothing.
 
-    {b A broken reference.} {!execute} raises {!Property.Oracle_failure} for a
-    broken reference, so {!Property.run} shrinks a case that broke the reference
-    among the candidates that break it too, and rejects them in the search of a
-    case that failed otherwise.
+    {b A broken reference} is a {!Property.Oracle_failure}, which
+    {!Property.run} shrinks and rejects as the facade says.
 
     {b Commands never called.} When {!Run.property} returns, every case has
-    passed. If at least one did, a command that some passing case's subset held
-    and that no passing case ran fails the test with a [Failure.Check_failure]
-    at the declaration site, whose message names every such command in the order
-    of [commands]:
+    passed. If at least one did, and the cases were generated, not replayed
+    alone ([replayed] of {!Property.stats} is [0]), a command that some passing
+    case's subset held and that no passing case ran makes the test vacuous, with
+    a [Failure.Check_failure] of a {!Failure.Vacuous} failure at the declaration
+    site, whose text names every such command in the order of [commands]:
     [never called: "pop", "peek" (over 100 passing cases); a call runs only
      where its arguments resolve and its ~pre holds]. When one of them takes an
     element of an {!among} type, the hint reads
@@ -477,8 +398,7 @@ val stateful :
     instead. A command is a value of [commands], compared physically.
 
     It takes no [examples], since a program is drawn, no [max_discard], the
-    budget being {!Property.run}'s default, and no [retries], since a second
-    attempt would replay the same programs from the root seed.
+    budget being {!Property.run}'s default, and no [retries] of its own.
 
     Raises [Invalid_argument] if [timeout] is given and is not finite and
     positive. The body raises [Invalid_argument], inside the running test and

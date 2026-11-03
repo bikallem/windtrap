@@ -11,19 +11,12 @@
      line i + 1 of a source of 10-byte lines. FILE is read with OCaml's
      string escapes, so a session can name any byte.
 
-   mkdata mutants OUT [--exe EXE] [--suite SUITE]
-       FILE:LINE:COL:REWRITE:BEFORE:AFTER=VERDICT...
-     VERDICT is killed, killed:TEST, elsewhere:EXE, not_evaluated,
-     outside_tests, unreached, filtered:REASON, flaky:TEST:FAILURE or
-     survived:TESTS[:RUNS], where a TEST is a path of '/'-separated names,
-     EXE is the identity of the killing executable, FAILURE has no ':' and
-     no '@', TESTS are ';'-separated TESTs and RUNS is the runs of the
-     survivor, 1 by default. No record has a
-     source digest. VERDICT@PREVIOUS gives the record the previous verdict
-     PREVIOUS, which has the syntax of VERDICT.
+   mkdata mutants OUT [--exe EXE] FILE:LINE:COL:REWRITE:BEFORE:AFTER=VERDICT...
+     VERDICT is killed, not_evaluated, outside_tests, unreached or
+     survived:TESTS, where TESTS are ';'-separated paths of '/'-separated
+     names.
 
-   --exe records the identity of the executable at EXE as it is now, and
-   --suite records the suite SUITE. *)
+   --exe records the identity of the executable at EXE as it is now. *)
 
 module Coverage = Windtrap_runtime.Coverage
 module Instr = Windtrap_runtime.Instr
@@ -70,39 +63,22 @@ let coverage ~identity out records =
   Instr.write_file out (Buffer.contents b)
 
 let verdict = function
-  | "killed" -> Verdicts.Killed { by = None }
+  | "killed" -> Verdicts.Killed
   | "not_evaluated" -> Verdicts.Not_evaluated
   | "outside_tests" -> Verdicts.Outside_tests
   | "unreached" -> Verdicts.Unreached
+  | v when String.starts_with ~prefix:"unknown:" v ->
+      Verdicts.Unknown (String.sub v 8 (String.length v - 8))
   | v -> (
       match String.split_on_char ':' v with
-      | [ "killed"; test ] ->
-          Verdicts.Killed { by = Some (String.split_on_char '/' test) }
-      | [ "flaky"; test; failure ] ->
-          Verdicts.Flaky { test = String.split_on_char '/' test; failure }
-      | "survived" :: tests :: runs ->
-          let runs =
-            match runs with
-            | [] -> 1
-            | [ runs ] -> int_of_string runs
-            | _ -> die "%S: not a verdict" v
-          in
-          Verdicts.survived ~runs
+      | [ "survived"; tests ] ->
+          Verdicts.survived
             (List.map (String.split_on_char '/')
                (String.split_on_char ';' tests))
-      | [ "elsewhere"; exe ] -> Verdicts.Killed_elsewhere { exe }
-      | [ "filtered"; reason ] -> Verdicts.Filtered reason
       | _ -> die "%S: not a verdict" v)
 
 let record spec =
   let mutant, v = split_last '=' spec in
-  let v, previous =
-    match String.index_opt v '@' with
-    | Some i ->
-        ( String.sub v 0 i,
-          Some (verdict (String.sub v (i + 1) (String.length v - i - 1))) )
-    | None -> (v, None)
-  in
   match String.split_on_char ':' mutant with
   | [ file; line; col; rewrite; before; after ] ->
       let id =
@@ -113,18 +89,19 @@ let record spec =
           rewrite;
         }
       in
+      (* The expression spans [before] on its line. *)
       {
         Verdicts.id;
+        end_line = id.line;
+        end_col = id.col + String.length before;
         before;
         after;
-        source_digest = None;
         verdict = verdict v;
-        previous;
       }
   | _ -> die "%S: not FILE:LINE:COL:REWRITE:BEFORE:AFTER" mutant
 
-let mutants ~identity ?suite out specs =
-  Verdicts.save ?identity ?suite out
+let mutants ~identity ?refused out specs =
+  Verdicts.save ?identity ?refused out
     (List.fold_left Verdicts.add Verdicts.empty (List.map record specs))
 
 let () =
@@ -135,16 +112,16 @@ let () =
         | "--exe" :: exe :: args -> (Some (identity exe), args)
         | args -> (None, args)
       in
-      let suite, args =
-        match (kind, args) with
-        | "mutants", "--suite" :: suite :: args -> (Some suite, args)
-        | _, args -> (None, args)
+      let refused, args =
+        match args with
+        | "--refused" :: reason :: args -> (Some reason, args)
+        | args -> (None, args)
       in
       match kind with
       | "coverage" -> coverage ~identity out args
-      | "mutants" -> mutants ~identity ?suite out args
+      | "mutants" -> mutants ~identity ?refused out args
       | kind -> die "%S: not coverage or mutants" kind)
   | _ ->
       die
-        "usage: mkdata (coverage | mutants) OUT [--exe EXE] [--suite SUITE] \
+        "usage: mkdata (coverage | mutants) OUT [--exe EXE] [--refused REASON] \
          RECORD..."

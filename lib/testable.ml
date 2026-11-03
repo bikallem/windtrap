@@ -114,6 +114,15 @@ let float_rel ~rel ~abs =
   let equal a b =
     let diff = Float.abs (a -. b) in
     let max_ab = Float.max (Float.abs a) (Float.abs b) in
+    (* The bound this comparison allows, which the relative part widens
+       where the sides are finite; an error that is not finite is no
+       margin. *)
+    (if Tolerance.observing () then
+       let allowed =
+         Float.max abs (if Float.is_finite max_ab then rel *. max_ab else 0.)
+       in
+       if a = b then Tolerance.observe 0. allowed
+       else if Float.is_finite diff then Tolerance.observe diff allowed);
     a = b || diff <= abs || (Float.is_finite max_ab && diff <= rel *. max_ab)
   in
   { pp = Pp.float_exact; equal; compare = Some Float.compare }
@@ -151,7 +160,27 @@ let array w =
     ~equal:(fun a0 a1 ->
       Array.length a0 = Array.length a1 && Array.for_all2 w.equal a0 a1)
 
-let slist w cmp = contramap (List.sort cmp) (list w)
+(* A multiset under [w]'s equality, which [cmp] only sorts for the pairing,
+   so a [cmp] coarser than the equality leaves two equal multisets equal.
+   Their difference is offered to the failure, which shows it in place of
+   the two whole lists. *)
+let slist w cmp =
+  let print = (list w).pp in
+  let equal a b =
+    match Multiset.difference ~equal:w.equal ~compare:cmp a b with
+    | [], [] -> true
+    | missing, extra ->
+        Multiset.offer a b
+          (lazy
+            {
+              Multiset.missing = Pp.to_string print missing;
+              missing_count = List.length missing;
+              extra = Pp.to_string print extra;
+              extra_count = List.length extra;
+            });
+        false
+  in
+  make ~pp:(fun ppf l -> print ppf (List.stable_sort cmp l)) ~equal
 
 let pair a b =
   make ~pp:(Pp.pair a.pp b.pp) ~equal:(fun (a0, b0) (a1, b1) ->

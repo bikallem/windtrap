@@ -35,6 +35,7 @@ type withheld =
   | Skipped
   | Refused of { line : int; reason : string }
   | Conflict
+  | In_law
 
 type message_diff = {
   constructor : string;
@@ -48,8 +49,21 @@ type containment_demand =
   | Suffix
   | Ordered of { index : int; resumed_at : int }
 
+type multiset = {
+  missing : text;
+  missing_count : int;
+  extra : text;
+  extra_count : int;
+}
+
 type kind =
-  | Equality of { expected : text; actual : text; not_ : bool; diffable : bool }
+  | Equality of {
+      expected : text;
+      actual : text;
+      not_ : bool;
+      diffable : bool;
+      multiset : multiset option;
+    }
   | Containment of {
       needle : text;
       found_at : int option;
@@ -82,6 +96,11 @@ type kind =
       rendering : rendering;
       inner : t option;
       failed_again : bool option;
+      token : string option;
+      domain : int option;
+      also : t list;
+      table : bool;
+      label : text option;
     }
   | Law of {
       law : string;
@@ -91,6 +110,7 @@ type kind =
     }
   | Timeout of { limit : float; case : timed_case option }
   | Message of text
+  | Vacuous of text
 
 and law_term =
   | Term of { name : string; value : text }
@@ -105,13 +125,8 @@ and timed_case = {
   count : int option;
 }
 
-and shrink_end =
-  | Converged
-  | Budget_spent
-  | Candidate_raised of text
-  | Timed_out of float
-
-and rendering = Value | Pre_image
+and shrink_end = Converged | Budget_spent | Timed_out of float
+and rendering = Ocaml | Value | Pre_image
 
 and t = {
   kind : kind;
@@ -120,6 +135,7 @@ and t = {
   msg : text option;
   subtest : string list;
   output_tail : tail option;
+  caught : bool;
 }
 
 (* Control *)
@@ -163,13 +179,59 @@ let rec classify exn backtrace : caught =
   | exn when is_fatal exn -> Printexc.raise_with_backtrace exn backtrace
   | exn -> `Exception (exn, backtrace)
 
+(* Recording scopes *)
+
+(* The innermost scope of each domain, newest failure first. A domain that a
+   test spawns starts in the scope that spawned it, which is shared, so the
+   list is atomic. *)
+let scope : t list Atomic.t option Domain.DLS.key =
+  Domain.DLS.new_key ~split_from_parent:Fun.id (fun () -> None)
+
+let record t =
+  match Domain.DLS.get scope with
+  | None -> ()
+  | Some recorded ->
+      let rec push () =
+        let seen = Atomic.get recorded in
+        if not (List.memq t seen) then
+          if not (Atomic.compare_and_set recorded seen (t :: seen)) then push ()
+      in
+      push ()
+
+let refuse t =
+  record t;
+  raise (Check_failure t)
+
+let recording f =
+  let own = Atomic.make [] in
+  let enclosing = Domain.DLS.get scope in
+  Domain.DLS.set scope (Some own);
+  let ended =
+    match f () with
+    | value ->
+        Domain.DLS.set scope enclosing;
+        Ok value
+    | exception exn ->
+        (* Read first: a raise inside [classify] would replace it. *)
+        let backtrace = Printexc.get_raw_backtrace () in
+        Domain.DLS.set scope enclosing;
+        Error (classify exn backtrace)
+  in
+  let left t = match ended with Error (`Assertion r) -> r == t | _ -> false in
+  let caught =
+    List.rev (Atomic.get own)
+    |> List.filter_map (fun t ->
+        if left t then None else Some { t with caught = true })
+  in
+  (ended, caught)
+
+(* A failure caught inside comes first: it happened before what [f] did
+   next. A timeout and an exit still reach their owner, and fail the test. *)
 let catch f =
-  match f () with
-  | value -> Ok value
-  | exception exn ->
-      (* Read first: a raise inside [classify] would replace it. *)
-      let backtrace = Printexc.get_raw_backtrace () in
-      Error (classify exn backtrace)
+  match recording f with
+  | ended, [] -> ended
+  | (Error (`Timeout _ | `Exit) as ended), _ -> ended
+  | _, first :: _ -> Error (`Assertion first)
 
 let to_exn : [< caught ] -> exn = function
   | `Assertion t -> Check_failure t
@@ -179,6 +241,7 @@ let to_exn : [< caught ] -> exn = function
 let reraise c =
   match (c :> caught) with
   | `Exception (exn, backtrace) -> Printexc.raise_with_backtrace exn backtrace
+  | `Assertion t -> refuse t
   | c -> raise (to_exn c)
 
 (* Dune compiles an executable's modules under [Dune__exe]. The prefix is cut
@@ -263,12 +326,30 @@ let make ?loc ?msg kind =
     msg = Option.map text msg;
     subtest = [];
     output_tail = None;
+    caught = false;
   }
 
-let equality ?loc ?msg ?(not_ = false) ~expected ~actual () =
+let equality ?loc ?msg ?(not_ = false) ?multiset ~expected ~actual () =
+  let multiset =
+    Option.map
+      (fun (m : Multiset.explanation) ->
+        {
+          missing = text m.missing;
+          missing_count = m.missing_count;
+          extra = text m.extra;
+          extra_count = m.extra_count;
+        })
+      multiset
+  in
   make ?loc ?msg
     (Equality
-       { expected = text expected; actual = text actual; not_; diffable = true })
+       {
+         expected = text expected;
+         actual = text actual;
+         not_;
+         diffable = true;
+         multiset;
+       })
 
 (* An ordered search failed from its cursor: an occurrence before the cursor
    is the one that did not count. *)
@@ -314,6 +395,7 @@ let predicate ?loc ?msg ~claim value =
          actual = text value;
          not_ = false;
          diffable = false;
+         multiset = None;
        })
 
 let raised ?loc ?msg ?expected ?actual ?(predicate = false) ?backtrace
@@ -336,7 +418,7 @@ let baseline ?loc baseline state =
 
 let property ?loc ?inner ?count ?summary ~rendered ~case_index ~shrink_steps
     ?(shrink_end = Converged) ~root ~examples ?(rendering = Value) ?failed_again
-    () =
+    ?token ?domain ?(also = []) ?(table = false) ?label () =
   make ?loc
     (Property
        {
@@ -351,6 +433,11 @@ let property ?loc ?inner ?count ?summary ~rendered ~case_index ~shrink_steps
          rendering;
          inner;
          failed_again;
+         token;
+         domain;
+         also;
+         table;
+         label = Option.map text label;
        })
 
 let law ?loc ?msg ?clause ~law ~equation terms =
@@ -358,6 +445,8 @@ let law ?loc ?msg ?clause ~law ~equation terms =
 
 let timeout ?loc ?case limit = make ?loc (Timeout { limit; case })
 let message ?loc s = make ?loc (Message (text s))
+let vacuous ?loc s = make ?loc (Vacuous (text s))
+let is_vacuous t = match t.kind with Vacuous _ -> true | _ -> false
 
 let of_fault : fault -> t = function
   | `Assertion failure -> failure
@@ -373,10 +462,10 @@ let with_output_tail tail t = { t with output_tail = Some tail }
 
 let with_withheld withheld t =
   match t.kind with
-  | Baseline { withheld = Some (Refused _ | Conflict); _ } -> t
+  | Baseline { withheld = Some (Refused _ | Conflict | In_law); _ } -> t
   | Baseline b -> { t with kind = Baseline { b with withheld = Some withheld } }
   | Equality _ | Containment _ | Raise _ | Property _ | Law _ | Timeout _
-  | Message _ ->
+  | Message _ | Vacuous _ ->
       t
 
 (* Captured-output tails *)

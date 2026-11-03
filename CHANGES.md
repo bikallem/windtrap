@@ -1,389 +1,362 @@
 # Changelog
 
-## Unreleased
+## v0.3.1 2026-11-01
+
+Windtrap 0.3.1 fixes two bugs that failed tests that were not at fault:
+a test that timed out could leave a mutex locked for every later test in
+its worker, and `stateful ~domains` ran about sixty times slower when
+its workers shared a processor, enough to reach a test's limit.
+
+### Stateful testing
+
+- `stateful ~domains` no longer spins for a time slice per run when its
+  workers share a processor, as on a loaded machine or under `taskset`:
+  a worker that waits for another at the start of a run sleeps after a
+  short spin, and a 50-case test of a counter on one core takes 0.11 s
+  instead of 6.8 s.
+
+### Running tests
+
+- A test that timed out no longer fails the tests after it in its
+  worker: it retires the worker, as a test that spawns a domain does,
+  so a mutex it held when its timeout stopped it is not still locked
+  in the next test. The documentation of timeouts says where the
+  timeout's exception can arrive and that the limit is wall-clock time.
+
+## v0.3.0 2026-10-30
+
+Windtrap 0.3.0 changes how property tests shrink and where tests run,
+with few changes to the interface.
+
+Generators now read a sequence of random choices, and shrinking reduces
+that sequence and runs the generator again, as Hypothesis does
+([MacIver and Donaldson, ECOOP 2020](https://drops.dagstuhl.de/storage/00lipics/lipics-vol166-ecoop2020/LIPIcs.ECOOP.2020.13/LIPIcs.ECOOP.2020.13.pdf)).
+0.2.0 shrank each value through a tree of smaller candidates, which
+cannot shrink across `Gen.bind` or change a value's shape. On benchmarks
+that need such a change, 0.3.0 reaches the smallest counterexample on
+every seed, where 0.2.0 reached it on 15% (a calculator's expressions)
+and 47% (nested lists).
+
+Outside Windows, each test now runs in a worker process, so a test that
+crashes, calls `exit` or hangs fails by name and the run goes on. A
+worker starts the test executable again, so module initialisation runs
+once per worker start. On raven's suites a run took about 3% longer than
+under 0.2.0, except where a suite opens a GPU at initialisation and pays
+for it in each new worker.
+
+### Highlights
+
+**A crash or a hang fails one test, not the run.** In 0.2.0 a test that
+segfaulted or ran out of memory ended the run with no summary, and a
+test that never returned kept the build waiting forever. Outside
+Windows, tests now run in worker processes, so such a test fails by
+name and the run goes on, and every test stops after ten minutes unless
+`~timeout` or `--timeout` sets another limit. `-j N` runs the tests in
+`N` workers at once.
+
+**A failure inside a catch-all is no longer lost.** In 0.2.0 an `equal`
+that failed inside `try … with _ -> ()`, or inside a library that
+ignores what its callbacks raise, passed the test. A failing verb now
+records its failure before it raises, and the block says
+`failed, then caught`. To retry a claim until it holds, use
+`eventually ~within f`.
+
+**A verdict says what it checked.** In 0.2.0 a property with
+`~count:0` and no examples passed, and a passing test never said how
+much it had run. Now a test that checks nothing fails as `VACUOUS`, with
+a line that says why, as do a property whose every case was discarded,
+an unmet `cover`, a stateful command never called and a table with no
+row. Under `-v` a passing test says what it ran, as
+`(100 cases, 2 examples, 14 discards)` or `holds on all 3 rows`, and a
+float comparison reports the largest error it saw against its
+tolerance; `--json` writes all of it.
+
+**Property tests find bugs sooner and shrink them further.** Shrinking
+now works on the choices a generator made, so it can shrink through
+`Gen.bind` and rewrite a value's structure. On benchmarks that need such
+a rewrite it reaches the smallest counterexample on every seed, where
+0.2.0 reached it on 15% (a calculator's expressions) and 47% (nested
+lists). Generators draw edge cases and repeated values more often, and
+the whole integer types draw small values first, so on planted bugs in
+search trees and a lambda calculus a failure comes after 22 cases on
+average, against 68. A failure prints a `keep it: ~examples:[ … ]` line
+to paste into the test.
+
+**Stateful tests on several domains check linearizability.** In 0.2.0
+the judge accepted any order of the parallel calls that kept each
+domain's program order, so a structure that was only sequentially
+consistent passed. Now a call that returned before another began must
+come first.
+
+**Mutation testing and coverage can judge one change.** Given the output
+of `git diff -U0`, `--mutate --diff FILE` tests only the mutants on the
+changed lines, and `windtrap coverage --diff FILE` reports only their
+points. Mutant verdicts no longer change from run to run, and a mutant
+that no run could judge is reported as unknown, never as a survivor.
+
+### Declaring tests
+
+- (breaking) `cases name ~id rows fn` is one test that runs every row
+  and reports each refuted one, as `row 2 of 5: b`, where 0.2.0's
+  `cases ~name base inputs fn` declared one test per row; `-f`, `-v`,
+  `~timeout`, `~retries` and the summary see one test
+  (doc/manual/resources-and-structure.md#checking-a-table-of-inputs).
+- A row is identified by `~id row`, and two rows with one id fail the
+  table before any row runs; `?label` shows a text beside a row and
+  identifies nothing.
+- A `skip` in a row skips that row alone, and a table skips only when
+  every row skipped; `-v` says `holds on 2 of 3 rows, 1 skipped: no GPU`.
+- A row keeps or withholds its baseline corrections, and refuses
+  `collect`, `classify` and `cover`, as a test of its own did in 0.2.0.
+- (breaking) `slow : test -> test` and `tag : string -> test -> test`
+  mark any test or group, as `focus` and `xfail` do, and `?tags` is
+  removed from every constructor; `slow name fn` is
+  `slow @@ test name fn`.
 
 ### Assertions
 
-- `uchar` is the witness for `Uchar.t`, printed in the Unicode notation,
-  as `U+00E9`.
+- (breaking) `starts_with ~prefix`, `ends_with ~suffix` and the `?sub`
+  of `Exn.invalid_arg`, `Exn.failure` and `Exn.sys_error` replace
+  `~affix` and `?substring`, as in `String.starts_with`,
+  `String.ends_with` and `contains`.
+- (breaking) A failing verb records its failure in the test before it
+  raises, so a catch-all around it, in the test or on a domain the test
+  spawned, no longer passes the test; the block says
+  `failed, then caught`.
+- `eventually ~within f` calls `f` until a call returns, for at most
+  `within` seconds, and fails with the last call's failure
+  (doc/manual/assertions.md#checking-inside-a-callback-or-until-a-claim-holds).
+- `slist t cmp` compares two lists as multisets under `t`'s equality and
+  uses `cmp` only to sort, where 0.2.0 found equal multisets unequal
+  under a coarser `cmp`; a failure says
+  `multisets differ: 2 missing, 1 extra` in place of a diff.
+- `equal` under `float eps` or `float_rel` records the largest error it
+  saw, which a failing block, `-v` and `--json` state, as
+  `tolerance at test/t.ml:12: largest error 3e-12 of 1e-06 allowed, over 40 comparisons`.
+- `output ()` on a domain the test spawned reads what that domain
+  printed through `Format`.
+- `uchar` is the witness for `Uchar.t`, printed as `U+00E9`.
 - `float_exact`, `float eps`, `float_rel` and the float generators
   print `infinity`, `neg_infinity` and `nan`, where 0.2.0 printed
   `inf`, `-inf` and, under some C libraries, `-nan`.
 
 ### Property testing
 
-- The captured output in the block of a failing property or stateful
-  test is that of the run that failed on the counterexample, where
-  0.2.0 showed the last lines of the whole search, which end on the
-  last candidate tried.
-- A counterexample prints as it was drawn, and a failing example as it
-  was given, where 0.2.0 printed them as the law left them, so that a
-  law that fills its `bytes` in place printed bytes it passes on.
+- (breaking) A test that refuted nothing and checked less than it
+  claims is vacuous, a failing verdict tagged `VACUOUS` and counted
+  apart in the summary: a property whose every case was discarded, an
+  unmet `cover`, a stateful command never called, a table with no row,
+  and `~count:0` with no example, which passed in 0.2.0.
+- (breaking) `cover ~share:p label cond` demands that a share `p` of the
+  cases carry `label`, judged as QuickCheck's `checkCoverage` judges it,
+  and states the bound it established, as
+  `cover "accepted" ~share:0.2: 27.9% of 800 cases, at least 19.3%`;
+  `cover`'s type is `?share:float -> string -> bool -> unit`
+  (doc/manual/property-testing.md#discarding-and-labelling-cases).
+- (breaking) An `expect`, `expect_exact` or `expect_file` in the law of
+  a property or a stateful test fails its case as any verb does, so the
+  case shrinks and no correction is written, where 0.2.0 recorded every
+  case's mismatch and passed the case.
+- (breaking) The whole integer types, `Gen.int`, `Gen.int32`,
+  `Gen.int64`, `Gen.nativeint` and a range over a type's `min_int` to
+  `max_int`, draw small values and the edges of powers of two first,
+  and a draw repeats an earlier value of its generator one time in
+  eight; on ETNA-style workloads a planted bug fails after 22 cases on
+  average, against 68, and a case costs up to 1.9 times as much to draw.
+- `Gen.float` and `Gen.float_range` draw a corner case one time in ten,
+  such as `-0.`, the least subnormal, the greatest finite float or a range's
+  bounds; a property that passed under 0.2.0 can fail on one.
+- `Gen.char` and `Gen.char_range` draw a corner one time in ten, as the
+  integer ranges do, so a default `Gen.string` holds a NUL in 7.7% of
+  the cases, against 1.8%
+  (doc/manual/property-testing.md#generating-strings-and-alphabets).
+- A list, array, string or bytes drawn without `~size` can be up to 255
+  long, where 0.2.0 stopped at 63; one in 133 is 64 or longer.
+- A seed or a `replay:` line that 0.2.0 printed draws other cases; a
+  replay token holds the case's choices and still replays its case.
+- Shrinking works on the choices a generator read, so it shrinks
+  through `Gen.bind` and can merge two inner lists or replace a node by
+  its subterm, which 0.2.0's trees could not
+  (doc/manual/property-testing.md#reading-a-counterexample).
+- `Gen.result`, `Gen.either` and `Gen.frequency` shrink toward `Ok`,
+  `Left` and the first generator of positive weight, and `-0.` shrinks
+  to `0.`.
+- A failing property prints the line that keeps its counterexample,
+  `keep it: ~examples:[ … ]` when its generators print OCaml and
+  `replay it: -f PATH --replay TOKEN` otherwise
+  (doc/manual/property-testing.md#keeping-a-counterexample-as-a-regression).
+- A property whose generator has no more values than its count runs its
+  law once on each, and `-v` says `holds on all N values`; a failure
+  reports every value refuted, none shrunk.
 - After the search the law runs once more on the counterexample, and
-  when that run does not fail the block says
+  when it passes the block says
   `the test did not fail again on this counterexample; it is not deterministic`.
-- `Gen.int32_range`, `Gen.int64_range` and `Gen.nativeint_range`
-  generate in a range of their type as `Gen.int_range` does, with the
-  same corners and shrinking; 0.2.0 had removed the first two.
+- A failing block shows the output captured on the counterexample, and
+  prints the counterexample as it was drawn, where 0.2.0 showed the
+  search's last output and the value as the law left it.
+- `~max_discard` defaults to ten discards per case, where 0.2.0 allowed
+  two, so a law that keeps an eighth of its cases no longer gives up by
+  chance.
+- A generator that overflows the stack still fails its case, and the
+  report names the likely cause
+  (doc/manual/property-testing.md#generating-a-recursive-type).
+- On a terminal the live line says when a test is shrinking, as
+  `[3/10] lists › rev: shrinking, 12 steps…`.
 - `Gen.uchar` draws a Unicode scalar value, each UTF-8 length equally
-  likely, and prints as `Uchar.of_int 0xE9`.
-- `Gen.float` and `Gen.float_range` draw a corner case with probability
-  0.1: for `Gen.float`, `0.`, `-0.`, `1.`, `-1.` and, of each sign, the
-  least subnormal, the least normal and the greatest finite float; for
-  a range, its bounds, its point closest to 0 and that point's
-  neighbours, and `-0.` when `low < 0. <= high`. A property that passed
-  under 0.2.0 can fail on one of them, and a `replay:` line that 0.2.0
-  printed for a property over a float draws other values.
-- `-0.` shrinks to `0.`, and a range whose `high` is `-0.` shrinks
-  toward `-0.`, where 0.2.0 shrank it toward `0.`.
-- `Gen.any_float` generates `nan`, `infinity` and `neg_infinity` beside
-  the finite floats.
-- `Gen.permutation ~pp values` generates `values` shuffled and shrinks
-  toward their given order, and `Gen.subsequence ~pp values` generates
-  some elements of `values` in their order and shrinks toward `[]`.
-- On a terminal, the line that names the running test says when a
-  property or stateful test is shrinking a counterexample, and how many
-  steps the search has taken, as
-  `[3/10] lists › rev: shrinking, 12 steps…`, where 0.2.0 named the test
-  alone while it searched.
+  likely, and `Gen.any_float` draws `nan`, `infinity` and `neg_infinity`
+  beside the finite floats.
+- `Gen.int32_range`, `Gen.int64_range` and `Gen.nativeint_range`
+  generate in a range of their type, as `Gen.int_range` does.
+- `Gen.permutation ~pp values` shuffles `values` and shrinks toward
+  their order, and `Gen.subsequence ~pp values` keeps some of them in
+  order and shrinks toward `[]`.
 
 ### Stateful testing
 
-- (breaking) `judges w` replaces `chooses w`: the reference receives the
-  system's outcome, `Ok v` or `Error e`, and rules on it. Returning
-  accepts it; a verb's failure, `Assert_failure`, `Match_failure` or the
-  system's own exception raised again rejects it; any other exception
-  breaks the reference, so a judge's own bug is reported as the test's,
-  where `chooses` blamed the system (see
-  [Judging calls against a rule](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/stateful-testing.md#judging-calls-against-a-rule)).
-  To migrate, a reference that returned the outcome it received returns
-  `()` instead, one that returned another outcome to reject it fails
-  with a verb such as `equal` or `mem`, and `Error e -> raise e` now
-  rejects the exception. An operation whose outcome the reference
-  predicts except in one corner the API leaves open becomes two
-  commands: a `returns` command whose `~pre` excludes the corner, and a
-  `judges` command whose `~pre` holds only there.
-- `among w t candidates` is the abstract type of the elements that a
-  value of `t` lists, such as an array's indices or a map's keys; a call
-  takes one with `^->`, from the nearest value of `t` before it in the
-  signature, else the first after it, and the element is taken from the
-  value's reference side when the call runs, so a `get` reads an index
-  that its array has (see
-  [Taking an argument from what a value lists](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/stateful-testing.md#taking-an-argument-from-what-a-value-lists)).
-- The subset of commands that a case draws from holds each command with
-  probability 3/4, where 0.2.0 held it with probability 1/2, so more
-  cases hold the commands that a bug needs together: over 200 seeds, a
-  planted recency bug in an LRU cache is found on 142 instead of 82.
-  Stateful suites run about 10% slower, and a `replay:` line that 0.2.0
-  printed draws other programs.
-- A failing program on one domain prints a `result` column, the
-  system's outcome of each call, when it holds a judging call; a table
-  without one is unchanged.
-- On several domains, a judge that breaks while an order is replayed
-  names the order, as
-  `reference of call 2 of 3, in the order 2 then 3: pop q1`.
-- An element prints as its witness prints it, and an element that
-  `candidates` could not give prints as `_`, as in
-  `reference of call 2 of 2: get d1 _`.
-- When a command that takes an element was never called, the
-  `never called:` hint names the listing:
-  `a call runs only where its arguments resolve, its value lists an element and its ~pre holds`.
-- `stateful` raises `Invalid_argument`, before any case, when a command
-  makes an element or takes one without a value of its type, as in
-  `Windtrap.stateful: get takes an element of 'd' without a value of 'd'; an element is listed by a value its call takes`.
-- On several domains a command that takes an element runs only before
-  the parallel calls, and the refusal of a command list with no call to
-  run after the prefix reads
-  `every command makes a value, has a ~pre or takes an element`.
-- At the start of a run of the parallel calls, a worker that waits for
-  the other workers sleeps after a short spin. Before, it spun until
-  each worker arrived. On a host with fewer CPUs than busy domains, it
-  spun for the time slices of the workers that did not run. For
-  example, on one CPU, a test with 100 programs on 4 domains took 57 s
-  before this change and 21 s after it.
+- (breaking) `judges w` replaces `chooses w`, and its reference rules on
+  the system's outcome instead of returning the one it accepts; an
+  exception other than a verb's failure or the system's own is reported
+  as a bug of the reference
+  (doc/manual/stateful-testing.md#judging-calls-against-a-rule).
+- (breaking) On several domains the judge accepts only the orders that
+  keep real time, so the test checks linearizability, where 0.2.0
+  checked program order alone.
+- `among w t candidates` is the type of the elements that a value of `t`
+  lists, such as an array's indices, and a call that takes one reads it
+  from that value when it runs
+  (doc/manual/stateful-testing.md#taking-an-argument-from-what-a-value-lists).
+- A case draws each command with probability 3/4, where 0.2.0 drew it
+  with 1/2, so a planted recency bug in an LRU cache is found on 142 of
+  200 seeds instead of 82; stateful suites run about 10% slower.
+- A program shrinks as a property's value does, and a failing program
+  prints a `replay it:` line; the guide's set shrinks to its minimum on
+  88% of seeds, against 66%.
+- A command list with no more programs than the count has each program
+  checked once, as a finite domain is.
+- A counterexample's table of calls escapes control bytes, keeps its
+  columns straight and ends no row in blanks.
+- On several domains the labels of the parallel calls count along the
+  order the judge accepted in each run, where 0.2.0 counted the first
+  run's.
+
+### Baselines and expect tests
+
+- (breaking) `expect_file ~file:"golden/x.txt" text` labels the file,
+  whose two positional strings compiled swapped in 0.2.0; a report
+  names the baseline as the call writes it.
+- (breaking) `expect_file` compares the final newline, which 0.2.0 gave
+  both sides, and `-u` and `--corrected` write the text byte for byte;
+  the block says
+  `values differ only by a trailing newline (on the expected side)`.
+- Under `CI` a baseline mismatch fails the run in every mode; a
+  `--corrected` run still writes the correction and says on standard
+  error why it exits 1.
+- The manual's dune stanza wraps its `diff?` actions in
+  `(concurrent …)` (`lang dune 3.8`), so one `dune promote` takes every
+  stale file of a run, where 0.2.0's `progn` stopped at the first
+  (doc/manual/baselines.md#running-expectations-under-dune).
+
+### Running tests
+
+- Tests run in worker processes, never in the process that calls `run`,
+  so a test that calls `exit`, segfaults, raises `Out_of_memory` or
+  loops in C past its limit fails, saying which, and the run goes on;
+  in 0.2.0 some of these passed a test, ended a failed run with 0 or
+  ended it with no summary
+  (doc/manual/running-tests.md#running-tests-in-worker-processes).
+- A worker starts the test executable again, so module initialisation
+  runs once per worker start and what a declaration opens is the
+  worker's own; make expensive declarations `lazy` or a `fixture`.
+- (breaking) A suite declares the same tests at each start of the
+  program; a worker that declares others fails the tests it was to run,
+  saying so.
+- (breaking) Every attempt has a limit, ten minutes unless `~timeout` or
+  `--timeout` sets one, where 0.2.0 let a test run forever; the runner
+  owns `SIGALRM` during every test outside `--in-process`, and Windows
+  enforces no limit.
+- A test still running three limits after it started is killed with its
+  worker and times out.
+- `-j N` (`WINDTRAP_JOBS`) runs the tests in `N` workers at once; the
+  default is one, and the report, the exit code and the corrections do
+  not depend on it.
+- `--in-process` runs one selected test in the calling process, with no
+  limit, for a debugger.
+- A worker retires after a test that spawned a domain, and an `at_exit`
+  handler that a test registers runs as its worker ends; one that
+  raises fails the run and names the test.
+- `--replay TOKEN` (`WINDTRAP_REPLAY`) checks the selected property or
+  stateful test on the case a failure printed, judging no vacuity; a
+  token its generator now parses differently fails as stale.
+- `--case PATH` checks the property or stateful test that `-f` selects
+  on the case that the bytes of `PATH` decode to, and every file decodes
+  to a case.
+- `--failed` reruns the cases that failed, a table's rows and each
+  recorded counterexample, drawing nothing; a test whose failure
+  belongs to no case reruns whole.
+- (breaking) The record that `--failed` reads is kept per executable and
+  suite, so two executables with one suite name no longer erase each
+  other's; the first `--failed` after upgrading finds no record.
+- `--failed` with nothing to rerun says why: the last run passed, no run
+  recorded failures, the record cannot be read, or it names no test of
+  the suite.
+- `--json PATH` (`WINDTRAP_JSON`) writes the results as one versioned
+  JSON document, a test per line with its verdict, failures and scope;
+  a `PATH` not ending in `.json` is a directory, as for `--junit`.
+- Under `-v` a passing property says what it ran, as
+  `PASS  sorts  1.2ms (100 cases, 2 examples, 14 discards)`, and a
+  failing one's block says what passed before it failed, as
+  `scope: 37 cases passed, 3 discards`.
+- Under dune no block prints `accept:`, and the report ends on one
+  `accept: dune promote FILES`, printed only when the run exits 0; when
+  dune withholds the corrections, the warning names the `-u` command
+  that accepts them (doc/manual/baselines.md#accepting-a-change).
+- A selection that keeps no test prints its `list:` line above the
+  summary, so the summary is the last line of every report.
+- (breaking) `--prop-count N` (`WINDTRAP_PROP_COUNT`) raises the count of
+  every property below `N`, a declared `~count` included, and lowers
+  none.
+- A project built inside another's `_build`, as `dune-release distrib`
+  builds one, finds its own build directory below `DUNE_SOURCEROOT`;
+  0.2.0 took the outer `_build`, so its inline tests wrote no correction
+  and its paths kept `_build/default`.
 
 ### Coverage
 
-- The right operand of `||` that is a call of `raise`, `raise_notrace`,
-  `failwith`, `invalid_arg` or `exit` has no point, where 0.2.0 gave it
-  one for being true, which it never is: `n > 0 || failwith "negative"`
-  read uncovered even when a test ran both of its paths.
-- A call of `invalid_arg` or `exit` has no point for its return, which
-  never comes, as a call of `raise` or `failwith` has none:
-  `if n < 1 then invalid_arg "n < 1";` read uncovered even when a test
-  ran it.
-- A call through `@@` or `|>` of a function that never returns has no
-  point for its return, as a direct call has none:
-  `if n < 1 then failwith @@ msg;` read uncovered even when a test ran
-  it.
-- `windtrap coverage --json` writes bytes of a path that are not UTF-8
-  as `\ufffd`, so the document is always valid JSON.
+- `invalid_arg` and `exit` join `raise` and `failwith` as calls with no
+  point for their return, direct or through `@@` or `|>`, and such a
+  call as the right operand of `||` has no point for being true; code
+  such as `n > 0 || failwith "negative"` no longer reads uncovered when
+  a test ran it.
+- `windtrap coverage --lines FILE:A-B,...` and `--diff FILE`, the output
+  of `git diff -U0`, report the points on those lines alone
+  (doc/manual/coverage.md#measuring-a-changes-coverage).
+- A report with no point says `coverage: no point to measure (0/0 points)`,
+  where it said `100.0%`, and a `--min` over no point is met.
 
 ### Mutation testing
 
-- The outcome line of a mutation run and of `windtrap mutants` ends
-  with the mutation score, as `score 60.0%`: the percentage of killed
-  mutants among those killed, survived and not evaluated (see
-  [Gating on the score](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#gating-on-the-score)).
-- `windtrap mutants --min-score PCT` exits 1 only when the score is
-  below `PCT`, and not for a survivor alone.
-- `windtrap mutants --json` prints the merge as one document: the
-  counts, the score, the executables, and each mutant with its verdict
-  and, for a survivor, the tests that ran it (see
-  [Exporting the verdicts](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#exporting-the-verdicts)).
-- `windtrap mutants` exits 1 with the reason on standard error when
-  standard output refuses its report or document, for example on a full
-  disk, and runs no gate.
-- A mutant drops one case of a `match`, a `function` or a `try`, under
-  the name `drop`, so that the value goes on to the next case that
-  matches it (see
-  [What is mutated](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#what-is-mutated)).
-- A mutant skips a call whose value the code discards, under the name
-  `skip`: the left operand of `e1; e2`, and `e` in `let () = e in body`.
-- (breaking) The `drop` and `skip` mutants are on by default, so a
-  project that had no survivor can have new ones, and `-no-arm` and
-  `-no-call` after `ppx_windtrap.mutate` in an `instrumentation` field
-  switch them off.
-- A mutant replaces `Some e` with `None`, under the name `none`, and
-  `h :: t` with `t`, under the name `tail`, and does not evaluate `e`
-  or `h` (see
-  [What is mutated](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#what-is-mutated)).
-- (breaking) The `none` and `tail` mutants are on by default, so a
-  project that had no survivor can have new ones, and `-no-ret` after
-  `ppx_windtrap.mutate` in an `instrumentation` field switches them
-  off.
-- (breaking) A `Some e` or an `h :: t` whose constructor is that of a
-  type of another module, such as a type with a `Some` and no `None`,
-  can fail to compile under `ppx_windtrap.mutate`, and
-  `[@mutate off "reason"]` on it is the way out.
-- `-lit` after `ppx_windtrap.mutate` switches on the mutants of
-  literals: an integer becomes its successor, under `inc`, or `1` under
-  `one` when it is `0`, a float becomes `0.` under `zero`, or `1.` under
-  `one` when it is zero, and `true` and `false` swap under `flip`.
-- `[@mutate off "reason"]` on the pattern of a case dismisses the `drop`
-  mutant of that case; on one alternative of an or-pattern or one
-  component of a tuple, as in `| A | B [@mutate off "reason"]`, it is an
-  error when the case has a `drop` mutant, and
-  `| (A | B) [@mutate off "reason"]` dismisses the case (see
-  [Dismissing an equivalent mutant](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#dismissing-an-equivalent-mutant)).
-- `[@mutate off "reason"]` on a `function` after parameters, as in
-  `let f x = function[@mutate off "reason"] ...`, dismisses every mutant
-  of its cases, and a bad payload there is an error.
-- The texts of a mutant spell a labeled tuple of OCaml 5.4 as the source
-  does, as `(~x:0, ~y)`, and not as the extension node that ppxlib
-  encodes it as.
-- The rewriter filters a mutant that the syntax shows equivalent to
-  the original, as the `sub` mutant of `x + 0`, or that changes only a
-  logging call of `Logs` or a literal of a `failwith` message: no child
-  tests it, and the report counts it under its reason (see
-  [Filtered mutants](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#filtered-mutants)).
-- The outcome line of a mutation run and of `windtrap mutants` counts
-  the filtered mutants, as `2 filtered`, and the score leaves them out.
-- `-no-filter` after `ppx_windtrap.mutate` in an `instrumentation`
-  field tests every mutant, and `-log-function NAME` adds a logging
-  function, as `-log-function Log.debug`.
-- `windtrap mutants --json` gives the count `"filtered"` in
-  `"summary"`, and each filtered mutant with its `"reason"` in the
-  array `"filtered"`, not in `"mutants"`.
-- `WINDTRAP_MUTATE` on a suite whose mutants in scope are all dismissed
-  or filtered says that of the mutants that the run could test, not of
-  every mutant of the executable.
-- `--arm` refuses a mutant that `[@mutate off]` dismisses or that the
-  rewriter filtered, and exits 1: its site has no guard, so no run can
-  arm it.
-- `--mutate-jobs N` and its mirror `WINDTRAP_MUTATE_JOBS` let a mutation
-  run test mutants at the same time on up to `N` CPUs. The maximum of
-  `N` is 256, and `auto` uses each CPU. The report and the verdict file
-  are the same for each `N`. A child uses the most CPUs that one of its
-  tests used at once in the dry run. For example, a test that uses two
-  domains at once gives 2. A child that uses more than `N` CPUs runs
-  alone (see
-  [Testing mutants in parallel](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#testing-mutants-in-parallel)).
-- The deadline of a mutation child does not count the time that the
-  child, or a process that its tests start, waits for a CPU on Linux,
-  so that the children of other suites under a parallel `dune runtest`
-  do not kill its mutant. This is also true for a child on several
-  domains (see
-  [Testing mutants in parallel](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#testing-mutants-in-parallel)).
-- The deadline of a mutation child does not include the time of the
-  whole dry run. It is 0.5 seconds, plus the time of the fixture
-  acquisitions and releases of the dry run, plus ten times the time that
-  the tests of the child took in the dry run (at least 1 second). Thus
-  with forked children, a mutant that makes a short test hang in a suite
-  without fixtures is killed after about 1.5 seconds, where 0.2.0 waited
-  at least the time of the dry run. In exec mode, the deadline also has
-  ten times the startup time, and the time that the dry run took up to
-  the last test of the child. The determinism probe keeps the time of
-  the dry run in its deadline. A forked child starts from the state at
-  the end of the dry run, which can make its test slower than in the
-  dry run (see
-  [What a mutation run runs](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#what-a-mutation-run-runs)).
-- A mutation child writes no last-failed store. The run removes the
-  store with the child, and on a busy file system the write can take
-  seconds. This time counted toward the deadline of the child, and a
-  mutant that survived could count as killed. A child still writes the
-  capture logs of its tests, because a test can read its captured
-  output, and a stall of the file system there can also expire a
-  deadline.
-- A mutation run that a signal stops when no child runs starts no
-  other child, and names the next mutant as `interrupted before
-  testing`.
-- A signal that a mutation run gets after its last child exits stops
-  nothing, also before the run reaps that child: the run writes its
-  verdict file and its report, and then dies by that signal.
-- The live line of a mutation run counts the mutants whose children
-  ended, as `[3/10]`, where 0.2.0 counted the mutant that started.
-- The live line of a mutation run that runs more than one child names
-  the first of them and counts the others, as
-  `[2/9] lib/calc.ml:9:3:sub and 2 more…`.
-- `--mutate-since REV` and its mirror `WINDTRAP_MUTATE_SINCE` let a
-  mutation run test only the mutants on the lines that changed in the
-  work tree since the git revision `REV`, and keep the verdicts of the
-  other lines that the same build wrote (see
-  [Testing the changed lines](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#testing-the-changed-lines)).
-- A run given `--mutate-since` or `WINDTRAP_MUTATE_SINCE` without
-  `--mutate`, `WINDTRAP_MUTATE`, `--arm` or `WINDTRAP_MUTATE_ARM` says
-  on standard error that it tests no mutant, and runs as usual.
-- `windtrap mutants --since REV` reports and gates on only the mutants
-  on the lines that changed since `REV` (see
-  [Testing the changed lines](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#testing-the-changed-lines)).
-- `--mutate-skip-killed` and its mirror `WINDTRAP_MUTATE_SKIP_KILLED`
-  let a mutation run skip a reached mutant that the verdict file of
-  another suite killed, of the same executable or of another. The skip
-  applies only when the source file of the mutant has the same digest.
-  The run uses only the verdict files that `windtrap mutants` keeps, so
-  a file of an earlier build gives no skip. The verdict file records the
-  mutant as killed elsewhere, with the name of the executable of that
-  file. The report names each verdict file that the run used, and the
-  outcome line counts the mutants as not tested. `windtrap mutants`
-  counts them as killed. When no verdict file of the merge has the kill,
-  it gives a note on standard error that tells which run to do again.
-  The run uses only the files on disk after its dry run, so run the fast
-  suites first, for example in a first `dune runtest`. Two suites with
-  the option that run at the same time can skip one mutant because of
-  each other. Thus run them one after the other, for example with
-  `dune runtest -j 1` (see
-  [Skipping the mutants that another suite killed](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#skipping-the-mutants-that-another-suite-killed)).
-- A mutation run lists in a section `unstable (N)` each mutant whose
-  verdict changed since the previous run on the same source, as
-  `survived → killed`. Killed, survived and not evaluated are the
-  verdicts that count, and a mutant killed elsewhere counts as killed.
-  The comparison examines only the source file of the mutant. Thus a
-  change of other code, for example a caller or a callee, can give a
-  correct row. When the tests and the other code did not change, a row
-  is a sign of a verdict that depends on the order of the domains.
-  `windtrap mutants` lists the same mutants from the verdict files, with
-  the executable of each, and `--json` gives them in `"unstable"`. The
-  section does not change the score or the exit code. Each suite
-  compares with its own verdict file (see
-  [Unstable verdicts](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#unstable-verdicts)).
-- `--mutate-retry N` and its mirror `WINDTRAP_MUTATE_RETRY` run the
-  child of a survivor again, up to `N` more times. The mutant survives
-  only when each run lets it survive. The default is 2 in a process that
-  spawned a domain, and 0 if not. The report gives the runs of a
-  survivor after its title, as `(3 runs)`, and the verdict file keeps
-  them. `windtrap mutants` gives their sum over the verdict files, and
-  `--json` gives it in `runs`. One verdict file named two times with
-  different text adds its runs two times. A retry makes a false
-  survivor less probable, but it does not make a verdict deterministic
-  (see
-  [Running a survivor again](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#running-a-survivor-again)).
-- In a process that spawned a domain, a mutation run does a check of
-  each kill that names a test. It runs the tests of the child, up to
-  and with that test, up to 3 times with no mutant, each in a new
-  process. When the test fails in one of these runs, the verdict is
-  `flaky`, not `killed`. The report lists each flaky mutant in a
-  section `flaky (N)`, with its test and the failure with no mutant.
-  The outcome line counts it as `1 flaky`. The score does not count a
-  flaky mutant. Each different list of tests costs at most 3 more
-  children in a run. Three runs with no failure do not prove that a test
-  is not flaky (see
-  [Flaky kills](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#flaky-kills)).
-- `windtrap mutants` gives a mutant as flaky when no executable killed
-  it and one executable gave it as flaky. It lists the mutant with that
-  executable and its test. `--json` gives the count `"flaky"` in
-  `"summary"`, and each flaky mutant with its `"test"` and its
-  `"failure"` in the array `"flaky"`, not in `"mutants"`. `"reached"`
-  does not count the flaky mutants.
-- A mutation run first runs the test that killed a mutant in the
-  previous run, alone, when the source file of the mutant did not
-  change and the test passes alone with no mutant, and runs every
-  reaching test only when that test does not kill it (see
-  [Where the verdicts are](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#where-the-verdicts-are)).
-- Each suite writes its own verdict file. The name of the file comes
-  from its executable and its suite. Before, the suite that ran last
-  replaced the one file of its executable. As a result,
-  `windtrap mutants` could call a killed mutant a survivor, or leave
-  out a survivor. This applied to a main that calls `Windtrap.run` with
-  more than one suite name, and to an inline-test library with more
-  than one test file. Two calls with one suite name share one file.
-  `windtrap mutants` counts each executable one time in its outcome
-  line, and `--json` gives the suite of each file in `"suite"`. A file
-  of a suite that no longer runs stays until you delete it. After a new
-  build, `windtrap mutants` leaves it out as stale, and
-  `--mutate-skip-killed` does not use it (see
-  [Where the verdicts are](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#where-the-verdicts-are)).
-- (breaking) A verdict file starts with `windtrap-mutants-v10`. It keeps
-  the test that killed each mutant, a digest of its source file, the
-  reason of each filtered mutant, the previous verdict of each mutant,
-  the runs of each survivor, the test and the failure of each flaky
-  mutant, and the suite that wrote it. It also keeps
-  the executable that killed a mutant that the run skipped.
-  `windtrap mutants` refuses a file of an earlier version, which has
-  another name that no run replaces: delete `_build/_mutants`, then run
-  the suites with their mutants again.
-- A suite that spawns a domain gets a full mutation run and a verdict
-  file. OCaml refuses `Unix.fork` in a process that spawned a domain, so
-  in such a process each child of the loop is a new process of the
-  suite executable, where 0.2.0 refused the suite, and `-e` gave a
-  narrowed run that wrote no verdict file (see
-  [When a run cannot mutate](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#when-a-run-cannot-mutate)).
-- `--mutate-children=auto|fork|exec` and its mirror
-  `WINDTRAP_MUTATE_CHILDREN` tell how the loop starts a child: `fork`,
-  a new process (`exec`), or `auto`, the default, which is `exec` only
-  when the process spawned a domain. Under `fork`, a process that
-  spawned a domain is refused before the probe.
-- A child that is a new process starts from module initialization, not
-  from the state that the dry run left. Thus a result that the dry run
-  cached can kill a mutant that a fork gives as not evaluated. When the
-  reaching tests of a mutant fail together in a new process with no
-  mutant, its child also runs the tests that the dry run ran before
-  them, and the verdict can name one of these tests. The report of such
-  a run tells the mode in one line above its outcome line and its
-  `reproduce:` line, as
-  `children: new processes, because the suite spawned a domain`.
-- A new process costs more than a fork: it starts the executable and
-  does its module initialization again. Exec mode also runs a child
-  that measures this startup time, and one child for each different
-  list of reaching tests. The deadline of each child adds ten times the
-  startup time (see
-  [When a run cannot mutate](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#when-a-run-cannot-mutate)
-  for a measurement).
-- A failure in a child before the first evaluation of the site of a
-  mutant does not kill the mutant. The child then runs the next
-  reaching test.
-- A mutant whose child did not evaluate its site is not evaluated, also
-  when a test failed. The report names the failure under the mutant, as
-  `a failure that the mutant did not cause: calc › memo`.
-- An armed run (`--arm`) whose tests failed without an evaluation of
-  the site ends on
-  `mutant not evaluated: no selected test ran the site, so the mutant did not cause the failure.`
-- An armed run (`--arm`) in which only tests before the first evaluation
-  of the site failed ends on
-  `mutant survived: the site ran 2 times, and only tests before its first run failed.`
-- An armed run (`--arm`) counts an evaluation in a process that a test
-  forks. When only such a process evaluated the site and no test failed
-  after it, the run ends on
-  `mutant survived: only a forked process ran the site, and no test failed after that.`
-- `--mutate-workers` (`WINDTRAP_MUTATE_WORKERS`) lets a stateful test
-  on several domains spawn its workers under `--mutate` and `--arm`. Then
-  a kill of such a test can depend on a schedule, and each child of the
-  run is a new process (see
-  [Stateful tests on several domains](https://github.com/invariant-hq/windtrap/blob/main/doc/manual/mutation.md#stateful-tests-on-several-domains)).
-- The dry run finds each test that reaches a mutation site, also when
-  the test evaluates the site on several domains at the same time.
-- A mutation run on Windows is refused because the loop needs process
-  groups, where 0.2.0 said that it needs `Unix.fork`.
+- `--mutate` and `windtrap mutants` take `--lines FILE:A-B,...` and
+  `--diff FILE` (`WINDTRAP_LINES`, `WINDTRAP_DIFF`) and judge the
+  mutants on those lines alone; lines with no mutation site run the
+  suite unmutated and say so
+  (doc/manual/mutation.md#testing-a-changes-mutants).
+- (breaking) A mutant that no run could judge is unknown, with its
+  reason, where 0.2.0 read it as a survivor, or as killed when its
+  child crashed; a refused suite's verdict file says so, and
+  `windtrap mutants` names it under `not mutation-tested` and exits 1.
+- Under `--mutate` and `--arm` the root seed is fixed unless `--seed`
+  gives one, so a verdict no longer changes from run to run.
+- Each mutant runs in a fresh worker, up to `-j` at once, so its verdict
+  does not depend on what earlier tests cached, and a suite that spawns
+  a domain is mutation-tested, where 0.2.0 refused it.
+- A surviving or unknown mutant's block opens on its location in the
+  compiler's format, which editors jump to; the verdict file is
+  `windtrap-mutants-v5`, and an earlier one is refused.
+- Three rewrites join the catalogue: `del` drops `e1` from `e1; e2`,
+  `int` nudges an integer literal and `bool` flips a boolean outside a
+  condition, each skipping code where a survivor asks for no test worth
+  writing
+  (doc/manual/mutation.md#what-is-mutated).
 
 ## v0.2.0 2026-09-26
 

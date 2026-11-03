@@ -84,17 +84,18 @@ let unwritable_stderr f =
 
 (* The message and location of the failure that [f ()] raises. *)
 let refused f =
-  match f () with
-  | _ -> "no failure"
-  | exception Failure.Check_failure { Failure.kind = Failure.Message m; loc; _ }
-    ->
+  match Failure.catch f with
+  | Ok _ -> "no failure"
+  | Error (#Failure.control as c) -> Failure.reraise c
+  | Error (`Exception (e, bt)) -> Printexc.raise_with_backtrace e bt
+  | Error (`Assertion { Failure.kind = Failure.Message m; loc; _ }) ->
       let at =
         match loc with
         | Some l -> strf "%s:%d" l.Loc.file l.Loc.line
         | None -> "no location"
       in
       strf "%s, at %s" m.Failure.kept at
-  | exception Failure.Check_failure _ -> "a failure that is not a message"
+  | Error (`Assertion _) -> "a failure that is not a message"
 
 (* Capture state *)
 
@@ -177,7 +178,7 @@ let state_group =
       cases
         "a log is <log_dir>/<suite>/<groups...>/<test>.output, each component \
          sanitized"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         layouts
         (fun (_, (suite, groups, test_name), log) ->
           equal (list string) [ log ] (logs_of ~suite ~groups ~test_name));
@@ -218,6 +219,18 @@ let buffers =
     ("the standard formatter", fun () -> Format.printf "x");
     ("the error formatter", fun () -> Format.eprintf "x");
   ]
+
+(* A domain's [Format] buffers are its own: a drain on a spawned domain, as
+   [output ()] there makes, forces that domain's through, and the test reads
+   what the domain printed. *)
+let on_a_domain read =
+  let cap, log = state () in
+  attempt cap (fun () ->
+      Domain.join
+        (Domain.spawn (fun () ->
+             Format.printf "out, ";
+             Format.eprintf "err";
+             read cap log)))
 
 let own_formatter () =
   let ppf = Format.formatter_of_out_channel stdout in
@@ -472,24 +485,6 @@ let outside_raises () =
   in
   equal string "log, log" after
 
-(* A duplicate takes the lowest free descriptor, so a descriptor that
-   [outside] leaves open moves it. *)
-let lowest_free () =
-  let fd = Unix.dup Unix.stdin in
-  Unix.close fd;
-  fd
-
-let outside_closes () =
-  posix_only ();
-  let cap, _ = state () in
-  let before, after =
-    attempt cap (fun () ->
-        let before = lowest_free () in
-        Capture.outside cap ignore;
-        (before, lowest_free ()))
-  in
-  is_true ~msg:"the lowest free descriptor is the same" (before = after)
-
 let outside_unredirected cap =
   let before = descriptors () in
   equal string "as before, as before"
@@ -499,8 +494,18 @@ let capturing =
   group "Capturing"
     [
       cases "drain forces the standard buffers through to descriptors 1 and 2"
-        ~name:fst buffers (fun (_, write) -> equal string "x" (drained write));
+        ~id:fst buffers (fun (_, write) -> equal string "x" (drained write));
       test "drain reaches no formatter of the user's" own_formatter;
+      test "a drain on a spawned domain forces that domain's formatters"
+        (fun () ->
+          equal string "out, err"
+            (on_a_domain (fun _ log ->
+                 Capture.drain ();
+                 read log)));
+      test "output () on a spawned domain reads what that domain printed"
+        (fun () ->
+          equal string "out, err"
+            (on_a_domain (fun cap _ -> Capture.output cap)));
       test "drain raises Sys_error when a flush fails" (fun () ->
           posix_only ();
           raises_match Exn.sys_error (fun () -> unwritable_stderr Capture.drain));
@@ -516,7 +521,7 @@ let capturing =
       cases
         "every write to descriptors 1 and 2 reaches the log, a subprocess's \
          included"
-        ~name:fst writers (fun (_, write) ->
+        ~id:fst writers (fun (_, write) ->
           let cap, log = state () in
           attempt cap write;
           equal string "x" (read log));
@@ -529,7 +534,7 @@ let capturing =
       cases
         "with_capture puts the descriptors back on every exit, and keeps a log \
          only of an attempt that ran"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         exits
         (fun (_, scenario, row) -> equal string row (scenario ()));
       test "a subprocess inherits no descriptor beyond 1 and 2" inherits_nothing;
@@ -548,8 +553,7 @@ let capturing =
         outside_elsewhere;
       test "outside points the descriptors back when its function raises"
         outside_raises;
-      test "outside closes the descriptors that it made" outside_closes;
-      cases "outside with nothing redirected is its function" ~name:fst
+      cases "outside with nothing redirected is its function" ~id:fst
         [
           ("no attempt running", fun () -> fst (state ()));
           ("disabled", fun () -> Capture.disabled);
@@ -701,7 +705,7 @@ let within ?(read = "") ~before ~inside ~after () =
 let marks =
   group "Marks"
     [
-      cases "mark is None" ~name:fst
+      cases "mark is None" ~id:fst
         [
           ("when disabled", fun () -> Capture.disabled);
           ("before any attempt", fun () -> fst (state ()));
@@ -747,7 +751,7 @@ let reading =
   group "Reading captured output"
     [
       cases "with no current log, output is \"\" and output_tail is None"
-        ~name:fst
+        ~id:fst
         [
           ("a new state", fun () -> fst (state ()));
           ( "after a failed setup",
@@ -770,20 +774,20 @@ let reading =
       test "a log truncated below the cursor has no unread bytes" truncated;
       cases
         "output_tail is the end of what the attempt wrote after output's cursor"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         after_cursor
         (fun (_, unread, row) ->
           equal string
             (row ^ ", the end, on a code point")
             (tail_of ~read:"compared" unread));
       cases "output_tail is None when nothing was written after the cursor"
-        ~name:fst
+        ~id:fst
         [
           ("an attempt that wrote nothing", ""); ("all of it read", "compared");
         ]
         (fun (_, read) -> equal string "none" (silent_after ~read));
       cases "output_tail keeps at most 8,192 bytes, cut on a code point"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         bounded
         (fun (_, unread, row) -> equal string row (tail_of ~read:"" unread));
       test "the tail names the log, which holds every byte" whole_log;

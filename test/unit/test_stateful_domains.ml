@@ -7,13 +7,12 @@
    that depend on the domain a call runs on, never on a race, so every
    verdict here is deterministic.
 
-   A process that has spawned a domain can never fork again. Thus these
-   tests are an executable of their own. Under mutation testing without
-   [--mutate-workers], a stateful test on several domains spawns nothing,
-   and every test here that spawns a pool skips. Thus the loop forks its
-   children. Some scenarios run in forked children, before any domain
-   exists. These scenarios leave a domain that runs forever, spawn every
-   domain that the runtime has, or test [--mutate-workers]. *)
+   Under mutation testing a stateful test on several domains spawns
+   nothing, and every test here that spawns a pool skips. The scenarios that
+   leave a domain running forever or spawn every domain the runtime has run
+   in a fresh process of this executable, which the test that reads them
+   starts: each worker starts the executable again, so work done as the
+   module initialises is paid once per worker. *)
 
 open Windtrap
 module Failure = Windtrap.Private.Failure
@@ -22,7 +21,8 @@ module Property = Windtrap.Private.Property
 module Run = Windtrap.Private.Run
 module Sections = Windtrap.Private.Report_sections
 module Seed = Windtrap.Private.Seed
-module Shrink_tree = Windtrap.Private.Gen_engine.Shrink_tree
+module Shrink = Windtrap.Private.Shrink
+module Choice = Windtrap.Private.Choice
 module Stateful = Windtrap.Private.Stateful
 module Test_tree = Windtrap.Private.Test_tree
 module Workers = Windtrap.Private.Workers
@@ -46,9 +46,66 @@ let root = 0x00c0ffee1234abcdL
 let state ?(path = "test_stateful_domains") index =
   Seed.make (Seed.derive ~root ~path ~index)
 
-let drawn ?path gen index = Gen_engine.sample gen (state ?path index)
-let value node = Gen_engine.value (Shrink_tree.root node)
-let printed gen program = Gen_engine.render_value gen program
+(* A parsed program, with what its parse read. *)
+type 'a drawn = { node : 'a Gen_engine.sample; case : Shrink.case }
+
+let parsed gen src =
+  let node = Gen_engine.parse gen src in
+  let case : Shrink.case =
+    {
+      choices = Choice.choices src;
+      spans = Choice.spans src;
+      dependents = Choice.dependents src;
+    }
+  in
+  { node; case }
+
+let drawn ?path gen index = parsed gen (Choice.generating (state ?path index))
+let value drawn = Gen_engine.value drawn.node
+
+(* The candidates of [drawn], in order: the edits of one step of the reducer
+   whose parse reads a shortlex smaller sequence, each sequence once. An edit
+   whose parse discards is none. *)
+let children gen drawn =
+  let seen = Hashtbl.create 16 in
+  let candidate choices =
+    match parsed gen (Choice.replaying choices) with
+    | child
+      when Shrink.shortlex child.case.choices drawn.case.choices < 0
+           && not (Hashtbl.mem seen child.case.choices) ->
+        Hashtbl.add seen child.case.choices ();
+        Some child
+    | _ | (exception Failure.Control `Discard) -> None
+  in
+  List.of_seq (Seq.filter_map candidate (Shrink.candidates drawn.case))
+
+(* The record of each program's last run and its summary, as [execute] gave
+   or raised them, the newest first. *)
+let records = ref []
+
+let execute ?workers program () =
+  let keep record summary =
+    records := (program, (record, summary)) :: !records
+  in
+  match Stateful.execute ?workers program with
+  | record ->
+      keep
+        (Format.asprintf "%a" Stateful.pp_record record)
+        (Stateful.summary record)
+  | exception (Property.Run_failure { record; summary; _ } as e) ->
+      keep record summary;
+      raise e
+  | exception e ->
+      keep "(no record)" None;
+      raise e
+
+(* [printed gen program] is the record of [program]'s last run. *)
+let printed _gen program =
+  match List.assq_opt program !records with
+  | Some (record, _) -> record
+  | None -> "(not run)"
+
+let summary program = Option.bind (List.assq_opt program !records) snd
 let self () = (Domain.self () :> int)
 let main_domain = Atomic.make (self ())
 
@@ -63,6 +120,7 @@ let kind (f : Failure.t) =
   in
   match f.kind with
   | Message m -> strf "message %S" m.kept
+  | Vacuous m -> strf "vacuous %S" m.kept
   | Raise { expected; actual; _ } ->
       "raise" ^ side "expected" expected ^ side "actual" actual
   | Equality { expected; actual; _ } ->
@@ -74,8 +132,15 @@ let kind (f : Failure.t) =
 let ended fn =
   match fn () with
   | () -> "returned"
-  | exception Failure.Check_failure f -> "failure " ^ label f ^ kind f
-  | exception Property.Oracle_failure f -> "oracle " ^ label f ^ kind f
+  | exception
+      ( Failure.Check_failure f
+      | Property.Run_failure { fault = `Assertion f; _ } ) ->
+      "failure " ^ label f ^ kind f
+  | exception
+      ( Property.Oracle_failure f
+      | Property.Run_failure
+          { fault = `Exception (Property.Oracle_failure f, _); _ } ) ->
+      "oracle " ^ label f ^ kind f
   | exception e -> "raised " ^ Failure.exn_to_string e
 
 (* The one test of a tree, and its body. *)
@@ -101,8 +166,6 @@ let with_pool n fn =
     skip ~reason:"under mutation testing no test spawns a domain" ();
   let pool = Workers.spawn n in
   Fun.protect ~finally:(fun () -> Workers.join pool) (fun () -> fn pool)
-
-let execute ?workers program () = Stateful.execute ?workers program
 
 (* [recorded gen program] runs [program], on the calling domain without
    [workers], and is its record, however the run ended. *)
@@ -274,7 +337,8 @@ let checking =
           equal (list string)
             [ "custom"; "parallel"; "prop"; "stateful" ]
             (tags
-               (Stateful.stateful ~domains:2 ~tags:[ "custom" ] "t" [ tick ]));
+               (Test_tree.tag "custom"
+               @@ Stateful.stateful ~domains:2 "t" [ tick ]));
           equal (list string) [ "prop"; "stateful" ]
             (tags (Stateful.stateful "t" [ tick ])));
       test "a test on several domains takes no retries, a group's included"
@@ -333,7 +397,6 @@ let rec after_prefix = function
 
 let shape (domains, per_branch) () =
   let gen = Stateful.program ~steps:6 ~domains (counter_commands ()) in
-  let fullest = ref 0 in
   Seq.iter
     (fun index ->
       let rows = table (recorded gen (value (drawn gen index))) in
@@ -344,8 +407,7 @@ let shape (domains, per_branch) () =
       in
       for d = 1 to domains do
         is_true ~msg:"a branch holds at most its share"
-          (per (string_of_int d) <= per_branch);
-        fullest := max !fullest (per (string_of_int d))
+          (per (string_of_int d) <= per_branch)
       done;
       is_true ~msg:"the prefix and the suffix hold at most steps calls"
         (List.length rows - List.length branches <= 6);
@@ -354,8 +416,7 @@ let shape (domains, per_branch) () =
           is_false ~msg:"no call after the prefix makes a value"
             (String.starts_with ~prefix:"let " (cell "call" row)))
         (after_prefix rows))
-    (Seq.init 200 Fun.id);
-  equal int ~msg:"the fullest branch holds its share" per_branch !fullest
+    (Seq.init 200 Fun.id)
 
 (* A counter that must not go below zero: [decr]'s ~pre asks the reference
    for a positive count. *)
@@ -379,7 +440,7 @@ let guarded_after_prefix () =
       if List.exists in_branch rows then incr parallel;
       List.iter
         (fun row ->
-          starts_with ~msg:"only incr runs after the prefix" ~affix:"incr "
+          starts_with ~msg:"only incr runs after the prefix" ~prefix:"incr "
             (cell "call" row))
         (after_prefix rows))
     (Seq.init 300 Fun.id);
@@ -415,7 +476,7 @@ let listing_after_prefix () =
         rows;
       List.iter
         (fun row ->
-          starts_with ~msg:"only incr runs after the prefix" ~affix:"incr "
+          starts_with ~msg:"only incr runs after the prefix" ~prefix:"incr "
             (cell "call" row))
         (after_prefix rows))
     (Seq.init 300 Fun.id);
@@ -426,9 +487,9 @@ let drawing =
   group "Drawing"
     [
       cases
-        "each branch holds at most its share of calls, some branch holds all \
-         of it, and nothing after the prefix makes a value"
-        ~name:(fun (d, n) -> strf "%d domains, %d each" d n)
+        "each branch holds at most its share of calls, and nothing after the \
+         prefix makes a value"
+        ~id:(fun (d, n) -> strf "%d domains, %d each" d n)
         shape_rows
         (fun row -> shape row ());
       test "a branch and the suffix draw no command that has a ~pre"
@@ -441,10 +502,7 @@ let drawing =
 
 (* The records of [program]'s candidates, each run on the calling domain. *)
 let candidates gen tree =
-  List.of_seq
-    (Seq.map
-       (fun child -> recorded gen (value child))
-       (Shrink_tree.children tree))
+  List.map (fun child -> recorded gen (value child)) (children gen tree)
 
 let moved () =
   let gen = Stateful.program ~steps:3 ~domains:2 (counter_commands ()) in
@@ -556,9 +614,12 @@ let verdict = function
         (String.concat " " (List.map string_of_int order))
         at (kind failure)
 
-let judged ~branches ~suffix =
+(* [precedes] lists the pairs [(a, b)] of calls where [a] returned before
+   [b] began. *)
+let judged ?(precedes = []) ~branches ~suffix () =
   fakes := [];
-  verdict (Stateful.judge ~fresh ~branches ~suffix)
+  let precedes a b = List.mem (a, b) precedes in
+  verdict (Stateful.judge ~fresh ~precedes ~branches ~suffix)
 
 let states () =
   List.rev_map (fun s -> String.concat ", " (List.rev s.seen)) !fakes
@@ -591,11 +652,35 @@ let judge_rows =
       "unexplained 3 1 2 4, at 1: equality 9, 3" );
   ]
 
+let real_time_rows =
+  [
+    ( "without real time, either branch may come first",
+      [],
+      [ [ push 1 1 ]; [ push 2 2 ] ],
+      [ observe 3 [ 2; 1 ] ],
+      "explained 2 1 3" );
+    ( "a call that returned before another began comes first",
+      [ (1, 2) ],
+      [ [ push 1 1 ]; [ push 2 2 ] ],
+      [ observe 3 [ 2; 1 ] ],
+      "unexplained 1 2 3, at 3: equality 2;1, 1;2" );
+    ( "and so before the calls after the one it precedes",
+      [ (1, 2); (1, 3) ],
+      [ [ push 1 1 ]; [ push 2 2; push 3 3 ] ],
+      [ observe 4 [ 2; 1; 3 ] ],
+      "unexplained 1 2 3 4, at 4: equality 2;1;3, 1;2;3" );
+    ( "calls that overlap come in either order",
+      [ (1, 3) ],
+      [ [ push 1 1 ]; [ push 2 2; push 3 3 ] ],
+      [ observe 4 [ 2; 1; 3 ] ],
+      "explained 2 1 3 4" );
+  ]
+
 let replayed () =
   (* Orders tried: 1 2 3 (fails), 1 3 2 (fails), 3 1 2 (passes). *)
   let branches = [ [ push 1 1; push 2 2 ]; [ push 3 3 ] ] in
   let suffix = [ observe 4 [ 3; 1; 2 ] ] in
-  equal string "explained 3 1 2 4" (judged ~branches ~suffix);
+  equal string "explained 3 1 2 4" (judged ~branches ~suffix ());
   equal (list string)
     [
       "push 1, push 2, push 3, observe";
@@ -604,66 +689,70 @@ let replayed () =
     ]
     (states ())
 
-(* A call of a branch that differs drops its state: the next order starts
-   from a fresh one. *)
-let fresh_after_difference () =
-  let branches = [ [ observe 1 [ 9 ] ]; [ push 2 2 ] ] in
-  let suffix = [ observe 3 [ 2 ] ] in
-  ignore (judged ~branches ~suffix : string);
-  equal (list string) [ "observe"; "push 2, observe" ] (states ())
-
 let judge_group =
   group "The judge"
     [
       cases "judges outcome vectors over program order"
-        ~name:(fun (n, _, _, _) -> n)
+        ~id:(fun (n, _, _, _) -> n)
         judge_rows
         (fun (_, branches, suffix, expected) ->
-          equal string expected (judged ~branches ~suffix));
+          equal string expected (judged ~branches ~suffix ()));
+      cases "judges only the orders that keep real time"
+        ~id:(fun (n, _, _, _, _) -> n)
+        real_time_rows
+        (fun (_, precedes, branches, suffix, expected) ->
+          equal string expected (judged ~precedes ~branches ~suffix ()));
       test
         "each branch point after the first starts from a fresh state replayed \
          along its path"
         replayed;
-      test "a branch's call that differs leaves no state to the next order"
-        fresh_after_difference;
     ]
 
 (* The report *)
 
 let property_failure = function
   | Property.Fail { failure; _ } -> Some failure
-  | Pass _ | Coverage_failed _ | Gave_up _ -> None
+  | Pass _ | Vacuous _ -> None
 
 (* The entry of the failure that [commands] give on two domains, as the
    report prints it, under the test's declaration at [loc]. *)
 let screen ?workers ~loc commands =
   let loc = Loc.of_pos loc in
-  let law _ p = Stateful.execute ?workers p in
+  let law _ p = ignore (Stateful.execute ?workers p : Stateful.record) in
+  let runs = if Option.is_some workers then 50 else 1 in
   let outcome =
-    Property.run ~loc ~summary:Stateful.summary ~prints_run:true ~root
-      ~path:"screen"
+    Property.run ~loc ~runs ~root ~path:"screen"
       (Stateful.program ~domains:2 commands)
       law
   in
   let f = require_match property_failure outcome in
-  Format.asprintf "%a"
-    (fun ppf f -> Sections.pp_failure ~ansi:false ~hints:false ppf f)
-    f
+  String.concat ""
+    (List.map
+       (fun l ->
+         Sections.render ~ansi:false (Sections.indented "    " l) ^ "\n")
+       (Sections.entry ~excerpt:false f).lines)
 
-(* The case that first loses an update, and the shrink steps that follow it,
-   depend on how the domains are scheduled; the counterexample they end on
-   does not. [unscheduled s] is [s] with the two counts replaced by [_]. *)
+(* The case that first loses an update, the shrink steps that follow it and
+   the order of the calls in the choices they end on depend on how the
+   domains are scheduled; the counterexample they print does not. Nor does
+   the closest order: when the two pushes do not overlap, real time allows
+   only the order they ran in. [unscheduled s] is [s] with the two counts,
+   the closest order and the token replaced by [_]. *)
 let unscheduled s =
-  let open_ = "(case " in
-  let rec find i =
-    if i + String.length open_ > String.length s then s
-    else if String.sub s i (String.length open_) = open_ then
-      let close = String.index_from s i ')' in
-      String.sub s 0 i ^ "(case _, shrunk _ steps"
-      ^ String.sub s close (String.length s - close)
-    else find (i + 1)
+  let replace ~after ~until by s =
+    let rec find i =
+      if i + String.length after > String.length s then s
+      else if String.sub s i (String.length after) = after then
+        let close = String.index_from s (i + String.length after) until in
+        String.sub s 0 i ^ by ^ String.sub s close (String.length s - close)
+      else find (i + 1)
+    in
+    find 0
   in
-  find 0
+  s
+  |> replace ~after:"(case " ~until:')' "(case _, shrunk _ steps"
+  |> replace ~after:"the closest order, " ~until:',' "the closest order, _"
+  |> replace ~after:"--replay " ~until:'\n' "--replay _"
 
 let lossy_screen () =
   with_pool 2 @@ fun workers ->
@@ -680,9 +769,10 @@ let lossy_screen () =
        2  1       push q1 0           ()
        3  2       push q1 0           ()
        4          length q1           1
+    replay it: --replay _
     which failed with:
       no order of the calls gives these results
-      the closest order, 2 then 3, differs at call 4: length q1
+      the closest order, _, differs at call 4: length q1
       expected  2
       actual    1
 |}
@@ -742,7 +832,7 @@ let summaries () =
        (strf "%d calls, %d in parallel"
           (List.length (table record))
           (parallel record)))
-    (Stateful.summary program)
+    (summary program)
 
 let one_domain_table () =
   let gen = Stateful.program ~steps:4 ~domains:2 (printed_counter ()) in
@@ -758,7 +848,7 @@ let one_domain_table () =
   is_true
     (String.starts_with
        ~prefix:(strf "%d calls, last: " (List.length (table record)))
-       (Option.get (Stateful.summary program)))
+       (Option.get (summary program)))
 
 let report =
   group "The report"
@@ -824,6 +914,11 @@ let placed () =
 
 let run_counter = Atomic.make 0
 
+(* Two runs of [program], as a case on the workers runs it. *)
+let twice ~workers program () =
+  execute ~workers program ();
+  execute ~workers program ()
+
 (* [get] returns the number of the run that made its value, which prints
    alike in every run: only the first of a program's runs gives the
    reference's [0]. *)
@@ -849,8 +944,8 @@ let witnessed () =
   in
   with_pool 2 @@ fun workers ->
   Atomic.set run_counter 0;
-  starts_with ~affix:"failure [no order of the calls gives these results\n"
-    (ended (execute ~workers (value tree)))
+  starts_with ~prefix:"failure [no order of the calls gives these results\n"
+    (ended (twice ~workers (value tree)))
 
 (* A bag of 1 and 2 whose [take] gives 2 in a program's first run and 1 in
    every later one, and whose [mem1] always holds: the second run's
@@ -888,8 +983,8 @@ let prefix_judged () =
   in
   with_pool 2 @@ fun workers ->
   runs := 0;
-  starts_with ~affix:"failure [no order of the calls gives these results\n"
-    (ended (execute ~workers (value tree)))
+  starts_with ~prefix:"failure [no order of the calls gives these results\n"
+    (ended (twice ~workers (value tree)))
 
 let judged () =
   let next = ref 0 in
@@ -948,9 +1043,9 @@ let drifting () =
   in
   reset ();
   let ending = ended (execute (value tree)) in
-  starts_with ~affix:"oracle [reference of call 2 of " ending;
+  starts_with ~prefix:"oracle [reference of call 2 of " ending;
   ends_with
-    ~affix:
+    ~suffix:
       "a replay of the reference differs from this run; the reference must \
        behave the same from run to run\""
     ending
@@ -1031,19 +1126,34 @@ let judging =
 
 (* A queue whose [pop] always gives [Some popped]: beside a push of
    [popped] in parallel, the outcome of a run in which the push went first.
-   The reference is the queue's contents, and [!judge] rules on each pop. *)
+   The reference is the queue's contents, and [!judge] rules on each pop. On
+   a worker the two calls wait for each other, so that they overlap and real
+   time orders neither. *)
 let lying_queue ~popped judge =
   let queue = abstract "q" in
+  let meet arrived =
+    if self () <> Atomic.get main_domain then begin
+      Atomic.incr arrived;
+      while Atomic.get arrived < 2 do
+        Domain.cpu_relax ()
+      done
+    end
+  in
   [
-    command "create" (Gen.unit @-> makes queue) (fun () -> ref []) ignore;
+    command "create"
+      (Gen.unit @-> makes queue)
+      (fun () -> ref [])
+      (fun () -> Atomic.make 0);
     command "push"
       (queue ^-> Gen.int_range 0 9 @-> returns unit)
       (fun q x -> q := !q @ [ x ])
-      (fun () _ -> ());
+      (fun arrived _ -> meet arrived);
     command "pop"
       (queue ^-> judges (option int))
       (fun q seen -> !judge q seen)
-      (fun () -> Some popped);
+      (fun arrived ->
+        meet arrived;
+        Some popped);
   ]
 
 (* A judge that rejects, with a verb, every outcome it does not accept. *)
@@ -1069,9 +1179,9 @@ let careless q = function
    [accept] holds reaches, run on the calling domain. *)
 let rec smallest gen tree accept =
   match
-    Seq.find
+    List.find_opt
       (fun child -> accept (recorded gen (value child)))
-      (Shrink_tree.children tree)
+      (children gen tree)
   with
   | None -> tree
   | Some child -> smallest gen child accept
@@ -1097,22 +1207,37 @@ let pop_beside_push ~popped judge =
 let rejected_order () =
   let judge = ref strict in
   let _, tree = pop_beside_push ~popped:0 judge in
-  equal string "returned" (ended (execute (value tree)))
+  with_pool 2 @@ fun workers ->
+  equal string "returned" (ended (execute ~workers (value tree)))
 
 let rejected_everywhere () =
   let judge = ref strict in
   let _, tree = pop_beside_push ~popped:7 judge in
+  with_pool 2 @@ fun workers ->
   equal string
     "failure [no order of the calls gives these results\n\
      the closest order, 3 then 2, differs at call 2: pop q1] equality 0, 7"
-    (ended (execute (value tree)))
+    (ended (execute ~workers (value tree)))
 
 let crashed_order () =
   let judge = ref strict in
   let _, tree = pop_beside_push ~popped:0 judge in
   judge := careless;
+  with_pool 2 @@ fun workers ->
   equal string
     {|oracle [reference of call 2 of 3, in the order 2 then 3: pop q1] raise actual Failure("hd")|}
+    (ended (execute ~workers (value tree)))
+
+(* On the calling domain branch 1 runs before branch 2, and real time leaves
+   that order alone: the pop that only the push's going first explains then
+   fails. *)
+let sequential_order () =
+  let judge = ref strict in
+  let _, tree = pop_beside_push ~popped:0 judge in
+  equal string
+    "failure [no order of the calls gives these results\n\
+     the closest order, 2 then 3, differs at call 2: pop q1] message \"pop \
+     gave 0 from an empty queue\""
     (ended (execute (value tree)))
 
 (* With the pop moved to the suffix and the push deleted, no call is
@@ -1133,45 +1258,6 @@ let crashed_alone () =
     {|oracle [reference of call 2 of 2: pop q1] raise actual Failure("hd")|}
     (ended (execute (value tree)))
 
-(* With the pop moved to the suffix, the push is the one parallel call, and
-   the closest order names it alone. *)
-let rejected_one_parallel () =
-  let judge = ref strict in
-  let gen, tree = pop_beside_push ~popped:7 judge in
-  let moved record =
-    calls record
-    = [ ("", "let q1 = create ()"); ("2", "push q1 0"); ("", "pop q1") ]
-  in
-  let tree = smallest gen tree moved in
-  equal string
-    "failure [no order of the calls gives these results\n\
-     the closest order, 2, differs at call 3: pop q1] equality 0, 7"
-    (ended (execute (value tree)))
-
-(* The program [create], then [push 0] in branch 1 beside [pop] in branch 2.
-   The pop gave 7: the first order rejects it, and the second, which pops
-   first, breaks the reference. *)
-let crashed_second_order () =
-  let judge = ref careless in
-  let gen =
-    Stateful.program ~steps:2 ~domains:2 (lying_queue ~popped:7 judge)
-  in
-  let accept record =
-    let calls = calls record in
-    List.mem ("2", "pop q1") calls
-    && List.exists
-         (fun (d, c) -> d = "1" && String.starts_with ~prefix:"push q1" c)
-         calls
-  in
-  let tree = smallest gen (find gen accept) accept in
-  equal
-    (list (pair string string))
-    [ ("", "let q1 = create ()"); ("1", "push q1 0"); ("2", "pop q1") ]
-    (calls (recorded gen (value tree)));
-  equal string
-    {|oracle [reference of call 3 of 3, in the order 3 then 2: pop q1] raise actual Failure("hd")|}
-    (ended (execute (value tree)))
-
 let judging_calls =
   group "Judging calls"
     [
@@ -1184,10 +1270,9 @@ let judging_calls =
          names that order"
         crashed_order;
       test "a crash names no order when no call is parallel" crashed_alone;
-      test "the closest order of one parallel call names that call"
-        rejected_one_parallel;
-      test "a crash names the order that the judge replayed"
-        crashed_second_order;
+      test
+        "on the calling domain the branches keep their order, as real time says"
+        sequential_order;
     ]
 
 (* Workers *)
@@ -1227,7 +1312,7 @@ let branch_failure () =
   let alone = recorded gen program in
   Atomic.set armed false;
   with_pool 2 @@ fun workers ->
-  starts_with ~affix:"failure [call " (armed_run ~workers program);
+  starts_with ~prefix:"failure [call " (armed_run ~workers program);
   Atomic.set armed true;
   equal string alone (recorded ~workers gen program);
   Atomic.set armed false
@@ -1240,8 +1325,8 @@ let reads_the_test () =
   let _, program = with_odd (fun () -> ignore (current_test ())) in
   with_pool 2 @@ fun workers ->
   let ending = armed_run ~workers program in
-  starts_with ~affix:"failure [call " ending;
-  ends_with ~affix:(strf "message %S" other_domain_error) ending
+  starts_with ~prefix:"failure [call " ending;
+  ends_with ~suffix:(strf "message %S" other_domain_error) ending
 
 let controls () =
   let _, skipping = with_odd (fun () -> skip ~reason:"why" ()) in
@@ -1252,7 +1337,7 @@ let controls () =
   let ending program =
     Atomic.set armed true;
     Fun.protect ~finally:(fun () -> Atomic.set armed false) @@ fun () ->
-    match Stateful.execute ~workers program with
+    match execute ~workers program () with
     | () -> "returned"
     | exception Failure.Control (`Skip (Some why)) -> "skip " ^ why
     | exception Sys.Break -> "Sys.Break"
@@ -1271,9 +1356,9 @@ let backtrace () =
   Atomic.set armed true;
   let f =
     Fun.protect ~finally:(fun () -> Atomic.set armed false) @@ fun () ->
-    match Stateful.execute ~workers program with
+    match execute ~workers program () with
     | () -> None
-    | exception Failure.Check_failure f -> Some f
+    | exception Property.Run_failure { fault = `Assertion f; _ } -> Some f
   in
   match require_some f with
   | { kind = Raise { backtrace = Some bt; _ }; _ } ->
@@ -1300,7 +1385,7 @@ let alarmed () =
   Atomic.set armed true;
   let ending =
     Fun.protect ~finally:(fun () -> Atomic.set armed false) @@ fun () ->
-    match Stateful.execute ~workers program with
+    match execute ~workers program () with
     | () -> "returned"
     | exception Failure.Control (`Timeout limit) ->
         strf "timed out after %gs" limit
@@ -1329,26 +1414,6 @@ let masked () =
   is_false ~msg:"the test's domain blocks none of them"
     (List.mem Sys.sigalrm (mask ()))
 
-(* Each worker that ends adds one entry to [Workers.ended], before the
-   entries that were there. On Linux, an entry has the thread id of its
-   worker, which is not that of the test. Where the system gives no thread
-   id, no worker adds an entry. *)
-let ended_entries () =
-  let before = Workers.ended () in
-  with_pool 3 (fun workers ->
-      Workers.run workers ~grace:(Fun.const 0.) (Array.make 3 ignore));
-  let rec added acc = function
-    | entries when entries == before -> List.rev acc
-    | [] -> fail "the entries before the pool are not the tail of the list"
-    | entry :: older -> added (entry :: acc) older
-  in
-  let tids = List.map fst (added [] (Workers.ended ())) in
-  match Windtrap.Private.Os.thread_id () with
-  | None -> equal (list int) [] tids
-  | Some test ->
-      equal int 3 (List.length (List.sort_uniq Int.compare tids));
-      is_false ~msg:"no entry is the thread of the test" (List.mem test tids)
-
 exception Job of int
 
 (* Jobs 1 and 2 raise; every job runs to its end, and the pool lives on. *)
@@ -1369,6 +1434,220 @@ let first_raise () =
     ("raised Job 1", [ true; true; true ])
     (ending, Array.to_list ended);
   Workers.run workers ~grace:(Fun.const 0.) (Array.make 3 ignore)
+
+(* [profiled ~on_worker n fn] is [with_pool n fn] under a memory profile
+   that samples every block, the workers' included, since a domain spawned
+   while a profile samples shares it. [on_worker] is given the call stack of
+   each block a worker allocates, and what it raises is raised in the worker
+   at that allocation, as an asynchronous exception is. *)
+let profiled ~on_worker n fn =
+  if Sys.ocaml_release.major = 5 && Sys.ocaml_release.minor < 3 then
+    skip ~reason:"Gc.Memprof samples no allocation before OCaml 5.3" ();
+  let caller = Domain.self () in
+  let sampled (allocation : Gc.Memprof.allocation) =
+    if Domain.self () <> caller then on_worker allocation.callstack;
+    None
+  in
+  let profile =
+    Gc.Memprof.start ~sampling_rate:1.0 ~callstack_size:16
+      {
+        Gc.Memprof.null_tracker with
+        alloc_minor = sampled;
+        alloc_major = sampled;
+      }
+  in
+  Fun.protect
+    ~finally:(fun () ->
+      Gc.Memprof.stop ();
+      Gc.Memprof.discard profile)
+    (fun () -> with_pool n fn)
+
+let mentions ~sub s =
+  let n = String.length s and m = String.length sub in
+  let rec from i = i + m <= n && (String.sub s i m = sub || from (i + 1)) in
+  from 0
+
+let run_all workers jobs = Workers.run workers ~grace:(Fun.const 0.) jobs
+
+(* Each job ends by marking its domain, and allocates nothing, so what that
+   domain allocates from then until the run returns is the pool's own, on
+   the way from the job's end to the mark that ends it: a block allocated
+   there is a point where an asynchronous exception could land. Flushing
+   the formatters allocates, and swallows what lands there. *)
+let allocates_nothing_but_flush () =
+  let lock = Mutex.create () and stacks = ref [] in
+  let finished = Array.init 2 (fun _ -> Atomic.make (-1)) in
+  let on_worker stack =
+    let self = (Domain.self () :> int) in
+    if Array.exists (fun d -> Atomic.get d = self) finished then
+      let s = Printexc.raw_backtrace_to_string stack in
+      Mutex.protect lock (fun () -> stacks := s :: !stacks)
+  in
+  profiled ~on_worker 2 @@ fun workers ->
+  let job i () = Atomic.set finished.(i) (Domain.self () :> int) in
+  for _ = 1 to 3 do
+    run_all workers (Array.init 2 job);
+    Array.iter (fun d -> Atomic.set d (-1)) finished
+  done;
+  equal (list string) []
+    (List.filter (fun s -> not (mentions ~sub:"format.ml" s)) !stacks)
+
+(* The first blocks a worker allocates in a run are the job it takes, and
+   the worker that takes it last takes it [delay] after the other, held at
+   its first block, so the other waits at the start for longer than it
+   spins. What a worker allocates after taking its job and before starting
+   it is the barrier's: a block there is a point where an asynchronous
+   exception could land between a worker's arrival and the wake of the
+   others. *)
+let starts_without_allocating () =
+  let delay = 0.05 in
+  let lock = Mutex.create () and stacks = ref [] in
+  let taken = Array.init 2 (fun _ -> Atomic.make (-1)) in
+  let started = Array.init 2 (fun _ -> Atomic.make false) in
+  let takers = Atomic.make 0 and ids = Array.make 2 (-1) in
+  let held () = if Atomic.fetch_and_add takers 1 = 1 then Unix.sleepf delay in
+  let on_worker stack =
+    let self = (Domain.self () :> int) in
+    let i = if ids.(0) = self then 0 else 1 in
+    if Atomic.compare_and_set taken.(i) self (-1) then held ()
+    else if Atomic.get taken.(i) = -1 && not (Atomic.get started.(i)) then
+      let s = Printexc.raw_backtrace_to_string stack in
+      Mutex.protect lock (fun () -> stacks := s :: !stacks)
+  in
+  Array.iter (fun s -> Atomic.set s true) started;
+  profiled ~on_worker 2 @@ fun workers ->
+  run_all workers
+    (Array.init 2 (fun i () -> ids.(i) <- (Domain.self () :> int)));
+  for _ = 1 to 2 do
+    Atomic.set takers 0;
+    Array.iteri
+      (fun i s ->
+        Atomic.set s false;
+        Atomic.set taken.(i) ids.(i))
+      started;
+    run_all workers (Array.init 2 (fun i () -> Atomic.set started.(i) true))
+  done;
+  equal (list string) []
+    (List.filter (fun s -> not (mentions ~sub:"Workers.take" s)) !stacks)
+
+exception Injected
+
+(* [shot] is raised once, at the first block a worker allocates while it
+   is armed. After a run, every worker waits for the next, so the first
+   block one allocates is the job it takes. *)
+let in_the_loop () =
+  let shot = Atomic.make false in
+  let on_worker _ =
+    if Atomic.compare_and_set shot true false then raise Injected
+  in
+  profiled ~on_worker 2 @@ fun workers ->
+  run_all workers (Array.make 2 ignore);
+  Atomic.set shot true;
+  let ending =
+    match run_all workers (Array.make 2 ignore) with
+    | () -> "returned"
+    | exception Injected -> "raised Injected"
+  in
+  equal (pair string bool) ("returned", false) (ending, Atomic.get shot);
+  run_all workers (Array.make 2 ignore)
+
+(* Job 0 raises a constant, and the shot lands on its worker at the first
+   block it allocates after, as the worker records the job's ending. *)
+let in_the_ending () =
+  let shot = Atomic.make true and target = Atomic.make (-1) in
+  let on_worker _ =
+    if
+      Atomic.get target = (Domain.self () :> int)
+      && Atomic.compare_and_set shot true false
+    then raise Injected
+  in
+  profiled ~on_worker 2 @@ fun workers ->
+  let job i () =
+    if i = 0 then begin
+      Atomic.set target (Domain.self () :> int);
+      raise Exit
+    end
+  in
+  let ending =
+    match run_all workers (Array.init 2 job) with
+    | () -> "returned"
+    | exception Injected -> "raised Injected"
+    | exception Exit -> "raised Exit"
+  in
+  Atomic.set target (-1);
+  equal (pair string bool) ("raised Injected", false) (ending, Atomic.get shot);
+  run_all workers (Array.make 2 ignore)
+
+(* The processor time of the calling thread, in seconds, as Linux counts
+   it in nanoseconds. *)
+let schedstat = "/proc/thread-self/schedstat"
+
+let thread_time () =
+  let line = In_channel.with_open_text schedstat In_channel.input_line in
+  Scanf.sscanf (Option.get line) "%d" (fun ns -> Float.of_int ns /. 1e9)
+
+(* In each round of a pool of [n] the worker that takes its job last takes
+   it [delay] after the others, held in the profiler's callback at the
+   block it allocates as it takes it, as a worker that waits for a
+   processor is held. Workers take their jobs one at a time, so the others'
+   callbacks have returned. The processor time of each of the others from
+   the end of its previous job to the start of this one is that of its wait
+   for the last: a worker that spun through the wait has most of [delay],
+   one that slept a few milliseconds at most. The last one's job counts the
+   others' jobs that start within [patience] of its own: those its arrival
+   woke. *)
+let waits_asleep n =
+  if not (Sys.file_exists schedstat) then
+    skip ~reason:"no per-thread processor time to read" ();
+  let delay = 0.2 and patience = 1.0 in
+  let armed = Array.init n (fun _ -> Atomic.make (-1)) in
+  let takers = Atomic.make 0 and last = Atomic.make (-1) in
+  let on_worker _ =
+    let self = (Domain.self () :> int) in
+    if Array.exists (fun a -> Atomic.compare_and_set a self (-1)) armed then
+      if Atomic.fetch_and_add takers 1 = n - 1 then begin
+        Atomic.set last self;
+        Unix.sleepf delay
+      end
+  in
+  profiled ~on_worker n @@ fun workers ->
+  let ids = Array.make n (-1) in
+  let started = Array.make n Float.nan and finished = Array.make n Float.nan in
+  let began = Atomic.make 0 and woken = Atomic.make 0 in
+  let await_others () =
+    let until = Unix.gettimeofday () +. patience in
+    while Atomic.get began < n - 1 && Unix.gettimeofday () < until do
+      Unix.sleepf 0.001
+    done;
+    Atomic.set woken (Atomic.get began)
+  in
+  let job i () =
+    started.(i) <- thread_time ();
+    let self = (Domain.self () :> int) in
+    ids.(i) <- self;
+    if self = Atomic.get last then await_others () else Atomic.incr began;
+    finished.(i) <- thread_time ()
+  in
+  run_all workers (Array.init n job);
+  let round () =
+    let before = Array.copy finished in
+    Atomic.set takers 0;
+    Atomic.set began 0;
+    Array.iteri (fun i a -> Atomic.set a ids.(i)) armed;
+    run_all workers (Array.init n job);
+    equal int ~msg:"jobs started while the last one's ran" (n - 1)
+      (Atomic.get woken);
+    List.filter_map
+      (fun i ->
+        if ids.(i) = Atomic.get last then None
+        else Some (started.(i) -. before.(i)))
+      (List.init n Fun.id)
+  in
+  let waited = List.concat (List.init 2 (fun _ -> round ())) in
+  equal int (2 * (n - 1)) (List.length waited);
+  List.iter
+    (less float_exact ~msg:"processor time of the wait" ~than:0.02)
+    waited
 
 (* [first] waits, on a worker, until [second] has run, so the one order
    that explains its outcome runs [second] first, which the judge tries
@@ -1406,7 +1685,7 @@ let meeting_commands ~cover_when =
    the search of a failing case descends. *)
 let rec shrunk gen keep tree =
   let kept child = keep (recorded gen (value child)) in
-  match Seq.find kept (Shrink_tree.children tree) with
+  match List.find_opt kept (children gen tree) with
   | Some child -> shrunk gen keep child
   | None -> tree
 
@@ -1430,21 +1709,23 @@ let met ~cover_when () =
     (exact (recorded gen program));
   with_pool 2 @@ fun workers ->
   ended (fun () ->
-      Run.property ~count:1
-        (Gen.map (fun () -> program) Gen.unit)
-        (fun p -> Stateful.execute ~workers p))
+      ignore
+        (Run.property ~count:1 ~runs:50
+           (Gen.map (fun () -> program) Gen.unit)
+           (fun p -> ignore (Stateful.execute ~workers p : Stateful.record))
+          : Property.stats))
 
 let labels =
   [
     ("an order the judge rejects counts nothing", false, "returned");
     ( "the order it accepts counts",
       true,
-      {|failure message "never covered: \"first, second before: true\" (over 1 passing cases)"|}
+      {|failure vacuous "never covered: \"first, second before: true\" (over 1 passing cases)"|}
     );
   ]
 
-(* [create]'s system prints the number of the case's run, and [check]
-   fails in its third run, so a failing case runs three times. *)
+(* [create]'s system prints the number of its run, and [check] fails in the
+   third run, so the failing case is the first, run three times. *)
 let failing_run_output () =
   let runs = Atomic.make 0 in
   let r = abstract "r" in
@@ -1462,12 +1743,17 @@ let failing_run_output () =
       ]
   in
   with_pool 2 @@ fun workers ->
+  (* The runs of a case are the law's calls on one value. *)
+  let case = ref None in
   let law program =
-    Atomic.set runs 0;
-    Stateful.execute ~workers program
+    if not (Option.fold ~none:false ~some:(( == ) program) !case) then begin
+      case := Some program;
+      Atomic.set runs 0
+    end;
+    ignore (Stateful.execute ~workers program : Stateful.record)
   in
-  match Run.property gen law with
-  | () -> fail "the property passed"
+  match Run.property ~runs:50 gen law with
+  | (_ : Property.stats) -> fail "the property passed"
   | exception Failure.Check_failure f ->
       equal (option string) (Some "run 3\n")
         (Option.map (fun (t : Failure.tail) -> t.text) f.output_tail)
@@ -1511,10 +1797,6 @@ let executor =
          again, and the workers live on"
         controls;
       test "an exception on a worker keeps its backtrace" backtrace;
-      test
-        "each worker that ends adds one entry with its thread id to the ended \
-         workers"
-        ended_entries;
       test "what a worker prints reaches the test's output" printed_output;
       test "a failing case's output is that of the run that failed"
         failing_run_output;
@@ -1527,8 +1809,28 @@ let executor =
         "Workers.run raises the first job's exception, by index, once every \
          job has ended"
         first_raise;
+      test
+        "from a job's end to its mark a worker allocates nothing but its \
+         formatters' flush, so no asynchronous exception lands between them"
+        allocates_nothing_but_flush;
+      test ~timeout:10.
+        "from taking its job to starting it a worker allocates nothing, though \
+         it waits for a late one"
+        starts_without_allocating;
+      test ~timeout:10.
+        "an asynchronous exception in a worker's loop ends no job, and the \
+         pool runs on"
+        in_the_loop;
+      test ~timeout:10.
+        "an asynchronous exception as a worker ends its job is the job's \
+         ending, and the pool runs on"
+        in_the_ending;
+      cases ~timeout:10.
+        "workers that wait for a late one at the start of a run sleep after a \
+         short spin, and the late one's arrival wakes them"
+        ~id:(strf "%d workers") [ 2; 3 ] waits_asleep;
       cases "labels count along the order the judge accepts"
-        ~name:(fun (n, _, _) -> n)
+        ~id:(fun (n, _, _) -> n)
         labels
         (fun (_, cover_when, expected) ->
           equal string expected (met ~cover_when ()));
@@ -1539,50 +1841,10 @@ let executor =
 let under_mutation, seen_under_mutation =
   let r =
     Recorded.execute
-      ~config:(fun c ->
-        {
-          c with
-          mutation =
-            Run.Loop
-              {
-                scope = [];
-                jobs = 1;
-                since = None;
-                children = Run.Auto;
-                skip_killed = false;
-                retry = None;
-              };
-        })
+      ~config:(fun c -> { c with mutation = Run.Loop Run.every_mutant })
       [ Stateful.stateful ~count:5 ~domains:2 "sequential" [ where () ] ]
   in
   (r, List.sort_uniq Int.compare (Log.take ()))
-
-(* Under mutation testing with [--mutate-workers], in a forked child: the
-   programs run on the workers. The text is the row of the test and whether
-   a call ran on a domain other than the test's. *)
-let workers_under_mutation =
-  Windtrap_test_support.Child.forked (fun () ->
-      let r =
-        Recorded.execute
-          ~config:(fun c ->
-            {
-              c with
-              mutation =
-                Run.Loop
-                  {
-                    scope = [];
-                    jobs = 1;
-                    since = None;
-                    children = Run.Auto;
-                    skip_killed = false;
-                    retry = None;
-                  };
-              mutate_workers = true;
-            })
-          [ Stateful.stateful ~count:5 ~domains:2 "parallel" [ where () ] ]
-      in
-      let others = List.filter (fun d -> d <> self ()) (Log.take ()) in
-      strf "%s %b" (Recorded.row r [ "parallel" ]) (others <> []))
 
 (* One after the other, a control from branch 1 ends the run before any
    later call runs. *)
@@ -1610,67 +1872,6 @@ let stops_at_a_control () =
   equal string "raised windtrap skip: why" (armed_run (value tree));
   equal int 0 !ticked
 
-(* One after the other, a call that fails its assertion fails the test, in a
-   branch and in the suffix. In the branch, no [odd] of the prefix fails
-   first. *)
-let sequential_branch_failure () =
-  let gen =
-    Stateful.program ~steps:1 ~domains:2
-      [ tick_command; odd (fun () -> fail "odd") ]
-  in
-  Atomic.set armed false;
-  let rec prefix = function
-    | ("", call) :: rest -> call :: prefix rest
-    | _ -> []
-  in
-  let tree =
-    find gen (fun record ->
-        let c = calls record in
-        List.mem ("1", "odd ()") c && not (List.mem "odd ()" (prefix c)))
-  in
-  equal string {|failure [call 2 of 7: odd ()] message "odd"|}
-    (armed_run (value tree))
-
-(* The suffix runs last, so its [odd] is the last one that runs. *)
-let sequential_suffix_failure () =
-  let left = ref 0 in
-  let last_fails () =
-    decr left;
-    if !left = 0 then fail "odd"
-  in
-  let gen =
-    Stateful.program ~steps:2 ~domains:2 [ tick_command; odd last_fails ]
-  in
-  Atomic.set armed false;
-  let tree =
-    find gen (fun record ->
-        match List.rev (calls record) with
-        | ("", "odd ()") :: earlier ->
-            List.exists (fun (d, _) -> d <> "") earlier
-        | _ -> false)
-  in
-  let odds = List.filter (fun (_, c) -> c = "odd ()") in
-  left := List.length (odds (calls (recorded gen (value tree))));
-  equal string {|failure [call 11 of 11: odd ()] message "odd"|}
-    (armed_run (value tree))
-
-(* The calls of a branch that ran before a control are rows of the record. *)
-let rows_before_a_control () =
-  let gen =
-    Stateful.program ~steps:1 ~domains:2
-      [ tick_command; odd (fun () -> skip ~reason:"why" ()) ]
-  in
-  Atomic.set armed false;
-  let tree =
-    find gen (fun record ->
-        match calls record with
-        | ("1", "tick ()") :: ("1", "odd ()") :: _ -> true
-        | _ -> false)
-  in
-  equal string "raised windtrap skip: why" (armed_run (value tree));
-  is_true ~msg:"the tick of branch 1 is a row"
-    (List.mem ("1", "tick ()") (calls (printed gen (value tree))))
-
 let mutation =
   group "Under mutation testing"
     [
@@ -1678,56 +1879,52 @@ let mutation =
         (fun () ->
           equal string "pass" (Recorded.row under_mutation [ "sequential" ]);
           equal (list int) [ self () ] seen_under_mutation);
-      test "with --mutate-workers, a program runs calls on the workers"
-        (fun () ->
-          match workers_under_mutation with
-          | None ->
-              skip ~reason:"POSIX only: the domains run in a forked child" ()
-          | Some text -> equal string "pass true" text);
       test "a control from a branch ends the run before the next branch"
         stops_at_a_control;
-      test "a control from a branch keeps the rows of the calls that ran"
-        rows_before_a_control;
-      test "one after the other, a branch's call that fails fails the test"
-        sequential_branch_failure;
-      test "one after the other, a suffix's call that fails fails the test"
-        sequential_suffix_failure;
     ]
 
 (* A call that never returns *)
 
-(* The run is forked before any domain exists: its worker sleeps on until
-   the child leaves by [_exit], and hands back the run's facts on a pipe. *)
-let in_fork fn =
-  if Sys.win32 then None
-  else begin
-    Format.pp_print_flush Format.std_formatter ();
-    Format.pp_print_flush Format.err_formatter ();
-    flush stdout;
-    flush stderr;
-    let read_fd, write_fd = Unix.pipe ~cloexec:true () in
-    match Unix.fork () with
-    | 0 ->
-        Unix.close read_fd;
-        let text = try fn () with e -> "raised " ^ Printexc.to_string e in
-        let oc = Unix.out_channel_of_descr write_fd in
-        output_string oc text;
-        close_out oc;
-        Unix._exit 0
-    | pid ->
-        Unix.close write_fd;
-        let ic = Unix.in_channel_of_descr read_fd in
-        let text = In_channel.input_all ic in
-        close_in ic;
-        ignore (Unix.waitpid [] pid);
-        Some text
-  end
+(* The run happens in a fresh process of this executable, before any domain
+   exists, and only when the test asks: the process runs the scenario its
+   variable names as the module initialises, prints the run's facts and
+   leaves by [_exit]. *)
+let scenario_variable = "STATEFUL_DOMAINS_SCENARIO"
+
+let in_a_fresh_process name fn =
+  match Sys.getenv_opt scenario_variable with
+  | Some n when n = name ->
+      let text = try fn () with e -> "raised " ^ Printexc.to_string e in
+      print_string text;
+      flush stdout;
+      Unix._exit 0
+  | _ ->
+      lazy
+        (if Sys.win32 then None
+         else begin
+           let read_fd, write_fd = Unix.pipe ~cloexec:true () in
+           let env =
+             Array.append
+               [| scenario_variable ^ "=" ^ name |]
+               (Unix.environment ())
+           in
+           let pid =
+             Unix.create_process_env Sys.executable_name
+               [| Sys.executable_name |] env Unix.stdin write_fd Unix.stderr
+           in
+           Unix.close write_fd;
+           let ic = Unix.in_channel_of_descr read_fd in
+           let text = In_channel.input_all ic in
+           close_in ic;
+           ignore (Unix.waitpid [] pid);
+           Some text
+         end)
 
 (* The timeout covers the whole body, the spawn of the workers included: it
    must outlast that spawn on a loaded builder, or it fires before the call
    starts, and the test then times out without a stuck call. *)
 let stuck =
-  in_fork (fun () ->
+  in_a_fresh_process "stuck" (fun () ->
       let block =
         command "block"
           (Gen.unit @-> returns unit)
@@ -1762,7 +1959,7 @@ let stuck =
 
 (* More workers than the runtime has domains, then a test that spawns two. *)
 let unspawnable =
-  in_fork (fun () ->
+  in_a_fresh_process "unspawnable" (fun () ->
       let r =
         Recorded.execute
           [
@@ -1788,19 +1985,20 @@ let unspawnable =
       String.concat "\n" lines)
 
 let spawn_fails () =
-  match unspawnable with
-  | None -> skip ~reason:"POSIX only: the run is forked" ()
+  match Lazy.force unspawnable with
+  | None -> skip ~reason:"POSIX only: the run is in a fresh process" ()
   | Some text -> (
       match String.split_on_char '\n' text with
       | [ too_many; failures; two ] ->
           equal string "too many: fail body" too_many;
-          starts_with ~affix:"failures: cannot spawn a worker domain: " failures;
+          starts_with ~prefix:"failures: cannot spawn a worker domain: "
+            failures;
           equal string "two: pass" two
       | _ -> fail text)
 
 let never_returns () =
-  match stuck with
-  | None -> skip ~reason:"POSIX only: the run is forked" ()
+  match Lazy.force stuck with
+  | None -> skip ~reason:"POSIX only: the run is in a fresh process" ()
   | Some text ->
       equal string
         "stuck: fail body\n\

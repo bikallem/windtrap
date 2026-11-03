@@ -41,7 +41,11 @@ raises `Parse_error` when the string is empty or not a number.
 
 ## The first suite
 
-A suite is one executable, declared by a `(test)` stanza.
+A suite is one executable, declared by a `(test)` stanza. Its two
+`env_var` deps make dune run the suite again when `WINDTRAP_SEED` or
+`WINDTRAP_PROP_COUNT` changes, as `WINDTRAP_SEED=… dune runtest` does to
+replay a seed: without them dune skips a test whose inputs it has seen
+pass, and the variable reaches nothing.
 
 `test/dune`:
 
@@ -49,7 +53,10 @@ A suite is one executable, declared by a `(test)` stanza.
 (test
  (name test_mylib)
  (modules test_mylib calc)
- (libraries windtrap))
+ (libraries windtrap)
+ (deps
+  (env_var WINDTRAP_SEED)
+  (env_var WINDTRAP_PROP_COUNT)))
 ```
 
 The suite declares its tests and runs them.
@@ -93,7 +100,7 @@ line. It ends with the seed the property drew its integers from:
 
 ```
 $ dune runtest
-mylib: 3 passed in 1.0ms (seed s1:b02192cebcec40d2).
+mylib: 3 passed in 2.1ms (seed s1:4f067e6ae1367fd8).
 ```
 
 ## A failing test
@@ -110,7 +117,7 @@ $ dune runtest
 File "test/dune", line 2, characters 7-17:
 2 |  (name test_mylib)
            ^^^^^^^^^^
-mylib: 3 tests (seed s1:4370715203d03b81)
+mylib: 3 tests (seed s1:4388550afcb1716f)
 ──────────────────────── failures ────────────────────────
   FAIL  add › adds two integers
     test/test_mylib.ml:5
@@ -120,7 +127,7 @@ mylib: 3 tests (seed s1:4370715203d03b81)
     actual    5
 ──────────────────────────────────────────────────────────
 
-2 passed, 1 failed in 0.9ms.
+2 passed, 1 failed in 2.3ms.
 ```
 
 ## The fix
@@ -129,7 +136,7 @@ We put the `5` back and run again:
 
 ```
 $ dune runtest
-mylib: 3 passed in 0.6ms (seed s1:a59d57ed8371d91e).
+mylib: 3 passed in 1.9ms (seed s1:ef7d1505b70466a8).
 ```
 
 ## Where to go next
@@ -150,4 +157,5 @@ manual has one page per kind of test and per workflow.
   its code with `let%test`, and the resources a test acquires.
 
 The [index](../../README.md#documentation) lists every page with its
-kind, and `lib/windtrap.mli` is the reference.
+kind, and `lib/windtrap.mli` is the reference, with `Windtrap.Testable`'s
+constructors in `lib/testable.mli`.

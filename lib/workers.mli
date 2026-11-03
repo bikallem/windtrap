@@ -18,10 +18,10 @@
     the job it holds, if any. Only one that lands while the domain starts,
     before its loop, as a memory profiler's callback may raise, ends the worker,
     and {!run} then waits for it as for a job that never ends. Between runs a
-    worker waits in a blocking section. At the start of a run, it waits for the
-    other workers: it spins for a short time, then sleeps in short steps. When
-    all arrived, each worker spins for a short time until all are ready, so that
-    the jobs start together.
+    worker waits in a blocking section. At the start of a run it spins for 20
+    microseconds while the other workers take their jobs, then waits for them in
+    a blocking section too, so a worker that shares its processor with a late
+    one leaves it to that one.
 
     {b Signals.} A worker is born blocking [SIGALRM], [SIGINT], [SIGTERM] and
     [SIGHUP], except on Windows, and so is every domain it spawns. The runtime
@@ -32,7 +32,9 @@
     the domain that spawned the pool did, and it flushes its own
     [Format.std_formatter] and [Format.err_formatter] after each job, so its
     output reaches the standard streams while the run that gave the job is still
-    open. *)
+    open.
+
+    @canonical Windtrap.Private.Workers *)
 
 type t
 (** The type for pools of worker domains. *)
@@ -42,16 +44,6 @@ val spawn : int -> t
     [Domain.spawn] raises, as [Failure] when the runtime has no domain left, or
     what a signal handler raises meanwhile, after the workers already spawned
     have been told to exit and joined. Raises [Invalid_argument] if [n < 1]. *)
-
-val ended : unit -> (int * float) list
-(** [ended ()] gives an entry for each worker that ended in this process, the
-    newest first. An entry is the thread id of the worker ({!Os.thread_id}) and
-    the seconds that it waited for a CPU ({!Os.cpu_wait}). A worker adds its
-    entry when its domain ends, after {!join} tells it to exit. A later call
-    gives the list of an earlier call as its tail. The mutation loop adds these
-    waits to the waits of the live threads, because a worker ends before its
-    test ends. Where the system does not give a thread id, the list stays empty.
-*)
 
 exception Stuck of exn * Printexc.raw_backtrace
 (** Raised by {!run} when a job is still running after its grace: the exception

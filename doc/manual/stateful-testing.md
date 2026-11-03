@@ -72,7 +72,11 @@ let () = exit (run "bounded_queue" [ queues; regressions ])
 
 The files ship as `examples/04-stateful-testing/` in windtrap's
 repository, and the transcripts print that directory's paths. The
-failing transcripts run the example with the change named above them.
+failing transcripts of `Bounded_queue` run the example with the change
+named above them. The later sections' systems, `Lru`, `Vec`, `Guard`,
+`Mpmc` and `Vault`, ship there beside their suites, and each failing
+transcript runs the suite of `planted/<name>/`, which builds it against
+the system with the bug named above the transcript.
 
 ## Writing a stateful test
 
@@ -144,7 +148,8 @@ let queues = group "queue" [ stateful "behaves like a list" commands ]
 calls, 100 and 20 by default. It runs each call on the system, then on
 the reference, and fails at the first call whose outcomes differ. A
 command listed twice is drawn twice as often, and a command that no
-passing program calls fails the test with `never called:` and its name.
+passing program calls makes the test vacuous, a verdict that fails,
+with `never called:` and its name.
 The `cover` in `Model.push` fails the test when no program fills a
 queue.
 
@@ -154,10 +159,10 @@ queue:
 ```
 $ dune exec examples/04-stateful-testing/test_bounded_queue.exe -- -v --seed s1:c26eddaeb764a645 -f behaves
 bounded_queue: 1 test (seed s1:c26eddaeb764a645)
-  PASS  queue › behaves like a list                3.3ms
+  PASS  queue › behaves like a list                3.7ms (100 cases)
     labels (100 passing cases):
-       46.0%  reached capacity
-1 passed in 4.1ms.
+       57.0%  reached capacity
+1 passed in 4.9ms.
 ```
 
 ## Checking the exceptions an operation raises
@@ -201,8 +206,10 @@ A failure prints the program that its failing run executed, as a table
 of the calls that ran, then the call that failed and its two outcomes,
 the reference's as `expected`. `let q1 = create 1` made the value `q1`,
 and `reference before` shows the reference side of each argument before
-the call, as the type's `~pp` prints it. The report's `replay:` line and
-`--seed` work as for a [property](property-testing.md).
+the call, as the type's `~pp` prints it. The report's `replay:` line,
+`--seed` and the `replay it:` line work as for a
+[property](property-testing.md): `--replay` with the token checks that
+one program again.
 
 If `push` let one element too many in, comparing the size with `>`
 where it compares with `=`, shrinking would reduce the program to three
@@ -216,11 +223,12 @@ bounded_queue: 1 test (seed s1:c26eddaeb764a645)
     examples/04-stateful-testing/test_bounded_queue.ml:39
       39 │ let queues = group "queue" [ stateful "behaves like a list" commands ]
 
-    counterexample (case 0, shrunk 7 steps): 3 calls, last: push
+    counterexample (case 0, shrunk 11 steps): 3 calls, last: push
        #  reference before  call
        1                    let q1 = create 1
        2  []                push q1 0
        3  [0]               push q1 0
+    replay it: -f 'queue › behaves like a list' --replay r1:AQAAAQEAAAEBAAAA:37cd7300
     which failed at:
       examples/04-stateful-testing/test_bounded_queue.ml:31
         31 │ command "push"
@@ -230,7 +238,7 @@ bounded_queue: 1 test (seed s1:c26eddaeb764a645)
 ──────────────────────────────────────────────────────────
 
 replay: dune exec examples/04-stateful-testing/test_bounded_queue.exe -- --seed s1:c26eddaeb764a645 -f 'behaves'
-1 failed in 0.8ms.
+1 failed in 3.6ms.
 ```
 
 ## Reading a failure of the model
@@ -244,7 +252,9 @@ stands for a failure of the system, nor the other way round.
 
 If `Model.peek` asserted that the queue is never empty, writing
 `[] -> assert false` where it raises `Bounded_queue.Empty`, the first
-`peek` of an empty queue would break the model:
+`peek` or `pop` of an empty queue would break the model. Shrinking turns
+a `peek` into the `pop` listed before it, since `Model.pop` reads
+`Model.peek`:
 
 ```
 $ dune exec examples/04-stateful-testing/test_bounded_queue.exe -- --seed s1:c26eddaeb764a645 -f behaves
@@ -254,27 +264,34 @@ bounded_queue: 1 test (seed s1:c26eddaeb764a645)
     examples/04-stateful-testing/test_bounded_queue.ml:39
       39 │ let queues = group "queue" [ stateful "behaves like a list" commands ]
 
-    counterexample (case 0, shrunk 7 steps): 2 calls, last: peek
+    counterexample (case 0, shrunk 19 steps): 2 calls, last: pop
        #  reference before  call
        1                    let q1 = create 1
-       2  []                peek q1
+       2  []                pop q1
+    replay it: -f 'queue › behaves like a list' --replay r1:AQAAAQIAAA:550b9a30
     which failed at:
-      examples/04-stateful-testing/test_bounded_queue.ml:35
-        35 │ command "peek" (queue ^-> returns int) Model.peek Bounded_queue.peek;
-      reference of call 2 of 2: peek q1
+      examples/04-stateful-testing/test_bounded_queue.ml:34
+        34 │ command "pop" (queue ^-> returns int) Model.pop Bounded_queue.pop;
+      reference of call 2 of 2: pop q1
       uncaught exception:
         File "examples/04-stateful-testing/test_bounded_queue.ml", line 10, characters 29-35: Assertion failed
       Raised at Test_bounded_queue.Model.peek in file "examples/04-stateful-testing/test_bounded_queue.ml", line 10, characters 29-41
+      Called from Test_bounded_queue.Model.pop in file "examples/04-stateful-testing/test_bounded_queue.ml", line 13, characters 12-18
 ──────────────────────────────────────────────────────────
 
 replay: dune exec examples/04-stateful-testing/test_bounded_queue.exe -- --seed s1:c26eddaeb764a645 -f 'behaves'
-1 failed in 1.0ms.
+1 failed in 2.8ms.
 ```
 
 ## Keeping a failing program as a regression
 
-A stateful test takes no fixed program, so a program that failed is
-kept by copying its calls into a `test`.
+The `replay it:` token checks the program that failed again, alone, on
+any machine, as long as the command list and the generators parse it
+the same way. A replay draws nothing, so a command its program never
+calls does not make it vacuous; once the bug is fixed, it passes and
+says `the replayed case passed`, and `--failed` does the same with the
+recorded token. A test holds no token, so a program that failed is kept
+in the suite by copying its calls into a `test`.
 
 `test/test_bounded_queue.ml`:
 
@@ -304,7 +321,7 @@ bounded_queue: 1 test
     but no exception was raised
 ──────────────────────────────────────────────────────────
 
-1 failed in 0.6ms.
+1 failed in 0.9ms.
 ```
 
 ## Observing the state after every call
@@ -356,37 +373,39 @@ without making its key the most recently used, the invariant would fail
 right after that `find`:
 
 ```
-$ dune exec test/test_lru.exe -- --seed s1:c26eddaeb764a645
+$ dune exec examples/04-stateful-testing/planted/lru/test_lru.exe -- --seed s1:c26eddaeb764a645
 lru: 1 test (seed s1:c26eddaeb764a645)
 ──────────────────────── failures ────────────────────────
   FAIL  Lru › behaves like a list
-    test/test_lru.ml:42
-      42 │ let caches = group "Lru" [ stateful "behaves like a list" commands ]
+    examples/04-stateful-testing/test_lru.ml:41
+      41 │ let caches = group "Lru" [ stateful "behaves like a list" commands ]
 
-    counterexample (case 37, shrunk 11 steps): 4 calls, last: find
+    counterexample (case 24, shrunk 17 steps): 4 calls, last: find
        #  reference before  call
        1                    let c1 = create 2
-       2  []                add c1 3 0
-       3  [(3, 0)]          add c1 0 0
-       4  [(0, 0); (3, 0)]  find c1 3
+       2  []                add c1 2 0
+       3  [(2, 0)]          add c1 0 0
+       4  [(0, 0); (2, 0)]  find c1 2
+    replay it: -f 'Lru › behaves like a list' --replay r1:AQABAQEAAgABAQAAAAECAAIA:4c22d617
     which failed with:
       after call 4 of 4, on c1
-      expected  [(3, 0); (0, 0)]
+      expected  [(2, 0); (0, 0)]
                   ~       ~
-      actual    [(0, 0); (3, 0)]
+      actual    [(0, 0); (2, 0)]
                   ~       ~
+    scope: 24 cases passed
 ──────────────────────────────────────────────────────────
 
-replay: dune exec test/test_lru.exe -- --seed s1:c26eddaeb764a645
-1 failed in 3.8ms.
+replay: dune exec examples/04-stateful-testing/planted/lru/test_lru.exe -- --seed s1:c26eddaeb764a645
+1 failed in 6.0ms.
 ```
 
 `after call 4 of 4, on c1` names the call after which the invariant
 failed, and the value it failed on. Without the invariant, the program
 must also draw a call that shows the order after the `find`, such as
-`to_list`. Over 200 seeds, this test finds the bug on 144
-without the invariant and on all 200 with it, and the median case that
-finds it falls from 32 to 11.
+`to_list`. Over 200 seeds, this test finds the bug on 135
+without the invariant and on 198 with it, and the median case that
+finds it falls from 32 to 13.
 
 The invariant runs on both sides after every call, and no row of the
 report shows it, so it must not change the state. `to_list` qualifies.
@@ -436,38 +455,40 @@ If `Vec.push` copied one element too few when the array grows, the
 third push would lose the element at index 1:
 
 ```
-$ dune exec test/test_vec.exe -- --seed s1:3d27fa99e7f6ae87
+$ dune exec examples/04-stateful-testing/planted/vec/test_vec.exe -- --seed s1:3d27fa99e7f6ae87
 vec: 1 test (seed s1:3d27fa99e7f6ae87)
 ──────────────────────── failures ────────────────────────
   FAIL  Vec › behaves like a list
-    test/test_vec.ml:34
-      34 │ let vecs = group "Vec" [ stateful "behaves like a list" commands ]
+    examples/04-stateful-testing/test_vec.ml:33
+      33 │ let vecs = group "Vec" [ stateful "behaves like a list" commands ]
 
-    counterexample (case 2, shrunk 13 steps): 5 calls, last: get
+    counterexample (case 25, shrunk 36 steps): 5 calls, last: get
        #  reference before  call
        1                    let v1 = create ()
        2  []                push v1 0
        3  [0]               push v1 1
        4  [0; 1]            push v1 0
        5  [0; 1; 0]         get v1 1
+    replay it: -f 'Vec › behaves like a list' --replay r1:AQABAQAAAQEAAQEBAAABAgDWqtWqAQA:b30bb875
     which failed at:
-      test/test_vec.ml:27
-        27 │ command "get" (vec ^-> index ^-> returns int) Model.get Vec.get;
+      examples/04-stateful-testing/test_vec.ml:26
+        26 │ command "get" (vec ^-> index ^-> returns int) Model.get Vec.get;
       call 5 of 5: get v1 1
       expected  1
       actual    0
+    scope: 25 cases passed
 ──────────────────────────────────────────────────────────
 
-replay: dune exec test/test_vec.exe -- --seed s1:3d27fa99e7f6ae87
-1 failed in 1.7ms.
+replay: dune exec examples/04-stateful-testing/planted/vec/test_vec.exe -- --seed s1:3d27fa99e7f6ae87
+1 failed in 5.3ms.
 ```
 
 The element is drawn with the program as a place in its list, relative
 to the list's length, so deleting an earlier call keeps its place. It
 shrinks toward the head of the list, here to index 1, the first that
-fails. Over 200 seeds, this test finds the bug on all 200, and on 187
+fails. Over 200 seeds, this test finds the bug on all 200, and on 188
 when `get` and `set` draw their index from `0` to `7`. The median case
-that finds it falls from 22 to 15.
+that finds it falls from 18 to 13.
 
 An element reads the nearest value of `t` before it in the signature,
 else the first one after it. A function that takes a key before its map
@@ -502,7 +523,7 @@ An element has limits that a value does not have:
   prefix, as a command with a `~pre` does.
 
 A command whose value never lists an element is never called, and the
-test fails with `never called:` and a hint that names the listing:
+test is vacuous, with `never called:` and a hint that names the listing:
 `a call runs only where its arguments resolve, its value lists an element and its ~pre holds`.
 
 ## Checking an outcome the API leaves open
@@ -632,27 +653,29 @@ it, a read of `./secrets/api.key` would not count, and `http_get` would
 run after it:
 
 ```
-$ dune exec test/test_guard.exe -- --seed s1:c26eddaeb764a645
+$ dune exec examples/04-stateful-testing/planted/guard/test_guard.exe -- --seed s1:c26eddaeb764a645
 guard: 1 test (seed s1:c26eddaeb764a645)
 ──────────────────────── failures ────────────────────────
   FAIL  Guard › keeps its policy
-    test/test_guard.ml:49
+    examples/04-stateful-testing/test_guard.ml:49
       49 │ let guards = group "Guard" [ stateful "keeps its policy" commands ]
 
-    counterexample (case 6, shrunk 7 steps): 3 calls, last: http_get
+    counterexample (case 3, shrunk 17 steps): 3 calls, last: http_get
        #  reference before        call                              result
        1                          let g1 = create ()
        2  clean                   read_file g1 ./secrets/api.key    Ran "read secrets/api.key"
        3  read ./secrets/api.key  http_get g1 https://example.com/  Ran "200 https://example.com/"
+    replay it: -f 'Guard › keeps its policy' --replay r1:AQABAQACAQIAAAA:87b9f323
     which failed at:
-      test/test_guard.ml:44
+      examples/04-stateful-testing/test_guard.ml:44
         44 │ command "http_get"
       call 3 of 3: http_get g1 https://example.com/
       http_get ran after ./secrets/api.key was read
+    scope: 3 cases passed
 ──────────────────────────────────────────────────────────
 
-replay: dune exec test/test_guard.exe -- --seed s1:c26eddaeb764a645
-1 failed in 1.3ms.
+replay: dune exec examples/04-stateful-testing/planted/guard/test_guard.exe -- --seed s1:c26eddaeb764a645
+1 failed in 3.7ms.
 ```
 
 A program that holds a judging call prints a `result` column, the
@@ -695,8 +718,9 @@ each request is answered. The program goes on after a `drain`, so one
 program can check the obligation in its middle as well as at its end.
 The command finds a bug only when a program draws it after the state
 that triggers the bug. A server that drops the request that arrives
-while three are waiting is found on 148 of 200 seeds at the default
-count, and on 196 at `~count:300`.
+while three are waiting fails only in a program that sends four
+requests before a `drain`, so some seeds miss it at the default count,
+and a larger `~count`, which draws more programs, misses it on fewer.
 
 ## Releasing what a program made
 
@@ -742,6 +766,10 @@ suffix. The prefix and the suffix run on the test's domain, and the
 branches run at once, each on a domain of its own. The test fails when
 no order of the calls, each branch keeping its order and the suffix
 last, replayed on the reference, gives every outcome the system gave.
+The order must also keep real time: a call that returned before another
+began comes first, as each call's monotonic-clock readings show, so the
+test checks that the structure is linearizable. A write that returns
+before a read on another domain begins must be seen by that read.
 
 One command list serves both tests. `Mpmc` is the project's own queue,
 meant to be shared, and the standard library's `Queue` is its
@@ -790,28 +818,30 @@ If `Mpmc.push` forgot to take the queue's lock, two pushes at once
 could lose one:
 
 ```
-$ dune exec test/test_mpmc.exe
-mpmc: 2 tests (seed s1:f1eb7b7406b0cca6)
+$ dune exec examples/04-stateful-testing/planted/mpmc/test_mpmc.exe
+mpmc: 2 tests (seed s1:2e824975c4f33a06)
 ──────────────────────── failures ────────────────────────
   FAIL  Mpmc › behaves like Queue from two domains
-    test/test_mpmc.ml:20
+    examples/04-stateful-testing/test_mpmc.ml:20
       20 │ stateful ~domains:2 "behaves like Queue from two domains" commands;
 
-    counterexample (case 0, shrunk 9 steps): 4 calls, 2 in parallel
+    counterexample (case 1, shrunk 30 steps): 4 calls, 2 in parallel
        #  domain  call                result
        1          let q1 = create ()
        2  1       push q1 0           ()
        3  2       push q1 0           ()
        4          length q1           1
+    replay it: -f 'Mpmc › behaves like Queue from two domains' --replay r1:AQAAAQIBAAABAwEAAAEBAwAA:92e0beb6
     which failed with:
       no order of the calls gives these results
       the closest order, 2 then 3, differs at call 4: length q1
       expected  2
       actual    1
+    scope: 1 case passed
 ──────────────────────────────────────────────────────────
 
-replay: dune exec test/test_mpmc.exe -- --seed s1:f1eb7b7406b0cca6
-1 passed, 1 failed in 81ms.
+replay: dune exec examples/04-stateful-testing/planted/mpmc/test_mpmc.exe -- --seed s1:2e824975c4f33a06
+1 passed, 1 failed in 32ms.
 ```
 
 The invariant of an abstract type runs after the prefix's calls only:
@@ -819,23 +849,21 @@ after the branches, several orders may explain what the system did.
 
 The contract differs from one domain's in five ways, all stated under
 `Windtrap.stateful`: a replay draws the same programs but not the same
-schedules, so it may pass; a counterexample does not run once more
+schedules, so it may pass: it runs its program 50 times, as the search
+runs each, stops at the first run that fails, and when none does says
+`its schedule is not replayed: the case passed 50 times`; a counterexample does not run once more
 after the search, except under `--mutate` and `--arm`; the test takes
 no retries and ignores a group's; under `--mutate` and `--arm` each
 program runs once on the test's domain, so a kill does not depend on a
 schedule; and a call still running one limit after the test's limit
 expired fails the test as timed out and stops the run after it.
-With `--mutate-workers`, the test spawns its workers under `--mutate`
-and `--arm`, as without mutation testing. Then a counterexample does
-not run once more, and a kill can depend on a schedule (see
-[Stateful tests on several domains](mutation.md#stateful-tests-on-several-domains)).
-Without a limit, a deadlock hangs until interrupted, and Ctrl-C works
-on it.
+Under `--in-process`, which gives a test no default limit, a deadlock
+without a `~timeout` hangs until interrupted, and Ctrl-C works on it.
 
 The domains need a processor each beside the test's. On fewer, a
 failure stays a failure, but fewer schedules are tried. A structure
 known to be unsafe is a negative test,
-`xfail ~reason:"not thread-safe" (stateful ~domains:2 "…" commands)`,
+`xfail ~reason:"not thread-safe" @@ stateful ~domains:2 "…" commands`,
 which fails as an unexpected pass when it finds nothing. The branches
 run outside the handlers that surround `run`, so a system whose calls
 need an effect handler is tested on one domain. Without a model the
@@ -886,32 +914,31 @@ If `store` logged the last digit of the pin, the pair would shrink to
 two pins that differ by one:
 
 ```
-$ dune exec test/test_vault.exe -- --seed s1:c26eddaeb764a645
+$ dune exec examples/04-stateful-testing/planted/vault/test_vault.exe -- --seed s1:c26eddaeb764a645
 vault: 1 test (seed s1:c26eddaeb764a645)
 ──────────────────────── failures ────────────────────────
   FAIL  Vault › logs nothing of a pin
-    test/test_vault.ml:19
+    examples/04-stateful-testing/test_vault.ml:19
       19 │ let vaults = group "Vault" [ stateful "logs nothing of a pin" commands ]
 
-    counterexample (case 1, shrunk 21 steps): 3 calls, last: log
+    counterexample (case 0, shrunk 17 steps): 3 calls, last: log
        #  call
        1  let v1 = create ()
-       2  store v1 ((0, 1))
+       2  store v1 ((1, 0))
        3  log v1
+    replay it: -f 'Vault › logs nothing of a pin' --replay r1:AQABAQABAAEDAAA:8b8db207
     which failed at:
-      test/test_vault.ml:16
+      examples/04-stateful-testing/test_vault.ml:16
         16 │ command "log" (vault ^-> returns (list string)) Vault.log Vault.log;
       call 3 of 3: log v1
-      expected  ["stored ...0"]
+      expected  ["stored ...1"]
                             ~
-      actual    ["stored ...1"]
+      actual    ["stored ...0"]
                             ~
-    labels (1 passing case):
-      100.0%  the pins differ
 ──────────────────────────────────────────────────────────
 
-replay: dune exec test/test_vault.exe -- --seed s1:c26eddaeb764a645
-1 failed in 0.9ms.
+replay: dune exec examples/04-stateful-testing/planted/vault/test_vault.exe -- --seed s1:c26eddaeb764a645
+1 failed in 3.7ms.
 ```
 
 Draw both halves of the pair. A fixed variation, such as a second pin
@@ -941,7 +968,7 @@ of the forms on this page:
 | never X after Y, once Y, X since Y | a reference that remembers what it needs of the past, and judges |
 | a monitor | a reference whose commands end in `judges` |
 | eventually, at quiescence | a drawn command that brings the system to rest, then observes it |
-| a scenario that a program must reach | a `cover` in the reference function of the call that observes it |
+| a scenario that a program must reach | a `cover` of its condition in the reference function of the call that observes it, called on every call |
 | noninterference, determinism | the system as its own reference, run twice |
 
 A `cover` demands its scenario on presence, and

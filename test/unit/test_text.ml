@@ -27,7 +27,7 @@ let newlines =
     [
       cases
         "normalize_newlines replaces each CRLF, and each other CR, by one LF"
-        ~name:name3
+        ~id:name3
         [
           ("LF alone", "a\nb\n", "a\nb\n");
           ("CRLF", "a\r\nb\r\n", "a\nb\n");
@@ -39,17 +39,8 @@ let newlines =
         ]
         (fun (_, s, normalized) ->
           equal string normalized (Text.normalize_newlines s));
-      cases "ensure_trailing_newline appends LF to a string that lacks one"
-        ~name:name3
-        [
-          ("no final LF", "a", "a\n");
-          ("a final LF", "a\n", "a\n");
-          ("the empty string", "", "\n");
-        ]
-        (fun (_, s, ensured) ->
-          equal string ensured (Text.ensure_trailing_newline s));
       cases "split_lines splits at each LF, a final LF ending the last line"
-        ~name:name3
+        ~id:name3
         [
           ("a final LF", "a\nb\n", [ "a"; "b" ]);
           ("no final LF", "a\nb", [ "a"; "b" ]);
@@ -253,17 +244,17 @@ let lengths_and_cuts =
   group "Lengths and cuts"
     [
       cases "length_utf8 counts code points as String.get_utf_8_uchar decodes"
-        ~name:name3 lengths (fun (_, s, n) -> equal int n (Text.length_utf8 s));
+        ~id:name3 lengths (fun (_, s, n) -> equal int n (Text.length_utf8 s));
       cases
         "truncate_utf8 n s is s when it fits, else n - 3 code points then ..."
-        ~name:name3 truncations (fun (_, (n, s), truncated) ->
+        ~id:name3 truncations (fun (_, (n, s), truncated) ->
           equal string truncated (Text.truncate_utf8 n s));
       prop "truncate_utf8 n s never has more than n code points"
         (Gen.pair (Gen.int_range 0 12) utf8)
         (fun (n, s) ->
           at_most int ~than:n (Text.length_utf8 (Text.truncate_utf8 n s)));
       cases "window keeps the part of a string at an end or around an offset"
-        ~name:name3 windows (fun (_, window_of, kept) ->
+        ~id:name3 windows (fun (_, window_of, kept) ->
           equal window kept (window_of ()));
       prop "window keeps a slice within the bound, cut on code points" anchored
         window_law;
@@ -280,11 +271,11 @@ let lengths_and_cuts =
             (Text.mark_truncated ~length:9 "ab"));
       cases
         "truncate_bytes_utf8 n s is s when it fits, else its marked head window"
-        ~name:name3 byte_truncations (fun (_, (n, s), truncated) ->
+        ~id:name3 byte_truncations (fun (_, (n, s), truncated) ->
           equal string truncated (Text.truncate_bytes_utf8 n s));
       cases
         "elide_middle keeps half of the bound from each end and counts the rest"
-        ~name:name3 elisions (fun (_, (n, show, s), elided) ->
+        ~id:name3 elisions (fun (_, (n, show, s), elided) ->
           equal string elided (Text.elide_middle n ~show s));
       test "elide_middle raises Invalid_argument for a negative bound"
         (fun () ->
@@ -345,7 +336,7 @@ let search =
   group "Search"
     [
       cases "first_occurrence is the offset of the first occurrence from start"
-        ~name:name3 occurrences (fun (_, (start, pattern, s), offset) ->
+        ~id:name3 occurrences (fun (_, (start, pattern, s), offset) ->
           equal (option int) offset (Text.first_occurrence ?start ~pattern s));
       prop "first_occurrence is the least offset from start where pattern is"
         searched (fun (start, pattern, s) ->
@@ -353,12 +344,12 @@ let search =
             (reference ~start ~pattern s)
             (Text.first_occurrence ~start ~pattern s));
       cases "first_occurrence raises Invalid_argument for a start outside s"
-        ~name:fst
+        ~id:fst
         [ ("a negative start", -1); ("a start past the end", 4) ]
         (fun (_, start) ->
-          raises_match (Exn.invalid_arg ~substring:"start") (fun () ->
+          raises_match (Exn.invalid_arg ~sub:"start") (fun () ->
               Text.first_occurrence ~start ~pattern:"a" "abc"));
-      cases "contains_substring tells whether pattern occurs in s" ~name:name3
+      cases "contains_substring tells whether pattern occurs in s" ~id:name3
         containments (fun (_, (pattern, s), found) ->
           equal bool found (Text.contains_substring ~pattern s));
       prop "contains_substring is true iff first_occurrence finds the pattern"
@@ -387,7 +378,7 @@ let controls =
         "escape_controls writes each byte below 0x20 but TAB, and DEL, as \
          \\xNN, and passes every other"
         every_byte;
-      cases "escape_controls escapes each control byte of a string" ~name:name3
+      cases "escape_controls escapes each control byte of a string" ~id:name3
         [
           ("no control byte", "plain \t\xc3\xa9 \xff", "plain \t\xc3\xa9 \xff");
           ( "C0 bytes, LF and CR included, and DEL",
@@ -402,101 +393,4 @@ let controls =
             (Text.escape_controls "\\x1b"));
     ]
 
-(* JSON *)
-
-let json_rows =
-  [
-    ("a plain string", "plain", {|"plain"|});
-    ("the empty string", "", {|""|});
-    ("a quote and a backslash", {|say "a\b"|}, {|"say \"a\\b\""|});
-    ("LF, CR and TAB", "a\nb\rc\td", {|"a\nb\rc\td"|});
-    ( "every other byte below 0x20, but not DEL",
-      "\x00\x1b\x1f\x7f",
-      "\"\\u0000\\u001b\\u001f\x7f\"" );
-    ( "well-formed UTF-8 passes",
-      "\u{e9}\u{20ac}\u{1d11e}",
-      "\"\u{e9}\u{20ac}\u{1d11e}\"" );
-    ("a lone byte", "a\xffb", "\"a\\ufffdb\"");
-    ("a cut sequence is one replacement", "a\xe2\x82b", "\"a\\ufffdb\"");
-    ("a sequence cut at the end", "a\xe2\x82", "\"a\\ufffd\"");
-    ( "an encoded surrogate is one replacement per byte",
-      "\xed\xa0\x80",
-      "\"\\ufffd\\ufffd\\ufffd\"" );
-  ]
-
-(* Any bytes: up to 16 of them, drawn from the ASCII range, the escaped
-   bytes and the bytes that start or continue a UTF-8 sequence. *)
-let bytes =
-  Gen.with_pp
-    (fun ppf s -> Format.fprintf ppf "%S" s)
-    (Gen.map (String.concat "")
-       (Gen.list ~size:(Gen.int_range 0 16)
-          (Gen.of_list
-             [
-               "a";
-               "\"";
-               "\\";
-               "\n";
-               "\r";
-               "\t";
-               "\x01";
-               "\x7f";
-               "\xc3";
-               "\xa9";
-               "\xe2";
-               "\xff";
-             ])))
-
-(* The JSON escapes that [json_string] writes, read back. *)
-let unquote j =
-  let b = Buffer.create (String.length j) in
-  let rec loop i =
-    if i < String.length j - 1 then
-      match j.[i] with
-      | '\\' -> (
-          match j.[i + 1] with
-          | 'n' ->
-              Buffer.add_char b '\n';
-              loop (i + 2)
-          | 'r' ->
-              Buffer.add_char b '\r';
-              loop (i + 2)
-          | 't' ->
-              Buffer.add_char b '\t';
-              loop (i + 2)
-          | 'u' ->
-              let u = int_of_string ("0x" ^ String.sub j (i + 2) 4) in
-              Buffer.add_utf_8_uchar b (Uchar.of_int u);
-              loop (i + 6)
-          | c ->
-              Buffer.add_char b c;
-              loop (i + 2))
-      | c ->
-          Buffer.add_char b c;
-          loop (i + 1)
-  in
-  loop 1;
-  Buffer.contents b
-
-let json_law s =
-  let j = Text.json_string s in
-  is_true ~msg:"quoted"
-    (String.length j >= 2 && j.[0] = '"' && j.[String.length j - 1] = '"');
-  is_true ~msg:"valid UTF-8" (String.is_valid_utf_8 j);
-  is_false ~msg:"a raw control byte" (String.exists (fun c -> c < ' ') j);
-  if String.is_valid_utf_8 s then equal string s (unquote j)
-
-let json =
-  group "JSON"
-    [
-      cases "json_string escapes what JSON needs and replaces malformed UTF-8"
-        ~name:name3 json_rows (fun (_, s, quoted) ->
-          equal string quoted (Text.json_string s));
-      prop
-        "json_string is quoted, valid UTF-8 and with no raw control byte, and \
-         reads back as a string that is UTF-8"
-        bytes json_law;
-    ]
-
-let () =
-  exit (run "text" [ newlines; lengths_and_cuts; search; controls; json ])
+let () = exit (run "text" [ newlines; lengths_and_cuts; search; controls ])

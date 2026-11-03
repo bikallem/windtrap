@@ -4,18 +4,18 @@
   ---------------------------------------------------------------------------*)
 
 (** Mutation verdicts: what a run made of each mutant, and the [.mutants] file
-    that carries the verdicts of one suite of an executable to the merge.
+    that carries the verdicts of one executable to the merge.
 
-    The mutation loop writes one verdict file for each suite of a test
-    executable. [windtrap mutants] loads the files of a project and combines
-    them with {!merge}, under which a mutant that is killed anywhere is killed.
-    Nothing here runs when the module loads or when the process exits. *)
+    The mutation loop writes one verdict file for each test executable.
+    [windtrap mutants] loads the files of a project and combines them with
+    {!merge}, under which a mutant that is killed anywhere is killed. Nothing
+    here runs when the module loads or when the process exits. *)
 
 (** {1:verdicts Verdicts}
 
-    A verdict is one of eight cases, and never a boolean or an exit code. A
-    failure to supervise the child that arms a mutant is none of the eight, and
-    a caller must record no verdict for it. *)
+    A verdict is one of six cases, and never a boolean or an exit code. What a
+    run could not decide is {!Unknown}, which outranks a survivor, so a mutant
+    that no run judged never reads as survived. *)
 
 type reaching_test = string list
 (** The type for a test that evaluated a mutant, by its path: the names of its
@@ -25,108 +25,53 @@ type reaching_test = string list
 (** The type for verdicts. A survivor always names a reaching test, because a
     mutant that no test reached is {!Outside_tests} or {!Unreached}. *)
 type verdict =
-  | Killed of { by : reaching_test option }
-      (** A test failed in or after the first test that evaluated the armed
-          site, or a fixture release failed after an evaluation. Or the child
-          that armed the mutant crashed or hung. [by] is the first test that
-          failed in this way. It is [None] when no one test is known: the child
-          crashed, hung or recorded no test, or a fixture release failed. [by]
-          is a reaching test, except in exec mode of the loop: there, a child
-          can also run the tests before the reaching tests, and one of them can
-          fail. *)
-  | Killed_elsewhere of { exe : string }
-      (** No child tested the mutant. A verdict file of the executable [exe]
-          gave it {!Killed}, with the source digest of this run. [exe] is the
-          identity on that file ({!Instr.identity}), and it is not [""]. When
-          that file is the file of another suite of the same executable, [exe]
-          is the identity of that executable. Only a loop under
-          [--mutate-skip-killed] gives it. *)
-  | Flaky of { test : reaching_test; failure : string }
-      (** A child of the mutant had a failure of [test] that counts, as for
-          {!Killed}. Then [test] also failed in a run of the same tests with no
-          mutant armed. Thus the failure can come from [test] and not from the
-          mutant. [failure] is the first failure of [test] in that run, on one
-          line. [test] is a test of the child, as the [by] of {!Killed}. Only a
-          loop in a process that spawned a domain gives it. *)
-  | Survived of {
-      first : reaching_test;
-      others : reaching_test list;
-      runs : int;
-          (** The runs of the child of the mutant that gave this verdict, [1] or
-              more. Each run let the mutant survive. A merge adds the runs
-              ({!add}). *)
-    }
-      (** A process of the child evaluated the armed site. No test failed in or
-          after the first test that evaluated it, and no fixture release failed.
-          A test that failed before that test does not count. [first] and
-          [others] are the reaching tests, sorted and without duplicates, and
-          [first] is the first. *)
+  | Killed
+      (** A reaching test failed, or a fixture release failed, in the run that
+          armed the mutant. *)
+  | Unknown of string
+      (** No verdict, and the string says why: the run that armed the mutant
+          ended before its tests did, by a crash, an exit or its deadline, or
+          the executable could not be mutation-tested, as when its dry run is
+          red, its suite is not deterministic or its selection narrows it. *)
+  | Survived of { first : reaching_test; others : reaching_test list }
+      (** Every reaching test passed, and the armed site was evaluated. [first]
+          and [others] are the reaching tests, sorted and without duplicates,
+          and [first] is the first. *)
   | Not_evaluated
-      (** The child did not evaluate the armed site, so it ran the code of the
-          unmutated program and tells nothing about the mutant. The dry run
-          evaluated the site and the child did not, as when the dry run cached
-          the result of the site in a table or a forced lazy value. A test that
-          failed in the child failed for a reason of its own, and does not kill
-          the mutant. *)
+      (** Every reaching test passed, and the armed site was not evaluated. The
+          dry run evaluated the site and the child did not, as when the dry run
+          cached the result of the site in a table or a forced lazy value. *)
   | Outside_tests
       (** No test reached the site, and the dry run evaluated it outside every
-          test, at module initialization or in a fixture release. The loop forks
-          no child for the mutant. *)
-  | Filtered of string
-      (** The rewriter filtered the mutant, for this reason (see
-          {!Mutate.dismissal.Filtered}). The loop forks no child for the mutant,
-          and a score does not count it. *)
+          test, at module initialization or in a fixture release. The loop
+          starts no worker for the mutant. *)
   | Unreached
       (** No test reached the site, and the dry run did not evaluate it outside
-          every test either. The loop forks no child for the mutant. *)
+          every test either. The loop starts no worker for the mutant. *)
 
-val survived : ?runs:int -> reaching_test list -> verdict
-(** [survived ?runs ts] is the {!Survived} verdict whose reaching tests are
-    [ts], sorted and without duplicates, with [runs] runs, [1] by default.
-    Raises [Invalid_argument] if [ts] is empty or if [runs] is below [1]. *)
-
-type scored = [ `Killed | `Survived | `Not_evaluated ]
-(** The type for the classes of the verdicts that a score counts. *)
-
-val scored : verdict -> scored option
-(** [scored v] is the class of [v]: [`Killed] for {!Killed} and
-    {!Killed_elsewhere}, [`Survived] for {!Survived}, [`Not_evaluated] for
-    {!Not_evaluated}, and [None] for the other verdicts. *)
+val survived : reaching_test list -> verdict
+(** [survived ts] is the {!Survived} verdict whose reaching tests are [ts],
+    sorted and without duplicates. Raises [Invalid_argument] if [ts] is empty.
+*)
 
 (** {1:collections Collections} *)
 
 type record = {
   id : Mutate.id;  (** The identifier of the mutant. *)
-  before : string;
-      (** The text of the original site, as {!Mutate.type-mutant} gives it. *)
-  after : string;
-      (** The text of the mutant, as {!Mutate.type-mutant} gives it. *)
-  source_digest : string option;
-      (** The lowercase hexadecimal MD5 of the source file of the mutant when
-          the run read it, and [None] when the run could not read the file. A
-          later run compares it with the file that it reads, to find out if the
-          file changed. *)
+  end_line : int;  (** The [end_line] of its site ({!Mutate.type-site}). *)
+  end_col : int;  (** The [end_col] of its site. *)
+  before : string;  (** The source text of the original expression. *)
+  after : string;  (** The source text of the armed expression. *)
   verdict : verdict;  (** What the run made of the mutant. *)
-  previous : verdict option;
-      (** The verdict of the mutant in the verdict file that the run replaced,
-          when that record has the source digest of this record, and the digest
-          is not [None]. It is [None] if not. The run that writes the file sets
-          it. *)
 }
 (** The type for the record of one mutant. A record is self-describing: it
-    carries the two renderings that a report draws the mutant with, so a report
-    needs no catalogue and outlives the executable that produced it. *)
+    carries the two renderings and the extent that a report draws the mutant
+    with, so a report needs no catalogue and outlives the executable that
+    produced it. *)
 
-val record_of_mutant :
-  ?source_digest:string -> Mutate.mutant -> verdict -> record
-(** [record_of_mutant ?source_digest m v] is the record of [m] with the verdict
-    [v], the digest [source_digest], [None] by default, and no previous verdict.
+val record_of_mutant : Mutate.mutant -> verdict -> record
+(** [record_of_mutant m v] is the record of [m] with the verdict [v].
     [m.dismissed] is dropped. *)
-
-val changed : record -> (scored * scored) option
-(** [changed r] is [Some (was, is)] when [r.previous] is [Some p], [scored p] is
-    [Some was], [scored r.verdict] is [Some is], and [was] is not [is]. It is
-    [None] if not. *)
 
 type t
 (** The type for verdict collections: finite maps from {!Mutate.type-id} to
@@ -137,55 +82,35 @@ val empty : t
 
 val add : t -> record -> t
 (** [add t r] is [t] with [r] recorded. A {!Survived} verdict is sorted on its
-    way in, and a [runs] below [1] becomes [1]. When [t] already holds a record
-    under [r.id], the smaller [(before, after, source_digest)] triple in
-    lexicographic order is kept, and the two verdicts combine into the verdict
-    of a mutant that one executable saw one way and another the other way. It is
-    {!Killed} if either is, and its killing test is the smaller of the two that
-    are known, if any. Otherwise it is {!Killed_elsewhere} if either is, with
-    the smaller [exe]. Otherwise it is {!Flaky} if either is, with the smaller
-    pair of test and failure, the test compared first. Otherwise it is
-    {!Not_evaluated} if either is, then {!Survived} with the reaching tests of
-    both and the sum of their runs, at most [max_int], if either is, then
-    {!Outside_tests} if either is, then {!Filtered} with the smaller reason if
-    either is, and {!Unreached} if both are. The two previous verdicts combine
-    in the same way, and a missing one leaves the other unchanged.
+    way in. When [t] already holds a record under [r.id], the smaller
+    [(before, after, end_line, end_col)] in lexicographic order is kept, and the
+    two verdicts combine into the verdict of a mutant that one executable saw
+    one way and another the other way. It is {!Killed} if either is. Otherwise
+    it is {!Unknown} if either is, with the smaller reason in [String.compare]
+    order when both are, then {!Not_evaluated} if either is, then {!Survived}
+    with the reaching tests of both if either is, then {!Outside_tests} if
+    either is, and {!Unreached} if both are.
 
-    [add] checks nothing of [r.id], [r.source_digest] and the [exe] of a
-    {!Killed_elsewhere}, in the verdict and in the previous verdict. It accepts
-    an empty [file], a [line] below [1], a negative [col], a [rewrite] outside
-    {!Mutate.rewrites}, a digest that is not 32 lowercase hexadecimal digits and
-    an empty [exe], and {!load} then refuses the file that {!save} writes for
-    the collection. *)
+    [add] checks nothing of [r.id] or of the end. It accepts an empty [file], a
+    [line] below [1], a negative [col], an end before the start and a [rewrite]
+    outside {!Mutate.rewrites}, and {!load} then refuses the file that {!save}
+    writes for the collection. *)
 
 val records : t -> record list
 (** [records t] is the records of [t], ordered by {!Mutate.compare_id}. *)
 
-val filter : (record -> bool) -> t -> t
-(** [filter keep t] is the records of [t] for which [keep] is [true]. *)
-
 val merge : t -> t -> t
 (** [merge a b] is the union of [a] and [b], where two records that share an
-    identifier are combined as {!add} does. [merge] is commutative and
-    associative, {!empty} is its unit, and an {!Unreached} verdict leaves the
+    identifier are combined as {!add} does. [merge] is commutative, associative
+    and idempotent, {!empty} is its unit, and an {!Unreached} verdict leaves the
     verdict it is combined with unchanged, so merging any number of files in any
-    order gives one answer. [merge a a] is [a] with the runs of each survivor
-    doubled, at most [max_int], in the verdict and in the previous verdict. Thus
-    a merge must not get one file two times. The previous verdict of a merged
-    record tells nothing of one executable. [windtrap mutants] reads the
-    previous verdicts of each file before the merge. *)
-
-val with_previous : prior:t -> t -> t
-(** [with_previous ~prior t] is [t] in which the [previous] of each record [r]
-    is [Some p.verdict] when [prior] has a record [p] under [r.id], and
-    [p.source_digest] is [r.source_digest] and is not [None]. It is [None] if
-    not. The [previous] of [p] is not used. *)
+    order gives one answer. *)
 
 (** {1:files Verdict files}
 
-    Each suite of an executable has one verdict file, at {!output_file}.
+    An executable has one verdict file, at {!output_file}.
 
-    The first line of a file is the magic line [windtrap-mutants-v10], which
+    The first line of a file is the magic line [windtrap-mutants-v5], which
     carries the version of the format. A file with another first line is
     refused, never converted, and nothing is promised from one version to the
     next. *)
@@ -214,49 +139,47 @@ val writer_identity : exe:string -> identity option
     [exe], whose [exe] is [Instr.exe_identity ~exe], or [None] when [exe] cannot
     be read. *)
 
-val output_file : exe:string -> suite:string -> string
-(** [output_file ~exe ~suite] is the verdict file of the suite [suite] of the
-    executable at [exe]: [Instr.output_file format ~exe] with [-<hash>] before
-    its extension, where [<hash>] is the hexadecimal MD5 of [suite]. The files
-    of the suites of one executable are in one directory, and their names start
-    with one prefix. An executable that is renamed or moved, and a suite that is
-    renamed, leave the previous file behind. *)
+val output_file : exe:string -> string
+(** [output_file ~exe] is [Instr.output_file format ~exe], the one verdict file
+    of the executable at [exe]. An executable that is renamed or moved leaves
+    its previous file behind. *)
 
-val load : string -> (t * identity option * string option, error) result
-(** [load path] is [Ok (t, identity, suite)] when the file at [path] is a
-    verdict file, where [identity] is the recorded writer and [suite] the
-    recorded suite, if any. The file is read with {!Instr.read_file}, and every
-    error names [path]. Otherwise it is the error of the read,
-    [Error (Unknown_format _)] for another first line, or [Error (Corrupt _)]
-    for data that is truncated or invalid:
+type file = {
+  verdicts : t;  (** The records of the file. *)
+  identity : identity option;  (** The recorded writer, if any. *)
+  refused : string option;
+      (** [Some reason] when the writer could not mutation-test its suite, and
+          [reason] says why. Its records then hold what it could not judge as
+          {!Unknown}. *)
+}
+(** The type for what a verdict file holds. *)
+
+val load : string -> (file, error) result
+(** [load path] is [Ok file] when the file at [path] is a verdict file. The file
+    is read with {!Instr.read_file}, and every error names [path]. Otherwise it
+    is the error of the read, [Error (Unknown_format _)] for another first line,
+    or [Error (Corrupt _)] for data that is truncated or invalid:
     - a negative count, or a count larger than the input,
     - an empty file name, a line below [1] or a negative column,
-    - a rewrite outside {!Mutate.rewrites}, an unknown verdict, or a missing or
-      unknown previous verdict,
-    - a source digest that is not empty and not 32 lowercase hexadecimal digits,
-    - a survivor with no reaching test or with fewer than one run, a killed
-      mutant with more than one killing test, an empty killing executable, or a
-      second record for one identifier,
-    - a malformed identity line, a suite count that is not [0] or [1], or bytes
-      after the last record.
-
-    A previous verdict obeys the rules of a verdict.
+    - a rewrite outside {!Mutate.rewrites}, or an unknown verdict,
+    - a survivor with no reaching test, or a second record for one identifier,
+    - a malformed identity line, a status that is neither [tested] nor [refused]
+      with its reason, or bytes after the last record.
 
     Nothing is repaired, and a file with one malformed record is not read at
     all. *)
 
-val save : ?identity:identity -> ?suite:string -> string -> t -> unit
-(** [save ?identity ?suite path t] writes [t] to [path] in the format of a
+val save : ?identity:identity -> ?refused:string -> string -> t -> unit
+(** [save ?identity ?refused path t] writes [t] to [path] in the format of a
     verdict file, with {!Instr.write_file}. Records are ordered by
     {!Mutate.compare_id} and reaching tests are sorted, so equal collections
     give equal files. [identity] is recorded after the magic line when it is
-    given, and then [suite], the name that the writer gave to [Windtrap.run],
-    when it is given. A merged collection has no single writer and is written
-    without the two.
+    given. A merged collection has no single writer and is written without one.
+    The status line follows: [tested], or [refused] and [refused]'s reason.
 
-    [load path] is then [Ok (t, identity, suite)] for every [t] whose
-    identifiers {!load} accepts, and [Error (Corrupt _)] for any other (see
-    {!add}). A collection built from the mutants of {!Mutate.val-catalogue}
+    [load path] is then [Ok { verdicts = t; identity; refused }] for every [t]
+    whose identifiers {!load} accepts, and [Error (Corrupt _)] for any other
+    (see {!add}). A collection built from the mutants of {!Mutate.val-catalogue}
     round-trips, unless a source file was registered under the name [""].
 
     Raises [Invalid_argument] before anything is written if [identity.exe] is

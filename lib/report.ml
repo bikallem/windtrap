@@ -50,6 +50,7 @@ type t = {
   live : bool;
   config : Run.config;
   armed : string option;
+  paths : string list; (* the suite's, which a [replay it:] line excludes *)
   mutable header : header option; (* [None] until [header] runs *)
   mutable header_printed : bool;
   mutable seen : int; (* results received *)
@@ -61,7 +62,7 @@ type t = {
   mutable survivors : int; (* survivor blocks committed *)
 }
 
-let create ~out ~ansi ?(terminal = false) (config : Run.config) =
+let create ~out ~ansi ?(terminal = false) ?(paths = []) (config : Run.config) =
   if not (Float.is_finite config.slow_threshold && config.slow_threshold >= 0.)
   then invalid_arg "Report.create: slow_threshold not finite and non-negative";
   {
@@ -75,6 +76,7 @@ let create ~out ~ansi ?(terminal = false) (config : Run.config) =
       (match config.mutation with
       | Run.Armed id -> Some id
       | Run.No_mutation | Run.Loop _ -> None);
+    paths;
     header = None;
     header_printed = false;
     seen = 0;
@@ -86,7 +88,7 @@ let create ~out ~ansi ?(terminal = false) (config : Run.config) =
 
 (* Under GitHub Actions the live line is off even on a terminal: its erase
    sequences would land verbatim in the log. *)
-let terminal (config : Run.config) =
+let terminal ?paths (config : Run.config) =
   let tty = Os.is_tty_stdout () in
   let ansi =
     Os.resolve_color config.color ~tty ~inside_dune:(Os.inside_dune ())
@@ -94,7 +96,7 @@ let terminal (config : Run.config) =
   in
   create ~out:Format.std_formatter ~ansi
     ~terminal:(tty && not (Os.in_github_actions ()))
-    config
+    ?paths config
 
 (* The transcript *)
 
@@ -192,6 +194,13 @@ let failures (r : Run.result) =
   | Failure.Fail failures -> failures
   | Failure.Pass | Failure.Skip _ -> []
 
+(* A counted failure that refuted nothing: each of its failures says the
+   test checked less than it claims. *)
+let vacuous (r : Run.result) =
+  match failures r with
+  | [] -> false
+  | failures -> List.for_all Failure.is_vacuous failures
+
 let attempts (r : Run.result) =
   if r.attempts > 1 then [ strf "%d attempts" r.attempts ] else []
 
@@ -226,41 +235,142 @@ let test_line ?(title = false) ~tag ~style ~name ~qualifiers ~timing () =
 
 (* The headline of a failure names every label never covered, so the
    coverage rows earn their place by the labels that were. *)
-let label_table t (s : Property.stats) =
-  let faint line = put t [ plain indent; styled `Faint line ] in
-  if s.collected <> [] then begin
-    faint (strf "labels (%d passing case%s):" s.cases (plural s.cases));
-    List.iter
-      (fun (label, count) ->
-        faint
-          (if s.cases > 0 then
-             strf "  %5.1f%%  %s"
-               (100. *. float_of_int count /. float_of_int s.cases)
-               label
-           else strf "  %d  %s" count label))
-      s.collected
-  end;
-  if
-    List.length s.coverage > 1
-    && List.exists
-         (fun (c : Property.cover_status) -> not c.satisfied)
-         s.coverage
-  then begin
-    put t [ plain (indent ^ "covered labels:") ];
-    List.iter
+let label_table (s : Property.stats) =
+  let faint line = [ plain indent; styled `Faint line ] in
+  (if s.collected = [] then []
+   else
+     faint (strf "labels (%d passing case%s):" s.cases (plural s.cases))
+     :: List.map
+          (fun (label, count) ->
+            faint
+              (if s.cases > 0 then
+                 strf "  %5.1f%%  %s"
+                   (100. *. float_of_int count /. float_of_int s.cases)
+                   label
+               else strf "  %d  %s" count label))
+          s.collected)
+  @ (if
+       List.length s.coverage > 1
+       && List.exists
+            (fun (c : Property.cover_status) -> not c.satisfied)
+            s.coverage
+     then
+       [ plain (indent ^ "covered labels:") ]
+       :: List.map
+            (fun (c : Property.cover_status) ->
+              [
+                plain
+                  (strf "%s  %s  %d%s" indent c.label c.hits
+                     (match (c.satisfied, c.share) with
+                     | true, _ -> ""
+                     | false, None -> "  never covered"
+                     | false, Some _ -> "  share unmet"));
+              ])
+            s.coverage
+     else [])
+  (* A share met says what it established; an unmet one is the failure's. *)
+  @ List.filter_map
       (fun (c : Property.cover_status) ->
-        put t
-          [
-            plain
-              (strf "%s  %s  %d%s" indent c.label c.hits
-                 (if c.satisfied then "" else "  never covered"));
-          ])
+        match c.share with
+        | Some share when c.satisfied ->
+            Some (faint (Property.share_fact ~label:c.label share))
+        | Some _ | None -> None)
       s.coverage
-  end
+
+(* How close each site of [equal] under a tolerance came to it. *)
+let tolerance_lines (r : Run.result) =
+  List.map
+    (fun (s : Check.tolerance) ->
+      let site =
+        match s.site with Some loc -> " at " ^ Loc.to_string loc | None -> ""
+      in
+      [
+        plain indent;
+        styled `Faint
+          (strf
+             "tolerance%s: largest error %.3g of %.3g allowed, over %d \
+              comparison%s"
+             site s.error s.tolerance s.comparisons (plural s.comparisons));
+      ])
+    r.tolerances
+
+(* A replay that passed checked its case again, which says nothing of the
+   cases a generated run would draw, and on several domains does not run the
+   schedule that failed. *)
+let replay_fact (s : Property.stats) =
+  match (s.replayed, s.runs) with
+  | 1, 1 -> "the replayed case passed"
+  | n, 1 -> strf "the %d replayed cases passed" n
+  | 1, runs ->
+      strf "its schedule is not replayed: the case passed %d times" runs
+  | _, runs ->
+      strf "their schedules are not replayed: each case passed %d times" runs
+
+(* What a property ran, each count that is not zero: the generated cases,
+   or the values of a domain checked whole, then the rows of a table that
+   skipped, with the first one's reason, then the examples and the
+   discards. A verdict says what held, and a failure what passed before
+   it. A verdict on replayed cases alone says that they passed. *)
+(* A table's row whose law returned is a case of the property that passed,
+   though it may have recorded a failure, as a stale baseline: the rows the
+   test refuted, by either, are the ones that did not pass, and those that
+   failed on a baseline are named. *)
+let table_rows (r : Run.result) failures ~drawn n =
+  let refuted =
+    List.sort_uniq String.compare
+      (List.filter_map
+         (function Run.Row id -> Some id | Run.Replay _ -> None)
+         r.refuted)
+  in
+  let skipped =
+    match r.skipped_rows with Some { count; _ } -> count | None -> 0
+  in
+  let passed =
+    if refuted = [] then drawn else n - skipped - List.length refuted
+  in
+  let on_baseline =
+    List.sort_uniq String.compare
+      (List.filter_map
+         (fun (f : Failure.t) ->
+           match (f.kind, f.subtest) with
+           | Failure.Baseline _, _ :: row :: _ -> Some row
+           | _ -> None)
+         failures)
+  in
+  strf "%d of %d row%s passed" passed n (plural n)
+  ::
+  (match List.length on_baseline with
+  | 0 -> []
+  | k -> [ strf "%d failed on a baseline" k ])
+
+let ran ?(failures = []) ~verdict (r : Run.result) (s : Property.stats) =
+  if verdict && s.replayed > 0 then [ replay_fact s ]
+  else
+    let some ?(passed = "") n what =
+      if n > 0 then [ strf "%d %s%s%s" n what (plural n) passed ] else []
+    in
+    let passed = if verdict then "" else " passed" in
+    let drawn = s.cases - s.examples in
+    let unit = if r.table then "row" else "value" in
+    (match (s.whole, r.skipped_rows) with
+      | Some n, None when verdict ->
+          [ strf "holds on all %d %s%s" n unit (plural n) ]
+      | Some n, Some _ when verdict ->
+          [ strf "holds on %d of %d %s%s" drawn n unit (plural n) ]
+      | Some n, _ when r.table -> table_rows r failures ~drawn n
+      | Some n, _ -> [ strf "%d of %d %s%s passed" drawn n unit (plural n) ]
+      | None, _ -> some ~passed drawn "case")
+    @ (match r.skipped_rows with
+      | Some { count; reason = Some reason } ->
+          [ strf "%d skipped: %s" count reason ]
+      | Some { count; reason = None } -> [ strf "%d skipped" count ]
+      | None -> [])
+    @ some ~passed s.examples "example"
+    @ some s.discards "discard"
 
 (* The heading counts every byte before the first line shown: what the
    capture cut and the lines the cap drops. *)
-let captured_output t (tail : Failure.tail) =
+let captured_output (tail : Failure.tail) =
   let total = List.length (Text.split_lines tail.text) in
   let cut, kept =
     Text.window ~lines:Sections.max_lines ~bytes:max_int Tail tail.text
@@ -274,32 +384,52 @@ let captured_output t (tail : Failure.tail) =
     else if n < total then strf "captured output (last %d of %d lines):" n total
     else strf "captured output (%d line%s):" total (plural total)
   in
-  put t [ plain indent; styled `Faint heading ];
-  List.iter (fun line -> put t [ plain (indent ^ "  " ^ line) ]) shown;
-  Option.iter
-    (fun path ->
-      put t
+  [ plain indent; styled `Faint heading ]
+  :: List.map (fun line -> [ plain (indent ^ "  " ^ line) ]) shown
+  @ List.map
+      (fun path ->
         [
           plain indent; styled `Faint ("full log: " ^ Os.display_artifact path);
         ])
-    tail.log_path
+      (Option.to_list tail.log_path)
+
+let entry_lines ~seen ?select f =
+  List.map (Sections.indented indent)
+    (Sections.entry ~seen ?select ~excerpt:true f).lines
 
 (* Sibling subtests, or a body and its teardown, fail independently: each
    failure has its entry, and the hints are the whole test's. *)
-let block_body t ~hints (r : Run.result) failures =
-  List.iteri
-    (fun i f ->
-      if i > 0 then put t [];
-      Sections.pp_failure ~ansi:t.ansi ~terminal:t.terminal ~excerpt:true
-        ~hints:false t.out f)
-    failures;
-  Option.iter (label_table t) r.prop_stats;
-  Option.iter (captured_output t)
-    (List.find_map (fun (f : Failure.t) -> f.output_tail) failures);
+let block_lines t ~seen ~hints (r : Run.result) failures =
+  let select =
+    Sections.selecting ~paths:t.paths (Test_tree.path_to_string r.path)
+  in
+  List.concat
+    (List.mapi
+       (fun i f -> (if i > 0 then [ [] ] else []) @ entry_lines ~seen ~select f)
+       failures)
+  @ (match r.prop_stats with
+    | None -> []
+    | Some s ->
+        (match ran ~failures ~verdict:false r s with
+          | [] -> []
+          | facts ->
+              [
+                [
+                  plain indent;
+                  styled `Faint ("scope: " ^ String.concat ", " facts);
+                ];
+              ])
+        @ label_table s)
+  @ tolerance_lines r
+  @ List.concat_map captured_output
+      (Option.to_list
+         (List.find_map (fun (f : Failure.t) -> f.output_tail) failures))
+  @
   if hints then
-    List.iter
-      (fun hint -> put t [ plain (indent ^ hint) ])
-      (Sections.hints ?armed:t.armed ~invocation:t.config.invocation failures)
+    List.map
+      (fun hint -> [ plain (indent ^ hint) ])
+      (Sections.hints ?armed:t.armed failures)
+  else []
 
 (* A counted failure's block. Under verbose its title is the test's row. *)
 let failure_block t (r : Run.result) =
@@ -313,12 +443,14 @@ let failure_block t (r : Run.result) =
             { state = Failure.Mismatch _ | Failure.Unresolvable _; _ }
         | Failure.Equality _ | Failure.Containment _ | Failure.Raise _
         | Failure.Property _ | Failure.Law _ | Failure.Timeout _
-        | Failure.Message _ ->
+        | Failure.Message _ | Failure.Vacuous _ ->
             false)
       failures
   in
   put t
-    (test_line ~title:true ~tag:"FAIL" ~style:`Red
+    (test_line ~title:true
+       ~tag:(if vacuous r then "VACUOUS" else "FAIL")
+       ~style:`Red
        ~name:(Test_tree.path_to_string r.path)
        ~qualifiers:
          (attempts r
@@ -326,18 +458,16 @@ let failure_block t (r : Run.result) =
          @ armed_qualifier t)
        ~timing:(if verbose then duration_to_string r.duration else "")
        ());
-  block_body t ~hints:true r failures
+  List.iter (put t)
+    (block_lines t ~seen:(t.ansi && t.terminal) ~hints:true r failures)
 
 (* An expected failure's block is a counted one's, dim past each line's
    indent, so it reads as evidence. It has no hints: an [accept:] would act
    on a failure the test expects. The text is escaped already, and escaping
    is idempotent. *)
 let excused_block t (r : Run.result) =
-  let buffer = Buffer.create 256 in
-  let out = Format.formatter_of_buffer buffer in
-  block_body { t with out; ansi = false } ~hints:false r (failures r);
-  Pp.flush out ();
   let dim line =
+    let line = Sections.render ~ansi:false line in
     let rec text_start i =
       if i < String.length line && line.[i] = ' ' then text_start (i + 1) else i
     in
@@ -348,7 +478,7 @@ let excused_block t (r : Run.result) =
         styled `Faint (String.sub line i (String.length line - i));
       ]
   in
-  List.iter dim (Text.split_lines (Buffer.contents buffer));
+  List.iter dim (block_lines t ~seen:false ~hints:false r (failures r));
   put t []
 
 (* A failed fixture release belongs to no test: its title has no attempts
@@ -357,8 +487,7 @@ let release_block t f =
   put t
     (test_line ~title:true ~tag:"FAIL" ~style:`Red ~name:Sections.release_title
        ~qualifiers:(armed_qualifier t) ~timing:"" ());
-  Sections.pp_failure ~ansi:t.ansi ~terminal:t.terminal ~excerpt:true
-    ~hints:false t.out f
+  List.iter (put t) (entry_lines ~seen:(t.ansi && t.terminal) f)
 
 (* A block is committed when its test finishes, so a run that dies has
    printed what it knew. A compact run opens its blocks with the header and
@@ -378,18 +507,23 @@ let commit t block x =
   t.blocks <- t.blocks + 1;
   Pp.flush t.out ()
 
+(* A passing property says what it ran. *)
+let scope_qualifiers (r : Run.result) =
+  match r.prop_stats with Some s -> ran ~verdict:true r s | None -> []
+
 (* The verbose row of a result that is not a counted failure. *)
 let row t (r : Run.result) =
   let name = Test_tree.path_to_string r.path in
   let timing = duration_to_string r.duration in
   match r.outcome with
-  | Failure.Pass -> (
+  | Failure.Pass ->
       put t
-        (test_line ~tag:"PASS" ~style:`Green ~name ~qualifiers:(attempts r)
+        (test_line ~tag:"PASS" ~style:`Green ~name
+           ~qualifiers:(attempts r @ scope_qualifiers r)
            ~timing ());
-      match r.prop_stats with
-      | Some s when s.collected <> [] -> label_table t s
-      | Some _ | None -> ())
+      List.iter (put t)
+        ((match r.prop_stats with Some s -> label_table s | None -> [])
+        @ tolerance_lines r)
   | Failure.Skip reason ->
       put t
         (test_line ~tag:"SKIP" ~style:`Yellow ~name
@@ -494,6 +628,7 @@ type summary = {
   skipped : int;
   excused : int;
   failed : int;
+  vacuous : int;
   subtests : int;
   not_run : int;
   corrections : int; (* files written *)
@@ -506,32 +641,34 @@ type summary = {
 let summary_line t (c : summary) ~duration =
   let named = if t.header_printed then None else t.header in
   let prefix = match named with Some h -> h.suite ^ ": " | None -> "" in
-  if c.passed + c.failed + c.skipped + c.excused + c.not_run = 0 then begin
+  if c.passed + c.failed + c.vacuous + c.skipped + c.excused + c.not_run = 0
+  then begin
     let reason =
       match t.header with
       | Some h ->
           empty_selection_reason ~declared:h.declared ~selection:h.selection
       | None -> None
     in
-    put t
-      [
-        plain
-          (match reason with
-          | Some reason -> strf "%sno tests ran: %s." prefix reason
-          | None -> prefix ^ "no tests ran.");
-      ];
-    (* A build action has no launcher to restate, so it names the flag. A
-       selection that the environment broadcast gets no hint: the variable
-       reached every stanza, so an emptied one holds no mistake, and an
-       inline runner takes no [-l]. *)
-    match t.header with
+    (* The hint sits above the summary, which stays the last line. A build
+       action has no launcher to restate, so it names the flag. A selection
+       that the environment broadcast gets no hint: the variable reached every
+       stanza, so an emptied one holds no mistake, and an inline runner takes
+       no [-l]. *)
+    (match t.header with
     | Some { declared; selection = Some _; _ }
       when declared <> 0 && not t.config.broadcast.selection -> (
         match t.config.invocation with
         | `Exe launcher -> put t [ plain (strf "list: %s -l" launcher) ]
         | `Mirrors -> put t [ styled `Faint "(list the suite's tests with -l)" ]
         )
-    | Some _ | None -> ()
+    | Some _ | None -> ());
+    put t
+      [
+        plain
+          (match reason with
+          | Some reason -> strf "%sno tests ran: %s." prefix reason
+          | None -> prefix ^ "no tests ran.");
+      ]
   end
   else begin
     let term n spans = if n > 0 then [ spans ] else [] in
@@ -539,7 +676,9 @@ let summary_line t (c : summary) ~duration =
       List.concat
         [
           term c.passed
-            ((if c.failed = 0 && c.not_written = 0 then styled `Green else plain)
+            ((if c.failed = 0 && c.vacuous = 0 && c.not_written = 0 then
+                styled `Green
+              else plain)
                (strf "%d passed" c.passed)
             ::
             (if c.flaky > 0 then
@@ -560,6 +699,7 @@ let summary_line t (c : summary) ~duration =
                         (plural c.subtests)
                     else ""));
             ];
+          term c.vacuous [ styled `Red (strf "%d vacuous" c.vacuous) ];
           term c.not_run [ plain (strf "%d not run" c.not_run) ];
           term c.corrections
             [
@@ -608,6 +748,20 @@ let slow_section t results =
     (strf "slow tests (%d, over %ss):" (List.length rows)
        (Pp.to_string Pp.decimal t.config.slow_threshold));
   List.iter (fun (d, path) -> caution t (strf "  %*s  %s" width d path)) rows
+
+(* Each test whose replayed cases passed, under its path. *)
+let replayed_section t results =
+  put t [ plain (strf "replayed (%d):" (List.length results)) ];
+  List.iter
+    (fun (r : Run.result) ->
+      Option.iter
+        (fun (s : Property.stats) ->
+          let line =
+            strf "  %s: %s" (Test_tree.path_to_string r.path) (replay_fact s)
+          in
+          put t [ (if s.runs > 1 then styled `Yellow line else plain line) ])
+        r.prop_stats)
+    results
 
 let flaky_section t results =
   caution t (strf "flaky tests (%d):" (List.length results));
@@ -663,15 +817,23 @@ let rec drop n = function _ :: rest when n > 0 -> drop (n - 1) rest | l -> l
    ended. An interrupted run's would run the tests the signal kept from
    running, and [-u] would accept baselines the report does not show. *)
 let close t ~commands ~results ~release_failures ~duration ?baselines ?stopped
-    ?(before_summary = ignore) () =
+    ?(held = `Withheld) ?(before_summary = ignore) () =
   sync t;
   clear_live t;
   let count s = List.length (List.filter (fun r -> status r = s) results) in
   let failed = List.filter (fun r -> status r = `Failed) results in
+  let refuted = List.filter (fun r -> not (vacuous r)) failed in
   let slow = List.filter (over_threshold t) results in
   let flaky =
     List.filter
       (fun (r : Run.result) -> r.attempts > 1 && status r = `Passed)
+      results
+  in
+  let replayed =
+    List.filter
+      (fun (r : Run.result) ->
+        status r = `Passed
+        && match r.prop_stats with Some s -> s.replayed > 0 | None -> false)
       results
   in
   let rows = match baselines with Some b -> corrections b | None -> [] in
@@ -692,7 +854,8 @@ let close t ~commands ~results ~release_failures ~duration ?baselines ?stopped
       flaky = List.length flaky;
       skipped = count `Skipped;
       excused = count `Excused;
-      failed = List.length failed + List.length release_failures;
+      failed = List.length refuted + List.length release_failures;
+      vacuous = List.length failed - List.length refuted;
       subtests =
         List.length
           (List.filter Sections.is_subtest_failure
@@ -713,6 +876,7 @@ let close t ~commands ~results ~release_failures ~duration ?baselines ?stopped
   let sections =
     section slow slow_section
     @ section flaky flaky_section
+    @ section replayed replayed_section
     @ section rows (corrections_section ~accepted)
   in
   (* A green run with nothing to show is its summary line alone. *)
@@ -744,10 +908,16 @@ let close t ~commands ~results ~release_failures ~duration ?baselines ?stopped
           `Filter (Some (Test_tree.path_to_string r.path))
       | _ -> run
     in
+    let promotion =
+      match (armed, invocation) with
+      | None, `Mirrors -> Sections.promotion ~held failures
+      | Some _, _ | None, `Exe _ -> None
+    in
     List.iter
       (fun line -> put t [ plain line ])
-      (Option.to_list
-         (Sections.accept ?armed ~invocation ~tests:accepted failures)
+      (Option.to_list promotion
+      @ Option.to_list
+          (Sections.accept ?armed ~invocation ~tests:accepted failures)
       @ Option.to_list (Sections.replay ?armed ~invocation ~tests:run failures)
       )
   end;
@@ -768,32 +938,53 @@ let close t ~commands ~results ~release_failures ~duration ?baselines ?stopped
 
 let finish = close ~commands:true
 
+(* A worker that waits on what this process holds never reaches its run, and
+   the interrupt is then the one thing that says where it waits. *)
+let still_starting (s : Run.starting) =
+  let _, kept =
+    Text.window ~lines:Sections.max_lines ~bytes:max_int Tail s.output
+  in
+  let wrote =
+    match Text.split_lines kept with
+    | [] -> ""
+    | lines ->
+        ", and it wrote:"
+        ^ String.concat "" (List.map (fun line -> "\n  " ^ line) lines)
+  in
+  strf
+    "interrupted while a worker was still in module initialisation, %s after \
+     it started%s"
+    (duration_to_string s.seconds)
+    wrote
+
 (* A path is one line of the diagnostic, whatever it holds. *)
-let interrupted t ?before_summary ?releasing ~running ~results ~duration () =
+let interrupted t ?before_summary ?releasing ?starting ~running ~results
+    ~duration () =
   sync t;
   clear_live t;
   Pp.flush t.out ();
   Os.say
-    (match (running, releasing) with
-    | Some path, _ ->
+    (match (running, releasing, starting) with
+    | Some path, _, _ ->
         "interrupted in " ^ Text.escape_controls (Test_tree.path_to_string path)
-    | None, Some fixture ->
+    | None, Some fixture, _ ->
         "interrupted while releasing " ^ Text.escape_controls fixture
-    | None, None -> "interrupted between tests");
+    | None, None, Some starting -> still_starting starting
+    | None, None, None -> "interrupted between tests");
   close t ~commands:false ~results ~release_failures:[] ~duration
     ?before_summary ()
 
 let observe t ~seed ~selection = function
-  | Run.Run_started { suite; total; selected; properties } ->
+  | Run.Run_started { suite; total; selected; seeded } ->
       header t ~suite ~tests:selected ~declared:total ?selection
-        ~seed:(if properties then Some seed else None)
+        ~seed:(if seeded then Some seed else None)
         ()
   | Run.Test_started { path } | Run.Shrunk { path } -> begin_test t ~path
   | Run.Shrinking { path; steps } -> shrinking t ~path ~steps
   | Run.Test_finished r -> result t r
   | Run.Fixture_release { name } -> note t ("releasing " ^ name)
-  | Run.Interrupted { running; releasing; results; duration } ->
-      interrupted t ?releasing ~running ~results ~duration ()
+  | Run.Interrupted { running; releasing; starting; results; duration } ->
+      interrupted t ?releasing ?starting ~running ~results ~duration ()
 
 (* The GitHub Actions envelope *)
 
@@ -819,7 +1010,7 @@ let escape_property s = encode ~property:true (Text.escape_controls s)
 let group_start name = strf "::group::%s\n" (escape_data name)
 let group_end = "::endgroup::\n"
 
-let annotation ?(invocation = `Mirrors) ?armed ?workers ~path (f : Failure.t) =
+let annotation ?(invocation = `Mirrors) ?armed ?paths ~path (f : Failure.t) =
   let path = Test_tree.path_to_string path in
   let location =
     match f.loc with
@@ -827,20 +1018,15 @@ let annotation ?(invocation = `Mirrors) ?armed ?workers ~path (f : Failure.t) =
         strf "file=%s,line=%d," (escape_property file) line
     | None -> ""
   in
-  let entry =
-    Pp.str "%a"
-      (fun ppf f ->
-        Sections.pp_failure ~ansi:false ~filter:path ~invocation ?armed ?workers
-          ppf f)
-      f
+  let _, lines =
+    Sections.unstyled_entry ~filter:(Some path) ~invocation ?armed ?paths f
   in
-  let rec stop i = if i > 0 && entry.[i - 1] = '\n' then stop (i - 1) else i in
   strf "::error %stitle=%s::%s\n" location
     (escape_property ("Test failure: " ^ path))
-    (escape_data (String.sub entry 0 (stop (String.length entry))))
+    (escape_data (String.concat "\n" lines))
 
-let annotations ?invocation ?armed ?workers ~release_failures results =
-  let annotate path f = annotation ?invocation ?armed ?workers ~path f in
+let annotations ?invocation ?armed ?paths ~release_failures results =
+  let annotate path f = annotation ?invocation ?armed ?paths ~path f in
   let counted (r : Run.result) =
     if status r = `Failed then List.map (annotate r.path) (failures r) else []
   in
@@ -865,21 +1051,10 @@ let mutation_killed t =
   clear_live t;
   put t [ styled `Green "mutant killed." ]
 
-let mutation_survived ?(failed_before = false) t ~hits ~xfail_failed =
+let mutation_survived t ~hits ~xfail_failed =
   clear_live t;
-  let ran () =
-    if hits = 0 then "mutant survived: only a forked process ran the site"
-    else strf "mutant survived: the site ran %d time%s" hits (plural hits)
-  in
   let line =
-    if hits = 0 && not (failed_before || xfail_failed) then
-      ran () ^ ", and no test failed after that."
-    else if failed_before && xfail_failed then
-      ran () ^ ", and only xfail tests and tests before its first run failed."
-    else if failed_before then
-      ran () ^ ", and only tests before its first run failed."
-    else if hits = 0 then ran () ^ ", and only xfail tests failed."
-    else if xfail_failed then
+    if xfail_failed then
       strf
         "mutant survived: the site was evaluated %d time%s and only xfail \
          tests failed."
@@ -892,37 +1067,20 @@ let mutation_survived ?(failed_before = false) t ~hits ~xfail_failed =
   in
   put t [ styled `Red line ]
 
-let mutation_not_evaluated ?(failed = false) t =
+let mutation_not_evaluated t =
   clear_live t;
   put t
-    [
-      styled `Yellow
-        (if failed then
-           "mutant not evaluated: no selected test ran the site, so the mutant \
-            did not cause the failure."
-         else "mutant not evaluated: no selected test ran the site.");
-    ]
+    [ styled `Yellow "mutant not evaluated: no selected test ran the site." ]
 
 let mutation_not_reached t =
   clear_live t;
   put t [ styled `Yellow "mutant not reached: only xfail tests ran the site." ]
 
-(* The first running mutant is the one the report waits for. A cut shortens
-   its identifier and never the count of the others. *)
-let mutation_testing t ~completed ~total ~running =
-  match running with
-  | [] -> ()
-  | first :: others ->
-      let tail =
-        match List.length others with
-        | 0 -> "\u{2026}"
-        | more -> strf " and %d more\u{2026}" more
-      in
-      progress ~tail t (strf "[%d/%d] %s" completed total first)
+let mutation_testing t ~index ~total ~id =
+  progress t (strf "[%d/%d] %s\u{2026}" index total id)
 
-(* The loop commits the block of a survivor when each mutant before it in the
-   catalogue has a verdict. The block is flushed, so a loop that dies has
-   printed the survivors that it committed. *)
+(* A survivor's block is committed when its child ends, so a loop that dies
+   has printed what it found. *)
 let mutation_survivor t survivor =
   print t
     (Sections.Line []
@@ -930,20 +1088,8 @@ let mutation_survivor t survivor =
     @ Sections.survivor_block ~exe_width:None survivor);
   t.survivors <- t.survivors + 1
 
-let mutation_finish ?note ?(lines = []) t m =
+let mutation_finish ?note t m =
   let closing = Sections.mutation_closing ~config:t.config m in
-  (* The lines go above the outcome group, so that [reproduce:] stays
-     directly above its outcome line. *)
-  let closing =
-    let lines =
-      List.rev_map (fun line -> Sections.Line [ Sections.plain line ]) lines
-    in
-    match List.rev closing with
-    | outcome :: (Sections.Hint _ as reproduce) :: rest ->
-        List.rev (outcome :: reproduce :: (lines @ rest))
-    | outcome :: rest -> List.rev (outcome :: (lines @ rest))
-    | [] -> closing
-  in
   match (note, List.rev closing) with
   | Some note, outcome :: rest ->
       print t (List.rev rest);
@@ -956,29 +1102,54 @@ let mutation_refused t message =
   Pp.flush t.out ();
   Os.say message
 
-type stopped = Startup | Probe | Testing of string list | Before of string
-
-let mutation_interrupted ?lines t stopped m =
+let mutation_interrupted t ~testing m =
   mutation_refused t
-    (match stopped with
-    | Startup -> "interrupted while a new process of the suite started"
-    | Probe -> "interrupted during the determinism probe"
-    | Testing ids -> "interrupted while testing " ^ String.concat ", " ids
-    | Before id -> "interrupted before testing " ^ id);
-  mutation_finish ?lines t m
-
-(* Failure projections *)
-
-let headline = Sections.headline
-let is_subtest_failure = Sections.is_subtest_failure
-let labeled_msg = Sections.labeled_msg
-let pp_failure = Sections.pp_failure
+    (match testing with
+    | Some id -> "interrupted while testing " ^ id
+    | None -> "interrupted during the determinism probe");
+  mutation_finish t m
 
 (* Running *)
 
-let run ?(on_event = fun (_ : Run.event) -> ()) ?stop_after ~suite
-    (config : Run.config) tests =
-  let renderer = terminal config in
+(* Whether dune holds the corrections of a run: all of them when it exits 0,
+   and once its missing files exist when they are all that make it exit 1. *)
+let held (outcome : Run.outcome) =
+  let refused =
+    List.exists
+      (function Baseline.Refused _ -> true | Baseline.Written _ -> false)
+      (Baseline.writes (Run.baselines outcome.run))
+  in
+  let failures =
+    List.concat_map
+      (fun (r : Run.result) -> if r.counted then failures r else [])
+      (Run.results outcome.run)
+  in
+  if Run.exit_code (Ok outcome) = 0 then `Held
+  else if
+    (not outcome.failed_in_ci)
+    && outcome.release_failures = []
+    && (not refused)
+    && List.for_all (fun f -> Option.is_some (Sections.acceptable f)) failures
+  then `Once_created
+  else `Withheld
+
+type executor =
+  ?on_event:(Run.event -> unit) ->
+  Run.config ->
+  suite:string ->
+  Test_tree.t list ->
+  (Run.outcome, Run.startup_error) result
+
+let run
+    ?(execute : executor =
+      fun ?on_event config -> Supervisor.execute ?on_event config)
+    ?(on_event = fun (_ : Run.event) -> ()) ~suite (config : Run.config) tests =
+  let paths =
+    List.map
+      (fun (c : Test_tree.case) -> Test_tree.path_to_string c.path)
+      (Test_tree.flatten tests)
+  in
+  let renderer = terminal ~paths config in
   let transcript =
     observe renderer ~seed:config.seed
       ~selection:
@@ -992,16 +1163,16 @@ let run ?(on_event = fun (_ : Run.event) -> ()) ?stop_after ~suite
     if config.github then begin
       print_string group_end;
       print_string
-        (annotations ~invocation:config.invocation ?armed:renderer.armed
-           ~workers:config.mutate_workers ~release_failures results)
+        (annotations ~invocation:config.invocation ?armed:renderer.armed ~paths
+           ~release_failures results)
     end
   in
   (* The transcript observes first, so a subscriber can neither drop nor
      reorder the run's own output. *)
   let on_event event =
     (match event with
-    | Run.Interrupted { running; releasing; results; duration } ->
-        interrupted renderer ?releasing ~running ~results ~duration
+    | Run.Interrupted { running; releasing; starting; results; duration } ->
+        interrupted renderer ?releasing ?starting ~running ~results ~duration
           ~before_summary:(close_envelope ~release_failures:[] results)
           ()
     | Run.Run_started _ | Run.Test_started _ | Run.Shrinking _ | Run.Shrunk _
@@ -1010,12 +1181,7 @@ let run ?(on_event = fun (_ : Run.event) -> ()) ?stop_after ~suite
     on_event event
   in
   if config.github then print_string (group_start suite);
-  (* [stop_after] replaces [config.bail] as the rule that stops the run at a
-     failure. The report keeps [config.bail] for its hints. *)
-  let executed =
-    if Option.is_some stop_after then { config with bail = false } else config
-  in
-  match Run.execute ~on_event ?stop_after executed ~suite tests with
+  match execute ~on_event config ~suite tests with
   | Error error ->
       if config.github then print_string group_end;
       Os.say (Run.startup_message error);
@@ -1025,15 +1191,19 @@ let run ?(on_event = fun (_ : Run.event) -> ()) ?stop_after ~suite
       let release_failures = outcome.release_failures in
       finish renderer ~results ~release_failures ~duration:outcome.duration
         ~baselines:(Run.baselines outcome.run)
-        ?stopped:(Run.stopped outcome.run)
+        ~held:(held outcome) ?stopped:(Run.stopped outcome.run)
         ~before_summary:(close_envelope ~release_failures results)
         ();
       (* Last, so the file is written from the rows the terminal has shown. *)
       Option.iter
         (Report_junit.write ~invocation:config.invocation ?armed:renderer.armed
-           ~workers:config.mutate_workers ~suite ~duration:outcome.duration
-           ~results ~release_failures)
+           ~paths ~suite ~duration:outcome.duration ~results ~release_failures)
         config.junit;
+      Option.iter
+        (Report_json.write ~suite ~seed:config.seed
+           ~selected:(selected renderer) ~duration:outcome.duration ~results
+           ~release_failures)
+        config.json;
       Pp.flush Format.std_formatter ();
       Pp.flush Format.err_formatter ();
       Ok outcome

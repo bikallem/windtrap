@@ -11,18 +11,17 @@
 === a missing baseline qualifies the row after its duration
   FAIL  help                                       0.2ms (no baseline)
     test/test_cli.ml:9
-    expect_file "test/help.expected": no baseline
+    expect_file ~file:"test/help.expected": no baseline
     proposed (3 lines):
       + Usage: mytool [OPTIONS] COMMAND
       + Commands:
       +   run
-    accept: touch 'test/help.expected' && dune runtest; dune promote test/help.expected
 
 
 === and shares the parenthesis with the armed qualifier
   FAIL  help                                       0.2ms (no baseline, mutant armed)
     test/test_cli.ml:9
-    expect_file "test/help.expected": no baseline
+    expect_file ~file:"test/help.expected": no baseline
     proposed (3 lines):
       + Usage: mytool [OPTIONS] COMMAND
       + Commands:
@@ -74,18 +73,28 @@
   PASS  t                                          0.2ms
 
 === a passing property prints its label table
-  PASS  labels visible                             1.2ms
+  PASS  labels visible                             1.2ms (100 cases)
     labels (100 passing cases):
        46.0%  even
 
 === and none without collected labels
-  PASS  no labels                                  0.2ms
+  PASS  no labels                                  0.2ms (100 cases)
+
+=== a table that held on every row says so
+  PASS  rows                                       0.2ms (holds on all 3 rows)
+
+=== a table whose other rows held counts its skipped rows, with the first one's reason
+  PASS  rows                                       0.2ms (holds on 2 of 3 rows, 1 skipped: no GPU)
+
+=== and without one, the count alone
+  PASS  rows                                       0.2ms (holds on 1 of 3 rows, 2 skipped)
 
 === an expected failure's table is in its block
   XFAIL  known › broken carry                      0.2ms (expected failure: issue #42)
     test/test_carry.ml:5
     expected  1
     actual    2
+    scope: 100 cases passed
     labels (100 passing cases):
        46.0%  even
 

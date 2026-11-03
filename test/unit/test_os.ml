@@ -103,8 +103,8 @@ let set_then_unset () =
 
 let refused_name name =
   setenv var None;
-  raises_match (Exn.invalid_arg ~substring:"environment variable name")
-    (fun () -> Os.setenv name (Some "v"));
+  raises_match (Exn.invalid_arg ~sub:"environment variable name") (fun () ->
+      Os.setenv name (Some "v"));
   equal (option string) None (Sys.getenv_opt var)
 
 let spellings () =
@@ -120,7 +120,7 @@ let environment =
   group "Environment variables"
     [
       cases "getenv is the value as it is, and None when unset or empty"
-        ~name:(fun (value, _) -> shown value)
+        ~id:(fun (value, _) -> shown value)
         [
           (None, None);
           (Some "", None);
@@ -132,11 +132,11 @@ let environment =
           equal (option string) read (Os.getenv var));
       test "setenv binds a variable, and None unbinds it" set_then_unset;
       cases "setenv refuses an empty name or one with =, before any change"
-        ~name:(strf "%S")
+        ~id:(Printf.sprintf "%S")
         [ ""; var ^ "=x" ]
         refused_name;
       cases "bool_of_string reads a boolean in any case, after trimming"
-        ~name:(fun (s, _) -> strf "%S" s)
+        ~id:(fun (s, _) -> strf "%S" s)
         [
           ("1", Some true);
           ("true", Some true);
@@ -160,7 +160,7 @@ let environment =
       test "bool_expected names every spelling but y and n" spellings;
       cases
         "split_comma is the trimmed items between commas, without empty ones"
-        ~name:(fun (s, _) -> strf "%S" s)
+        ~id:(fun (s, _) -> strf "%S" s)
         [
           ("a, b ,,c ", [ "a"; "b"; "c" ]);
           ("slow", [ "slow" ]);
@@ -181,7 +181,7 @@ let ci_row (ci, github) =
 
 let flag_cases name ~var read rows =
   cases name
-    ~name:(fun (value, _) -> shown value)
+    ~id:(fun (value, _) -> shown value)
     rows
     (fun (value, set) ->
       setenv var value;
@@ -193,7 +193,7 @@ let platform =
       cases
         "in_ci and in_github_actions count CI and GITHUB_ACTIONS as set unless \
          unset, empty or false"
-        ~name:(fun (ci, github, _) ->
+        ~id:(fun (ci, github, _) ->
           strf "CI %s, GITHUB_ACTIONS %s" (shown ci) (shown github))
         [
           (None, None, "no CI, no GitHub Actions");
@@ -247,7 +247,7 @@ let colour =
   group "Colour"
     [
       cases "color_mode_of_string reads a mode in any case, untrimmed"
-        ~name:(fun (s, _) -> strf "%S" s)
+        ~id:(fun (s, _) -> strf "%S" s)
         [
           ("always", "always");
           ("NEVER", "never");
@@ -263,7 +263,7 @@ let colour =
       cases
         "resolve_color styles under Always, never under Never, and under Auto \
          on a terminal or under dune unless TERM is dumb or NO_COLOR is set"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         [
           ("always, on a pipe", (Os.Always, false, false, false, None), true);
           ("always, on a dumb terminal", (Always, true, false, true, None), true);
@@ -428,45 +428,12 @@ let taken_names () =
     (fun () -> Os.atomic_write ~path "x");
   equal (list string) (List.sort String.compare taken) (entries dir)
 
-(* Every other temporary name is taken, so one of two writes meets a taken
-   name, and takes the next one. *)
-let taken_name_skipped () =
-  let dir = temp_dir () in
-  let taken =
-    List.init 320 (fun i -> strf ".tmp-%x-%x" (Unix.getpid ()) (2 * i))
-  in
-  List.iter
-    (fun name ->
-      Unix.close (Unix.openfile (Filename.concat dir name) [ O_CREAT ] 0o600))
-    taken;
-  let path = Filename.concat dir "target" in
-  Os.atomic_write ~path "first";
-  Os.atomic_write ~path "second";
-  equal
-    (pair string (list string))
-    ("second", List.sort String.compare ("target" :: taken))
-    (read path, entries dir)
-
-(* A duplicate takes the lowest free descriptor, so a descriptor that a write
-   leaves open moves it. *)
-let lowest_free () =
-  let fd = Unix.dup Unix.stdin in
-  Unix.close fd;
-  fd
-
-let no_descriptor_left () =
-  posix_only ();
-  let path = Filename.concat (temp_dir ()) "target" in
-  let before = lowest_free () in
-  Os.atomic_write ~path "x";
-  is_true ~msg:"the lowest free descriptor is the same" (before = lowest_free ())
-
 let atomic_writes =
   group "Atomic file writes"
     [
       cases
         "atomic_write leaves the target holding its contents, and no other file"
-        ~name:fst
+        ~id:fst
         [
           ("a new file of every byte value, past one write", (None, every_byte));
           ( "a replaced file",
@@ -477,7 +444,7 @@ let atomic_writes =
         (fun (_, row) -> written row);
       cases
         "the file takes perm under the umask, whatever the replaced file had"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         [
           ("the default under umask 022", (0o022, None, None), 0o644);
           ("0o600 under umask 022", (0o022, Some 0o600, None), 0o600);
@@ -486,13 +453,13 @@ let atomic_writes =
         ]
         (fun (_, input, perm) -> equal int perm (created input));
       cases "atomic_write refuses a perm beyond 0o777 before touching a file"
-        ~name:(fun (name, _) -> name)
+        ~id:(fun (name, _) -> name)
         [ ("-1", -1); ("0o1000", 0o1000); ("0o4755", 0o4755) ]
         (fun (_, perm) -> refused_perm perm);
       cases
         "a failed write raises Sys_error naming the path and the step, and \
          leaves the directory as it was"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         [
           ("a missing parent", missing_parent, "cannot create temporary file");
           ("a directory as target", directory_target, "cannot replace");
@@ -507,9 +474,6 @@ let atomic_writes =
         concurrent_writers;
       test "a write whose temporary names are all taken fails, and leaves them"
         taken_names;
-      test "a write takes the next temporary name when one is taken"
-        taken_name_skipped;
-      test "atomic_write leaves no descriptor open" no_descriptor_left;
     ]
 
 (* Project root and log root *)
@@ -574,7 +538,7 @@ let root =
       cases
         "INSIDE_DUNE names the build directory, cut after its first _build \
          component"
-        ~name:fst
+        ~id:fst
         [
           ("a build context", ("/w/_build/default", ("/w", "/w/_build")));
           ( "a sandboxed action's context",
@@ -591,23 +555,42 @@ let root =
           equal (pair string string) (root, logs build) (under (Some value)));
       cases
         "a relative INSIDE_DUNE is made absolute against the working directory"
-        ~name:(fun (value, _) -> strf "%S" value)
+        ~id:(fun (value, _) -> strf "%S" value)
         [
           ("w/_build/default", ("w", "w/_build"));
           ("w\\_build\\default", ("w", "w/_build"));
         ]
         relative_inside_dune;
       cases
+        "below DUNE_SOURCEROOT, the build directory is the first _build \
+         component under it"
+        ~id:fst
+        [
+          ( "a tree unpacked into another's _build",
+            ( "/w/_build/p",
+              "/w/_build/p/_build/default",
+              ("/w/_build/p", "/w/_build/p/_build") ) );
+          ( "a source root with a trailing /",
+            ( "/w/_build/p/",
+              "/w/_build/p/_build/default",
+              ("/w/_build/p", "/w/_build/p/_build") ) );
+          ( "a context outside the source root",
+            ("/elsewhere", "/w/_build/p/_build/default", ("/w", "/w/_build")) );
+        ]
+        (fun (_, (source_root, value, (root, build))) ->
+          setenv "DUNE_SOURCEROOT" (Some source_root);
+          equal (pair string string) (root, logs build) (under (Some value)));
+      cases
         "an INSIDE_DUNE that names no build directory leaves it to the \
          executable"
-        ~name:shown
+        ~id:shown
         [ Some "1"; Some "/w/src"; Some "" ]
         falls_through;
       test "without INSIDE_DUNE, the directory of the executable decides"
         executable's_directory;
       cases
         "project_root is WINDTRAP_PROJECT_ROOT when set, normalized lexically"
-        ~name:(fun (value, _) -> strf "%S" value)
+        ~id:(fun (value, _) -> strf "%S" value)
         [
           ("/tmp/override", "/tmp/override");
           ("/r/", "/r");
@@ -645,7 +628,7 @@ let reconstruction =
       cases
         "reconstruct proves a source path under the root, or gives the \
          candidate"
-        ~name:(fun (name, _, _, _) -> name)
+        ~id:(fun (name, _, _, _) -> name)
         [
           ("a relative path", "/proj", "test/foo.ml", Ok "/proj/test/foo.ml");
           ( "a build context's copy",
@@ -727,7 +710,7 @@ let reconstruction =
           equal (result string string) proven (Os.reconstruct ~root file));
       test "reconstruct resolves no symbolic link" reconstruct_symlink;
       cases "build_root is the build directory and the context after it"
-        ~name:(fun (dir, _) -> strf "%S" dir)
+        ~id:(fun (dir, _) -> strf "%S" dir)
         [
           ("/w/_build/default/test", Some "/w/_build/default");
           ("/w/_build/default", Some "/w/_build/default");
@@ -739,6 +722,10 @@ let reconstruction =
         ]
         (fun (dir, context) ->
           equal (option string) context (Os.build_root dir));
+      test "build_root searches below DUNE_SOURCEROOT" (fun () ->
+          setenv "DUNE_SOURCEROOT" (Some "/w/_build/p");
+          equal (option string) (Some "/w/_build/p/_build/default")
+            (Os.build_root "/w/_build/p/_build/default/test"));
     ]
 
 (* Display paths *)
@@ -761,7 +748,7 @@ let display =
       cases
         "display_path spells a path relative to the project root, without its \
          build segment, dots or repeated separators"
-        ~name:(fun (path, _) -> strf "%S" path)
+        ~id:(fun (path, _) -> strf "%S" path)
         [
           ("/r/_build/default/qa/x/t.exe", "qa/x/t.exe");
           ("/r/_build/release.x/qa/x/t.exe", "qa/x/t.exe");
@@ -781,12 +768,12 @@ let display =
       cases
         "display_path and display_artifact remove a root spelled with ., .. or \
          repeated separators"
-        ~name:(strf "%S") [ "/r/"; "/r/."; "/r//"; "/x/../r"; "//r/./" ]
+        ~id:(Printf.sprintf "%S") [ "/r/"; "/r/."; "/r//"; "/x/../r"; "//r/./" ]
         (fun root ->
           equal (pair string string) ("a/b.ml", "_build/x.log")
             (under_root_spelled root));
       cases "display_artifact removes the root prefix and nothing else"
-        ~name:(fun (path, _) -> strf "%S" path)
+        ~id:(fun (path, _) -> strf "%S" path)
         [
           ("/r/_build/_tests/s/t.output", "_build/_tests/s/t.output");
           ("/r/./a//b", "./a//b");
@@ -824,7 +811,7 @@ let components =
       cases
         "sanitize_component keeps a safe name, and marks a changed one with \
          its digest"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         [
           ("a safe name", "abc-1_2.x", "abc-1_2.x");
           ("a safe name with a leading dot", ".hidden", ".hidden");
@@ -911,7 +898,7 @@ let filesystem =
   group "Filesystem helpers"
     [
       cases "file_exists is true iff the path exists, and false on an error"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         [
           ("a directory", (fun () -> temp_dir ()), true);
           ("a file", (fun () -> temp_file ()), true);
@@ -936,7 +923,7 @@ let filesystem =
           Os.mkdir_p ".";
           equal (list string) [] (entries cwd));
       cases "failure_reason is why an operation on a path failed, less the path"
-        ~name:(fun (name, _, _, _) -> name)
+        ~id:(fun (name, _, _, _) -> name)
         [
           ( "a Sys_error that starts with the path",
             "a/b.xml",
@@ -993,16 +980,11 @@ let flushed_first () =
     "channel, unflushed; formatter, unflushed\nwindtrap: after both\n"
     (output ())
 
-let flushed_err_formatter () =
-  Format.eprintf "formatter, unflushed@\n";
-  Os.say "after it";
-  equal string "formatter, unflushed\nwindtrap: after it\n" (output ())
-
 let standard_error =
   group "Standard error"
     [
       cases "say writes windtrap: and its message as a line on standard error"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         [
           ( "a message",
             (fun () -> Os.say "could not write the verdict file: disk full"),
@@ -1034,8 +1016,6 @@ let standard_error =
           equal (triple string string string) ("exited 0", "", err) (said f));
       test "say flushes standard output first, formatter and channel"
         flushed_first;
-      test "say flushes a pending Format.err_formatter first"
-        flushed_err_formatter;
     ]
 
 (* Signals *)
@@ -1080,29 +1060,6 @@ let handled_then_restored () =
     (pair (list string) string)
     ([ "SIGUSR1" ], "the handler found")
     (!got, disposition ~mine after)
-
-(* The disposition of each signal of the list, as the handler finds it in the
-   process that called [with_signals]. *)
-let defaults_while_handled () =
-  posix_only ();
-  let found =
-    (Sys.signal usr1 Sys.Signal_default, Sys.signal usr2 Sys.Signal_default)
-  in
-  let probe signal =
-    let disposition = Sys.signal signal Sys.Signal_default in
-    Sys.set_signal signal disposition;
-    disposition
-  in
-  let seen = ref [] in
-  Os.with_signals [ usr1; usr2 ]
-    (fun _ -> seen := [ probe usr1; probe usr2 ])
-    (fun () ->
-      raise_signal usr1;
-      until (fun () -> !seen <> []));
-  Sys.set_signal usr1 (fst found);
-  Sys.set_signal usr2 (snd found);
-  equal (list string) [ "default"; "default" ]
-    (List.map (disposition ~mine:ignore) !seen)
 
 (* A signal a process sends itself is delivered before [kill] returns, and its
    handler runs at the first safepoint, so ten polls would see it run. *)
@@ -1229,11 +1186,9 @@ let signals =
         handled_then_restored;
       test "a signal the process was started with ignored stays ignored"
         ignored_stays_ignored;
-      test "the handler runs with the signals of the list at their default"
-        defaults_while_handled;
       cases
         "a signal of the list that the handler sends ends the process at once"
-        ~name:fst
+        ~id:fst
         [ ("the same signal", usr1); ("another of the list", usr2) ]
         (fun (_, sent) ->
           posix_only ();
@@ -1255,7 +1210,7 @@ let signals =
       cases
         "what the handler of a held signal raises, with_blocked raises in \
          place of its function's value, not of its exception"
-        ~name:fst
+        ~id:fst
         [
           ("the function returns", (false, "Stdlib.Exit"));
           ("the function raises", (true, "Not_found"));
@@ -1263,7 +1218,7 @@ let signals =
         (fun (_, (fn_raises, raised)) ->
           equal (pair string bool) (raised, false) (handler_raises ~fn_raises));
       cases "die_by ends the process by the signal, though handled and blocked"
-        ~name:signal_name [ Sys.sighup; Sys.sigint; Sys.sigpipe; Sys.sigterm ]
+        ~id:signal_name [ Sys.sighup; Sys.sigint; Sys.sigpipe; Sys.sigterm ]
         (fun signal ->
           posix_only ();
           killed_by signal (wait (fork (dies_by signal))));

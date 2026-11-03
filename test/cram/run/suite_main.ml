@@ -26,15 +26,16 @@ let default =
     (* The one failing test: scenarios select it by name to fail a run and
        exclude it by name to pass one. *)
     test "boom" (fun () -> equal ~msg:"deliberate" int 1 2);
-    slow "crawls" (fun () -> is_true true);
+    slow @@ test "crawls" (fun () -> is_true true);
     (* The baseline the sessions plant, at a path both files agree on. *)
     test "greeting" (fun () ->
-        expect_file "hello from the fixture\n" "test/cram/run/greeting.expected");
+        expect_file ~file:"test/cram/run/greeting.expected"
+          "hello from the fixture\n");
   ]
 
 let focused =
   [
-    focus (test "focused" (fun () -> is_true true));
+    focus @@ test "focused" (fun () -> is_true true);
     test "unfocused" (fun () -> is_true true);
   ]
 
@@ -79,7 +80,8 @@ let streamed =
 let masked =
   [
     test "masked" (fun () ->
-        expect_file "fresh from the fixture\n" "test/cram/run/masked.expected";
+        expect_file ~file:"test/cram/run/masked.expected"
+          "fresh from the fixture\n";
         equal ~msg:"deliberate" int 1 2);
   ]
 
@@ -113,8 +115,37 @@ let accepts =
     test "holds" (fun () -> expect "same" @@ __POS_OF__ "same");
     test "stale literal" (fun () -> expect "fresh" @@ __POS_OF__ "stale");
     test "stale file" (fun () ->
-        expect_file "fresh from the fixture\n" "test/cram/run/accepts.expected");
+        expect_file ~file:"test/cram/run/accepts.expected"
+          "fresh from the fixture\n");
     prop "small" Gen.int (fun n -> is_true (abs n < 1000));
+  ]
+
+(* The scope that --json gives each kind of test: a property with labels,
+   a cover demand, examples and discards, a table, a stateful test, a plain
+   test, a vacuous property and a skip. *)
+let scope =
+  [
+    prop "labels" ~count:200 ~examples:[ 0; 1 ] (Gen.int_range 0 999) (fun n ->
+        assume (n mod 10 <> 0);
+        classify "even" (n mod 2 = 0);
+        cover "small" (n < 100));
+    cases "rows" ~id:(Testable.to_string int) [ 1; 2; 3 ] (fun n ->
+        is_true (n > 0));
+    stateful ~count:20 "counter"
+      [ command "incr" (Gen.unit @-> returns unit) ignore ignore ];
+    prop "shares" (Gen.int_range 0 199) (fun n ->
+        cover ~share:0.2 "a quarter" (n < 50));
+    test "plain" ignore;
+    test "close" (fun () ->
+        equal (float 1e-6) 1. (1. +. 3e-9);
+        equal (list (float_rel ~rel:1e-3 ~abs:0.)) [ 100.; 2. ] [ 100.05; 2. ]);
+    test "far" (fun () ->
+        equal (float 1e-6) 1. (1. +. 1e-9);
+        equal (float 1e-6) 1. 1.5);
+    prop "near" (Gen.float_range 1. 2.) (fun x ->
+        equal (float 1e-9) x (x +. (x *. 1e-12)));
+    prop ~count:0 "nothing" Gen.int ignore;
+    test "skips" (fun () -> skip ~reason:"later" ());
   ]
 
 (* Signals *)
@@ -197,7 +228,7 @@ let leaving =
   [
     test "corrects" (fun () ->
         reads_env ();
-        expect_file "new\n" "c.expected");
+        expect_file ~file:"c.expected" "new\n");
     test "fails" (fun () -> equal ~msg:"deliberate" int 1 2);
     bracket ~setup:ignore
       ~teardown:(fun () -> touch "teardown ran")
@@ -262,6 +293,53 @@ let handlers () =
     ("handlers: " ^ String.concat " " (List.map2 kept signals before));
   code
 
+(* What case.t checks one case of: a property that fails on an element
+   from 10 on, one that hangs on 7, one that discards odd values, one that
+   holds over a generator reading every kind of choice, a counter that loses
+   its fourth increment, and a test that checks no property. *)
+let cased =
+  let counter = abstract "c" ~pp:(fun ppf r -> Format.pp_print_int ppf !r) in
+  let everything =
+    Gen.(
+      list
+        (pair
+           (one_of [ map string_of_int int; string; map string_of_float float ])
+           (option (triple bool (int_range (-5) 5) char))))
+  in
+  [
+    prop "small"
+      Gen.(list (int_range 0 100))
+      (fun l -> List.iter (less int ~than:10) l);
+    prop "hangs on 7" (Gen.int_range 0 100) (fun n ->
+        if n = 7 then Unix.sleepf 60.);
+    prop "even" (Gen.int_range 0 100) (fun n -> assume (n mod 2 = 0));
+    prop "anything" everything ignore;
+    stateful "counts"
+      [
+        command "create"
+          (Gen.int_range 0 0 @-> makes counter)
+          (fun _ -> ref 0)
+          (fun _ -> ref 0);
+        command "incr"
+          (counter ^-> returns unit)
+          incr
+          (fun r -> if !r <> 3 then incr r);
+        command "get" (counter ^-> returns int) ( ! ) ( ! );
+      ];
+    test "plain" ignore;
+  ]
+
+(* The case file of a replay token, the bytes of its choices, written to
+   standard output: the file a user decodes from the token. *)
+let case_of token =
+  match Windtrap.Private.Choice.of_token token with
+  | Ok (choices, _) ->
+      print_string (Windtrap.Private.Choice.to_bytes choices);
+      0
+  | Error why ->
+      prerr_endline why;
+      2
+
 let declared = function
   | Some "focus" -> focused
   | Some "duplicate" -> duplicate
@@ -272,11 +350,13 @@ let declared = function
   | Some "property" -> property
   | Some "properties" -> properties
   | Some "accepts" -> accepts
+  | Some "scope" -> scope
   | Some "waiting" -> waiting
   | Some "releasing" -> releasing
   | Some "leaving" -> leaving
   | Some "lingering" -> lingering
   | Some "forking" -> forking
+  | Some "cased" -> cased
   | Some ("" | "default") | None -> default
   | Some other -> invalid_arg ("suite_main: unknown FACADE_FIXTURE " ^ other)
 
@@ -285,4 +365,5 @@ let () =
     (match Sys.getenv_opt "FACADE_FIXTURE" with
     | Some "between" -> between ()
     | Some "handlers" -> handlers ()
+    | Some "case_of" -> case_of Sys.argv.(1)
     | name -> run "fixture" (declared name))

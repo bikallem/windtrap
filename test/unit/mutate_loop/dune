@@ -19,14 +19,14 @@
  (libraries windtrap))
 
 ; The mutation loop forks, and Windows has no fork: the loop refuses there.
+; The scenarios share suite_main.exe's one verdict file, which each removes
+; and reads back, so two at once read each other's: -j 1 outranks a
+; WINDTRAP_JOBS in the environment.
 
 (test
  (package ppx_windtrap)
  (name test_mutate_loop)
  (modules test_mutate_loop)
- (foreign_stubs
-  (language c)
-  (names pty_stubs))
  (enabled_if
   (<> %{os_type} Win32))
  (libraries windtrap windtrap_runtime windtrap_test_support unix)
@@ -36,5 +36,6 @@
   inline/runner_main.exe
   inline/inline_armed.ml
   runaway/runaway_main.exe
-  partitions/partitions_main.exe
-  scoped/scoped_main.exe))
+  (glob_files ../../support/preload/*.so))
+ (action
+  (run %{test} -j 1)))

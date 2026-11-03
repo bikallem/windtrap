@@ -20,12 +20,12 @@
 
     The dumps are those that {!Data_files.discover} finds for
     [Windtrap_runtime.Coverage.format] and the [PATH] arguments. A dump is
-    judged from the identity on its header ({!Data_files.identity}) before it is
-    loaded: a dump of another build is excluded whatever its records hold, and a
-    dump of the current build must load. A dump of another build is one whose
-    {!Data_files.val-freshness} is not [Fresh], and no flag keeps it. The first
-    dump that is not excluded and cannot be read or parsed, its header included,
-    ends the command with its {!Windtrap_runtime.Coverage.pp_error}.
+    judged from the identity on its header ({!Data_files.load_fresh}) before it
+    is loaded: a dump of another build is excluded whatever its records hold,
+    and a dump of the current build must load. A dump of another build is one
+    whose {!Data_files.type-freshness} is not [Fresh], and no flag keeps it. The
+    first dump that is not excluded and cannot be read or parsed, its header
+    included, ends the command with its {!Windtrap_runtime.Coverage.pp_error}.
 
     On standard error the command says the {!Data_files.warnings} of the
     excluded dumps, then {!Data_files.all_excluded} when no dump is left, and
@@ -39,7 +39,18 @@
     under the roots of {!Data_files.discover}: the root of the project after a
     search, and the current directory under [PATH] arguments. The rows of the
     report come in the order of file names that
-    {!Windtrap_runtime.Coverage.file_reports} gives. *)
+    {!Windtrap_runtime.Coverage.file_reports} gives.
+
+    [--lines SPEC] and [--diff FILE], also spelled with [=], repeat and add up
+    into a {!Windtrap.Private.Lines.t}, read by
+    {!Windtrap.Private.Lines.of_spec} and {!Windtrap.Private.Lines.of_diff}, as
+    under [windtrap mutants]. The merge then keeps the points whose first byte
+    is on one of those lines, through {!Windtrap_runtime.Coverage.keep}, and the
+    report, the documents and [--min] are those of the kept points. A point is
+    placed on its line through its source, so a file that the lines name and
+    whose source is not found or is stale is left out, and named on standard
+    error with the reason. [--expect] reads the whole merge. A malformed [SPEC]
+    or an unreadable [FILE] is a usage error. *)
 
 (** {1:gates Gates}
 
@@ -87,11 +98,6 @@
     ["uncovered_lines"] is the ascending array of the one-based lines that an
     unvisited point touches. It is empty for a file whose source the runtime
     does not find or judges stale ({!Windtrap_runtime.Coverage.file_reports}).
-
-    Each string is written by {!Windtrap.Private.Text.json_string}. Thus a
-    recorded name that is not valid UTF-8 has U+FFFD in its ["path"] in place of
-    the bytes that are not valid. That ["path"] is not equal to the [SF:] line
-    of the file in the LCOV document.
 
     {b LCOV.} The document is one record per source file, in the same order. A
     record is these lines, in this order:
@@ -146,7 +152,7 @@ val run : string list -> int
       or the coverage is below [--min].
     - [2] for a usage error. The usage errors are an unknown option, a [--min]
       that is not a number of the interval \[[0];[100]\], a [--color] value that
-      the flag refuses, a flag that lacks its value, and [--json] given with
-      [--lcov]. It is also [2] for a [WINDTRAP_COLOR] that the flag would
-      refuse, when [--color] is absent and the report is printed. A machine
-      format reads no [WINDTRAP_COLOR]. *)
+      the flag refuses, a malformed [--lines], an unreadable [--diff], a flag
+      that lacks its value, and [--json] given with [--lcov]. It is also [2] for
+      a [WINDTRAP_COLOR] that the flag would refuse, when [--color] is absent
+      and the report is printed. A machine format reads no [WINDTRAP_COLOR]. *)

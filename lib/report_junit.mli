@@ -7,7 +7,9 @@
     the file that it is written to.
 
     {!write} is the entry point, which {!Report.run} calls under [--junit] only.
-    Nothing of the document reaches the terminal. *)
+    Nothing of the document reaches the terminal.
+
+    @canonical Windtrap.Private.Report_junit *)
 
 (** {1:document The document}
 
@@ -28,13 +30,9 @@
     - A skip holds a [skipped] element, whose [message] is the reason of the
       skip when it gave one.
     - A counted failure holds one [failure] element for each of the test's own
-      failures. The [message] of the element is {!Report_sections.headline}. Its
-      text is the entry of {!Report_sections.pp_failure} under [ansi:false] and
-      without excerpt. The entry ends with its hint lines
-      ({!Report_sections.hints}), its [accept:] line ({!Report_sections.accept})
-      and its [replay:] line ({!Report_sections.replay}), whose filter is the
-      full path of the test: a [failure] is read alone, away from the
-      transcript.
+      failures. Its [message] and its text are the summary and the lines of
+      {!Report_sections.unstyled_entry}, one per line, whose filter is the full
+      path of the test: a [failure] is read alone, away from the transcript.
     - A [system-out] follows these elements when a failure of the test, that of
       a subtest included, has a captured tail. It holds the whole text of the
       first such {!Failure.type-tail}.
@@ -83,17 +81,18 @@
 val write :
   invocation:Run.invocation ->
   ?armed:string ->
-  ?workers:bool ->
+  ?paths:string list ->
   suite:string ->
   duration:float ->
   results:Run.result list ->
   release_failures:Failure.t list ->
   string ->
   unit
-(** [write ~invocation ?armed ?workers ~suite ~duration ~results
-     ~release_failures target] writes the {{!section-document}document} of
-    [results] and [release_failures] to the file that [target], the value of
-    [--junit], names for [suite].
+(** [write ~invocation ?armed ~suite ~duration ~results ~release_failures
+     target] writes the {{!section-document}document} of [results] and
+    [release_failures] to the file that [target], the value of [--junit], names
+    for [suite]. [paths] are the suite's test paths, which a failure's
+    [replay it:] line excludes as {!Report_sections.unstyled_entry} does.
     - A [target] that ends in [.xml] is that file, as given. The test is that of
       [Filename.check_suffix], on the name alone. Every suite that reads the
       same value writes the same file, and the last one wins.
@@ -103,10 +102,9 @@ val write :
       their names apart. [write] creates the directory and its parents
       ({!Os.mkdir_p}), and it never creates the parent of an [.xml] target.
 
-    [invocation], [armed], which is the identifier of an armed mutant, and
-    [workers] ({!Report_sections.replay}) spell the hint lines of each failure.
-    The caller must pass those of the run, so that the text of a [failure] is
-    the lines of the block on the terminal.
+    [invocation] and [armed], which is the identifier of an armed mutant, spell
+    the hint lines of each failure. The caller must pass those of the run, so
+    that the text of a [failure] is the lines of the block on the terminal.
 
     {!Os.atomic_write} writes the file, so an existing report is replaced whole.
     A report that cannot be written is one warning on standard error

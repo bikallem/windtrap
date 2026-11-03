@@ -165,7 +165,7 @@ let duplicate_counts_once () =
 let points_and_instrumentation =
   group "Points and instrumentation"
     [
-      cases "register refuses a table no instrumenter emits" ~name:fst
+      cases "register refuses a table no instrumenter emits" ~id:fst
         [
           ("counts of another length", ([| pt 0 1 |], Array.make 2 0));
           ("an inverted extent", ([| pt 5 3 |], [| 0 |]));
@@ -382,6 +382,23 @@ let collections =
         mismatch_message;
       test "a data error is Instr's message, which says to delete the files"
         data_message;
+      test
+        "keep keeps the points a predicate holds of, with their counts, and \
+         drops a file it leaves with none" (fun () ->
+          let t =
+            collection
+              [
+                ("lib/a.ml", [ (line 1, 3); (line 2, 0); (line 3, 5) ]);
+                ("lib/b.ml", [ (line 1, 1) ]);
+              ]
+          in
+          let odd ~file (p : Coverage.point) =
+            String.equal file "lib/a.ml" && p.start_ofs <> (line 2).start_ofs
+          in
+          equal hits_t
+            [ ("lib/a.ml", [ (1, 3); (3, 5) ]) ]
+            (hits (Coverage.keep odd t));
+          equal hits_t (hits t) (hits (Coverage.keep (fun ~file:_ _ -> true) t)));
     ]
 
 (* Dumps *)
@@ -474,7 +491,7 @@ let unwritable () =
   let r = run_child ~dump:blocked [ "first" ] in
   equal int 0 (Child.exit_code r);
   starts_with
-    ~affix:("windtrap: warning: cannot write coverage file " ^ blocked ^ ": ")
+    ~prefix:("windtrap: warning: cannot write coverage file " ^ blocked ^ ": ")
     r.err
 
 let silent () =
@@ -558,6 +575,33 @@ let destination_fixed () =
 
 let posix_only () = if Sys.win32 then skip ~reason:"POSIX only" ()
 
+(* The library that hides /proc/self/exe from the child it is preloaded
+   into, built on Linux alone. *)
+let no_proc_exe =
+  Filename.concat
+    (Filename.dirname Windtrap_runtime.Instr.executable)
+    "../../support/preload/no_proc_exe.so"
+
+(* Started by a relative name with /proc/self/exe hidden, the child's
+   runtime takes its name from argv[0], relative to the directory it started
+   in, as outside Linux and macOS. It then changes directory, and its dump
+   still names and digests the executable. *)
+let identity_from_the_start_directory () =
+  if not (Sys.file_exists "/proc/self/exe") then
+    skip ~reason:"preloading a library is Linux's" ();
+  let started = Filename.dirname child_exe
+  and name = "./" ^ Filename.basename child_exe in
+  let run ~dump args =
+    Child.run ~cwd:started
+      ~env:[ ("WINDTRAP_COVERAGE_FILE", dump); ("LD_PRELOAD", no_proc_exe) ]
+      name args
+  in
+  let dump = Filename.concat (temp_dir ()) "child.coverage" in
+  equal string name (run ~dump [ "name" ]).out;
+  let r = run ~dump [ "moved"; temp_dir () ] in
+  equal int 0 (Child.exit_code r);
+  equal string (child_dump ~exe:child_exe [| 1; 0; 0 |]) (read dump)
+
 let fork_shares_the_path () =
   posix_only ();
   let dump = Filename.concat (temp_dir ()) "fork.coverage" in
@@ -592,7 +636,7 @@ let relative_needs_cwd () =
   no_removed_cwd ();
   let err = cwd_gone ~dump:"rel.coverage" in
   starts_with
-    ~affix:"windtrap: warning: cannot determine the coverage output file: " err;
+    ~prefix:"windtrap: warning: cannot determine the coverage output file: " err;
   equal int 1 (List.length (String.split_on_char '\n' (String.trim err)))
 
 let absolute_needs_none () =
@@ -629,6 +673,10 @@ let dumps =
         "the destination is fixed at the first registration, a relative path \
          against the directory of that moment"
         destination_fixed;
+      test
+        "a child named relative to its start directory keeps its identity \
+         after it changes directory"
+        identity_from_the_start_directory;
       test
         "under WINDTRAP_COVERAGE_FILE a forked child and its parent share the \
          path, and the last to exit wins"
@@ -670,10 +718,9 @@ let dumps =
       test "load reads a dump of no file as the empty collection" (fun () ->
           equal string "files: "
             (loaded (load_text "windtrap-coverage-v3\n0\n")));
-      cases "load refuses another first line" ~name:fst foreign
-        (fun (_, text) ->
+      cases "load refuses another first line" ~id:fst foreign (fun (_, text) ->
           equal string "unknown format" (loaded (load_text text)));
-      cases "load refuses truncated or invalid data" ~name:fst corrupt
+      cases "load refuses truncated or invalid data" ~id:fst corrupt
         (fun (_, text) -> equal string "corrupt" (loaded (load_text text)));
       test "load refuses a missing file as unreadable" (fun () ->
           equal string "unreadable"
@@ -842,7 +889,7 @@ let report_data =
             { Coverage.visited = 0; total = 0 }
             (Coverage.summary (collection [ ("lib/e.ml", []) ])));
       cases "uncovered_lines are the lines an unvisited extent touches"
-        ~name:(fun (name, _, _, _) -> name)
+        ~id:(fun (name, _, _, _) -> name)
         touched_lines
         (fun (_, source, extents, lines) ->
           equal (list int) lines

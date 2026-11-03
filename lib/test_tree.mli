@@ -7,11 +7,10 @@
 
     A suite is a list of {!t} values, leaf tests and nested groups. Declaring is
     data construction. A constructor stores a body, a scope, a setup and a
-    teardown without calling them, and the [name] of {!cases} is the one
-    function of the user that a constructor calls. A group has no hooks, so
-    every callback that a tree stores belongs to one test, and the runner calls
-    it inside the exception boundary of that test. {!flatten} resolves what the
-    groups declare onto their tests.
+    teardown without calling them, and calls no function of the user. A group
+    has no hooks, so every callback that a tree stores belongs to one test, and
+    the runner calls it inside the exception boundary of that test. {!flatten}
+    resolves what the groups declare onto their tests.
 
     The path of a test is the names of its enclosing groups, outermost first,
     then its own. {!path_to_string} joins it into the path string, which is the
@@ -24,7 +23,9 @@
     The declaration site of a node is [Loc.resolve ?__POS__ ()], fixed when its
     constructor is applied. A capture cannot see through the frame of a helper
     that wraps a constructor, so a function of the library that wraps one must
-    take [?__POS__] and pass it on. *)
+    take [?__POS__] and pass it on.
+
+    @canonical Windtrap.Private.Test_tree *)
 
 (** {1:tags Tags}
 
@@ -94,78 +95,27 @@ type body =
 
 (** {1:declaring Declaring tests}
 
-    The six constructors take the same four optional arguments, and each stores
-    what it is given on the node that it builds.
-    - [__POS__] is the declaration site (see the preamble of the module).
-    - [tags] are the tags of the node itself. Defaults to [[]].
-    - [timeout] is the limit of a test in seconds, over its setup, its body and
-      its teardown, and for {!scoped} over the whole call of [scope].
-    - [retries] is the number of extra attempts that a failing test gets.
-
-    A node without [timeout] or without [retries] declares none, and {!flatten}
-    takes that of the nearest enclosing group that declares one, so on a group
-    the two are the defaults of every test under it.
-
-    Every constructor raises [Invalid_argument], when it is applied, if
-    [timeout] is given and is not finite and positive, or if [retries] is
-    negative. *)
+    The facade states the three optional arguments of the constructors, and when
+    a constructor raises. Each stores what it is given on the node that it
+    builds, with no tag, and a node without [timeout] or without [retries]
+    declares none, which {!flatten} resolves. *)
 
 val test :
   ?__POS__:Loc.pos ->
-  ?tags:string list ->
   ?timeout:float ->
   ?retries:int ->
   string ->
   (unit -> unit) ->
   t
-(** [test name fn] is the test [name] with the body [fn], stored as a {!Body}.
-    The body passes by returning and fails by raising. *)
-
-val slow :
-  ?__POS__:Loc.pos ->
-  ?tags:string list ->
-  ?timeout:float ->
-  ?retries:int ->
-  string ->
-  (unit -> unit) ->
-  t
-(** [slow name fn] is {!val-test} with {!Tag.slow} added to [tags]. *)
+(** [test name fn] stores [fn] as a {!Body}. See the facade's [test]. *)
 
 val group :
-  ?__POS__:Loc.pos ->
-  ?tags:string list ->
-  ?timeout:float ->
-  ?retries:int ->
-  string ->
-  t list ->
-  t
-(** [group name children] is the group [name] over [children], which can hold
-    groups in turn. [name] is a component of the path of every test under the
-    group, and [tags] join their effective tags. *)
-
-val cases :
-  ?__POS__:Loc.pos ->
-  ?tags:string list ->
-  ?timeout:float ->
-  ?retries:int ->
-  name:('a -> string) ->
-  string ->
-  'a list ->
-  ('a -> unit) ->
-  t
-(** [cases ~name base inputs fn] is
-    [group base (List.map (fun i -> test (name i) (fun () -> fn i)) inputs)],
-    with two differences. Every child has the site of the [cases] call as its
-    declaration site. The optional arguments sit on the group, so [tags] reach
-    every child, and [timeout] and [retries] apply to each of them.
-
-    [name] is applied to every input, in the order of [inputs], when [cases] is
-    applied, so what it raises escapes at declaration, outside any test. *)
+  ?__POS__:Loc.pos -> ?timeout:float -> ?retries:int -> string -> t list -> t
+(** See the facade's [group]. *)
 
 val scoped :
   (('r -> unit) -> unit) ->
   ?__POS__:Loc.pos ->
-  ?tags:string list ->
   ?timeout:float ->
   ?retries:int ->
   string ->
@@ -182,7 +132,6 @@ val scoped :
 
 val bracket :
   ?__POS__:Loc.pos ->
-  ?tags:string list ->
   ?timeout:float ->
   ?retries:int ->
   setup:(unit -> 'r) ->
@@ -210,25 +159,25 @@ val bracket :
 
 (** {1:annotating Annotations}
 
-    An annotation marks the node that it is applied to and leaves its
-    declaration site alone. On a group it reaches every test under it, which
-    {!flatten} resolves. *)
+    {!flatten} resolves an annotation on a group onto every test under it. *)
+
+val tag : string -> t -> t
+(** [tag name t] is [t] with [name] added to its own tags, which {!flatten}
+    unions with those of its ancestors. See the facade's [tag]. *)
+
+val slow : t -> t
+(** [slow t] is [tag Tag.slow t]. *)
 
 val focus : t -> t
-(** [focus t] is [t] marked as focused. When a suite holds such a node, the
-    runner keeps only the tests of its selection that are focused (see
-    {!focus_sites}). *)
+(** See the facade's [focus], and {!focus_sites}. *)
 
 val xfail : ?reason:string -> t -> t
-(** [xfail ?reason t] is [t] marked as expected to fail. The mark is inert here,
-    and the runner inverts what counts as failed for such a test (see
-    {!Run.result.counted}). Such a test reaches no mutant (see {!Mutate_loop}).
-    [reason] is the known defect, and without it the annotation is
-    [{ reason = None }].
-
-    The annotation nearest a test is the one that its {!type-case} carries. On
-    one node the first one applied stays, so
-    [xfail ~reason:"b" (xfail ~reason:"a" t)] keeps ["a"]. *)
+(** [xfail ?reason t] is [t] marked, with [{ reason = None }] without [reason].
+    The mark is inert here, and the runner inverts what counts as failed for
+    such a test (see {!Run.result.counted}). The {!type-case} of a test carries
+    the annotation nearest it. On one node the first one applied stays, so
+    [xfail ~reason:"b" (xfail ~reason:"a" t)] keeps ["a"]. See the facade's
+    [xfail]. *)
 
 val focus_sites : t list -> Loc.t option list
 (** [focus_sites tests] is the declaration site of every node of [tests] that

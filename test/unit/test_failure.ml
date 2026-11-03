@@ -49,7 +49,7 @@ let texts =
       cases
         "a text keeps the longest prefix of at most 65,536 bytes on a code \
          point"
-        ~name:fst
+        ~id:fst
         [
           ("the empty string", ("", "0 of 0 bytes, whole, a prefix"));
           ( "65,536 bytes",
@@ -137,14 +137,14 @@ let reraise_keeps_the_backtrace () =
   in
   let original = text (Error c) in
   contains ~sub:"Test_failure.raise_not_found" original;
-  starts_with ~affix:original
+  starts_with ~prefix:original
     (text (Failure.catch (fun () -> Failure.reraise c)))
 
 let catching =
   group "Catching the user's code"
     [
       cases "catch classifies what its function raised"
-        ~name:(fun (n, _, _) -> n)
+        ~id:(fun (n, _, _) -> n)
         ((("a return", (fun () -> ()), "returned") :: raised)
         @ [
             ( "a timeout that cut a finally",
@@ -165,12 +165,12 @@ let catching =
           ])
         (fun (_, f, row) -> equal string row (catch_row f));
       cases "reraise raises again what catch returned"
-        ~name:(fun (n, _, _) -> n)
+        ~id:(fun (n, _, _) -> n)
         raised reraise_row;
       test "reraise continues the backtrace of an exception"
         reraise_keeps_the_backtrace;
       cases "exn_to_string drops Dune__exe__ where a name starts with it"
-        ~name:(fun (n, _, _) -> n)
+        ~id:(fun (n, _, _) -> n)
         [
           ("an executable's exception", Full, "Test_failure.Full");
           ( "a name inside another exception's printer",
@@ -188,7 +188,7 @@ let catching =
         ]
         (fun (_, e, s) -> equal string s (Failure.exn_to_string e));
       cases "caught_to_string is exn_to_string of the exception it classifies"
-        ~name:fst
+        ~id:fst
         [
           ("an exception", (`Exception (Full, Printexc.get_callstack 0), Full));
           ("an assertion", (`Assertion boom, Failure.Check_failure boom));
@@ -198,6 +198,82 @@ let catching =
         ]
         (fun (_, (c, e)) ->
           equal string (Failure.exn_to_string e) (Failure.caught_to_string c));
+    ]
+
+(* Recording *)
+
+(* Each failure's message, and whether it is marked caught. *)
+let marked fs =
+  List.map
+    (fun (f : Failure.t) ->
+      match f.kind with
+      | Message m -> (m.kept, f.caught)
+      | _ -> ("not a message", f.caught))
+    fs
+
+let marks = list (pair string bool)
+let swallow f = try f () with _ -> ()
+let refused name () = Failure.refuse (Failure.message name)
+
+(* [caught_row], naming the message of any assertion. *)
+let named_row = function
+  | Error (`Assertion f) -> "assertion " ^ fst (List.hd (marked [ f ]))
+  | r -> caught_row r
+
+let recorded f =
+  let ended, caught = Failure.recording f in
+  (named_row ended, marked caught)
+
+let recorded_row = pair string marks
+
+let recording =
+  group "Recording"
+    [
+      test "recording lists what was caught, oldest first, and not what left"
+        (fun () ->
+          equal recorded_row
+            ("assertion c", [ ("a", true); ("b", true) ])
+            (recorded (fun () ->
+                 swallow (refused "a");
+                 swallow (refused "b");
+                 refused "c" ())));
+      test "a failure caught inside catch is its error, marked caught"
+        (fun () ->
+          match Failure.catch (fun () -> swallow (refused "a")) with
+          | Error (`Assertion f) -> equal marks [ ("a", true) ] (marked [ f ])
+          | r -> fail ("caught " ^ caught_row r));
+      test "catch gives the oldest caught failure over what was raised"
+        (fun () ->
+          equal string "assertion a"
+            (named_row
+               (Failure.catch (fun () ->
+                    swallow (refused "a");
+                    raise Not_found))));
+      test "catch gives a timeout over a caught failure" (fun () ->
+          equal string "timeout 1.5"
+            (catch_row (fun () ->
+                 swallow (refused "a");
+                 raise (Failure.Control (`Timeout 1.5)))));
+      test "a failure refused again in its scope is recorded once" (fun () ->
+          equal recorded_row
+            ("returned", [ ("a", true) ])
+            (recorded (fun () ->
+                 swallow (fun () ->
+                     try refused "a" ()
+                     with Failure.Check_failure f -> Failure.refuse f))));
+      test "what an inner scope owns is not seen outside it" (fun () ->
+          equal recorded_row ("returned", [])
+            (recorded (fun () ->
+                 ignore (Failure.catch (fun () -> swallow (refused "a"))))));
+      test "reraise records an assertion in the enclosing scope" (fun () ->
+          let c = require_error (Failure.catch (refused "a")) in
+          equal recorded_row
+            ("returned", [ ("a", true) ])
+            (recorded (fun () -> swallow (fun () -> Failure.reraise c))));
+      test "a raise that is not a refusal records nothing" (fun () ->
+          equal recorded_row ("returned", [])
+            (recorded (fun () ->
+                 swallow (fun () -> raise (Failure.Check_failure boom)))));
     ]
 
 (* Backtraces *)
@@ -218,15 +294,16 @@ let unwrapped s =
   copy 0;
   Buffer.contents b
 
-(* [catch] handles the raise, so the trace ends in windtrap's frame. *)
+(* [catch] handles the raise in [recording], so the trace ends in windtrap's
+   frame. *)
 let trailing_run_dropped () =
   let raw = require_match exception_backtrace (Failure.catch raise_not_found) in
   let whole = Printexc.raw_backtrace_to_string raw in
   let trimmed = Failure.backtrace_to_string raw in
-  contains ~sub:"Windtrap__Failure.catch" whole;
-  starts_with ~affix:"Raised at Dune__exe__Test_failure.raise_not_found" whole;
-  starts_with ~affix:"Raised at Test_failure.raise_not_found" trimmed;
-  starts_with ~affix:trimmed (unwrapped whole);
+  contains ~sub:"Windtrap__Failure.recording" whole;
+  starts_with ~prefix:"Raised at Dune__exe__Test_failure.raise_not_found" whole;
+  starts_with ~prefix:"Raised at Test_failure.raise_not_found" trimmed;
+  starts_with ~prefix:trimmed (unwrapped whole);
   not_contains ~sub:"Windtrap__" trimmed;
   not_contains ~sub:"Dune__exe__" trimmed
 
@@ -351,6 +428,7 @@ let texts_of (f : Failure.t) =
         terms
   | Timeout _ -> []
   | Message t -> [ ("message", t) ]
+  | Vacuous t -> [ ("vacuous", t) ]
 
 let bounded_texts (_, (f, fields)) =
   let row (name, (t : Failure.text)) =
@@ -378,10 +456,13 @@ let defaults (f : Failure.t) =
         (present count) (present summary)
         (match shrink_end with
         | Converged -> "converged"
-        | Budget_spent | Candidate_raised _ | Timed_out _ -> "not converged")
-        (match rendering with Value -> "value" | Pre_image -> "pre-image")
+        | Budget_spent | Timed_out _ -> "not converged")
+        (match rendering with
+        | Ocaml -> "ocaml"
+        | Value -> "value"
+        | Pre_image -> "pre-image")
   | Law { clause; _ } -> "clause " ^ present clause
-  | Containment _ | Timeout _ | Message _ -> "no default"
+  | Containment _ | Timeout _ | Message _ | Vacuous _ -> "no default"
 
 let window (f : Failure.t) =
   require_match
@@ -389,7 +470,7 @@ let window (f : Failure.t) =
       | Failure.Containment { excerpt; excerpt_offset; haystack_length; _ } ->
           Some (excerpt_offset, excerpt, haystack_length)
       | Equality _ | Raise _ | Baseline _ | Property _ | Law _ | Timeout _
-      | Message _ ->
+      | Message _ | Vacuous _ ->
           None)
     f.kind
 
@@ -484,7 +565,7 @@ let baseline_names = function
       { baseline = File p; state = Unresolvable { candidate }; _ } ->
       Some (p, candidate)
   | Baseline _ | Equality _ | Containment _ | Raise _ | Property _ | Law _
-  | Timeout _ | Message _ ->
+  | Timeout _ | Message _ | Vacuous _ ->
       None
 
 let names_whole () =
@@ -524,9 +605,9 @@ let constructors =
       cases
         "a constructor builds a body failure with no location, subtest or \
          output"
-        ~name:fst constructed (fun (_, f) ->
+        ~id:fst constructed (fun (_, f) ->
           equal string "body, no loc, no msg, no subtest, no output" (frame f));
-      cases "a constructor bounds every text it is given" ~name:fst
+      cases "a constructor bounds every text it is given" ~id:fst
         [
           ( "equality",
             ( Failure.equality ~msg:big ~expected:big ~actual:big (),
@@ -574,7 +655,7 @@ let constructors =
       cases
         "a constructor fills its payload and defaults its optional fields to \
          none"
-        ~name:fst
+        ~id:fst
         [
           ( "equality",
             ( Failure.equality ~expected:"1" ~actual:"2" (),
@@ -611,7 +692,7 @@ let constructors =
         (fun (_, (f, row)) -> equal string row (defaults f));
       test "law keeps its fields and its terms in the order given" law_fields;
       cases "containment checks found_at and resumed_at against the haystack"
-        ~name:fst
+        ~id:fst
         [
           ("found_at -1", ((Some (-1), None), "raises Invalid_argument"));
           ("found_at 0", ((Some 0, None), "accepted"));
@@ -627,7 +708,7 @@ let constructors =
       cases
         "an unanchored excerpt is 10 lines or 1 KiB, from the head or under \
          Suffix the end"
-        ~name:(fun (n, _, _, _) -> n)
+        ~id:(fun (n, _, _, _) -> n)
         unanchored
         (fun (_, demand, haystack, window) ->
           let offset, excerpt, _ = excerpt demand haystack in
@@ -692,8 +773,9 @@ let withheld (f : Failure.t) =
   | Baseline { withheld = Some (Refused { line; reason }); _ } ->
       strf "refused %d: %s" line reason
   | Baseline { withheld = Some Conflict; _ } -> "conflict"
+  | Baseline { withheld = Some In_law; _ } -> "in a law"
   | Equality _ | Containment _ | Raise _ | Property _ | Law _ | Timeout _
-  | Message _ ->
+  | Message _ | Vacuous _ ->
       "no baseline"
 
 let baseline state = Failure.baseline (File "p") state
@@ -706,7 +788,7 @@ let property_inner (f : Failure.t) =
     (function
       | Failure.Property { inner; _ } -> inner
       | Equality _ | Containment _ | Raise _ | Baseline _ | Law _ | Timeout _
-      | Message _ ->
+      | Message _ | Vacuous _ ->
           None)
     f.kind
 
@@ -741,7 +823,7 @@ let failed_term_unmarked () =
 let updating =
   group "Updating"
     [
-      cases "with_withheld marks a baseline failure in any state" ~name:fst
+      cases "with_withheld marks a baseline failure in any state" ~id:fst
         [
           ("missing", Failure.Missing { proposed = Failure.text "a" });
           ("mismatch", mismatch);
@@ -751,7 +833,7 @@ let updating =
           equal string "skipped"
             (withheld (Failure.with_withheld Skipped (baseline state))));
       cases "a refused or conflicting mark holds whatever the attempt adds"
-        ~name:fst
+        ~id:fst
         [
           ( "refused",
             (Failure.Refused { line = 3; reason = "why" }, "refused 3: why") );
@@ -777,7 +859,7 @@ let tail_law (output, omitted) =
   let t = Failure.tail ~omitted_bytes:omitted output in
   let len = String.length output and kept = String.length t.text in
   cover "longer than tail_bytes" (len > Failure.tail_bytes);
-  ends_with ~affix:t.text output;
+  ends_with ~suffix:t.text output;
   at_most int ~than:Failure.tail_bytes kept;
   if len <= Failure.tail_bytes then equal int len kept
   else at_least int ~than:(Failure.tail_bytes - 3) kept;
@@ -811,6 +893,7 @@ let () =
          texts;
          control;
          catching;
+         recording;
          backtraces;
          constructors;
          faults;

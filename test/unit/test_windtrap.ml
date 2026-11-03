@@ -221,8 +221,35 @@ let tagged_prop () =
          if carries c then Some (Test_tree.path_to_string c.path) else None)
        (Test_tree.flatten tests))
 
+(* A mark wraps a test of any family, and a group, as [slow @@ …]. *)
+let marked () =
+  let noop = command "noop" (Gen.unit @-> returns unit) ignore ignore in
+  let tests =
+    [
+      slow @@ prop "law" Gen.int ignore;
+      tag "gpu" @@ cases "table" ~id:string_of_int [ 1 ] ignore;
+      tag "gpu" @@ slow @@ stateful "program" [ noop ];
+      slow @@ group "g" [ test "inner" ignore ];
+    ]
+  in
+  let known = [ "gpu"; "prop"; "slow"; "stateful" ] in
+  equal (list string)
+    [
+      "law: prop slow";
+      "table: gpu";
+      "program: gpu prop slow stateful";
+      "g › inner: slow";
+    ]
+    (List.map
+       (fun (c : Test_tree.case) ->
+         Test_tree.path_to_string c.path
+         ^ ": "
+         ^ String.concat " "
+             (List.filter (fun t -> Test_tree.Tag.mem t c.tags) known))
+       (Test_tree.flatten tests))
+
 let both_flags =
-  let tests = [ test ~tags:[ "x" ] "tagged" ignore; test "untagged" ignore ] in
+  let tests = [ tag "x" @@ test "tagged" ignore; test "untagged" ignore ] in
   List.map
     (fun flags ->
       (String.concat " " flags, facade ~flags:("-l" :: flags) "both" tests))
@@ -283,7 +310,8 @@ let declaring =
   group "Declaring tests"
     [
       test "prop adds the prop tag, under a group too" tagged_prop;
-      cases "a tag named by both --tag and --exclude-tag is excluded" ~name:fst
+      test "slow and tag mark a test of any family, and a group" marked;
+      cases "a tag named by both --tag and --exclude-tag is excluded" ~id:fst
         both_flags (fun (_, r) -> equal text "untagged\n" r.out);
       test "a property and a stateful test inherit a group's retries" (fun () ->
           equal (pair int int) (3, 3)
@@ -331,7 +359,7 @@ let strays =
 
 let a_label_outside_a_property name =
   let text = raised (failure strays [ name ]) in
-  starts_with ~affix:"Invalid_argument" text;
+  starts_with ~prefix:"Invalid_argument" text;
   contains ~sub:name text;
   contains ~sub:"property" text
 
@@ -358,7 +386,7 @@ let properties =
       test "collect, classify and cover label the cases of the running law"
         the_labels_reach_the_engine;
       cases "a label outside a property fails the test with Invalid_argument"
-        ~name:Fun.id
+        ~id:Fun.id
         [ "collect"; "classify"; "cover" ]
         a_label_outside_a_property;
       test "reject outside a property fails the test with the message"
@@ -411,6 +439,60 @@ let stateful_tests =
           equal (pair int int) (0, 0) ((stats programs [ "none" ]).cases, opened));
     ]
 
+(* Tables *)
+
+let parity n = if n mod 2 = 0 then "even" else "odd"
+
+let tables =
+  Recorded.execute
+    [
+      cases "duplicates" ~id:parity [ 1; 2; 3 ] ignore;
+      cases "keyed"
+        ~id:(fun n -> "n" ^ string_of_int n)
+        [ 1; 2 ]
+        (fun n -> equal int 1 n);
+    ]
+
+(* Two rows whose law returns but whose literal is stale, and one that
+   holds: the stale rows did not pass. *)
+let stale_table =
+  facade "stale"
+    [
+      cases "rows" ~id:fst
+        [
+          ("a", __POS_OF__ {| a |});
+          ("b", __POS_OF__ {| stale |});
+          ("c", __POS_OF__ {| stale |});
+        ]
+        (fun (text, literal) -> expect text literal);
+    ]
+
+(* A property that fails, beside another whose path holds its own. *)
+let replayable =
+  facade "replay"
+    [
+      prop "law" (Gen.with_pp Format.pp_print_int Gen.int) (fun _ ->
+          is_true false);
+      prop "law kept" Gen.int ignore;
+    ]
+
+let tables_group =
+  group "Tables"
+    [
+      test "a row that only failed on a baseline is not counted as passed"
+        (fun () ->
+          contains ~sub:"scope: 1 of 3 rows passed, 2 failed on a baseline"
+            stale_table.out);
+      test "replay it selects the property alone" (fun () ->
+          contains ~sub:"replay it: -f law -e 'law kept' --replay r1:"
+            replayable.out);
+      test "two rows with one id are duplicates, and no row runs" (fun () ->
+          contains ~sub:"duplicate rows: rows 1 and 3 have the id odd"
+            (message (failure tables [ "duplicates" ])));
+      test "a refuted row is reported by its id" (fun () ->
+          equal string "n2" (rendered (failure tables [ "keyed" ])));
+    ]
+
 (* Baselines *)
 
 let project env root = ("WINDTRAP_PROJECT_ROOT", root) :: env
@@ -459,7 +541,7 @@ let relative_file =
     [
       test "moved" (fun () ->
           chdir (temp_dir ());
-          expect_file "v" "rel.expected");
+          expect_file ~file:"rel.expected" "v\n");
     ]
 
 let bracketed, bracket_root =
@@ -469,7 +551,7 @@ let bracketed, bracket_root =
       ~config:(fun c -> { c with baseline = Baseline.Update })
       [
         bracket ~setup:ignore ~teardown:ignore "bracketed" (fun () ->
-            expect_file "content\n" "src/bracketed.expected");
+            expect_file ~file:"src/bracketed.expected" "content\n");
       ]
   in
   (r, root)
@@ -489,11 +571,11 @@ let promotion =
   let stale name =
     let file = name ^ ".expected" in
     write (Filename.concat root file) "old\n";
-    test name (fun () -> expect_file "new\n" file)
+    test name (fun () -> expect_file ~file "new\n")
   in
   let masked =
     test "masked" (fun () ->
-        expect_file "new\n" "masked.expected";
+        expect_file ~file:"masked.expected" "new\n";
         equal int 1 2)
   in
   let run flags tests =
@@ -531,7 +613,7 @@ let checked_rows, accepted_rows, row_copy =
   write copy
     (read (Filename.concat (Filename.dirname Sys.executable_name) this_file));
   let table =
-    cases "rows" ~name:fst rows (fun (text, literal) -> expect text literal)
+    cases "rows" ~id:fst rows (fun (text, literal) -> expect text literal)
   in
   let run baseline =
     Recorded.execute ~env:(project [] root)
@@ -541,26 +623,19 @@ let checked_rows, accepted_rows, row_copy =
   let checked = run Baseline.Check in
   (checked, run Baseline.Update, copy)
 
+(* A row's failure is labelled with the row, as a subtest's is. *)
 let each_row_checks_its_literal () =
-  let outcome (name, _) =
-    let path = [ "rows"; name ] in
-    match Recorded.failures checked_rows path with
-    | [] -> strf "%s: %s" name (Recorded.row checked_rows path)
-    | failures ->
-        let lines =
-          List.map
-            (fun (f : Failure.t) -> string_of_int (require_some f.loc).Loc.line)
-            failures
-        in
-        strf "%s: failed at line %s" name (String.concat ", " lines)
+  let failed (f : Failure.t) =
+    strf "%s: failed at line %d"
+      (Test_tree.path_to_string (List.tl f.subtest))
+      (require_some f.loc).Loc.line
   in
   equal (list string)
     [
-      "same: pass";
-      strf "new one: failed at line %d" (row_line (List.nth rows 1));
-      strf "new two: failed at line %d" (row_line (List.nth rows 2));
+      strf "row 2 of 3: new one: failed at line %d" (row_line (List.nth rows 1));
+      strf "row 3 of 3: new two: failed at line %d" (row_line (List.nth rows 2));
     ]
-    (List.map outcome rows)
+    (List.map failed (Recorded.failures checked_rows [ "rows" ]))
 
 let each_row_is_corrected_alone () =
   let lines = String.split_on_char '\n' (read row_copy) in
@@ -576,19 +651,79 @@ let each_row_is_corrected_alone () =
     [ strf "wrote %s, 2" (Windtrap_test_support.slashed row_copy) ]
     (written accepted_rows)
 
+(* A law that checks one literal for every value from 10 on: each mode
+   refutes the case, shrinks it to 10, and writes nothing. *)
+let in_law baseline =
+  let root = Scratch.dir "windtrap-law-" in
+  let copy = Filename.concat root __FILE__ in
+  Os.mkdir_p (Filename.dirname copy);
+  write copy
+    (read (Filename.concat (Filename.dirname Sys.executable_name) this_file));
+  Recorded.execute ~env:(project [] root)
+    ~config:(fun c -> { c with baseline; seed = 1L })
+    [
+      prop "law" (Gen.int_range 0 1000) (fun n ->
+          if n >= 10 then expect (string_of_int n) @@ __POS_OF__ {|x|});
+    ]
+
+let in_law_runs =
+  List.map (fun m -> (m, in_law m)) Baseline.[ Check; Corrected; Update ]
+
+let a_law's_mismatch_refutes_its_case (_, r) =
+  let shown (f : Failure.t) =
+    match f.kind with
+    | Property
+        { rendered; inner = Some { kind = Baseline { withheld; _ }; _ }; _ } ->
+        strf "%s, %s" rendered.kept
+          (match withheld with
+          | Some Failure.In_law -> "in a law"
+          | Some _ -> "withheld otherwise"
+          | None -> "a correction")
+    | _ -> "not a property's mismatch"
+  in
+  equal (list string) [ "10, in a law" ]
+    (List.map shown (Recorded.failures r [ "law" ]));
+  equal (list string) [] (written r)
+
 (* An expect_file failure at a given position. *)
 let placed_file =
   let root = Scratch.dir "windtrap-placed-" in
   Recorded.execute ~env:(project [] root)
     [
       test "placed" (fun () ->
-          expect_file ~__POS__:("elsewhere.ml", 7, 2, 9) "v" "placed.expected");
+          expect_file ~__POS__:("elsewhere.ml", 7, 2, 9) ~file:"placed.expected"
+            "v");
     ]
+
+(* A file whose last line ends in a newline that the produced text lacks,
+   checked, then accepted with -u. *)
+let lost_newline =
+  let root = Scratch.dir "windtrap-newline-" in
+  let file = Filename.concat root "n.expected" in
+  write file "a\nb\n";
+  let tests =
+    [ test "drops it" (fun () -> expect_file ~file:"n.expected" "a\nb") ]
+  in
+  let env = project [] root in
+  let checked = facade ~env "newline" tests in
+  let accepted = facade ~env ~flags:[ "-u" ] "newline" tests in
+  (checked, accepted, In_channel.with_open_bin file In_channel.input_all)
+
+let a_lost_final_newline_fails () =
+  let checked, _, _ = lost_newline in
+  equal int 1 checked.code;
+  contains
+    ~sub:"values differ only by a trailing newline (on the expected side)"
+    checked.out
+
+let u_writes_the_produced_bytes () =
+  let _, accepted, on_disk = lost_newline in
+  equal (pair int string) (0, "a\nb") (accepted.code, on_disk)
 
 let one_warning () =
   expect_exact (promoted "a correction beside a failure").err
   @@ __POS_OF__
-       {|windtrap: warning: dune registers a correction for promotion only when the run that wrote it exits 0, so the failures above withhold the correction written here. Fix the failures, rerun, then 'dune promote'.
+       {|windtrap: warning: dune registers a correction for promotion only when the run that wrote it exits 0, so the failures above withhold the correction written here. Fix the failures, rerun, then 'dune promote'. To accept it now: promotion -u
 |}
 
 let the_warning_agrees_in_number () =
@@ -610,9 +745,23 @@ let baselines =
       test "each row of a cases table is checked against the literal it carries"
         each_row_checks_its_literal;
       test "-u corrects each row's literal alone" each_row_is_corrected_alone;
+      cases
+        "in a law, a mismatch refutes the case, which shrinks, and is never a \
+         correction"
+        ~id:(fun (mode, _) ->
+          match mode with
+          | Baseline.Check -> "check"
+          | Corrected -> "--corrected"
+          | Update -> "-u")
+        in_law_runs a_law's_mismatch_refutes_its_case;
       test "expect_file locates its failure at the __POS__ given" (fun () ->
           let loc = require_some (failure placed_file [ "placed" ]).loc in
           equal (pair string int) ("elsewhere.ml", 7) (loc.Loc.file, loc.line));
+      test
+        "expect_file compares the final newline, and says when it alone differs"
+        a_lost_final_newline_fails;
+      test "-u writes expect_file's text as produced"
+        u_writes_the_produced_bytes;
       test "a relative expect_file path does not follow chdir" (fun () ->
           equal string "pass" (Recorded.row relative_file [ "moved" ]));
       test "a baseline in a bracket's body is accepted like any other"
@@ -626,7 +775,7 @@ let baselines =
               ] )
             (Recorded.exit_code bracketed, written bracketed));
       cases "a correction dune will not promote is the one run that warns"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         [
           ("a correction beside a failure", 1, true);
           ("two corrections beside a failure", 1, true);
@@ -643,7 +792,7 @@ let baselines =
       test "the warning agrees in number" the_warning_agrees_in_number;
       test "the warning leaves the summary the report's last line" (fun () ->
           let r = promoted "a correction beside a failure" in
-          starts_with ~affix:"2 failed, 1 correction written in "
+          starts_with ~prefix:"2 failed, 1 correction written in "
             (last_line r.out));
       test "-u beside a failure accepts in place" (fun () ->
           contains ~sub:"1 correction accepted in "
@@ -690,7 +839,7 @@ let outside_a_test =
     ("output", escape output);
     ("expect", escape (fun () -> expect "x" (__POS__, "x")));
     ("expect_exact", escape (fun () -> expect_exact "x" (__POS__, "x")));
-    ("expect_file", escape (fun () -> expect_file "x" "x.expected"));
+    ("expect_file", escape (fun () -> expect_file ~file:"x.expected" "x"));
     ("collect", escape (fun () -> collect "label"));
     ("classify", escape (fun () -> classify "label" true));
     ("cover", escape (fun () -> cover "label" true));
@@ -743,10 +892,10 @@ let an_operation_fails_a_release () =
 let the_running_test =
   group "The running test"
     [
-      cases "raises Invalid_argument outside a test" ~name:fst outside_a_test
+      cases "raises Invalid_argument outside a test" ~id:fst outside_a_test
         (fun (_, e) ->
-          raises_match (Exn.invalid_arg ~substring:"no test is running")
-            (fun () -> replay e));
+          raises_match (Exn.invalid_arg ~sub:"no test is running") (fun () ->
+              replay e));
       test "outside a test setenv, chdir and subtest change nothing" (fun () ->
           equal
             (triple (option string) string bool)
@@ -827,15 +976,6 @@ let mirrored_usage =
 
 let mirrored_empty = facade ~env:filter_mirror "emptied" []
 
-(* A revision that no mutation loop reads, by its source. *)
-let unused_since =
-  [
-    ( "--mutate-since",
-      facade ~flags:[ "--mutate-since=HEAD" ] "since" [ passes ] );
-    ( "WINDTRAP_MUTATE_SINCE",
-      facade ~env:[ ("WINDTRAP_MUTATE_SINCE", "HEAD") ] "since" [ passes ] );
-  ]
-
 (* A run whose argv.(0) is empty, and one without argv. *)
 let fixed_flags logs = [ "-o"; logs; "--color"; "never" ]
 
@@ -891,7 +1031,7 @@ let kept_stops, kept_entered =
   write (Filename.concat root "c.expected") "old\n";
   let tests =
     [
-      test "corrects" (fun () -> expect_file "new\n" "c.expected");
+      test "corrects" (fun () -> expect_file ~file:"c.expected" "new\n");
       test "later" ignore;
     ]
   in
@@ -910,7 +1050,7 @@ let bailed_entries =
 
 let version_line () =
   let out = version.out in
-  starts_with ~affix:"windtrap " out;
+  starts_with ~prefix:"windtrap " out;
   one_line out;
   not_contains ~sub:"%" out
 
@@ -918,7 +1058,7 @@ let running =
   group "Running"
     [
       cases "run returns the exit code"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         codes
         (fun (_, code, r) -> equal int code r.code);
       test "run raises Invalid_argument while a run is executing" nested_run;
@@ -927,18 +1067,18 @@ let running =
           equal string "" help.err);
       test "--version prints one line that names the version" version_line;
       cases "a usage error prints nothing on stdout and names the fault"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         usage_errors
         (fun (_, r, fault) ->
           equal string "" r.out;
           contains ~sub:fault r.err);
       test "the report is complete on stdout when run returns" (fun () ->
-          starts_with ~affix:"codes: 1 passed in " green.out;
+          starts_with ~prefix:"codes: 1 passed in " green.out;
           equal string "" green.err);
       test "a failing suite's report holds its failure" (fun () ->
           contains ~sub:"  FAIL  boom" red.out);
       test "a second suite in the same process prints its own report" (fun () ->
-          starts_with ~affix:"second: 1 passed in " second.out);
+          starts_with ~prefix:"second: 1 passed in " second.out);
       test "-l prints the selection alone, in declaration order" (fun () ->
           equal (triple int text string)
             (0, "outer › picked\nother\n", "")
@@ -951,15 +1091,15 @@ let running =
           @@ __POS_OF__
                {|windtrap: no tests selected: filter "zzznope" matched none of 2 tests.
 |});
-      test "an empty selection says why, then how to list the suite" (fun () ->
+      test "an empty selection says how to list the suite, then why" (fun () ->
           equal (pair int string) (2, "") (emptied_pair.code, emptied_pair.err);
           expect_exact emptied_pair.out
           @@ __POS_OF__
-               {|emptysuite: no tests ran: filter "zzznope" matched none of 2 tests.
-list: emptysuite -l
+               {|list: emptysuite -l
+emptysuite: no tests ran: filter "zzznope" matched none of 2 tests.
 |});
       cases "the code of a selection that keeps no test"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         selection_codes
         (fun (_, code, r) -> equal int code r.code);
       test "a mirror's emptied selection says why and names no way out"
@@ -972,8 +1112,8 @@ list: emptysuite -l
       test "under --corrected the way out names the flag" (fun () ->
           expect_exact typed_corrected.out
           @@ __POS_OF__
-               {|emptied: no tests ran: filter "zzznope" matched none of 1 test.
-(list the suite's tests with -l)
+               {|(list the suite's tests with -l)
+emptied: no tests ran: filter "zzznope" matched none of 1 test.
 |});
       test "without argv.(0) a run prints what it prints with it" (fun () ->
           equal text typed_corrected.out blank_typed.out;
@@ -984,26 +1124,14 @@ list: emptysuite -l
         (fun () ->
           equal int 2 blank_usage.code;
           contains ~sub:"usage: blank [OPTIONS] [PATTERN...]" blank_usage.err);
-      cases "flags that change what prints change no exit code" ~name:fst
-        printing (fun (_, code) -> equal int 1 code);
+      cases "flags that change what prints change no exit code" ~id:fst printing
+        (fun (_, code) -> equal int 1 code);
       test "a test of kept corrections still stops -x" (fun () ->
           contains ~sub:"1 not run" kept_stops.out);
       test "a test of kept corrections enters the last failed tests" (fun () ->
           equal text "corrects\n" kept_entered.out);
       test "a test that -x left unexecuted keeps its entry" (fun () ->
           equal text "a\nb\n" bailed_entries.out);
-      cases
-        "a revision without a mutation loop runs the suite and says so on \
-         stderr"
-        ~name:fst unused_since (fun (source, r) ->
-          equal int 0 r.code;
-          starts_with ~affix:"since: 1 passed in " r.out;
-          equal text
-            (strf
-               "windtrap: %s gives a revision, but neither --mutate nor \
-                WINDTRAP_MUTATE is given, so the suite runs without mutation\n"
-               source)
-            r.err);
     ]
 
 let () =
@@ -1014,6 +1142,7 @@ let () =
          declaring;
          properties;
          stateful_tests;
+         tables_group;
          baselines;
          captured_output;
          the_running_test;

@@ -8,11 +8,11 @@ type ending = Done | Raised of exn * Printexc.raw_backtrace
 exception Stuck of exn * Printexc.raw_backtrace
 
 (* The caller publishes a run under [mutex], as a new [generation] and its
-   [jobs]. Worker [i] marks the generation it took in [arrived.(i)] and then in
-   [ready.(i)] at the start barrier. It marks it in [ended.(i)] after it wrote
-   its [ending]. Thus the ending and every write of the job are visible to the
-   caller that reads the mark. A mark is an atomic store: it allocates nothing,
-   so no asynchronous exception lands between a worker and its mark, as one can
+   [jobs]. Worker [i] marks the generation it took in [arrived.(i)] at the
+   start barrier, and in [ended.(i)] once it has written its [ending], so
+   the ending and every write of the job are visible to the caller that
+   reads the mark. A mark is an atomic store: it allocates nothing, so no
+   asynchronous exception lands between a worker and its mark, as one can
    in [Atomic.incr], which allocates from OCaml 5.4; and marking twice is
    harmless. *)
 type t = {
@@ -22,7 +22,9 @@ type t = {
   mutable jobs : (unit -> unit) array;
   mutable quit : bool;
   arrived : int Atomic.t array; (* the start barrier *)
-  ready : int Atomic.t array; (* the second phase of the start barrier *)
+  gate : Mutex.t;
+  opened : Condition.t;
+  asleep : int Atomic.t;
   ended : int Atomic.t array;
   endings : ending array;
   mutable domains : unit Domain.t list;
@@ -31,11 +33,13 @@ type t = {
 
 let size t = Array.length t.endings
 
-let all_marked marks generation =
-  let rec from i =
-    i = Array.length marks || (Atomic.get marks.(i) = generation && from (i + 1))
-  in
-  from 0
+(* A local closure over [marks] would allocate in every call, and a worker
+   and the caller spin on this. *)
+let rec marked_from marks generation i =
+  i = Array.length marks
+  || (Atomic.get marks.(i) = generation && marked_from marks generation (i + 1))
+
+let all_marked marks generation = marked_from marks generation 0
 
 (* The next generation after [seen], or [None] to exit. An exception out of
    the blocking wait, as a handler of the user's may raise, leaves the mutex
@@ -55,75 +59,109 @@ let take t seen =
       Mutex.unlock t.mutex;
       raise exn
 
+(* [Format.std_formatter] is the main domain's: a worker's printing goes to
+   its own domain's formatters. *)
 let flush_formatters () =
-  Format.pp_print_flush Format.std_formatter ();
-  Format.pp_print_flush Format.err_formatter ()
+  Format.pp_print_flush (Format.get_std_formatter ()) ();
+  Format.pp_print_flush (Format.get_err_formatter ()) ()
 
-(* [wait] first spins, so that it sees the end of a short wait at once.
-   Then it sleeps in short steps, and the other domains can use the
-   processors. A signal handler runs at the poll points of the two. *)
-let spins = 20_000
-let pause = 0.000_2
+(* The start barrier. A worker that arrives before the others spins, so
+   that on a processor of its own it starts its job within a spin of the
+   last to arrive. Past [spin_ns] it sleeps on [opened] and leaves its
+   processor to the workers it waits for, which may share it; the last to
+   arrive wakes it. A sleeper counts itself in [asleep], under [gate],
+   before it reads the marks, and an arriver reads [asleep] after its mark,
+   so either the sleeper sees the mark or the arriver sees the sleeper. A
+   sleeper's generation stays in every mark until it has passed, since the
+   next is published only once every worker has ended.
 
-let wait done_ =
-  let rec step spun =
-    if not (done_ ()) then
-      if spun < spins then begin
-        Domain.cpu_relax ();
-        step (spun + 1)
-      end
-      else begin
-        Unix.sleepf pause;
-        step spun
-      end
-  in
-  step 0
+   An asynchronous exception can land at a poll point between a mark and
+   the wake, as a signal handler or a finaliser raises: in the loop of
+   [all_marked], or as a contended lock of [gate] leaves its blocking
+   section. The worker then opens the gate again as it records the
+   exception as its job's ending, and [recover] opens it once more whatever
+   else lands.
 
-(* The most seconds of the second phase of the start barrier: more than a
-   sleep step of [wait] and the time that the system takes to wake the
-   thread. A bound in time and not in spins does not depend on the speed of
-   [Domain.cpu_relax]. *)
-let ready_limit = 0.000_5
+   Two workers woken together for a run arrive within 3 us of each other
+   when each has a processor; one that waits for a processor arrives tens
+   of microseconds to milliseconds after the other. 20 us of spinning takes
+   the first and leaves the processor in the second, where spinning on
+   would cost a worker that shares it a time slice. The bound is a time,
+   since a spin's cost varies tenfold between processors. Yielding before
+   sleeping hands the processor to whatever else waits for it, for its
+   slice: on a loaded machine that cost each run 2 ms and most of the
+   jobs' overlap. The last to arrive wakes a sleeper at once, where sleeping
+   in steps, as [wait] does, would start it a step late. *)
+let spin_ns = 20_000
 
-(* [spin done_] spins until [done_ ()], but at most [ready_limit]
-   seconds. *)
-let spin done_ =
-  let started = Os.counter () in
-  while (not (done_ ())) && Os.count_s started < ready_limit do
-    Domain.cpu_relax ()
-  done
+(* Wakes the sleepers once every worker has arrived. A spurious wake is
+   harmless: a sleeper reads the marks again. *)
+let open_gate t generation =
+  if Atomic.get t.asleep > 0 && all_marked t.arrived generation then begin
+    Mutex.lock t.gate;
+    match Condition.broadcast t.opened with
+    | () -> Mutex.unlock t.gate
+    | exception exn ->
+        Mutex.unlock t.gate;
+        raise exn
+  end
 
-(* Whatever the job raises is its ending.
+(* Only a sleeper writes [asleep], under [gate]. *)
+let count_asleep t n = Atomic.set t.asleep (Atomic.get t.asleep + n)
 
-   The start barrier has two phases. In the first, a worker waits for the other
-   workers ([wait]), and it sleeps after [spins], as the caller does in [run].
-   Thus, when a process has fewer CPUs than domains, its workers do not spin for
-   the time slices of the workers that do not run. But a worker that sleeps sees
-   the last arrival late, and the last worker starts its job at once. In the
-   second phase, each worker is awake, and it spins until all are ready
-   ([spin]). Thus the jobs start together. A worker that does not get ready in
-   [ready_limit] does not stop the others. *)
+(* An exception out of the blocking wait leaves [asleep] as it found it and
+   [gate] released. *)
+let sleep t generation =
+  Mutex.lock t.gate;
+  count_asleep t 1;
+  match
+    while not (all_marked t.arrived generation) do
+      Condition.wait t.opened t.gate
+    done
+  with
+  | () ->
+      count_asleep t (-1);
+      Mutex.unlock t.gate
+  | exception exn ->
+      count_asleep t (-1);
+      Mutex.unlock t.gate;
+      raise exn
+
+(* A clock that fails reads 0, and the worker then sleeps at once. *)
+let rec pass t generation start =
+  if not (all_marked t.arrived generation) then begin
+    let now = Os.spin_ns () in
+    if now <= 0 || now - start >= spin_ns then sleep t generation
+    else begin
+      Domain.cpu_relax ();
+      pass t generation start
+    end
+  end
+
+(* Whatever the job raises is its ending, and opens the gate. *)
 let run_job t i generation jobs =
   let ending =
     match
       Atomic.set t.arrived.(i) generation;
-      wait (fun () -> all_marked t.arrived generation);
-      Atomic.set t.ready.(i) generation;
-      spin (fun () -> all_marked t.ready generation);
+      open_gate t generation;
+      pass t generation (Os.spin_ns ());
       jobs.(i) ()
     with
     | () -> Done
-    | exception exn -> Raised (exn, Printexc.get_raw_backtrace ())
+    | exception exn ->
+        let backtrace = Printexc.get_raw_backtrace () in
+        open_gate t generation;
+        Raised (exn, backtrace)
   in
   (try flush_formatters () with _ -> ());
   ending
 
 (* Nothing leaves the loop but an exit. An exception that escapes [serve],
    as an asynchronous one may between its handlers, ends the job taken and
-   not yet ended, if any: the worker arrives, so the other jobs start, and
-   the exception is the job's ending, so no run waits for this worker. An
-   exception in that recovery starts it again. The loop then takes the next
-   job. *)
+   not yet ended, if any: the worker arrives and opens the gate, so the
+   other jobs start, and the exception is the job's ending, so no run waits
+   for this worker. An exception in that recovery starts it again. The loop
+   then takes the next job. *)
 let work t i =
   let taken = ref 0 in
   let publish ending =
@@ -144,9 +182,9 @@ let work t i =
     match
       if Atomic.get t.ended.(i) <> !taken then begin
         Atomic.set t.arrived.(i) !taken;
-        Atomic.set t.ready.(i) !taken;
         publish (Raised (exn, Printexc.get_raw_backtrace ()))
-      end
+      end;
+      open_gate t !taken
     with
     | () -> guard ()
     | exception exn -> recover exn
@@ -164,26 +202,6 @@ let tell_quit t =
    the runner's handlers, not even in its first instructions. *)
 let runner_signals = [ Sys.sigalrm; Sys.sigint; Sys.sigterm; Sys.sighup ]
 
-(* The thread id and the wait of each worker that ended, the newest
-   first. *)
-let ended_list = Atomic.make []
-let ended () = Atomic.get ended_list
-
-(* Nothing that a handler or a callback raises here ends the worker. *)
-let add_wait () =
-  try
-    match Os.thread_id () with
-    | None -> ()
-    | Some tid ->
-        let ended = (tid, Os.cpu_wait ()) in
-        let rec add () =
-          let old = Atomic.get ended_list in
-          if not (Atomic.compare_and_set ended_list old (ended :: old)) then
-            add ()
-        in
-        add ()
-  with _ -> ()
-
 let spawn n =
   if n < 1 then invalid_arg "Workers.spawn: no worker";
   let t =
@@ -194,7 +212,9 @@ let spawn n =
       jobs = [||];
       quit = false;
       arrived = Array.init n (fun _ -> Atomic.make 0);
-      ready = Array.init n (fun _ -> Atomic.make 0);
+      gate = Mutex.create ();
+      opened = Condition.create ();
+      asleep = Atomic.make 0;
       ended = Array.init n (fun _ -> Atomic.make 0);
       endings = Array.make n Done;
       domains = [];
@@ -205,13 +225,7 @@ let spawn n =
   let start i =
     Domain.spawn (fun () ->
         Printexc.record_backtrace backtraces;
-        match work t i with
-        | () -> add_wait ()
-        | exception exn ->
-            (* Only an exception before the loop of [work] gets here. *)
-            let backtrace = Printexc.get_raw_backtrace () in
-            add_wait ();
-            Printexc.raise_with_backtrace exn backtrace)
+        work t i)
   in
   let start_all () =
     for i = 0 to n - 1 do
@@ -226,6 +240,26 @@ let spawn n =
       tell_quit t;
       List.iter Domain.join t.domains;
       Printexc.raise_with_backtrace exn backtrace
+
+(* Spinning answers a short run at once; a long one is waited for in
+   sleeps, which leave the workers the processors. A signal handler runs at
+   the poll points of either. *)
+let spins = 20_000
+let pause = 0.000_2
+
+let wait done_ =
+  let rec step spun =
+    if not (done_ ()) then
+      if spun < spins then begin
+        Domain.cpu_relax ();
+        step (spun + 1)
+      end
+      else begin
+        Unix.sleepf pause;
+        step spun
+      end
+  in
+  step 0
 
 (* Nothing a handler raises during the grace ends it early. *)
 let rec wait_until ~started ~grace done_ =

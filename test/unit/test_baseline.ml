@@ -71,6 +71,7 @@ let withheld = function
   | Some Conflict -> ", conflict"
   | Some Failed_outside -> ", failed outside"
   | Some Skipped -> ", skipped"
+  | Some In_law -> ", in a law"
 
 (* The steps of a run. Each gives the rows of what it did. *)
 
@@ -180,14 +181,14 @@ let write_refusal path =
 (* Modes *)
 
 let by_mode claim ~files ~steps rows =
-  cases claim rows
-    ~name:(fun (mode, _) -> mode_name mode)
+  cases claim
+    ~id:(fun (mode, _) -> mode_name mode)
+    rows
     (fun (mode, trace) ->
       let root = project files in
       equal traced trace (scenario ~mode root (steps root)))
 
-let differing =
-  "file test/help.expected: mismatch \"new\\n\" against \"old\\n\""
+let differing = "file test/help.expected: mismatch \"new\" against \"old\\n\""
 
 let modes =
   group "Modes"
@@ -208,14 +209,14 @@ let modes =
         [
           ( Baseline.Check,
             [
-              "file test/help.expected: missing \"hello\\nworld\\n\"";
+              "file test/help.expected: missing \"hello\\nworld\"";
               "kept 0";
               disk [];
               disk [];
             ] );
           ( Corrected,
             [
-              "file test/help.expected: missing \"hello\\nworld\\n\"";
+              "file test/help.expected: missing \"hello\\nworld\"";
               "kept 0";
               disk [];
               disk [];
@@ -226,7 +227,7 @@ let modes =
               "kept 1";
               disk [];
               "wrote test/help.expected, 0 literals";
-              disk [ file help "hello\nworld\n" ];
+              disk [ file help "hello\r\nworld" ];
             ] );
         ];
       by_mode
@@ -243,16 +244,14 @@ let modes =
               "kept 1";
               "wrote test/help.expected.corrected, 0 literals";
               disk
-                [
-                  file help "old\n"; file "test/help.expected.corrected" "new\n";
-                ];
+                [ file help "old\n"; file "test/help.expected.corrected" "new" ];
             ] );
           ( Update,
             [
               "pass";
               "kept 1";
               "wrote test/help.expected, 0 literals";
-              disk [ file help "new\n" ];
+              disk [ file help "new" ];
             ] );
         ];
     ]
@@ -260,8 +259,9 @@ let modes =
 (* Subjects *)
 
 let compares claim rows =
-  cases claim rows
-    ~name:(fun (name, _, _, _) -> name)
+  cases claim
+    ~id:(fun (name, _, _, _) -> name)
+    rows
     (fun (_, subject, actual, row) ->
       equal traced [ row ]
         (scenario ~mode:Check (project []) [ check subject actual ]))
@@ -274,19 +274,28 @@ let subjects =
   group "Subjects"
     [
       cases
-        "a file compares as canonical lines, where CR LF and CR are LF and a \
-         final newline is added"
-        ~name:(fun (name, _, _, _) -> name)
+        "a file compares as lines, where CR LF and CR are LF, final newline \
+         included"
+        ~id:(fun (name, _, _, _) -> name)
         [
-          ("CR LF on disk", "hello\r\nworld", "hello\nworld\n", "pass");
-          ("CR on disk", "a\rb", "a\nb\n", "pass");
-          ("no final newline produced", "hello\nworld\n", "hello\nworld", "pass");
+          ("CR LF on disk", "hello\r\nworld\r\n", "hello\nworld\n", "pass");
+          ("CR on disk", "a\rb", "a\nb", "pass");
+          ("CR LF produced", "a\nb\n", "a\r\nb\r\n", "pass");
+          ( "no final newline produced",
+            "hello\nworld\n",
+            "hello\nworld",
+            "file test/help.expected: mismatch \"hello\\nworld\" against \
+             \"hello\\nworld\\n\"" );
+          ( "no final newline on disk",
+            "hello",
+            "hello\n",
+            "file test/help.expected: mismatch \"hello\\n\" against \"hello\""
+          );
           ("an empty file and an empty text", "", "", "pass");
           ( "a difference",
             "hello\n",
             "bye",
-            "file test/help.expected: mismatch \"bye\\n\" against \"hello\\n\""
-          );
+            "file test/help.expected: mismatch \"bye\" against \"hello\\n\"" );
         ]
         file_compares;
       compares
@@ -329,8 +338,8 @@ let subjects =
             ]
             (scenario ~mode:Update root
                [
-                 check (File "a/b.txt") "one";
-                 check (File "a/./b.txt") "two";
+                 check (File "a/b.txt") "one\n";
+                 check (File "a/./b.txt") "two\n";
                  commit root;
                  on_disk root;
                ]));
@@ -347,7 +356,7 @@ let relative_root () =
   chdir (temp_dir ());
   let root = Filename.concat (Unix.realpath top) "proj" in
   equal traced written_a (play t [ check (File "a.txt") "x"; commit root ]);
-  equal traced [ file "proj/a.txt" "x\n" ] (tree top)
+  equal traced [ file "proj/a.txt" "x" ] (tree top)
 
 let relative_cwd () =
   let top =
@@ -360,7 +369,7 @@ let relative_cwd () =
   let cwd = "proj/_build/default/test" in
   let t = Baseline.create ~root:"proj" ~cwd ~mode:Check () in
   chdir (temp_dir ());
-  equal traced [ "pass" ] (play t [ check file_help "copy" ])
+  equal traced [ "pass" ] (play t [ check file_help "copy\n" ])
 
 let default_root () =
   let root = project [] in
@@ -375,7 +384,7 @@ let default_cwd () =
   in
   chdir (Filename.concat root "_build/default/test");
   let t = Baseline.create ~root ~mode:Check () in
-  equal traced [ "pass" ] (play t [ check file_help "copy" ])
+  equal traced [ "pass" ] (play t [ check file_help "copy\n" ])
 
 let gone_cwd () =
   if Sys.win32 then skip ~reason:"POSIX only" ();
@@ -396,7 +405,7 @@ let mode_witness =
 let registries =
   group "Registries"
     [
-      cases "mode is the mode of create" ~name:mode_name
+      cases "mode is the mode of create" ~id:mode_name
         [ Baseline.Check; Corrected; Update ] (fun mode ->
           equal mode_witness mode
             (Baseline.mode (Baseline.create ~root:"/" ~cwd:"/" ~mode ())));
@@ -409,21 +418,21 @@ let registries =
       cases
         "a run whose cwd lies in a build context under the root reads dune's \
          copy"
-        ~name:Fun.id [ "_build/default"; "_build/.sandbox/3f/default" ]
+        ~id:Fun.id [ "_build/default"; "_build/.sandbox/3f/default" ]
         (fun context ->
           let root =
             project [ (help, "source\n"); (context ^ "/" ^ help, "copy\n") ]
           in
           let cwd = Filename.concat root (context ^ "/test") in
           equal traced [ "pass" ]
-            (scenario ~mode:Check ~cwd root [ check file_help "copy" ]));
+            (scenario ~mode:Check ~cwd root [ check file_help "copy\n" ]));
       test "a build context under another root is no build action of the run"
         (fun () ->
           let root = project [ (help, "source\n") ] in
           let other = project [ ("_build/default/" ^ help, "elsewhere\n") ] in
           let cwd = Filename.concat other "_build/default/test" in
           equal traced [ "pass" ]
-            (scenario ~mode:Check ~cwd root [ check file_help "source" ]));
+            (scenario ~mode:Check ~cwd root [ check file_help "source\n" ]));
       test "create raises Sys_error as Os.project_root does" gone_cwd;
     ]
 
@@ -517,8 +526,7 @@ let checking =
       cases
         "a path that cannot be proven under the root is Unresolvable in every \
          mode, and records nothing"
-        ~name:(fun (mode, (name, _, _, _)) ->
-          strf "%s, %s" name (mode_name mode))
+        ~id:(fun (mode, (name, _, _, _)) -> strf "%s, %s" name (mode_name mode))
         (List.concat_map
            (fun mode -> List.map (fun subject -> (mode, subject)) unproven)
            [ Baseline.Check; Corrected; Update ])
@@ -534,15 +542,15 @@ let checking =
             ]
             (scenario ~mode:Check root
                [
-                 check file_help "one";
+                 check file_help "one\n";
                  edit root help "two\n";
-                 check file_help "one";
-                 check file_help "two";
+                 check file_help "one\n";
+                 check file_help "two\n";
                ]));
       cases
         "an accepted key compares with its accepted content alone, and another \
          content is a conflict that records nothing"
-        ~name:(fun (mode, _) -> mode_name mode)
+        ~id:(fun (mode, _) -> mode_name mode)
         [
           ( Baseline.Corrected,
             "file test/help.expected: mismatch \"hi\\n\" against \"old\\n\"" );
@@ -560,19 +568,19 @@ let checking =
             (scenario ~mode
                (project [ (help, "old\n") ])
                [
-                 check file_help "hi";
-                 check file_help "hi";
-                 check file_help "yo";
+                 check file_help "hi\n";
+                 check file_help "hi\n";
+                 check file_help "yo\n";
                  settle ~keep:true;
                ]));
       cases
         "a check with ~correct:false fails as under Check, whatever the mode"
-        ~name:mode_name [ Baseline.Corrected; Update ] (fun mode ->
+        ~id:mode_name [ Baseline.Corrected; Update ] (fun mode ->
           equal traced
             [ "file x: mismatch \"v\\n\" against \"old\\n\""; "kept 0" ]
             (scenario ~mode
                (project [ ("x", "old\n") ])
-               [ check ~correct:false (File "x") "v"; settle ~keep:true ]));
+               [ check ~correct:false (File "x") "v\n"; settle ~keep:true ]));
       test "a check computes no location and carries the one given" located;
       test "a failure bounds its texts, and the correction holds actual whole"
         bounded;
@@ -585,7 +593,7 @@ let checking =
       cases
         "a literal whose source cannot take its correction fails, refused, \
          whatever the mode, and records nothing"
-        ~name:(fun (name, _, _, _) -> name)
+        ~id:(fun (name, _, _, _) -> name)
         [
           ( "a drifted source under Corrected",
             Baseline.Corrected,
@@ -649,9 +657,9 @@ let settling =
             ]
             (scenario ~mode:Corrected root
                [
-                 check file_help "hi";
+                 check file_help "hi\n";
                  settle ~keep:false;
-                 check file_help "yo";
+                 check file_help "yo\n";
                  commit root;
                ]));
       test
@@ -669,10 +677,10 @@ let settling =
             ]
             (scenario ~mode:Update root
                [
-                 check file_help "two";
+                 check file_help "two\n";
                  check (File "b") "2";
                  settle ~keep:false;
-                 check file_help "one";
+                 check file_help "one\n";
                  commit root;
                  on_disk root;
                ]));
@@ -730,8 +738,8 @@ let corrected_in_build () =
        ~cwd:(Filename.concat root (build ^ "test"))
        root
        [
-         check file_help "copy";
-         check (File "test/other.expected") "x";
+         check file_help "copy\n";
+         check (File "test/other.expected") "x\n";
          check old "new";
          commit root;
          on_disk root;
@@ -752,7 +760,7 @@ let refused_alone () =
       [
         check old "new";
         check (File "ro/sub/x") "v";
-        check (File "z.txt") "z";
+        check (File "z.txt") "z\n";
         settle ~keep:true;
         lock;
         write;
@@ -852,7 +860,7 @@ let writing =
       cases
         "a correction is Source_patch's rewrite of the literal, or insertion \
          of the node, to the produced text"
-        ~name:(fun (name, _, _, _) -> name)
+        ~id:(fun (name, _, _, _) -> name)
         [
           ("a flexible literal", source, old, "a\n  b");
           ("an exact literal", source, literal ~exact:true " old ", "a\n b");
@@ -898,7 +906,7 @@ let writing =
           equal traced
             [ "pass"; "kept 0"; disk [ file help "keep\r\n" ] ]
             (scenario ~mode:Update root
-               [ check file_help "keep"; commit root; on_disk root ]));
+               [ check file_help "keep\n"; commit root; on_disk root ]));
       test "a second write writes nothing" (fun () ->
           let root = project [] in
           equal traced
@@ -931,7 +939,7 @@ let writing =
             ]
             (scenario ~mode:Update root
                [
-                 check file_help "new";
+                 check file_help "new\n";
                  edit root help "edited since\n";
                  commit root;
                  on_disk root;

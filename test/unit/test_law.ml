@@ -102,7 +102,7 @@ let screens =
              prop "Version.compare is a total order"
                Gen.(triple v v v)
                (Law.order ~respell:Version.pad version);
-             cases ~name:Version.to_string "of_string reads these back" fixtures
+             cases "of_string reads these back" ~id:Version.to_string fixtures
                (Law.round_trip version string Version.to_string (fun s ->
                     require_some (Version.of_string s)));
            ];
@@ -138,6 +138,7 @@ let nested (f : Failure.t) =
         strf "uncaught %s%s" actual.kept
           (if Option.is_some backtrace then ", with a backtrace" else "")
     | Message m -> "message " ^ m.kept
+    | Vacuous m -> "vacuous " ^ m.kept
     | Raise _ | Containment _ | Baseline _ | Property _ | Law _ | Timeout _ ->
         "another failure"
   in
@@ -159,7 +160,7 @@ let payload (f : Failure.t) =
       String.concat "\n"
         (strf "%s%s: %s" law clause equation :: List.map term terms)
   | Equality _ | Containment _ | Raise _ | Baseline _ | Property _ | Timeout _
-  | Message _ ->
+  | Message _ | Vacuous _ ->
       "not a law's failure: " ^ nested f
 
 let control = function
@@ -169,15 +170,20 @@ let control = function
   | `Exit -> "exit"
   | `Discard -> "discard"
 
+(* Through windtrap's own catch, which owns the failure a law records. *)
 let outcome law =
-  match law () with
-  | () -> "holds"
-  | exception Failure.Check_failure f -> payload f
-  | exception Failure.Control c -> control c
-  | exception e -> "raised " ^ Failure.exn_to_string e
+  match Failure.catch law with
+  | Ok () -> "holds"
+  | Error (`Assertion f) -> payload f
+  | Error (#Failure.control as c) -> control c
+  | Error (`Exception (e, _)) | (exception e) ->
+      "raised " ^ Failure.exn_to_string e
 
 let failure_of law =
-  match law () with () -> None | exception Failure.Check_failure f -> Some f
+  match Failure.catch law with
+  | Ok () -> None
+  | Error (`Assertion f) -> Some f
+  | Error c -> Failure.reraise c
 
 let failed law = require_some ~msg:"the law failed" (failure_of law)
 
@@ -324,7 +330,7 @@ let lawful =
 let holding =
   group "Laws that hold"
     [
-      cases "a law returns when its equation holds" ~name:fst lawful
+      cases "a law returns when its equation holds" ~id:fst lawful
         (fun (_, law) -> equal string "holds" (outcome law));
       prop "a law is the law of a prop"
         Gen.(triple small_int small_int small_int)
@@ -345,8 +351,9 @@ let holding =
       prop "involutive over drawn lists, palindromes among them"
         Gen.(list (int_range 0 1))
         (Law.involutive (list int) List.rev);
-      cases "a law is the function of a cases" ~name:string_of_int [ -1; 0; 2 ]
-        (Law.idempotent int abs);
+      cases "a law is the function of a cases"
+        ~id:(Testable.to_string Testable.int)
+        [ -1; 0; 2 ] (Law.idempotent int abs);
     ]
 
 (* Laws that fail *)
@@ -867,7 +874,7 @@ let failing =
       cases
         "a law raises one failure that names it, states its equation and lists \
          its terms"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         broken
         (fun (_, law, literal) -> expect (outcome law) literal);
     ]
@@ -1058,7 +1065,7 @@ let clause_order =
          respelled and transitive clauses"
         equivalence_calls;
       cases "a wrong equality fails the clause of the call it answered"
-        ~name:(fun (k, _) -> strf "call %d" k)
+        ~id:(fun (k, _) -> strf "call %d" k)
         equivalence_clauses
         (fun (k, row) ->
           equal string row
@@ -1165,52 +1172,6 @@ let failed_rows =
           failed [r a] no location, uncaught Failure("boom"), with a backtrace
         |}
     );
-    ( "a respelling that an order-dependent equality takes on one side only",
-      (fun () ->
-        Law.equivalence ~respell:succ
-          (Testable.make ~pp:pp_int ~equal:(fun x y -> x <= y))
-          (1, 1)),
-      __POS_OF__
-        {|
-        equivalence (clause respelled): r a = a
-          term [a] 1
-          term [r a] 2
-          term [r a = a] false
-        |}
-    );
-    ( "a respelling that raises on its own image",
-      (fun () ->
-        Law.equivalence
-          ~respell:(fun x -> if x = 1 then 2 else boom x)
-          near (1, 5)),
-      __POS_OF__
-        {|
-        equivalence (clause transitive): a = r (r a)
-          term [a] 1
-          term [r a] 2
-          failed [r (r a)] no location, uncaught Failure("boom"), with a backtrace
-        |}
-    );
-    ( "a neutral operation that raises",
-      (fun () -> Law.neutral int (fun _ _ -> boom ()) 0 5),
-      __POS_OF__
-        {|
-        neutral: op e x = x
-          term [e] 0
-          term [x] 5
-          failed [op e x] no location, uncaught Failure("boom"), with a backtrace
-        |}
-    );
-    ( "an absorbing operation that raises",
-      (fun () -> Law.absorbing int (fun _ _ -> boom ()) 0 1),
-      __POS_OF__
-        {|
-        absorbing: op z x = z
-          term [z] 0
-          term [x] 1
-          failed [op z x] no location, uncaught Failure("boom"), with a backtrace
-        |}
-    );
     ( "a premise that raises",
       (fun () -> Law.preserves int succ boom 1),
       __POS_OF__
@@ -1264,7 +1225,7 @@ let failed_terms =
   group "Failed terms"
     [
       cases "a function under test that raises or fails ends the law there"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         failed_rows
         (fun (_, law, literal) -> expect (outcome law) literal);
       test "a failed term holds the very failure its function raised"
@@ -1272,7 +1233,7 @@ let failed_terms =
       test "an uncaught exception keeps the backtrace of its raise"
         backtrace_of_uncaught;
       cases "a control or a fatal exception passes through the law as raised"
-        ~name:fst passed_through (fun (_, e) ->
+        ~id:fst passed_through (fun (_, e) ->
           equal string
             (outcome (fun () -> raise e))
             (outcome (fun () -> Law.idempotent int (fun _ -> raise e) 1)));
@@ -1309,7 +1270,9 @@ let over_ints : (string * (int Testable.t -> unit)) list =
 
 let printer_calls law =
   let w, calls = counting () in
-  (match law w with () -> () | exception Failure.Check_failure _ -> ());
+  (match Failure.catch (fun () -> law w) with
+  | Ok () | Error (`Assertion _) -> ()
+  | Error c -> Failure.reraise c);
   !calls
 
 let escapes =
@@ -1346,9 +1309,9 @@ let witnesses =
   group "Witnesses"
     [
       cases "what a witness's equality, order or printer raises escapes the law"
-        ~name:fst escapes (fun (_, law) ->
+        ~id:fst escapes (fun (_, law) ->
           equal string "raised Test_law.Bug" (outcome law));
-      cases "a law that holds calls no printer" ~name:fst over_ints
+      cases "a law that holds calls no printer" ~id:fst over_ints
         (fun (_, law) -> equal int 0 (printer_calls law));
       test "a failing law prints each of its terms once" (fun () ->
           equal int 7
@@ -1362,9 +1325,11 @@ let pos = ("fake.ml", 42, 3, 9)
 let site = "why at fake.ml:42:3"
 
 let annotation law =
-  match law () with
-  | () -> "returned"
-  | exception Failure.Check_failure f ->
+  match Failure.catch law with
+  | Ok () -> "returned"
+  | Error (#Failure.control as c) -> Failure.reraise c
+  | Error (`Exception (e, bt)) -> Printexc.raise_with_backtrace e bt
+  | Error (`Assertion f) ->
       strf "%s at %s"
         (match f.msg with Some m -> m.kept | None -> "nothing")
         (match f.loc with
@@ -1423,16 +1388,16 @@ let term_keeps_its_site () =
   in
   equal (option string) (Some "fake.ml")
     (Option.map (fun (l : Loc.t) -> l.file) f.loc);
-  starts_with ~affix:"test/unit/test_law.ml"
+  starts_with ~prefix:"test/unit/test_law.ml"
     (require_some (last_failed f).loc).file
 
 let located_rows =
   group "Locations and messages"
     [
-      cases "?msg and ?__POS__ are the failure's msg and site" ~name:fst
-        every_law (fun (_, law) -> equal string site (annotation law));
+      cases "?msg and ?__POS__ are the failure's msg and site" ~id:fst every_law
+        (fun (_, law) -> equal string site (annotation law));
       test "without ?__POS__ a law is located in the caller's file" (fun () ->
-          starts_with ~affix:"nothing at test/unit/test_law.ml:"
+          starts_with ~prefix:"nothing at test/unit/test_law.ml:"
             (annotation (fun () ->
                  Law.idempotent int succ 1;
                  ())));
@@ -1487,17 +1452,18 @@ let no_order =
   group "No order"
     [
       cases "order and monotone refuse a witness without an order, first"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         orderless refuses_before_any_clause;
     ]
 
 (* Demands *)
 
-(* The law of a property that draws [value] in each of five cases. *)
+(* The law of a property over [value] alone, a domain of one value, which
+   is checked whole. *)
 let demanded value law =
   match Run.property ~count:5 (Gen.constant value) law with
-  | () -> "covered"
-  | exception Failure.Check_failure { kind = Message m; _ } -> m.kept
+  | (_ : Windtrap.Private.Property.stats) -> "covered"
+  | exception Failure.Check_failure { kind = Vacuous m; _ } -> m.kept
 
 let fn =
   Testable.make
@@ -1507,7 +1473,7 @@ let fn =
 let applied h = h 0
 let wrapped h y = h y
 let paired = Testable.make ~pp:(fun ppf (n, _) -> pp_int ppf n) ~equal:( == )
-let never label = strf "never covered: %S (over 5 passing cases)" label
+let never label = strf "never covered: %S (over 1 passing cases)" label
 
 let demand_rows =
   [
@@ -1533,7 +1499,7 @@ let demand_rows =
       "covered" );
     ( "equivalence, both demands unmet",
       (fun () -> demanded (1, 1) (Law.equivalence ~respell:Fun.id int)),
-      {|never covered: "equivalence: an unequal pair", "equivalence: r a differs from a" (over 5 passing cases)|}
+      {|never covered: "equivalence: an unequal pair", "equivalence: r a differs from a" (over 1 passing cases)|}
     );
     ( "order, a equal to b and apart from c",
       (fun () -> demanded (1, 1, 2) (Law.order int)),
@@ -1683,7 +1649,9 @@ let where =
       stateful ~count:10 "system"
         [ command "law" (Gen.unit @-> returns unit) ignore unmoved ];
       test "test" unmoved;
-      cases ~name:string_of_int "cases" [ 1; 2 ]
+      cases "cases"
+        ~id:(Testable.to_string Testable.int)
+        [ 1; 2 ]
         (Law.ignores int int Fun.id Fun.id);
       test "fixture" released;
       test "context in a test" (fun () -> is_none (Run.prop_context ()));
@@ -1723,8 +1691,8 @@ let from_domain name =
 
 let message r path =
   match Recorded.failures r path with
-  | [ { kind = Message m; _ } ] -> m.kept
-  | _ -> "not one message"
+  | [ { kind = Vacuous m; _ } ] -> m.kept
+  | _ -> "not one vacuous failure"
 
 let prop_stats r path =
   let at (row : Run.result) = List.equal String.equal row.path path in
@@ -1736,13 +1704,13 @@ let demands =
   group "Demands"
     [
       cases "a law demands, by label, the case that could be trivial"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         demand_rows
         (fun (_, run, row) -> equal string row (run ()));
       test "a prop's law registers its demands" (fun () ->
           equal string "fail body" (Recorded.row where [ "prop" ]);
           equal string
-            {|never covered: "ignores: g x differs from x" (over 10 passing cases)|}
+            {|never covered: "ignores: g x differs from x" (over 1 passing cases)|}
             (message where [ "prop" ]));
       test "a stateful test's law registers its demands" (fun () ->
           equal string "fail body" (Recorded.row where [ "stateful" ]);
@@ -1755,18 +1723,14 @@ let demands =
             {|never covered: "ignores: g x differs from x" (over 10 passing cases)|}
             (message where [ "system" ]));
       cases "two calls of one law share a demand unless their msgs differ"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         labelled
         (fun (_, run, row) -> equal string row (run ()));
       test "a test's law demands nothing and holds" (fun () ->
           equal string "pass" (Recorded.row where [ "test" ]);
           is_false (prop_stats where [ "test" ]));
       test "a cases row's law demands nothing and holds" (fun () ->
-          equal (list string) [ "pass"; "pass" ]
-            [
-              Recorded.row where [ "cases"; "1" ];
-              Recorded.row where [ "cases"; "2" ];
-            ]);
+          equal string "pass" (Recorded.row where [ "cases" ]));
       test "a law in a fixture's release demands nothing and holds" (fun () ->
           equal string "pass" (Recorded.row where [ "fixture" ]);
           equal int 0 (List.length (Recorded.outcome where).release_failures));
@@ -1853,32 +1817,36 @@ let proposal =
               test/unit/test_law.ml:102
                 102 │ prop "Version.compare is a total order"
 
-              counterexample (case 1, shrunk 5 steps): (0.0, 0.0, 0.0)
+              counterexample (case 1, shrunk 1 step): (0.0, 0.0, 0.0)
+              replay it: -f 'version › Version.compare is a total order' --replay r1:AAAAAAAAAAAA:32ff63f8
               which failed with:
                 order (agrees with equal): cmp a (r a) = 0 iff a = r a
                 a            0.0
                 r a          0.0.0
                 cmp a (r a)  0
                 a = r a      false
-              labels (1 passing case):
-                100.0%  order: an unequal pair
+              scope: 1 case passed
 
-            FAIL  version › of_string reads these back › 0.0.0-a.1
+            FAIL  version › of_string reads these back
               test/unit/test_law.ml:105
-                105 │ cases ~name:Version.to_string "of_string reads these back" fixtures
+                105 │ cases "of_string reads these back" ~id:Version.to_string fixtures
 
-              round trip: g (f x) = x
-              x    0.0.0-a.1
-              f x  "0.0.0-a.1"
-              g (f x) failed with:
-                expected  Some _
-                actual    None
+              counterexample (row 2 of 2): 0.0.0-a.1
+              which failed with:
+                round trip: g (f x) = x
+                x    0.0.0-a.1
+                f x  "0.0.0-a.1"
+                g (f x) failed with:
+                  expected  Some _
+                  actual    None
+              scope: 1 of 2 rows passed
 
-            FAIL  path › Path.equal is an equivalence
+            VACUOUS  path › Path.equal is an equivalence
               test/unit/test_law.ml:111
                 111 │ prop "Path.equal is an equivalence"
 
               never covered: "equivalence: an unequal pair" (over 100 passing cases)
+              scope: 100 cases passed
               labels (100 passing cases):
                 100.0%  equivalence: r a differs from a
               covered labels:

@@ -73,6 +73,9 @@ let pass ?duration ?attempts name =
 let failed ?duration ?attempts name msg =
   result ?duration ?attempts [ name ] (Failure.Fail [ Failure.message msg ])
 
+let vacuous name reason =
+  result [ name ] (Failure.Fail [ Failure.vacuous reason ])
+
 let run_through ?(tests = None) ?(suite = "s") ?(results = [])
     ?(release_failures = []) ?baselines ?(duration = 0.1) r =
   (match tests with
@@ -124,7 +127,7 @@ let renderer =
     [
       cases
         "create refuses a slow threshold that is not finite and non-negative"
-        ~name:fst refused_thresholds refused_threshold;
+        ~id:fst refused_thresholds refused_threshold;
       test "terminal styles standard output as --color says, with no live line"
         terminal_styles;
     ]
@@ -152,12 +155,12 @@ let baseline name = "test/unit/expected/test_report/" ^ name ^ ".expected"
 let plain_golden ~verbose name () =
   let t = transcript ~verbose () in
   not_contains ~sub:"\027" t;
-  expect_file t (baseline name)
+  expect_file ~file:(baseline name) t
 
 let coloured_golden ~verbose name () =
   let t = transcript ~ansi:true ~verbose () in
   contains ~sub:"\027[" t;
-  expect_file (Gallery.marked t) (baseline name)
+  expect_file ~file:(baseline name) (Gallery.marked t)
 
 let header_rows =
   [
@@ -282,10 +285,20 @@ let shrinking_line_cut () =
   in
   at_most int ~than:80 (Text.length_utf8 line);
   not_contains ~sub:long line;
-  ends_with ~affix:"...: shrinking, 12 steps\u{2026}" line
+  ends_with ~suffix:"...: shrinking, 12 steps\u{2026}" line
 
 let label_stats collected =
-  { Property.cases = 100; discards = 0; collected; coverage = [] }
+  {
+    Property.cases = 100;
+    examples = 0;
+    discards = 0;
+    whole = None;
+    count = 100;
+    replayed = 0;
+    runs = 1;
+    collected;
+    coverage = [];
+  }
 
 let silent_rows =
   [
@@ -304,8 +317,8 @@ let silent (_, r) =
 
 let observe = Report.observe ~seed:Fixtures.root ~selection:None
 
-let started ?(total = 4) ?(properties = false) () =
-  Run.Run_started { suite = "s"; total; selected = total; properties }
+let started ?(total = 4) ?(seeded = false) () =
+  Run.Run_started { suite = "s"; total; selected = total; seeded }
 
 let release =
   Failure.with_phase Failure.Release
@@ -463,6 +476,18 @@ let row_entries () =
   let one ?ansi ?invocation ?armed r =
     verbose ?ansi ?invocation ?armed (fun rd -> Report.result rd r)
   in
+  (* A table of 3 rows that passed, [passed] of them holding. *)
+  let table passed skipped_rows =
+    {
+      (result
+         ~prop_stats:
+           { (label_stats []) with cases = passed; whole = Some 3; count = 3 }
+         [ "rows" ] Failure.Pass)
+      with
+      Run.table = true;
+      skipped_rows;
+    }
+  in
   let excused_property =
     {
       Fixtures.excused_result with
@@ -514,6 +539,12 @@ let row_entries () =
            ~duration:0.0012 [ "labels visible" ] Failure.Pass) );
     ( "and none without collected labels",
       one (result ~prop_stats:(label_stats []) [ "no labels" ] Failure.Pass) );
+    ("a table that held on every row says so", one (table 3 None));
+    ( "a table whose other rows held counts its skipped rows, with the first \
+       one's reason",
+      one (table 2 (Some { Run.count = 1; reason = Some "no GPU" })) );
+    ( "and without one, the count alone",
+      one (table 1 (Some { Run.count = 2; reason = None })) );
     ( "an expected failure's table is in its block",
       one
         {
@@ -575,31 +606,31 @@ let noteworthy_notice () =
         Report.finish r ~release_failures:[] ~results ~duration:0.01 ())
   in
   not_contains ~sub:"releasing" t;
-  starts_with ~affix:("s: 2 tests\n" ^ failures_rule ^ "\n  FAIL  b\n") t
+  starts_with ~prefix:("s: 2 tests\n" ^ failures_rule ^ "\n  FAIL  b\n") t
 
 (* The observer *)
 
 let seed_rows =
-  let header ~properties () =
+  let header ~seeded () =
     rendered ~config:(config ~verbose:true ()) (fun r ->
-        observe r (started ~total:2 ~properties ()))
+        observe r (started ~total:2 ~seeded ()))
   in
-  let green ~properties () =
+  let green ~seeded () =
     rendered (fun r ->
-        observe r (started ~total:2 ~properties ());
+        observe r (started ~total:2 ~seeded ());
         List.iter (fun res -> observe r (Run.Test_finished res)) two_results;
         Report.finish r ~release_failures:[] ~results:two_results ~duration:0.06
           ())
   in
   [
     ( "a header over a property prints the seed",
-      (header ~properties:true, "s: 2 tests (seed " ^ seed ^ ")\n") );
+      (header ~seeded:true, "s: 2 tests (seed " ^ seed ^ ")\n") );
     ( "a header over no property prints none",
-      (header ~properties:false, "s: 2 tests\n") );
+      (header ~seeded:false, "s: 2 tests\n") );
     ( "a green property run ends on its seed",
-      (green ~properties:true, "s: 2 passed in 60ms (seed " ^ seed ^ ").\n") );
+      (green ~seeded:true, "s: 2 passed in 60ms (seed " ^ seed ^ ").\n") );
     ( "a green run without a property carries none",
-      (green ~properties:false, "s: 2 passed in 60ms.\n") );
+      (green ~seeded:false, "s: 2 passed in 60ms.\n") );
   ]
 
 let observe_interrupted () =
@@ -611,6 +642,7 @@ let observe_interrupted () =
              {
                running = Some [ "g"; "t" ];
                releasing = None;
+               starting = None;
                results = [];
                duration = 0.5;
              }))
@@ -629,13 +661,14 @@ let observe_raises_nothing () =
          observe r (Run.Shrunk { path = [ "\027" ] });
          observe r
            (Run.Run_started
-              { suite = ""; total = 0; selected = 5; properties = true });
+              { suite = ""; total = 0; selected = 5; seeded = true });
          observe r (Run.Test_finished fail);
          observe r
            (Run.Interrupted
               {
                 running = None;
                 releasing = Some "\027";
+                starting = None;
                 results = [ fail; fail ];
                 duration = Float.nan;
               })))
@@ -659,6 +692,12 @@ let stream_rows =
         false,
         "s: 2 tests\n" ^ failures_rule ^ "\n  FAIL  bad\n    b\n" ^ closing_rule
         ^ "\n\n1 passed, 1 failed in 500ms.\n" ) );
+    ( "a vacuous test is tagged and counted apart from a failure",
+      ( [ pass "ok"; vacuous "empty" "no row"; failed "bad" "b" ],
+        false,
+        "s: 3 tests\n" ^ failures_rule
+        ^ "\n  VACUOUS  empty\n    no row\n\n  FAIL  bad\n    b\n"
+        ^ closing_rule ^ "\n\n1 passed, 1 failed, 1 vacuous in 500ms.\n" ) );
     ( "under -v the rows are -v's",
       ( [ pass "ok" ],
         true,
@@ -763,12 +802,12 @@ let empty_rows =
         "mylib: no tests ran: the suite declares none.\n" ) );
     ( "a selection names itself, the total and how to list",
       ( empty ~invocation:exe ~header:parsr (),
-        "mylib: no tests ran: filter \"parsr\" matched none of 48 tests.\n\
-         list: ./t.exe -l\n" ) );
+        "list: ./t.exe -l\n\
+         mylib: no tests ran: filter \"parsr\" matched none of 48 tests.\n" ) );
     ( "a build action names the flag",
       ( empty ~header:parsr (),
-        "mylib: no tests ran: filter \"parsr\" matched none of 48 tests.\n\
-         (list the suite's tests with -l)\n" ) );
+        "(list the suite's tests with -l)\n\
+         mylib: no tests ran: filter \"parsr\" matched none of 48 tests.\n" ) );
     ( "a selection from the environment has no hint, under a launcher",
       ( empty ~invocation:exe ~broadcast:true ~header:parsr (),
         "mylib: no tests ran: filter \"parsr\" matched none of 48 tests.\n" ) );
@@ -1093,7 +1132,12 @@ let endings_entries () =
             ~prop_stats:
               {
                 Property.cases = 100;
+                examples = 0;
+                whole = None;
+                count = 100;
                 discards = 3;
+                replayed = 0;
+                runs = 1;
                 collected = [ ("empty", 36); ("nonempty", 64) ];
                 coverage =
                   [
@@ -1101,8 +1145,14 @@ let endings_entries () =
                       Property.label = "collision";
                       hits = 0;
                       satisfied = false;
+                      share = None;
                     };
-                    { Property.label = "singleton"; hits = 9; satisfied = true };
+                    {
+                      Property.label = "singleton";
+                      hits = 9;
+                      satisfied = true;
+                      share = None;
+                    };
                   ];
               }
             [ "p" ]
@@ -1115,7 +1165,12 @@ let endings_entries () =
             ~prop_stats:
               {
                 Property.cases = 100;
+                examples = 0;
+                whole = None;
+                count = 100;
                 discards = 3;
+                replayed = 0;
+                runs = 1;
                 collected = [ ("empty", 36); ("nonempty", 64) ];
                 coverage =
                   [
@@ -1123,6 +1178,7 @@ let endings_entries () =
                       Property.label = "collision";
                       hits = 0;
                       satisfied = false;
+                      share = None;
                     };
                   ];
               }
@@ -1202,6 +1258,17 @@ let endings_entries () =
       stopped (fun r ->
           Report.interrupted r ~releasing:"fixture (db.ml:3)\027[31m"
             ~running:None ~results:[] ~duration:0.5 ()) );
+    ( "stopped while a worker starts: its last ten lines, how long it took",
+      stopped (fun r ->
+          Report.interrupted r
+            ~starting:
+              {
+                seconds = 2.5;
+                output =
+                  String.concat ""
+                    (List.init 12 (fun i -> Printf.sprintf "line %d\n" i));
+              }
+            ~running:None ~results:[] ~duration:3. ()) );
   ]
 
 let write_source root =
@@ -1274,7 +1341,7 @@ let refused_file () =
   let head = "  could not write " ^ display "help.expected" ^ ": " in
   let refused = List.nth t 3 in
   equal string ("  accepted " ^ display "a.expected") (List.nth t 2);
-  starts_with ~affix:head refused;
+  starts_with ~prefix:head refused;
   not_contains ~sub:"help.expected"
     (String.sub refused (String.length head)
        (String.length refused - String.length head));
@@ -1283,12 +1350,12 @@ let refused_file () =
 
 (* The commands that end a report *)
 
-let ending ?(config = config ~invocation:exe ()) ?(interrupted = false) results
-    =
+let ending ?(config = config ~invocation:exe ()) ?(interrupted = false) ?held
+    results =
   rendered ~config (fun r ->
       if interrupted then
         Report.interrupted r ~running:None ~results ~duration:0.1 ()
-      else Report.finish r ~results ~release_failures:[] ~duration:0.1 ())
+      else Report.finish r ~results ~release_failures:[] ~duration:0.1 ?held ())
 
 let failing ?xfail name failures =
   result ?xfail [ name ] (Failure.Fail failures)
@@ -1359,15 +1426,28 @@ let armed_commands () =
     t;
   not_contains ~sub:"accept:" t
 
+(* No block promotes: the run promotes once on its summary, and only what
+   dune holds. *)
 let mirrors_commands () =
-  let t = ending ~config:{ (config ()) with Run.filter = [ "geo" ] } stale in
+  let config = { (config ()) with Run.filter = [ "geo" ] } in
+  let accepts held =
+    List.filter
+      (fun l -> String.starts_with ~prefix:"accept:" (String.trim l))
+      (lines (ending ~config ?held stale))
+  in
   contains
     ~sub:
       ("\nreplay: WINDTRAP_SEED=" ^ seed
      ^ " WINDTRAP_FILTER='geo' dune runtest\n")
-    t;
-  equal (pair int int) (2, 0)
-    (count ~sub:"    accept: " t, count ~sub:"accept:" t)
+    (ending ~config stale);
+  equal (list string)
+    [
+      "accept: touch 'test/help.expected' && dune runtest; dune promote \
+       test/test_cli.ml test/help.expected";
+    ]
+    (accepts (Some `Once_created));
+  equal (list string) [] (accepts (Some `Withheld));
+  equal (list string) [] (accepts None)
 
 let nothing_to_run_again_rows =
   [
@@ -1428,40 +1508,39 @@ let transcript_group =
           gallery "timelines" (timeline_entries ()));
       test "the verbose rows print as their gallery" (fun () ->
           gallery "rows" (row_entries ()));
-      cases "header" ~name:fst header_rows header_row;
+      cases "header" ~id:fst header_rows header_row;
       test "the replay line carries the seed the header printed" seed_restated;
-      cases "a duration prints in one form in a row and in the summary"
-        ~name:fst duration_rows duration_row;
+      cases "a duration prints in one form in a row and in the summary" ~id:fst
+        duration_rows duration_row;
       test "a duration's unit is chosen after rounding" unit_after_rounding;
-      cases "the live line is off" ~name:fst off_live_rows (fun (_, draw) ->
+      cases "the live line is off" ~id:fst off_live_rows (fun (_, draw) ->
           equal string "" (draw ()));
       test "the live line is cut to 80 columns" live_line_cut;
       test "a search's live line is cut in its path, never in its count"
         shrinking_line_cut;
       cases
         "a compact run prints nothing of a result that is no counted failure"
-        ~name:fst silent_rows silent;
-      cases "note" ~name:fst note_rows (fun (_, run) ->
+        ~id:fst silent_rows silent;
+      cases "note" ~id:fst note_rows (fun (_, run) ->
           let t, expected = run () in
           equal string expected t);
       test "a compact transcript never carries a notice" noteworthy_notice;
-      cases "observe prints the seed iff a selected test is a property"
-        ~name:fst seed_rows (fun (_, (t, expected)) ->
-          equal string expected (t ()));
+      cases "observe prints the seed iff a selected test is a property" ~id:fst
+        seed_rows (fun (_, (t, expected)) -> equal string expected (t ()));
       test "observe maps Interrupted to interrupted" observe_interrupted;
       test "observe raises nothing of its own" observe_raises_nothing;
-      cases "--stream changes no line of the transcript" ~name:fst stream_rows
+      cases "--stream changes no line of the transcript" ~id:fst stream_rows
         (fun (_, (results, verbose, expected)) ->
           equal text expected (streamed ~verbose results));
       test "under --stream a test's bytes come before the report's"
         stream_drains;
       group "The selection"
         [
-          cases "selection_description" ~name:fst selection_rows
+          cases "selection_description" ~id:fst selection_rows
             (fun (_, (focused, config, expected)) ->
               equal (option string) expected
                 (Report.selection_description ~focused config));
-          cases "empty_selection_reason" ~name:fst reason_rows
+          cases "empty_selection_reason" ~id:fst reason_rows
             (fun (_, (declared, selection, expected)) ->
               equal (option string) expected
                 (Report.empty_selection_reason ~declared ~selection));
@@ -1470,9 +1549,9 @@ let transcript_group =
         [
           test "the endings print as their gallery" (fun () ->
               gallery "endings" (endings_entries ()));
-          cases "an empty run says why" ~name:fst empty_rows
+          cases "an empty run says why" ~id:fst empty_rows
             (fun (_, (t, expected)) -> equal text expected (t ()));
-          cases "the summary is the last line" ~name:fst summary_rows
+          cases "the summary is the last line" ~id:fst summary_rows
             (fun (_, run) ->
               let t, expected = run () in
               equal string expected (last_line t));
@@ -1495,7 +1574,7 @@ let transcript_group =
                     (stop, summary)
               | _ -> fail t);
           cases "the slow section lists the results at or over the threshold"
-            ~name:fst slow_section_rows slow_section;
+            ~id:fst slow_section_rows slow_section;
           test "corrections: one written row per file, in path order"
             corrections_written;
           test "corrections: an accepted file's row" accepted_file;
@@ -1510,9 +1589,11 @@ let transcript_group =
             bail_accepts_its_test;
           test "a path in an accept line stays one line" bail_escapes_its_path;
           test "an armed run arms its replay and accepts nothing" armed_commands;
-          test "under a build action each block promotes its own file"
+          test
+            "under a build action the summary promotes every file dune holds, \
+             and no block does"
             mirrors_commands;
-          cases "no accept and no replay" ~name:fst nothing_to_run_again_rows
+          cases "no accept and no replay" ~id:fst nothing_to_run_again_rows
             nothing_to_run_again;
           test "an interrupted run says on stderr what it stopped"
             interrupted_says;
@@ -1523,7 +1604,8 @@ let transcript_group =
 
 (* A row's annotation is made in its test. *)
 let annotation ?invocation ?armed ?(path = [ "t" ]) f () =
-  Report.annotation ?invocation ?armed ~path f
+  Report.annotations ?invocation ?armed ~release_failures:[]
+    [ result path (Failure.Fail [ f ]) ]
 
 let annotations ?invocation ?armed ?(release_failures = []) results () =
   Report.annotations ?invocation ?armed ~release_failures results
@@ -1710,7 +1792,7 @@ let withheld_annotation () =
       ()
   in
   ends_with
-    ~affix:
+    ~suffix:
       "%0A    no correction was kept: the test also failed outside its \
        expectations; fix that failure and rerun\n"
     a
@@ -1721,7 +1803,7 @@ let envelope_composed () =
   print_string (Report.group_start "mylib");
   observe r
     (Run.Run_started
-       { suite = "mylib"; total = 1; selected = 1; properties = false });
+       { suite = "mylib"; total = 1; selected = 1; seeded = false });
   observe r (Run.Test_finished bad);
   Report.finish r ~release_failures:[] ~results:[ bad ] ~duration:0.01
     ~before_summary:(fun () ->
@@ -1778,20 +1860,19 @@ let group_rows =
 let github =
   group "The GitHub Actions envelope"
     [
-      cases "the fold's commands" ~name:fst group_rows
-        (fun (_, (c, expected)) -> equal string expected c);
+      cases "the fold's commands" ~id:fst group_rows (fun (_, (c, expected)) ->
+          equal string expected c);
       test "an annotation prints as its baseline" (fun () ->
-          expect_file
+          expect_file ~file:(baseline "annotation")
             (annotation
                ~path:[ "users"; "sessions after login" ]
-               Fixtures.eq_failure ())
-            (baseline "annotation"));
-      cases "an annotation holds" ~name:fst annotation_rows annotation_row;
-      cases "an annotation leaves out" ~name:fst annotation_absent_rows
+               Fixtures.eq_failure ()));
+      cases "an annotation holds" ~id:fst annotation_rows annotation_row;
+      cases "an annotation leaves out" ~id:fst annotation_absent_rows
         annotation_absent;
-      cases "one command line per counted failure entry" ~name:fst
+      cases "one command line per counted failure entry" ~id:fst
         command_lines_rows command_lines;
-      cases "no annotation" ~name:fst empty_annotation_rows (fun (_, results) ->
+      cases "no annotation" ~id:fst empty_annotation_rows (fun (_, results) ->
           equal string "" (annotations results ()));
       test "an annotation with no command ends on its facts" (fun () ->
           equal string "::error title=Test failure%3A bad::    boom\n"
@@ -1800,7 +1881,7 @@ let github =
         withheld_annotation;
       test "the fold closes before the annotations, the summary last"
         envelope_composed;
-      cases "the fold closes after the last section" ~name:fst fold_rows
+      cases "the fold closes after the last section" ~id:fst fold_rows
         (fun (_, (results, expected)) -> equal text expected (folded results));
     ]
 
@@ -1826,31 +1907,6 @@ let verdict_rows =
       ( (fun r -> Report.mutation_survived r ~hits:2 ~xfail_failed:true),
         "mutant survived: the site was evaluated 2 times and only xfail tests \
          failed.\n" ) );
-    ( "survived, evaluated only in a forked process",
-      ( (fun r -> Report.mutation_survived r ~hits:0 ~xfail_failed:false),
-        "mutant survived: only a forked process ran the site, and no test \
-         failed after that.\n" ) );
-    ( "survived, evaluated only in a forked process, and an xfail test passed",
-      ( (fun r -> Report.mutation_survived r ~hits:0 ~xfail_failed:true),
-        "mutant survived: only a forked process ran the site, and only xfail \
-         tests failed.\n" ) );
-    ( "survived, and a test failed before the first evaluation",
-      ( (fun r ->
-          Report.mutation_survived ~failed_before:true r ~hits:1
-            ~xfail_failed:false),
-        "mutant survived: the site ran 1 time, and only tests before its first \
-         run failed.\n" ) );
-    ( "survived, a test failed before the first evaluation, and an xfail test \
-       passed",
-      ( (fun r ->
-          Report.mutation_survived ~failed_before:true r ~hits:2
-            ~xfail_failed:true),
-        "mutant survived: the site ran 2 times, and only xfail tests and tests \
-         before its first run failed.\n" ) );
-    ( "not evaluated after a failure",
-      ( (fun r -> Report.mutation_not_evaluated ~failed:true r),
-        "mutant not evaluated: no selected test ran the site, so the mutant \
-         did not cause the failure.\n" ) );
     ( "not evaluated",
       ( (fun r -> Report.mutation_not_evaluated r),
         "mutant not evaluated: no selected test ran the site.\n" ) );
@@ -1859,12 +1915,9 @@ let verdict_rows =
         "mutant not reached: only xfail tests ran the site.\n" ) );
   ]
 
-(* A line longer than the margin leaves the queue of [Format] before the
-   flush, so the margin is wider than each line. *)
 let unflushed (_, (write, expected)) =
   let b = Buffer.create 64 in
   let ppf = Format.formatter_of_buffer b in
-  Format.pp_set_margin ppf 1000;
   write (Report.create ~out:ppf ~ansi:false (config ~armed:"x" ()));
   let before = Buffer.contents b in
   Format.pp_print_flush ppf ();
@@ -1884,10 +1937,28 @@ let calc_source =
   source_of
     [ (13, "  | Sub -> a - b"); (21, "let sign n = if n > 0 then 1 else 0") ]
 
+(* The mutant [id] names, spanning [before] on its line. *)
+let shown_mutant ?source id line before after =
+  let file, col =
+    match String.split_on_char ':' id with
+    | [ file; _; col; _ ] -> (file, int_of_string col)
+    | _ -> invalid_arg id
+  in
+  {
+    Sections.id;
+    file;
+    line;
+    col;
+    end_line = line;
+    end_col = col + String.length before;
+    before;
+    after;
+    source;
+  }
+
 let survivor id line before after witnesses =
   {
-    Sections.mutant =
-      { Sections.id; line; before; after; source = Some calc_source };
+    Sections.mutant = shown_mutant ~source:calc_source id line before after;
     witnesses =
       List.map
         (fun (test, line) ->
@@ -1897,7 +1968,6 @@ let survivor id line before after witnesses =
             exe = None;
           })
         witnesses;
-    runs = 1;
   }
 
 let add_survivor =
@@ -1912,11 +1982,10 @@ let loop_report =
   {
     Sections.survivors = [ add_survivor; ge_survivor ];
     not_evaluated = [];
-    flaky = [];
-    unstable = [];
+    unknown = [];
+    refused = [];
     unreached = [ ("lib/calc.ml", 40); ("lib/calc.ml", 41) ];
     outside_tests = [];
-    filtered = [];
     killed = 3;
     not_tested = 0;
     scope = Sections.Suite;
@@ -1930,8 +1999,8 @@ let loop_steps (m : Sections.mutation) =
          [
            ( strf "mutation_testing %d" (i + 1),
              fun r ->
-               Report.mutation_testing r ~completed:i ~total
-                 ~running:[ s.mutant.id ] );
+               Report.mutation_testing r ~index:(i + 1) ~total ~id:s.mutant.id
+           );
            ("mutation_survivor", fun r -> Report.mutation_survivor r s);
          ])
        m.survivors)
@@ -1959,36 +2028,12 @@ let mutation_entries () =
         [
           ( "mutation_testing 1",
             fun r ->
-              Report.mutation_testing r ~completed:0 ~total:2
-                ~running:[ "lib/calc.ml:9:3:sub" ] );
+              Report.mutation_testing r ~index:1 ~total:2
+                ~id:"lib/calc.ml:9:3:sub" );
           ( "mutation_testing 2",
             fun r ->
-              Report.mutation_testing r ~completed:1 ~total:2
-                ~running:[ "lib/calc.ml:13:11:add" ] );
-        ] );
-    ( "the live line names the first running mutant and counts the others",
-      timeline ~ansi:true ~terminal:true
-        [
-          ( "mutation_testing 3",
-            fun r ->
-              Report.mutation_testing r ~completed:2 ~total:9
-                ~running:
-                  [
-                    "lib/calc.ml:9:3:sub";
-                    "lib/calc.ml:13:11:add";
-                    "lib/calc.ml:21:16:ge";
-                  ] );
-          ( "a cut keeps the count",
-            fun r ->
-              Report.mutation_testing r ~completed:2 ~total:9
-                ~running:
-                  [
-                    "lib/a/very/long/path/that/no/terminal/line/holds/whole/calc.ml:9:3:sub";
-                    "lib/calc.ml:13:11:add";
-                  ] );
-          ( "no child runs",
-            fun r -> Report.mutation_testing r ~completed:9 ~total:9 ~running:[]
-          );
+              Report.mutation_testing r ~index:2 ~total:2
+                ~id:"lib/calc.ml:13:11:add" );
         ] );
     ( "every mutant killed: the outcome alone",
       loop ~ansi:true
@@ -2002,45 +2047,6 @@ let mutation_entries () =
               killed = 0;
               not_tested = 2;
             }) );
-    ( "the mode of the children prints above the reproduce line",
-      rendered ~config:(config ~invocation:loop_invocation ()) (fun r ->
-          Report.mutation_finish
-            ~lines:[ "children: new processes" ]
-            r
-            { loop_report with Sections.survivors = [ add_survivor ] }) );
-    ( "the mode of the children prints above a lone outcome line",
-      rendered (fun r ->
-          Report.mutation_finish
-            ~lines:[ "children: new processes" ]
-            r
-            { loop_report with Sections.survivors = []; unreached = [] }) );
-    ( "a note on standard error does not move the mode of the children",
-      rendered (fun r ->
-          Report.mutation_finish ~note:"verdicts not saved"
-            ~lines:[ "children: new processes" ]
-            r
-            { loop_report with Sections.survivors = []; unreached = [] }) );
-    ( "the lines print in order above the reproduce line",
-      rendered ~config:(config ~invocation:loop_invocation ()) (fun r ->
-          Report.mutation_finish
-            ~lines:
-              [
-                "children: new processes";
-                "killed elsewhere: 1 mutant, not tested, from the verdict file \
-                 of default/a.exe (1)";
-              ]
-            r
-            { loop_report with Sections.survivors = [ add_survivor ] }) );
-    ( "an interrupted loop prints its lines",
-      rendered (fun r ->
-          Report.mutation_interrupted
-            ~lines:
-              [
-                "killed elsewhere: 1 mutant, not tested, from the verdict file \
-                 of default/a.exe (1)";
-              ]
-            r (Report.Testing [ "lib/calc.ml:9:12:add" ])
-            { loop_report with Sections.survivors = []; unreached = [] }) );
     ( "stopped before a child ended",
       rendered (fun r ->
           Report.mutation_finish r
@@ -2061,101 +2067,50 @@ let refused_after_live () =
     Report.create ~out:Format.std_formatter ~ansi:true ~terminal:true
       (config ())
   in
-  Report.mutation_testing r ~completed:0 ~total:2
-    ~running:[ "lib/a.ml:1:0:add" ];
+  Report.mutation_testing r ~index:1 ~total:2 ~id:"lib/a.ml:1:0:add";
   Report.mutation_refused r "no mutant";
   equal text
-    "\r\027[2K\027[2m  [0/2] lib/a.ml:1:0:add\u{2026}\027[0m\r\027[2Kwindtrap: \
+    "\r\027[2K\027[2m  [1/2] lib/a.ml:1:0:add\u{2026}\027[0m\r\027[2Kwindtrap: \
      no mutant\n"
     (output ())
 
 let interrupted_rows =
   [
     ( "a child",
-      ( Report.Testing [ "lib/calc.ml:9:12:add" ],
+      ( Some "lib/calc.ml:9:12:add",
         "windtrap: interrupted while testing lib/calc.ml:9:12:add\n" ) );
-    ( "several children",
-      ( Report.Testing [ "lib/calc.ml:9:12:add"; "lib/calc.ml:13:11:add" ],
-        "windtrap: interrupted while testing lib/calc.ml:9:12:add, \
-         lib/calc.ml:13:11:add\n" ) );
-    ( "no child",
-      ( Report.Before "lib/calc.ml:13:11:add",
-        "windtrap: interrupted before testing lib/calc.ml:13:11:add\n" ) );
     ( "the determinism probe",
-      (Report.Probe, "windtrap: interrupted during the determinism probe\n") );
-    ( "the start of a new process",
-      ( Report.Startup,
-        "windtrap: interrupted while a new process of the suite started\n" ) );
+      (None, "windtrap: interrupted during the determinism probe\n") );
   ]
 
-let interrupted_loop (_, (stopped, expected)) =
+let interrupted_loop (_, (testing, expected)) =
   let t =
     rendered (fun r ->
-        Report.mutation_interrupted r stopped
+        Report.mutation_interrupted r ~testing
           { loop_report with Sections.survivors = []; unreached = [] })
   in
   equal (pair string string)
-    (expected, "mutants: 3 reached by this suite, 3 killed, score 100.0%\n")
+    (expected, "mutants: 3 reached by this suite, 3 killed\n")
     (output (), t)
 
 let mutation =
   group "Mutation lines"
     [
-      cases "an armed run's announcement and verdicts" ~name:fst verdict_rows
+      cases "an armed run's announcement and verdicts" ~id:fst verdict_rows
         unflushed;
       test "a loop's lines print as their gallery" (fun () ->
           gallery "mutation" (mutation_entries ()));
-      cases "the loop's live line is off" ~name:fst live_off_rows
+      cases "the loop's live line is off" ~id:fst live_off_rows
         (fun (_, (ansi, terminal)) ->
           equal string ""
             (rendered ~ansi ~terminal (fun r ->
-                 Report.mutation_testing r ~completed:0 ~total:2
-                   ~running:[ "lib/calc.ml:9:3:sub" ])));
+                 Report.mutation_testing r ~index:1 ~total:2
+                   ~id:"lib/calc.ml:9:3:sub")));
       test
         "mutation_refused erases the live line and flushes before its message"
         refused_after_live;
-      cases "mutation_interrupted says what it stopped, then closes" ~name:fst
+      cases "mutation_interrupted says what it stopped, then closes" ~id:fst
         interrupted_rows interrupted_loop;
     ]
 
-(* Failure projections *)
-
-let projections () =
-  let fs =
-    [
-      Fixtures.prop_failure;
-      Fixtures.subtest_failure "shape [0]";
-      Fixtures.snap_missing;
-    ]
-  in
-  let entry pp f =
-    Format.asprintf "%a"
-      (pp ~ansi:false ?terminal:None ?excerpt:None ?hints:None ?filter:None
-         ?invocation:None ?armed:None ?workers:None)
-      f
-  in
-  equal (list string)
-    (List.map Sections.headline fs)
-    (List.map Report.headline fs);
-  equal (list bool)
-    (List.map Sections.is_subtest_failure fs)
-    (List.map Report.is_subtest_failure fs);
-  equal
-    (list (option string))
-    (List.map Sections.labeled_msg fs)
-    (List.map Report.labeled_msg fs);
-  equal (list string)
-    (List.map (entry Sections.pp_failure) fs)
-    (List.map (entry Report.pp_failure) fs)
-
-let () =
-  exit
-    (run "report"
-       [
-         renderer;
-         transcript_group;
-         github;
-         mutation;
-         group "Failure projections"
-           [ test "they are Report_sections'" projections ];
-       ])
+let () = exit (run "report" [ renderer; transcript_group; github; mutation ])

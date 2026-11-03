@@ -65,6 +65,21 @@ let merge a b =
 
 let files t = List.map fst (File_map.bindings t)
 
+let keep f t =
+  File_map.filter_map
+    (fun file entry ->
+      let kept =
+        List.filter
+          (fun (p, _) -> f ~file p)
+          (Array.to_list (Array.combine entry.points entry.counts))
+      in
+      match kept with
+      | [] -> None
+      | kept ->
+          let points, counts = List.split kept in
+          Some { points = Array.of_list points; counts = Array.of_list counts })
+    t
+
 (* Dumps *)
 
 type identity = Instr.identity = { exe : string; digest : string }
@@ -197,6 +212,10 @@ let dump target ~exe () =
         Instr.warn "cannot write a coverage file under %s: %s" dir
           (Printexc.to_string e))
 
+(* A process that hands its counts to another, as a worker hands them to its
+   parent, dumps none of its own. A process it forks still dumps its own. *)
+let handed_over = ref (fun () -> false)
+
 (* A relative executable path under an unreadable current directory
    leaves the target known and the identity not, and the dump is then
    written without one. *)
@@ -220,7 +239,7 @@ let install_dump () =
       let exe =
         determined (fun () -> Instr.exe_identity ~exe:Instr.executable)
       in
-      at_exit (dump target ~exe)
+      at_exit (fun () -> if not (!handed_over ()) then dump target ~exe ())
 
 let validate ~file points counts =
   let err fmt =
@@ -253,6 +272,29 @@ let register ~file ~points ~counts =
 let visit counts index =
   let count = counts.(index) in
   if count < max_int then counts.(index) <- count + 1
+
+(* Counts across processes *)
+
+let hand_over ~self = handed_over := self
+
+let take () =
+  let t = snapshot () in
+  File_map.iter
+    (fun _ (_, live) ->
+      List.iter (fun c -> Array.fill c 0 (Array.length c) 0) live)
+    !registry;
+  t
+
+(* Into the first registration of a file: the dump adds up those of one
+   file. *)
+let absorb t =
+  File_map.iter
+    (fun file { points; counts } ->
+      match File_map.find_opt file !registry with
+      | Some (table, live :: _) when points_equal table points ->
+          Array.iteri (fun i n -> live.(i) <- saturating_add live.(i) n) counts
+      | Some _ | None -> ())
+    t
 
 (* Summaries *)
 

@@ -106,34 +106,6 @@ let build_dirs =
     ("/w/p/src/lib", None);
   ]
 
-let build_roots =
-  [
-    ("/w/p/_build/default/test", Some "/w/p");
-    ("/w/p/_build/.sandbox/0abc12/default/test", Some "/w/p");
-    ("/w/p/_build/.sandbox/_build/_coverage", Some "/w/p");
-    ("/w/p/_build_ci/default/test/t.exe", Some "/w/p");
-    ("/w/p/src/lib", None);
-  ]
-
-let exe_locations =
-  [
-    ( "a relative executable lies below the build directory",
-      ("/w/_build/_mutants/windtrap-a.mutants", "default/t.exe"),
-      Some ("/w/_build/default/t.exe", "_build/default/t.exe") );
-    ( "a private build directory keeps its name",
-      ("/w/_build_ci/_mutants/windtrap-a.mutants", "default/t.exe"),
-      Some ("/w/_build_ci/default/t.exe", "_build_ci/default/t.exe") );
-    ( "an absolute executable is its own path and spelling",
-      ("/w/_build/_mutants/windtrap-a.mutants", "/opt/t.exe"),
-      Some ("/opt/t.exe", "/opt/t.exe") );
-    ( "a relative executable of a file below no build directory",
-      ("/w/p/windtrap-a.mutants", "default/t.exe"),
-      None );
-    ( "an absolute executable of a file below no build directory",
-      ("/w/p/windtrap-a.mutants", "/opt/t.exe"),
-      Some ("/opt/t.exe", "/opt/t.exe") );
-  ]
-
 let relative_path () =
   let cwd = Filename.concat (temp_dir ()) "_build/default" in
   Sys.mkdir (Filename.dirname cwd) 0o755;
@@ -160,60 +132,6 @@ let unreadable_cwd () =
     (in_build ~build:"/w/_build" "default/a.exe")
     (Instr.output_file format ~exe:"/w/_build/default/a.exe")
 
-let freshness_witness =
-  Testable.make
-    ~pp:(fun ppf -> function
-      | Instr.Fresh -> Format.pp_print_string ppf "Fresh"
-      | Orphan s -> Format.fprintf ppf "Orphan %S" s
-      | Stale s -> Format.fprintf ppf "Stale %S" s)
-    ~equal:( = )
-
-(* A scratch directory [w] with no component named [_build*], so that the
-   build directory of a file in [w/_build/_mutants] is [w/_build]. *)
-let freshness_fixture () =
-  let w = temp_dir () in
-  let exe = Filename.concat w "_build/default/t.exe" in
-  Sys.mkdir (Filename.concat w "_build") 0o755;
-  Sys.mkdir (Filename.concat w "_build/default") 0o755;
-  Sys.mkdir (Filename.concat w "_build/_mutants") 0o755;
-  write exe "an executable\n";
-  let digest = require_some (Instr.file_digest exe) in
-  (w, exe, digest)
-
-let new_table () : (string, string option) Hashtbl.t = Hashtbl.create 8
-
-let freshness_cases () =
-  let w, _, d = freshness_fixture () in
-  let path = Filename.concat w "_build/_mutants/windtrap-a.mutants" in
-  let other = String.make 32 'f' in
-  let check ?(path = path) identity expected =
-    equal freshness_witness expected
-      (Instr.freshness ~digests:(new_table ()) ~path identity)
-  in
-  check None Instr.Fresh;
-  check (Some { Instr.exe = "default/t.exe"; digest = d }) Fresh;
-  check
-    (Some { Instr.exe = "default/t.exe"; digest = other })
-    (Stale "_build/default/t.exe");
-  check
-    (Some { Instr.exe = "default/gone.exe"; digest = d })
-    (Orphan "_build/default/gone.exe");
-  check
-    ~path:(Filename.concat w "windtrap-a.mutants")
-    (Some { Instr.exe = "default/t.exe"; digest = other })
-    Fresh
-
-let freshness_memo () =
-  let w, exe, d = freshness_fixture () in
-  let path = Filename.concat w "_build/_mutants/windtrap-a.mutants" in
-  let identity = Some { Instr.exe = "default/t.exe"; digest = d } in
-  let digests = new_table () in
-  equal freshness_witness Instr.Fresh (Instr.freshness ~digests ~path identity);
-  write exe "another executable\n";
-  equal freshness_witness Instr.Fresh (Instr.freshness ~digests ~path identity);
-  equal freshness_witness (Instr.Stale "_build/default/t.exe")
-    (Instr.freshness ~digests:(new_table ()) ~path identity)
-
 let build_paths =
   group "Build paths"
     [
@@ -224,34 +142,32 @@ let build_paths =
             [ "/w/./a"; Filename.concat (Sys.getcwd ()) "./a/../b" ]
             [ Instr.absolute "/w/./a"; Instr.absolute "./a/../b" ]);
       cases "build_dir cuts the path after its first component named _build*"
-        ~name:fst build_dirs (fun (path, dir) ->
+        ~id:fst build_dirs (fun (path, dir) ->
           equal (option string) dir (Instr.build_dir ~path));
       test "a relative path is made absolute against the current directory"
         relative_path;
-      cases
-        "exe_location is the path and the spelling of the executable that \
-         wrote a file"
-        ~name:(fun (name, _, _) -> name)
-        exe_locations
-        (fun (_, (path, exe), expected) ->
-          equal
-            (option (pair string string))
-            expected
-            (Instr.exe_location ~path exe));
-      cases "build_root is the parent of the build directory" ~name:fst
-        build_roots (fun (path, root) ->
-          equal (option string) root (Instr.build_root ~path));
+      test
+        "below DUNE_SOURCEROOT, the build directory is the first _build \
+         component under it" (fun () ->
+          setenv "DUNE_SOURCEROOT" (Some "/w/_build/p");
+          let exe = "/w/_build/p/_build/default/test/a.exe" in
+          equal (option string) (Some "/w/_build/p/_build")
+            (Instr.build_dir ~path:exe);
+          equal string "default/test/a.exe" (Instr.exe_identity ~exe);
+          equal string
+            (in_build ~build:"/w/_build/p/_build" "default/test/a.exe")
+            (Instr.output_file format ~exe));
       cases "exe_identity is the path below the build directory, normalized"
-        ~name:fst normalized (fun (exe, identity) ->
+        ~id:fst normalized (fun (exe, identity) ->
           equal string identity (Instr.exe_identity ~exe));
       cases
         "exe_identity drops the .sandbox/<digest> right below the build \
          directory, and nothing else"
-        ~name:fst sandboxed (fun (exe, identity) ->
+        ~id:fst sandboxed (fun (exe, identity) ->
           equal string identity (Instr.exe_identity ~exe));
       cases
         "an executable's own name never makes it lie below a build directory"
-        ~name:fst named_build (fun (exe, identity) ->
+        ~id:fst named_build (fun (exe, identity) ->
           equal string identity (Instr.exe_identity ~exe));
       test "data_dir and standalone_data_dir name the format's directory"
         (fun () ->
@@ -264,28 +180,22 @@ let build_paths =
       cases
         "output_file is windtrap-<md5 of the identity>.<ext> in the data \
          directory of the build directory"
-        ~name:fst below_a_build (fun (exe, file) ->
+        ~id:fst below_a_build (fun (exe, file) ->
           equal string file (Instr.output_file format ~exe));
       cases
         "below no build directory, output_file is in the standalone data \
          directory of the current directory, hashed from the absolute path"
-        ~name:Fun.id below_none (fun exe ->
+        ~id:Fun.id below_none (fun exe ->
           equal string
             (strf "%s/windtrap-%s.smp" (standalone ()) (md5 exe))
             (Instr.output_file format ~exe));
-      cases "output_dir is output_file without its extension" ~name:Fun.id
+      cases "output_dir is output_file without its extension" ~id:Fun.id
         [ "/w/p/_build/default/test/a.exe"; "/opt/t.exe" ] (fun exe ->
           equal string
             (Filename.remove_extension (Instr.output_file format ~exe))
             (Instr.output_dir format ~exe));
       test "a value that needs an unreadable current directory raises Sys_error"
         unreadable_cwd;
-      test
-        "freshness judges a file by the digest of the executable at its \
-         recorded path"
-        freshness_cases;
-      test "freshness reads the digest of an executable one time for one table"
-        freshness_memo;
     ]
 
 (* Errors and warnings *)
@@ -434,9 +344,9 @@ let the_header =
       cases
         "add_header refuses a malformed identity in a message the format's \
          owner prefixes, after the magic line"
-        ~name:fst malformed (fun (_, identity) ->
+        ~id:fst malformed (fun (_, identity) ->
           let message, written = refusal identity in
-          starts_with ~affix:"Sample: " message;
+          starts_with ~prefix:"Sample: " message;
           equal string "windtrap-sample-v1\n" written);
       test "add_header names what is malformed" (fun () ->
           expect
@@ -581,11 +491,11 @@ let parsing =
       test "without exe, read_identity is None past the whitespace only"
         no_identity;
       cases "read_identity is None when the first three bytes are not exe"
-        ~name:fst not_exe (fun (_, input) ->
+        ~id:fst not_exe (fun (_, input) ->
           is_none ~pp:pp_identity (Instr.read_identity (after input)));
       test "finish accepts trailing whitespace" (fun () ->
           Instr.finish (after " \t\r\n"));
-      cases "a reader refuses what it cannot read with Parse_error" ~name:fst
+      cases "a reader refuses what it cannot read with Parse_error" ~id:fst
         refused (fun (_, f) -> raises_match parse_error f);
       test "the reasons name what was read, and where" (fun () ->
           expect

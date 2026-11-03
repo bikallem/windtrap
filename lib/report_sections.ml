@@ -116,8 +116,23 @@ let elided s = String.length s > max_value_bytes
 let shown s = Text.elide_middle max_value_bytes ~show:Fun.id s
 
 (* An example is never shrunk. *)
-let case_name ~examples ~case_index ~shrink_steps =
-  if examples then strf "example %d" (case_index + 1)
+(* A replayed case is reported as an example is, and keeps its token. *)
+(* A table's row is named by its position, then its label, cut to one line
+   as [Table] cuts a row's tag. *)
+let case_name ?(replayed = false) ?domain ?(table = false) ?label ~examples
+    ~case_index ~shrink_steps () =
+  let label =
+    match label with
+    | Some l ->
+        ", " ^ Text.elide_middle 60 ~show:Text.escape_controls (shown_text l)
+    | None -> ""
+  in
+  if replayed then "replayed case"
+  else if table && Option.is_some domain then
+    strf "row %d of %d%s" (case_index + 1) (Option.get domain) label
+  else if Option.is_some domain then
+    strf "value %d of %d" (case_index + 1) (Option.get domain)
+  else if examples then strf "example %d" (case_index + 1)
   else if shrink_steps = 0 then strf "case %d" case_index
   else strf "case %d, shrunk %s" case_index (counted shrink_steps "step")
 
@@ -126,7 +141,7 @@ let timeout_fact ~limit (case : Failure.timed_case option) =
   | None -> strf "timed out after %gs" limit
   | Some { case_index; examples; passed; _ } ->
       strf "timed out after %gs in %s (%d passed)" limit
-        (case_name ~examples ~case_index ~shrink_steps:0)
+        (case_name ~examples ~case_index ~shrink_steps:0 ())
         passed
 
 let law_head ~law ~clause =
@@ -136,7 +151,7 @@ let law_head ~law ~clause =
 let baseline_subject = function
   | Failure.Literal { exact = false } -> "expect"
   | Failure.Literal { exact = true } -> "expect_exact"
-  | Failure.File path -> strf "expect_file \"%s\"" (Os.display_path path)
+  | Failure.File path -> strf "expect_file ~file:\"%s\"" (Os.display_path path)
 
 let needle_word = function
   | Failure.Prefix -> "prefix"
@@ -192,9 +207,6 @@ let cut_fact ~anchors:(expected_anchor, actual_anchor)
       (List.filter_map side
          [ (expected_anchor, expected); (actual_anchor, actual) ])
 
-let diff_lines hunks =
-  List.fold_left (fun n h -> n + 1 + List.length h.Diff.lines) 0 hunks
-
 (* Failure projections *)
 
 let labeled_msg (f : Failure.t) =
@@ -207,101 +219,12 @@ let labeled_msg (f : Failure.t) =
 
 let is_subtest_failure (f : Failure.t) = f.subtest <> []
 
-let headline (f : Failure.t) =
-  let fact =
-    match f.kind with
-    | Failure.Equality { not_ = true; expected; _ } ->
-        "both sides equal: " ^ shown_text expected
-    | Failure.Equality { expected; actual; diffable = false; _ } ->
-        strf "expected %s, got %s" (shown_text expected) (shown_text actual)
-    | Failure.Equality { expected = e; actual = a; _ } -> (
-        let whole = whole e a and expected = e.kept and actual = a.kept in
-        if String.equal expected actual then
-          if whole then "both sides render as: " ^ expected
-          else agree_fact ~anchors:expected_actual ~expected:e ~actual:a
-        else if
-          not (String.contains expected '\n' || String.contains actual '\n')
-        then strf "expected %s, got %s" (shown_text e) (shown_text a)
-        else
-          match Diff.hunks ~expected ~actual () with
-          | [] when whole ->
-              newline_fact ~anchors:expected_actual ~expected ~actual
-          | [] -> cut_fact ~anchors:expected_actual ~expected:e ~actual:a
-          | hunks ->
-              strf "expected and actual differ (%d diff lines)"
-                (diff_lines hunks))
-    | Failure.Containment { needle; found_at; haystack_length; demand; _ } -> (
-        let needle = shown_text needle in
-        match (demand, found_at) with
-        | Failure.Ordered { index; resumed_at }, Some at ->
-            strf "element %d %S out of order: at byte %d, before byte %d" index
-              needle at resumed_at
-        | Failure.Ordered { index; resumed_at }, None ->
-            strf
-              "element %d %S not found at or after byte %d (%d-byte haystack)"
-              index needle resumed_at haystack_length
-        | (Failure.Anywhere | Failure.Prefix | Failure.Suffix), Some _ ->
-            strf "%s %S %s" (needle_word demand) needle
-              (containment_verdict ~demand ~found_at)
-        | (Failure.Anywhere | Failure.Prefix | Failure.Suffix), None ->
-            strf "%s %S not found (%d-byte haystack)" (needle_word demand)
-              needle haystack_length)
-    | Failure.Raise { expected = Some e; actual = Some a; _ } ->
-        strf "expected exception %s, raised %s" (shown_text e) (shown_text a)
-    | Failure.Raise { expected = Some e; actual = None; _ } ->
-        strf "expected exception %s, none raised" (shown_text e)
-    | Failure.Raise { expected = None; actual = Some a; predicate; _ } ->
-        if predicate then
-          "exception did not satisfy the predicate: " ^ shown_text a
-        else "uncaught exception: " ^ shown_text a
-    | Failure.Raise { expected = None; actual = None; _ } ->
-        "expected an exception, none raised"
-    | Failure.Baseline { baseline; state; _ } -> (
-        let subject = baseline_subject baseline in
-        match state with
-        | Failure.Missing _ -> subject ^ ": no baseline"
-        | Failure.Mismatch _ -> subject ^ ": mismatch"
-        | Failure.Unresolvable _ ->
-            subject ^ ": cannot resolve the path under the project root")
-    | Failure.Property
-        {
-          rendered;
-          summary;
-          case_index;
-          shrink_steps;
-          shrink_end;
-          examples;
-          rendering;
-          _;
-        } ->
-        (* [shrunk 100 steps] alone reads as a converged search. *)
-        strf "property failed (%s%s):%s%s"
-          (case_name ~examples ~case_index ~shrink_steps)
-          (if examples then ""
-           else
-             match shrink_end with
-             | Failure.Converged -> ""
-             | Failure.Budget_spent -> ", shrink limit reached"
-             | Failure.Candidate_raised _ -> ", shrinking stopped"
-             | Failure.Timed_out _ -> ", shrinking timed out")
-          (match rendering with
-          | Failure.Pre_image -> " computed from "
-          | Failure.Value -> " ")
-          (shown_text (Option.value summary ~default:rendered))
-    | Failure.Law { law; clause; equation; terms } -> (
-        let head = law_head ~law ~clause in
-        match List.rev terms with
-        | Failure.Failed { name; _ } :: _ -> strf "%s: %s failed" head name
-        | (Failure.Term _ | Failure.Side _) :: _ | [] ->
-            strf "%s: %s" head equation)
-    | Failure.Timeout { limit; case } -> timeout_fact ~limit case
-    | Failure.Message m -> (
-        match shown_text m with "" -> "(empty failure message)" | m -> m)
-  in
+(* A failure on one line: its label, then the head of its entry's facts. *)
+let summary (f : Failure.t) head =
   let line =
     String.map
       (function '\n' | '\r' | '\t' -> ' ' | c -> c)
-      (match labeled_msg f with None -> fact | Some msg -> msg ^ ": " ^ fact)
+      (match labeled_msg f with None -> head | Some msg -> msg ^ ": " ^ head)
   in
   let rec cut i chars =
     if i >= String.length line then line
@@ -313,16 +236,6 @@ let headline (f : Failure.t) =
   cut 0 0
 
 (* Command hints *)
-
-let filter_flag = function Some f -> " -f " ^ shell_quote f | None -> ""
-
-(* An armed run's failures are the mutant's: a command that runs the test
-   without it passes. *)
-let arm_flag = function Some id -> " --arm " ^ shell_word id | None -> ""
-
-let arm_mirror = function
-  | Some id -> strf "WINDTRAP_MUTATE_ARM=%s " (shell_word id)
-  | None -> ""
 
 (* A baseline failure whose correction a command accepts, with whether its
    baseline is missing. A withheld correction accepts nothing. *)
@@ -337,25 +250,56 @@ let acceptable (f : Failure.t) =
   | Failure.Baseline { state = Failure.Unresolvable _; _ }
   | Failure.Equality _ | Failure.Containment _ | Failure.Raise _
   | Failure.Property _ | Failure.Law _ | Failure.Timeout _ | Failure.Message _
-    ->
+  | Failure.Vacuous _ ->
       None
 
-(* Promotion fills a file and never creates one: a missing file must exist
-   before dune's [diff?] registers its correction. *)
-let promote_line (f : Failure.t) =
-  match acceptable f with
-  | None -> None
-  | Some (Failure.File path, true) ->
-      let file = Os.display_path path in
-      Some
-        (strf "accept: touch %s && dune runtest; dune promote %s"
-           (shell_quote file) (shell_word file))
-  | Some (Failure.File path, false) ->
-      Some ("accept: dune promote " ^ shell_word (Os.display_path path))
-  | Some (Failure.Literal _, _) -> (
-      match f.loc with
-      | Some loc -> Some ("accept: dune promote " ^ shell_word loc.Loc.file)
-      | None -> Some "accept: dune promote")
+let distinct lines =
+  List.rev
+    (List.fold_left
+       (fun acc line -> if List.mem line acc then acc else line :: acc)
+       [] lines)
+
+(* The file that holds a baseline: the file itself, or the source of a
+   literal, [None] when the literal has no location. *)
+let baseline_file (f : Failure.t) = function
+  | Failure.File path -> Some (Os.display_path path)
+  | Failure.Literal _ -> Option.map (fun (loc : Loc.t) -> loc.file) f.loc
+
+(* Dune registers the corrections of an action that exits 0 alone, and
+   promotion fills a file and never creates one: a missing file must exist,
+   and the run be made again, before [dune promote] can accept anything. *)
+let promotion ~held failures =
+  let baselines =
+    List.filter_map
+      (fun f ->
+        Option.map
+          (fun (baseline, missing) -> (baseline_file f baseline, missing))
+          (acceptable f))
+      failures
+  in
+  let files = distinct (List.map fst baselines) in
+  let promote =
+    if List.mem None files then "dune promote"
+    else
+      String.concat " "
+        ("dune promote" :: List.filter_map (Option.map shell_word) files)
+  in
+  match (held, files) with
+  | _, [] | `Withheld, _ -> None
+  | `Held, _ -> Some ("accept: " ^ promote)
+  | `Once_created, _ -> (
+      match
+        distinct
+          (List.filter_map
+             (fun (file, missing) -> if missing then file else None)
+             baselines)
+      with
+      | [] -> None
+      | missing ->
+          Some
+            (strf "accept: touch %s && dune runtest; %s"
+               (String.concat " " (List.map shell_quote missing))
+               promote))
 
 let withheld_fact (f : Failure.t) =
   let kept_none reason = Some ("no correction was kept: " ^ reason) in
@@ -377,54 +321,48 @@ let withheld_fact (f : Failure.t) =
       | Failure.Skipped ->
           kept_none
             "the test also skipped; skip before the expectation or not at all, \
-             and rerun")
+             and rerun"
+      | Failure.In_law -> None)
   | Failure.Baseline _ | Failure.Equality _ | Failure.Containment _
   | Failure.Raise _ | Failure.Property _ | Failure.Law _ | Failure.Timeout _
-  | Failure.Message _ ->
+  | Failure.Message _ | Failure.Vacuous _ ->
       None
 
-let hints ?armed ?(invocation = `Mirrors) failures =
-  let distinct lines =
-    List.rev
-      (List.fold_left
-         (fun acc line -> if List.mem line acc then acc else line :: acc)
-         [] lines)
-  in
+let hints ?armed failures =
   match armed with
   | Some _ -> []
-  | None -> (
-      distinct (List.filter_map withheld_fact failures)
-      @
-      match invocation with
-      | `Mirrors -> distinct (List.filter_map promote_line failures)
-      | `Exe _ -> [])
+  | None -> distinct (List.filter_map withheld_fact failures)
 
 (* A command that runs a run's tests again restates the run's selection.
    [--failed] reads the last-failed store under the run's [-o]. It has no
    mirror, and a pattern's mirror holds one pattern: under the mirrors those
-   are left out, and the command runs more tests, never fewer. Under
-   mutation testing, the command also keeps [--mutate-workers], which changes
-   what a stateful test runs. *)
-let selection_words invocation (c : Run.config) =
+   are left out, and the command runs more tests, never fewer. *)
+let selection_words invocation tests =
   let flag name var = function [] -> [] | values -> [ (name, var, values) ] in
-  let workers =
-    match c.mutation with
-    | (Run.Loop _ | Run.Armed _) when c.mutate_workers -> true
-    | Run.No_mutation | Run.Loop _ | Run.Armed _ -> false
-  in
   let patterns name var values =
     match invocation with
     | `Mirrors when List.compare_length_with values 1 > 0 -> []
     | `Mirrors | `Exe _ -> flag name var (List.map shell_quote values)
   in
-  let flags =
-    patterns "-f" "WINDTRAP_FILTER" c.filter
-    @ patterns "-e" "WINDTRAP_EXCLUDE" c.exclude
-    @ flag "--tag" "WINDTRAP_TAG" (List.map shell_word c.tags)
-    @ flag "--exclude-tag" "WINDTRAP_EXCLUDE_TAG"
-        (List.map shell_word c.exclude_tags)
-    @ flag "--shard" "WINDTRAP_SHARD"
-        (Option.to_list (Option.map (fun (k, n) -> strf "%d/%d" k n) c.shard))
+  let flags, failed =
+    match tests with
+    | `Filter filter ->
+        (patterns "-f" "WINDTRAP_FILTER" (Option.to_list filter), "")
+    | `Run (c : Run.config) ->
+        ( patterns "-f" "WINDTRAP_FILTER" c.filter
+          @ patterns "-e" "WINDTRAP_EXCLUDE" c.exclude
+          @ flag "--tag" "WINDTRAP_TAG" (List.map shell_word c.tags)
+          @ flag "--exclude-tag" "WINDTRAP_EXCLUDE_TAG"
+              (List.map shell_word c.exclude_tags)
+          @ flag "--shard" "WINDTRAP_SHARD"
+              (Option.to_list
+                 (Option.map (fun (k, n) -> strf "%d/%d" k n) c.shard)),
+          if not c.failed_only then ""
+          else if String.equal c.log_dir (Os.default_log_dir ()) then
+            " --failed"
+          else
+            strf " -o %s --failed" (shell_word (Os.display_artifact c.log_dir))
+        )
   in
   match invocation with
   | `Exe _ ->
@@ -432,51 +370,73 @@ let selection_words invocation (c : Run.config) =
         (List.concat_map
            (fun (name, _, values) -> List.map (strf " %s %s" name) values)
            flags)
-      ^ (if workers then " --mutate-workers" else "")
-      ^
-      if not c.failed_only then ""
-      else if String.equal c.log_dir (Os.default_log_dir ()) then " --failed"
-      else strf " -o %s --failed" (shell_word (Os.display_artifact c.log_dir))
+      ^ failed
   | `Mirrors ->
       String.concat ""
         (List.map
            (fun (_, var, values) ->
              strf "%s=%s " var (String.concat "," values))
            flags)
-      ^ if workers then "WINDTRAP_MUTATE_WORKERS=1 " else ""
 
-(* A build action's corrections are dune's to promote, file by file. *)
-let accept ?armed ?(invocation = `Mirrors) ~tests failures =
+(* Every command that runs tests again: the launcher, then [flags], then the
+   selection; under the mirrors, the mirror of each before [dune runtest]. A
+   flag pairs its spelling with its mirror's. An armed run's failures are the
+   mutant's, so the command arms it, and under dune names the backend, since
+   the armed action exists only in that build; [force] reruns an action that
+   dune would replay from its cache, as it replays a passing one. *)
+let command ?armed ?(force = false) ~invocation ~flags tests =
+  let arm, arm_mirror =
+    match armed with
+    | Some id ->
+        ( [ ("--arm " ^ shell_word id, "WINDTRAP_MUTATE_ARM=" ^ shell_word id) ],
+          " --instrument-with ppx_windtrap.mutate" )
+    | None -> ([], "")
+  in
+  let flags = arm @ flags and selection = selection_words invocation tests in
+  match invocation with
+  | `Exe cmd ->
+      cmd
+      ^ String.concat "" (List.map (fun (f, _) -> " " ^ f) flags)
+      ^ selection
+  | `Mirrors ->
+      String.concat "" (List.map (fun (_, m) -> m ^ " ") flags)
+      ^ selection ^ "dune runtest"
+      ^ (if force then " --force" else "")
+      ^ arm_mirror
+
+(* A build action's corrections are dune's to promote, and [-u] has no
+   mirror. *)
+let accept_command ?armed ?(invocation = `Mirrors) ~tests failures =
   match (armed, invocation) with
   | Some _, _ | None, `Mirrors -> None
-  | None, `Exe cmd ->
+  | None, `Exe _ ->
       if not (List.exists (fun f -> Option.is_some (acceptable f)) failures)
       then None
-      else
-        Some
-          (strf "accept: %s -u%s" cmd
-             (match tests with
-             | `Run config -> selection_words invocation config
-             | `Filter filter -> filter_flag filter))
+      else Some (command ~invocation ~flags:[ ("-u", "") ] tests)
 
-(* The seed and the case count of a failure whose case was generated. *)
+let accept ?armed ?invocation ~tests failures =
+  Option.map
+    (fun command -> "accept: " ^ command)
+    (accept_command ?armed ?invocation ~tests failures)
+
+(* The seed and the case count of a failure whose case was generated. A
+   domain checked whole fails again under any seed. *)
 let drawn (f : Failure.t) =
   match f.kind with
-  | Failure.Property { examples = false; root; count; _ }
+  | Failure.Property { examples = false; domain = None; root; count; _ }
   | Failure.Timeout { case = Some { examples = false; root; count; _ }; _ } ->
       Some (root, count)
   | Failure.Property { examples = true; _ }
+  | Failure.Property { domain = Some _; _ }
   | Failure.Timeout { case = Some { examples = true; _ } | None; _ }
   | Failure.Equality _ | Failure.Containment _ | Failure.Raise _
-  | Failure.Baseline _ | Failure.Law _ | Failure.Message _ ->
+  | Failure.Baseline _ | Failure.Law _ | Failure.Message _ | Failure.Vacuous _
+    ->
       None
 
 (* A late case replays only under at least as many cases as the failing run
-   generated, so the largest count is restated. An armed action exists only
-   in the instrumented build. *)
-let replay ?armed ?(workers = false) ?(invocation = `Mirrors) ~tests failures =
-  (* A [`Run] restates [--mutate-workers] through [selection_words]. *)
-  let workers = workers && Option.is_some armed in
+   generated, so the largest count is restated. *)
+let replay ?armed ?(invocation = `Mirrors) ~tests failures =
   match List.filter_map drawn failures with
   | [] -> None
   | (root, _) :: _ as cases ->
@@ -489,34 +449,14 @@ let replay ?armed ?(workers = false) ?(invocation = `Mirrors) ~tests failures =
           None cases
       in
       let seed = Seed.to_string root in
-      Some
-        (match invocation with
-        | `Exe cmd ->
-            strf "replay: %s%s --seed %s%s%s" cmd (arm_flag armed) seed
-              (match count with
-              | Some n -> strf " --prop-count %d" n
-              | None -> "")
-              (match tests with
-              | `Run config -> selection_words invocation config
-              | `Filter filter ->
-                  filter_flag filter
-                  ^ if workers then " --mutate-workers" else "")
-        | `Mirrors ->
-            strf "replay: %sWINDTRAP_SEED=%s %s%sdune runtest%s"
-              (arm_mirror armed) seed
-              (match count with
-              | Some n -> strf "WINDTRAP_PROP_COUNT=%d " n
-              | None -> "")
-              (match tests with
-              | `Run config -> selection_words invocation config
-              | `Filter filter ->
-                  (match filter with
-                    | Some f -> strf "WINDTRAP_FILTER=%s " (shell_quote f)
-                    | None -> "")
-                  ^ if workers then "WINDTRAP_MUTATE_WORKERS=1 " else "")
-              (match armed with
-              | Some _ -> " --instrument-with ppx_windtrap.mutate"
-              | None -> ""))
+      let flags =
+        ("--seed " ^ seed, "WINDTRAP_SEED=" ^ seed)
+        :: List.map
+             (fun n ->
+               (strf "--prop-count %d" n, strf "WINDTRAP_PROP_COUNT=%d" n))
+             (Option.to_list count)
+      in
+      Some ("replay: " ^ command ?armed ~invocation ~flags tests)
 
 (* Entries *)
 
@@ -721,55 +661,65 @@ let sides ~seen ~gutter ~anchors:(expected_anchor, actual_anchor) ~marked
 (* A cut pair that kept the same bytes says so instead of a diff, and a
    difference in a final newline is a fact of two whole texts only. The facts
    name the two sides by their [anchors], and so do the [headers] above the
-   hunks. *)
+   hunks. The result is the difference in one clause, then its lines. *)
 let text_diff ~anchors ~headers ~show ~(expected : Failure.text)
     ~(actual : Failure.text) =
   let whole = whole expected actual in
   if (not whole) && String.equal expected.kept actual.kept then
-    [ line (agree_fact ~anchors ~expected ~actual) ]
+    let fact = agree_fact ~anchors ~expected ~actual in
+    (fact, [ line fact ])
   else
     let e = show expected.kept and a = show actual.kept in
-    let diff =
+    let cut = cut_fact ~anchors ~expected ~actual in
+    let head, diff =
       match Diff.hunks ~expected:e ~actual:a () with
-      | [] when whole -> [ line (newline_fact ~anchors ~expected:e ~actual:a) ]
-      | [] -> []
-      | hunks when headers ->
+      | [] when whole ->
+          let fact = newline_fact ~anchors ~expected:e ~actual:a in
+          (fact, [ line fact ])
+      | [] -> (cut, [])
+      | hunks ->
           let expected_anchor, actual_anchor = anchors in
-          [ styled `Faint ("--- " ^ expected_anchor) ]
-          :: [ styled `Faint ("+++ " ^ actual_anchor) ]
-          :: hunk_lines hunks
-      | hunks -> hunk_lines hunks
+          let count =
+            List.fold_left (fun n h -> n + 1 + List.length h.Diff.lines) 0 hunks
+          in
+          ( strf "%s and %s differ (%d diff lines)" expected_anchor
+              actual_anchor count,
+            if headers then
+              [ styled `Faint ("--- " ^ expected_anchor) ]
+              :: [ styled `Faint ("+++ " ^ actual_anchor) ]
+              :: hunk_lines hunks
+            else hunk_lines hunks )
     in
-    if whole then diff
-    else diff @ [ faint ("(" ^ cut_fact ~anchors ~expected ~actual ^ ")") ]
+    (head, if whole then diff else diff @ [ faint ("(" ^ cut ^ ")") ])
 
-(* Two printed values that had to be equal, under their [anchors]. *)
+(* Two printed values that had to be equal, under their [anchors], as the
+   difference in one clause and its lines. *)
 let equality ~seen ~show ~anchors ~gutter ~(expected : Failure.text)
     ~(actual : Failure.text) =
   if whole expected actual && String.equal expected.kept actual.kept then
     let value = show expected.kept in
     let render_as = styled `Faint "both sides render as:" in
-    (if String.contains value '\n' then [ render_as ] :: lines ~lead:"  " value
-     else [ [ render_as; plain (" " ^ shown value) ] ])
-    @ [ faint "the printer shows less than the equality compares" ]
+    ( "both sides render as: " ^ value,
+      (if String.contains value '\n' then
+         [ render_as ] :: lines ~lead:"  " value
+       else [ [ render_as; plain (" " ^ shown value) ] ])
+      @ [ faint "the printer shows less than the equality compares" ] )
   else if
     String.equal expected.kept actual.kept
     || String.contains (show expected.kept) '\n'
     || String.contains (show actual.kept) '\n'
   then text_diff ~anchors ~headers:true ~show ~expected ~actual
   else
-    sides ~seen ~gutter ~anchors ~marked:true
-      ~expected:(show (shown_text expected))
-      ~actual:(show (shown_text actual))
+    let e = show (shown_text expected) and a = show (shown_text actual) in
+    ( strf "%s %s, got %s" (fst anchors) e a,
+      sides ~seen ~gutter ~anchors ~marked:true ~expected:e ~actual:a )
 
 (* The anchors of a raise state the difference, so nothing is marked; [actual]
    is [None] when nothing was raised. *)
 let raise_sides ~seen ~expected ~actual =
   let spans_lines s = String.contains s '\n' in
   match actual with
-  | ((Some actual)
-     [@mutate off "unmarked, sides draws a one-line pair as the next case does"])
-    when not (spans_lines expected || spans_lines actual) ->
+  | Some actual when not (spans_lines expected || spans_lines actual) ->
       sides ~seen
         ~gutter:(2 + String.length "expected exception")
         ~anchors:("expected exception", "raised")
@@ -825,7 +775,7 @@ let source_spans line text =
     plain (match String.trim text with "" -> "" | text -> " " ^ shown text);
   ]
 
-let rec entry ~seen ~excerpt ~inner (f : Failure.t) =
+let rec entry ?select ~seen ~excerpt ~inner (f : Failure.t) =
   let phase =
     match f.phase with
     | Failure.Body -> None
@@ -857,25 +807,48 @@ let rec entry ~seen ~excerpt ~inner (f : Failure.t) =
     | ([ _ ] as names) | _ :: names ->
         [ field "subtest" @ [ plain (Test_tree.path_to_string names) ] ]
   in
+  let caught =
+    if f.caught then [ [ styled `Yellow "failed, then caught" ] ] else []
+  in
   let msg =
     match f.msg with Some msg -> lines ~lead:"" (shown_text msg) | None -> []
   in
-  location @ source @ subtest @ msg @ facts ~seen ~excerpt f.kind
+  let head, facts = facts ?select ~seen ~excerpt f.kind in
+  (head, location @ source @ subtest @ caught @ msg @ facts)
 
-and facts ~seen ~excerpt = function
+(* The facts of a kind in one clause, the head of a summary, then their
+   lines: one case analysis gives both, so the two cannot disagree. *)
+and facts ?select ~seen ~excerpt = function
   | Failure.Equality { not_ = true; expected; _ } ->
       let expected = shown_text expected in
-      if String.contains expected '\n' then
-        line "both sides equal:" :: lines ~lead:"  " expected
-      else [ line ("both sides equal: " ^ shown expected) ]
+      ( "both sides equal: " ^ expected,
+        if String.contains expected '\n' then
+          line "both sides equal:" :: lines ~lead:"  " expected
+        else [ line ("both sides equal: " ^ shown expected) ] )
+  | Failure.Equality { multiset = Some m; _ } ->
+      (* The difference alone: two long lists would show as a diff of their
+         reflowed printings, cut before it reached the elements that differ. *)
+      let side name style (t : Failure.text) =
+        let t = shown_text t in
+        if String.contains t '\n' then faint (name ^ ":") :: block style t
+        else [ field name @ [ styled style (shown t) ] ]
+      in
+      let head =
+        strf "multisets differ: %d missing, %d extra" m.missing_count
+          m.extra_count
+      in
+      ( head,
+        (line head :: side "missing" `Green m.missing)
+        @ side "extra" `Red m.extra )
   | Failure.Equality { expected = claim; actual = value; diffable = false; _ }
     ->
       (* A claim describes the expected value and is never diffed. *)
-      let value = shown_text value in
-      (field "expected" @ [ styled `Green (shown (shown_text claim)) ])
-      ::
-      (if String.contains value '\n' then faint "actual:" :: block `Red value
-       else [ field "actual" @ [ styled `Red (shown value) ] ])
+      let claim = shown_text claim and value = shown_text value in
+      ( strf "expected %s, got %s" claim value,
+        (field "expected" @ [ styled `Green (shown claim) ])
+        ::
+        (if String.contains value '\n' then faint "actual:" :: block `Red value
+         else [ field "actual" @ [ styled `Red (shown value) ] ]) )
   | Failure.Equality { expected; actual; _ } ->
       equality ~seen ~show:Fun.id ~anchors:expected_actual ~gutter:10 ~expected
         ~actual
@@ -888,6 +861,23 @@ and facts ~seen ~excerpt = function
         excerpt_offset = offset;
         demand;
       } ->
+      let text = shown_text needle in
+      let head =
+        match (demand, found_at) with
+        | Failure.Ordered { index; resumed_at }, Some at ->
+            strf "element %d %S out of order: at byte %d, before byte %d" index
+              text at resumed_at
+        | Failure.Ordered { index; resumed_at }, None ->
+            strf
+              "element %d %S not found at or after byte %d (%d-byte haystack)"
+              index text resumed_at haystack_length
+        | (Failure.Anywhere | Failure.Prefix | Failure.Suffix), Some _ ->
+            strf "%s %S %s" (needle_word demand) text
+              (containment_verdict ~demand ~found_at)
+        | (Failure.Anywhere | Failure.Prefix | Failure.Suffix), None ->
+            strf "%s %S not found (%d-byte haystack)" (needle_word demand) text
+              haystack_length
+      in
       let element =
         match demand with
         | Failure.Ordered { index; _ } ->
@@ -900,8 +890,7 @@ and facts ~seen ~excerpt = function
         @ [
             plain
               ("\""
-              ^ Text.elide_middle max_value_bytes ~show:String.escaped
-                  (shown_text needle)
+              ^ Text.elide_middle max_value_bytes ~show:String.escaped text
               ^ "\": "
               ^ containment_verdict ~demand ~found_at);
           ]
@@ -953,15 +942,28 @@ and facts ~seen ~excerpt = function
           ]
         else []
       in
-      element @ (needle_line :: shown_haystack) @ range
+      (head, element @ (needle_line :: shown_haystack) @ range)
   | Failure.Raise { expected; actual; predicate; backtrace; message_diff } ->
+      let head =
+        match (expected, actual) with
+        | Some e, Some a ->
+            strf "expected exception %s, raised %s" (shown_text e)
+              (shown_text a)
+        | Some e, None ->
+            strf "expected exception %s, none raised" (shown_text e)
+        | None, Some a when predicate ->
+            "exception did not satisfy the predicate: " ^ shown_text a
+        | None, Some a -> "uncaught exception: " ^ shown_text a
+        | None, None -> "expected an exception, none raised"
+      in
       let raised =
         match (message_diff, expected, actual) with
         | Some { Failure.constructor; expected_message; actual_message }, _, _
           ->
             line (strf "raised %s with the wrong message:" constructor)
-            :: equality ~seen ~show:(strf "%S") ~anchors:expected_actual
-                 ~gutter:10 ~expected:expected_message ~actual:actual_message
+            :: snd
+                 (equality ~seen ~show:(strf "%S") ~anchors:expected_actual
+                    ~gutter:10 ~expected:expected_message ~actual:actual_message)
         | None, Some expected, actual ->
             raise_sides ~seen ~expected:(shown_text expected)
               ~actual:(Option.map shown_text actual)
@@ -984,33 +986,55 @@ and facts ~seen ~excerpt = function
               (List.map faint (Text.split_lines (shown_text bt)))
               ~more:(more "frames")
       in
-      raised @ frames
-  | Failure.Baseline { baseline; state; withheld = _ } -> (
+      (head, raised @ frames)
+  | Failure.Baseline { baseline; state; withheld } ->
       let subject = baseline_subject baseline in
-      match state with
-      | Failure.Missing { proposed } ->
-          let proposed = Text.split_lines (shown_text proposed) in
-          line (subject ^ ": no baseline")
-          :: line
-               (strf "proposed (%s):" (counted (List.length proposed) "line"))
-          :: capped max_proposed_lines
-               (List.map
-                  (fun l -> [ plain "  "; styled `Red ("+ " ^ l) ])
-                  proposed)
-               ~more:(fun n -> plain "  " :: more "lines" n)
-      | Failure.Mismatch { expected; actual } ->
-          line (subject ^ ": mismatch")
-          :: text_diff ~anchors:expected_actual ~headers:false ~show:Fun.id
-               ~expected ~actual
-      | Failure.Unresolvable { candidate } ->
-          List.map line
+      (* A law's mismatch is a counterexample's inner failure, which no
+         hint follows, so it says itself why it is no correction. *)
+      let in_law =
+        match withheld with
+        | Some Failure.In_law ->
             [
-              subject
-              ^ ": the path cannot be proven to lie under the project root";
-              "unverified path: " ^ Os.display_path candidate;
-              "(set WINDTRAP_PROJECT_ROOT to the directory the path is \
-               relative to)";
-            ])
+              line
+                "no correction: a property's law claims this for every value, \
+                 and one text cannot hold for them all";
+            ]
+        | Some _ | None -> []
+      in
+      let head, facts =
+        match state with
+        | Failure.Missing { proposed } ->
+            let head = subject ^ ": no baseline" in
+            let proposed = Text.split_lines (shown_text proposed) in
+            ( head,
+              line head
+              :: line
+                   (strf "proposed (%s):"
+                      (counted (List.length proposed) "line"))
+              :: capped max_proposed_lines
+                   (List.map
+                      (fun l -> [ plain "  "; styled `Red ("+ " ^ l) ])
+                      proposed)
+                   ~more:(fun n -> plain "  " :: more "lines" n) )
+        | Failure.Mismatch { expected; actual } ->
+            let head = subject ^ ": mismatch" in
+            ( head,
+              line head
+              :: snd
+                   (text_diff ~anchors:expected_actual ~headers:false
+                      ~show:Fun.id ~expected ~actual) )
+        | Failure.Unresolvable { candidate } ->
+            ( subject ^ ": cannot resolve the path under the project root",
+              List.map line
+                [
+                  subject
+                  ^ ": the path cannot be proven to lie under the project root";
+                  "unverified path: " ^ Os.display_path candidate;
+                  "(set WINDTRAP_PROJECT_ROOT to the directory the path is \
+                   relative to)";
+                ] )
+      in
+      (head, facts @ in_law)
   | Failure.Property
       {
         rendered;
@@ -1022,17 +1046,43 @@ and facts ~seen ~excerpt = function
         rendering;
         inner;
         failed_again;
+        token;
+        domain;
+        also;
+        table;
+        label;
         root = _;
         count = _;
       } ->
+      let case =
+        case_name
+          ~replayed:(examples && Option.is_some token)
+          ?domain ~table ?label ~examples ~case_index ~shrink_steps ()
+      in
+      (* [shrunk 100 steps] alone reads as a converged search. *)
+      let failed =
+        strf "property failed (%s%s%s):%s%s" case
+          (match also with
+          | [] -> ""
+          | also -> strf ", %d refuted" (List.length also + 1))
+          (if examples then ""
+           else
+             match shrink_end with
+             | Failure.Converged -> ""
+             | Failure.Budget_spent -> ", shrink limit reached"
+             | Failure.Timed_out _ -> ", shrinking timed out")
+          (match rendering with
+          | Failure.Pre_image -> " computed from "
+          | Failure.Ocaml | Failure.Value -> " ")
+          (shown_text (Option.value summary ~default:rendered))
+      in
       let rendered = shown_text rendered in
       (* A pre-image is marked on the head itself, so that a reader who stops
          there does not take it for the value the body received. *)
       let head =
-        strf "counterexample (%s):%s"
-          (case_name ~examples ~case_index ~shrink_steps)
+        strf "counterexample (%s):%s" case
           (match rendering with
-          | Failure.Value -> ""
+          | Failure.Ocaml | Failure.Value -> ""
           | Failure.Pre_image -> " computed from")
       in
       (* A summary takes the value's place on the head, and the rendering
@@ -1049,7 +1099,7 @@ and facts ~seen ~excerpt = function
       in
       let pre_image =
         match rendering with
-        | Failure.Value -> []
+        | Failure.Ocaml | Failure.Value -> []
         | Failure.Pre_image ->
             [
               [
@@ -1087,13 +1137,6 @@ and facts ~seen ~excerpt = function
                     be minimal"
                    shrink_steps);
             ]
-        | Failure.Candidate_raised text ->
-            [
-              line
-                (strf "shrinking stopped after %d steps: a candidate raised %s"
-                   shrink_steps (shown_text text));
-              line "counterexample may not be minimal";
-            ]
       in
       let again =
         match failed_again with
@@ -1113,17 +1156,51 @@ and facts ~seen ~excerpt = function
             line
               (if Option.is_some i.loc then "which failed at:"
                else "which failed with:")
-            :: List.map (indented "  ") (entry ~seen ~excerpt ~inner:true i)
+            :: List.map (indented "  ")
+                 (snd (entry ~seen ~excerpt ~inner:true i))
       in
-      counterexample @ pre_image @ stop @ again @ inner
+      (* The line that keeps the case: an example to paste where its value
+         prints as OCaml, else the token that replays it. A domain checked
+         whole checks the value again on every run, and needs neither. *)
+      let keep =
+        match (rendering, token) with
+        | _ when Option.is_some domain -> []
+        | Failure.Ocaml, _ ->
+            let value = List.map String.trim (Text.split_lines rendered) in
+            let value = String.concat " " value in
+            [ line (strf "keep it: ~examples:[ %s ]" value) ]
+        | (Failure.Value | Failure.Pre_image), Some token ->
+            let select =
+              match select with Some words -> words ^ " " | None -> ""
+            in
+            [ line (strf "replay it: %s--replay %s" select token) ]
+        | (Failure.Value | Failure.Pre_image), None -> []
+      in
+      (* A domain checked whole reports every value it refuted, each as the
+         first is. *)
+      let others =
+        List.concat_map
+          (fun (f : Failure.t) -> [] :: snd (facts ~seen ~excerpt f.kind))
+          also
+      in
+      (failed, counterexample @ pre_image @ stop @ again @ keep @ inner @ others)
   | Failure.Law { law; clause; equation; terms } ->
-      line (strf "%s: %s" (law_head ~law ~clause) equation)
-      :: law_terms ~seen ~excerpt terms
-  | Failure.Timeout { limit; case } -> [ line (timeout_fact ~limit case) ]
+      let opening = strf "%s: %s" (law_head ~law ~clause) equation in
+      ( (match List.rev terms with
+        | Failure.Failed { name; _ } :: _ ->
+            strf "%s: %s failed" (law_head ~law ~clause) name
+        | (Failure.Term _ | Failure.Side _) :: _ | [] -> opening),
+        line opening :: law_terms ~seen ~excerpt terms )
+  | Failure.Timeout { limit; case } ->
+      let fact = timeout_fact ~limit case in
+      (fact, [ line fact ])
   | Failure.Message m -> (
       match shown_text m with
-      | "" -> [ line "(empty failure message)" ]
-      | m -> lines ~lead:"" m)
+      | "" -> ("(empty failure message)", [ line "(empty failure message)" ])
+      | m -> (m, lines ~lead:"" m))
+  | Failure.Vacuous reason ->
+      let reason = shown_text reason in
+      ("vacuous: " ^ reason, [ line reason ])
 
 (* A row per term, every value at one column; the two sides close the list as
    an equality's do, and a failed term as a property's inner failure does. *)
@@ -1145,40 +1222,53 @@ and law_terms ~seen ~excerpt terms =
   let rec rows = function
     | [] -> []
     | [ Failure.Side left; Failure.Side right ] ->
-        equality ~seen ~show:Fun.id ~anchors:(left.name, right.name) ~gutter
-          ~expected:left.value ~actual:right.value
+        snd
+          (equality ~seen ~show:Fun.id ~anchors:(left.name, right.name) ~gutter
+             ~expected:left.value ~actual:right.value)
     | (Failure.Term { name; value } | Failure.Side { name; value }) :: rest ->
         row name value @ rows rest
     | Failure.Failed { name; failure } :: rest ->
         line
           (strf "%s failed %s:" name
              (if Option.is_some failure.loc then "at" else "with"))
-        :: List.map (indented "  ") (entry ~seen ~excerpt ~inner:true failure)
+        :: List.map (indented "  ")
+             (snd (entry ~seen ~excerpt ~inner:true failure))
         @ rows rest
   in
   rows terms
 
-(* Colour alone shows a changed span only on a terminal a reader watches:
-   elsewhere the escapes may be stripped (dune strips an action's output when
-   its own is no terminal) or read raw. *)
-let pp_failure ~ansi ?(terminal = false) ?(excerpt = false)
-    ?hints:(hinted = true) ?filter ?(invocation = `Mirrors) ?armed ?workers ppf
-    f =
-  let entry = entry ~seen:(ansi && terminal) ~excerpt ~inner:false f in
-  let hint_lines =
-    if not hinted then []
-    else
-      List.map
-        (fun h -> [ plain h ])
-        (hints ?armed ~invocation [ f ]
-        @ Option.to_list
-            (accept ?armed ~invocation ~tests:(`Filter filter) [ f ])
-        @ Option.to_list
-            (replay ?armed ?workers ~invocation ~tests:(`Filter filter) [ f ]))
+type entry = { summary : string; lines : span list list }
+
+let entry ?(seen = false) ?select ~excerpt f =
+  let head, lines = entry ?select ~seen ~excerpt ~inner:false f in
+  { summary = summary f head; lines }
+
+(* A pattern keeps every path that holds it, so the paths that hold the
+   test's own are excluded. *)
+let selecting ~paths path =
+  let holds p =
+    (not (String.equal p path)) && Text.contains_substring ~pattern:path p
   in
-  List.iter
-    (fun line -> Pp.pf ppf "%s@\n" (render ~ansi (indented indent line)))
-    (entry @ hint_lines)
+  String.concat " "
+    (("-f " ^ shell_word path)
+    :: List.map (fun p -> "-e " ^ shell_word p) (List.filter holds paths))
+
+let headline f = (entry ~excerpt:false f).summary
+
+(* A failure away from its block: its entry and its hint lines, unstyled. *)
+let unstyled_entry ?armed ?(invocation = `Mirrors) ?(paths = []) ~filter f =
+  let select = Option.map (selecting ~paths) filter in
+  let e = entry ?select ~excerpt:false f in
+  let tests = `Filter filter in
+  let hints =
+    hints ?armed [ f ]
+    @ Option.to_list (accept ?armed ~invocation ~tests [ f ])
+    @ Option.to_list (replay ?armed ~invocation ~tests [ f ])
+  in
+  ( e.summary,
+    List.map
+      (fun l -> render ~ansi:false (indented indent l))
+      (e.lines @ List.map line hints) )
 
 (* The section vocabulary *)
 
@@ -1194,12 +1284,13 @@ type section =
 
 let dashes n = String.concat "" (List.init (max 0 n) (fun _ -> "\u{2500}"))
 
-let rule ~width = function
-  | None -> dashes width
+let rule = function
+  | None -> dashes rule_width
   | Some label ->
       let inner = Text.length_utf8 label + 2 in
-      let left = max 2 ((width - inner) / 2) in
-      dashes left ^ " " ^ label ^ " " ^ dashes (max 2 (width - inner - left))
+      let left = max 2 ((rule_width - inner) / 2) in
+      dashes left ^ " " ^ label ^ " "
+      ^ dashes (max 2 (rule_width - inner - left))
 
 (* The runs of [lines], ascending and without duplicates, as pairs of their
    first and last line: lines at most [within] apart share a run. *)
@@ -1292,7 +1383,7 @@ let print ~out ~ansi sections =
       | Rows { margin; columns; rows } ->
           List.iter put_trimmed (table ~margin ~columns rows)
       | Excerpt e -> List.iter put_trimmed (excerpt_rows e)
-      | Rule label -> put [ styled `Faint (rule ~width:rule_width label) ])
+      | Rule label -> put [ styled `Faint (rule label) ])
     sections;
   Pp.flush out ()
 
@@ -1338,22 +1429,26 @@ let percentage ?(width = 0) ~min ~visited ~total () =
 
 (* The gate compares the unrounded percentage, and the line gives the counts
    beside its rounding, so no printed comparison contradicts its own digits.
-   The minimum prints as given. *)
+   The minimum prints as given. With no point, the line claims no
+   percentage: lines a change selects may hold none, and a gate over nothing
+   is met without being stated. *)
 let coverage_line ~min ~visited ~total =
-  [
-    plain "coverage: ";
-    percentage ~min ~visited ~total ();
-    plain (strf " (%d/%d points)" visited total);
-  ]
-  @
-  match min with
-  | None -> []
-  | Some min ->
-      [
-        plain (strf ", minimum %s%%: " (Pp.to_string Pp.decimal min));
-        (if percent ~visited ~total >= min then styled `Green "ok"
-         else styled `Red "FAILED");
-      ]
+  if total = 0 then [ plain "coverage: no point to measure (0/0 points)" ]
+  else
+    [
+      plain "coverage: ";
+      percentage ~min ~visited ~total ();
+      plain (strf " (%d/%d points)" visited total);
+    ]
+    @
+    match min with
+    | None -> []
+    | Some min ->
+        [
+          plain (strf ", minimum %s%%: " (Pp.to_string Pp.decimal min));
+          (if percent ~visited ~total >= min then styled `Green "ok"
+           else styled `Red "FAILED");
+        ]
 
 let coverage_report ~mode ~min (c : coverage) =
   let widest f =
@@ -1436,46 +1531,37 @@ type witness = { test : string; loc : Loc.t option; exe : string option }
 
 type mutant = {
   id : string;
+  file : string;
   line : int;
+  col : int;
+  end_line : int;
+  end_col : int;
   before : string;
   after : string;
   source : string option;
 }
 
-type survivor = { mutant : mutant; witnesses : witness list; runs : int }
+type survivor = { mutant : mutant; witnesses : witness list }
 
-type not_evaluated = {
-  mutant : mutant;
-  invocation : Run.invocation;
-  failed : string option;
-}
+(* The compiler's spelling of a location, which editors and dune parse. *)
+let diagnostic (m : mutant) =
+  strf "File \"%s\", %s, characters %d-%d:" m.file
+    (if m.end_line = m.line then strf "line %d" m.line
+     else strf "lines %d-%d" m.line m.end_line)
+    m.col m.end_col
 
-type flaky = {
-  mutant : mutant;
-  test : string;
-  failure : string;
-  exe : string option;
-}
-
-type scored = [ `Killed | `Survived | `Not_evaluated ]
-
-type unstable = {
-  id : string;
-  exe : string option;
-  previous : scored;
-  verdict : scored;
-}
-
+type not_evaluated = { mutant : mutant; invocation : Run.invocation }
+type unknown = { mutant : mutant; reason : string; invocation : Run.invocation }
+type refused = { executable : string; reason : string; mutants : int }
 type scope = Suite | Selected of int | Executables of int
 
 type mutation = {
   survivors : survivor list;
   not_evaluated : not_evaluated list;
-  flaky : flaky list;
-  unstable : unstable list;
+  unknown : unknown list;
+  refused : refused list;
   unreached : (string * int) list;
   outside_tests : (string * int) list;
-  filtered : string list;
   killed : int;
   not_tested : int;
   scope : scope;
@@ -1484,15 +1570,8 @@ type mutation = {
 (* A build action's suite is reached through dune alone: [--force] because
    dune replays a cached test action, which arms nothing, and the backend
    because a plain build carries no mutant. *)
-let arm_command ~invocation ~selection id =
-  match invocation with
-  | `Exe cmd -> strf "%s%s%s" cmd (arm_flag (Some id)) selection
-  | `Mirrors ->
-      strf "%s%sdune runtest --force --instrument-with ppx_windtrap.mutate"
-        (arm_mirror (Some id)) selection
-
-let reproduce_line ~invocation ~selection id =
-  "reproduce: " ^ arm_command ~invocation ~selection id
+let arm_command ~invocation ~tests id =
+  command ~armed:id ~force:true ~invocation ~flags:[] tests
 
 (* A survivor is drawn as a failure block is: it is a defect report about the
    tests it names. *)
@@ -1500,14 +1579,13 @@ let survivor_block ~exe_width (s : survivor) =
   let m = s.mutant in
   let title =
     Line
-      ([
-         plain "  ";
-         styled `Red "SURVIVED";
-         plain "  ";
-         styled `Bold m.id;
-         plain (strf "  %s \u{2192} %s" m.before m.after);
-       ]
-      @ if s.runs > 1 then [ plain (strf "  (%d runs)" s.runs) ] else [])
+      [
+        plain "  ";
+        styled `Red "SURVIVED";
+        plain "  ";
+        styled `Bold m.id;
+        plain (strf "  %s \u{2192} %s" m.before m.after);
+      ]
   in
   let source =
     match Option.map (fun s -> Array.of_list (Text.split_lines s)) m.source with
@@ -1555,24 +1633,20 @@ let survivor_block ~exe_width (s : survivor) =
             { margin = indent ^ "  "; columns; rows = List.map cells witnesses };
         ]
   in
-  (title :: source) @ reaching
-
-let scored (m : mutation) =
-  m.killed + List.length m.survivors + List.length m.not_evaluated
-
-let mutation_score m = percent ~visited:m.killed ~total:(scored m)
+  (Line [ plain (diagnostic m) ] :: title :: source) @ reaching
 
 (* The reached count is the sum of the other terms, so the line cannot
-   disagree with the blocks above it. A zero term is omitted, and so is a
-   score of no scored mutant, unless a gate needs it. As on the coverage line,
-   the gate compares the unrounded score. *)
-let mutation_line ~min (m : mutation) =
+   disagree with the blocks above it. A zero term is omitted. *)
+let mutation_summary (m : mutation) =
   let survived = List.length m.survivors in
+  let unknown =
+    List.fold_left
+      (fun n (r : refused) -> n + r.mutants)
+      (List.length m.unknown) m.refused
+  in
   let reached =
     let n =
-      m.killed + survived
-      + List.length m.not_evaluated
-      + List.length m.flaky + m.not_tested
+      m.killed + survived + List.length m.not_evaluated + unknown + m.not_tested
     in
     match m.scope with
     | Suite -> strf "%d reached by this suite" n
@@ -1581,8 +1655,6 @@ let mutation_line ~min (m : mutation) =
     | Executables _ -> strf "%d reached" n
   in
   let term n make = if n > 0 then [ make n ] else [] in
-  let score = mutation_score m in
-  let score_text = strf "score %.1f%%" score in
   let terms =
     (if survived > 0 then
        [
@@ -1592,35 +1664,25 @@ let mutation_line ~min (m : mutation) =
     @ term m.killed (fun n -> [ styled `Green (strf "%d killed" n) ])
     @ term (List.length m.not_evaluated) (fun n ->
         [ styled `Yellow (strf "%d not evaluated" n) ])
-    @ term (List.length m.flaky) (fun n ->
-        [ styled `Yellow (strf "%d flaky" n) ])
+    @ term unknown (fun n -> [ styled `Yellow (strf "%d unknown" n) ])
     @ term (List.length m.unreached) (fun n ->
         [ styled `Yellow (strf "%d never reached" n) ])
     @ term (List.length m.outside_tests) (fun n ->
         [ styled `Yellow (strf "%d evaluated outside tests" n) ])
-    @ term (List.length m.filtered) (fun n -> [ plain (strf "%d filtered" n) ])
     @ term m.not_tested (fun n -> [ plain (strf "%d not tested" n) ])
-    @ (match m.scope with
-      | Executables n -> [ [ plain (counted n "executable") ] ]
-      | Suite | Selected _ -> [])
     @
-    match min with
-    | None -> term (scored m) (fun _ -> [ plain score_text ])
-    | Some min ->
-        let met = score >= min in
-        [
-          [
-            (if met then plain score_text else styled `Red score_text);
-            plain (strf ", minimum %s%%: " (Pp.to_string Pp.decimal min));
-            (if met then styled `Green "ok" else styled `Red "FAILED");
-          ];
-        ]
+    match m.scope with
+    | Executables n ->
+        [ plain (counted n "executable") ]
+        :: term (List.length m.refused) (fun n ->
+            [ styled `Red (strf "%d not mutation-tested" n) ])
+    | Suite | Selected _ -> []
   in
   plain "mutants: " :: separated (plain ", ") terms
 
 (* Each mutant with the command that tests it in a new process, which starts
    from no state that a dry run left. *)
-let not_evaluated_section ~selection = function
+let not_evaluated_section ~tests = function
   | [] -> []
   | not_evaluated ->
       let mutant (n : not_evaluated) =
@@ -1631,40 +1693,10 @@ let not_evaluated_section ~selection = function
               styled `Bold n.mutant.id;
               plain (strf "  %s \u{2192} %s" n.mutant.before n.mutant.after);
             ];
+          Hint
+            ("    arm: "
+            ^ arm_command ~invocation:n.invocation ~tests n.mutant.id);
         ]
-        @ (match n.failed with
-          | None -> []
-          | Some failed ->
-              [
-                Line
-                  [
-                    plain "    ";
-                    styled `Yellow "a failure that the mutant did not cause: ";
-                    plain failed;
-                  ];
-              ])
-        @ [
-            Hint
-              ("    arm: "
-              ^ arm_command ~invocation:n.invocation ~selection n.mutant.id);
-          ]
-      in
-      let failures =
-        if
-          List.exists
-            (fun (n : not_evaluated) -> n.failed <> None)
-            not_evaluated
-        then
-          [
-            Line
-              [
-                plain
-                  "  A failure in such a child has a cause of its own, for \
-                   example a schedule of domains, the clock, or the tests \
-                   before it.";
-              ];
-          ]
-        else []
       in
       Rule (Some (strf "not evaluated (%d)" (List.length not_evaluated)))
       :: Line
@@ -1672,77 +1704,50 @@ let not_evaluated_section ~selection = function
              plain
                "  Each site ran in the dry run and not in its mutant's child.";
            ]
-      :: failures
-      @ List.concat_map mutant not_evaluated
+      :: List.concat_map mutant not_evaluated
       @ [ Rule None ]
 
-let flaky_section = function
+(* Each mutant with why no run judged it, and the command that runs it
+   again. *)
+let unknown_section ~tests = function
   | [] -> []
-  | flaky ->
-      let mutant (f : flaky) =
-        let exe =
-          match f.exe with Some e -> [ plain e; plain "  " ] | None -> []
-        in
+  | unknown ->
+      let mutant (u : unknown) =
         [
+          Line [ plain (diagnostic u.mutant) ];
           Line
             [
               plain "  ";
-              styled `Bold f.mutant.id;
-              plain (strf "  %s \u{2192} %s" f.mutant.before f.mutant.after);
+              styled `Bold u.mutant.id;
+              plain (strf "  %s \u{2192} %s" u.mutant.before u.mutant.after);
             ];
-          Line ((plain "    test: " :: exe) @ [ plain f.test ]);
-          Line
-            [
-              plain "    ";
-              styled `Yellow "failure with no mutant: ";
-              plain f.failure;
-            ];
+          Line [ plain ("    " ^ u.reason) ];
+          Hint
+            ("    arm: "
+            ^ arm_command ~invocation:u.invocation ~tests u.mutant.id);
         ]
       in
-      Rule (Some (strf "flaky (%d)" (List.length flaky)))
-      :: Line
-           [
-             plain
-               "  A test killed each mutant, and then failed in a run with no \
-                mutant.";
-           ]
-      :: Line [ plain "  The score does not count these mutants." ]
-      :: List.concat_map mutant flaky
+      Rule (Some (strf "unknown (%d)" (List.length unknown)))
+      :: List.concat_map mutant unknown
       @ [ Rule None ]
 
-let unstable_section = function
+(* A suite that wrote no verdict would leave its mutants to the others, as
+   survivors they might have killed. *)
+let refused_section = function
   | [] -> []
-  | unstable ->
-      let name = function
-        | `Killed -> "killed"
-        | `Survived -> "survived"
-        | `Not_evaluated -> "not evaluated"
-      in
-      let left gap = { gap; align = `Left; width = None } in
-      let with_exe =
-        List.exists (fun (u : unstable) -> u.exe <> None) unstable
-      in
-      let row (u : unstable) =
-        (if with_exe then [ plain (Option.value u.exe ~default:"") ] else [])
-        @ [
-            styled `Bold u.id;
-            plain (strf "%s \u{2192} %s" (name u.previous) (name u.verdict));
-          ]
-      in
-      let columns =
-        (if with_exe then [ left ""; left "  " ] else [ left "" ])
-        @ [ left "   " ]
-      in
-      [
-        Rule (Some (strf "unstable (%d)" (List.length unstable)));
+  | refused ->
+      let row (r : refused) =
         Line
           [
+            plain "  ";
+            styled `Bold r.executable;
             plain
-              "  The source of each mutant did not change, but its verdict did.";
-          ];
-        Rows { margin = "  "; columns; rows = List.map row unstable };
-        Rule None;
-      ]
+              (strf "  %s unknown: %s" (counted r.mutants "mutant") r.reason);
+          ]
+      in
+      Rule (Some (strf "not mutation-tested (%d)" (List.length refused)))
+      :: List.map row refused
+      @ [ Rule None ]
 
 (* One row per file: what a reader does with an unreached mutant is write a
    test for its lines, and a project has hundreds of them. *)
@@ -1796,65 +1801,35 @@ let outside_tests_section =
           ];
       ]
 
-(* One row per reason, the most frequent first: a reader examines a filter
-   that removes many mutants before one that removes few. *)
-let filtered_section = function
-  | [] -> []
-  | reasons ->
-      let counts =
-        List.map
-          (fun reason ->
-            (reason, List.length (List.filter (String.equal reason) reasons)))
-          (List.sort_uniq String.compare reasons)
-      in
-      let counts =
-        List.stable_sort (fun (_, a) (_, b) -> Int.compare b a) counts
-      in
-      let width =
-        String.length
-          (string_of_int (List.fold_left max 0 (List.map snd counts)))
-      in
-      let row (reason, n) = Line [ plain (strf "  %*d  %s" width n reason) ] in
-      Rule (Some (strf "filtered (%d)" (List.length reasons)))
-      :: Line
-           [
-             plain
-               "  The rewriter found these mutants equivalent or of no \
-                interest, and no child tested them.";
-           ]
-      :: List.map row counts
-      @ [ Rule None ]
-
 (* The command arms the first survivor printed. *)
-let outcome ~invocation ~selection ~min (m : mutation) =
+let outcome ~invocation ~tests (m : mutation) =
   (match m.survivors with
     | [] -> []
     | first :: _ ->
-        [ Hint (reproduce_line ~invocation ~selection first.mutant.id) ])
-  @ [ Line (mutation_line ~min m) ]
+        [
+          Hint ("reproduce: " ^ arm_command ~invocation ~tests first.mutant.id);
+        ])
+  @ [ Line (mutation_summary m) ]
 
 (* The caller hands over the survivors whose blocks it printed. *)
 let mutation_closing ~(config : Run.config) (m : mutation) =
-  let invocation = config.invocation in
-  let selection = selection_words invocation config in
+  let invocation = config.invocation and tests = `Run config in
   let sections =
     [
-      not_evaluated_section ~selection m.not_evaluated;
-      flaky_section m.flaky;
-      unstable_section m.unstable;
+      not_evaluated_section ~tests m.not_evaluated;
+      unknown_section ~tests m.unknown;
       unreached_section m.unreached;
       outside_tests_section m.outside_tests;
-      filtered_section m.filtered;
     ]
   in
-  let rest = join (sections @ [ outcome ~invocation ~selection ~min:None m ]) in
+  let rest = join (sections @ [ outcome ~invocation ~tests m ]) in
   match m.survivors with
   | [] when List.for_all (function [] -> true | _ :: _ -> false) sections ->
       rest
   | [] -> Line [] :: rest
   | _ :: _ -> Rule None :: Line [] :: rest
 
-let mutation_report ~invocation ~min (m : mutation) =
+let mutation_report ~invocation (m : mutation) =
   let exes =
     List.concat_map
       (fun (s : survivor) ->
@@ -1877,11 +1852,10 @@ let mutation_report ~invocation ~min (m : mutation) =
   join
     [
       survivors;
-      not_evaluated_section ~selection:"" m.not_evaluated;
-      flaky_section m.flaky;
-      unstable_section m.unstable;
+      not_evaluated_section ~tests:(`Filter None) m.not_evaluated;
+      unknown_section ~tests:(`Filter None) m.unknown;
+      refused_section m.refused;
       unreached_section m.unreached;
       outside_tests_section m.outside_tests;
-      filtered_section m.filtered;
-      outcome ~invocation ~selection:"" ~min m;
+      outcome ~invocation ~tests:(`Filter None) m;
     ]

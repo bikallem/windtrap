@@ -4,7 +4,9 @@ This page shows how to check a value inside a test body: compare it with
 an expected one, bound it, search it, unwrap it, or expect an exception.
 Each section shows what the verb prints when its claim fails. The
 reference for every verb and witness is
-[`lib/windtrap.mli`](../../lib/windtrap.mli).
+[`lib/windtrap.mli`](../../lib/windtrap.mli), and for the constructors
+and accessors of `Windtrap.Testable`, which that file names without
+listing, [`lib/testable.mli`](../../lib/testable.mli).
 
 The snippets test `Shop`, a module of shopping carts.
 
@@ -129,7 +131,7 @@ shop: 2 tests
     actual    370
 ──────────────────────────────────────────────────────────
 
-1 passed, 1 failed in 0.6ms.
+1 passed, 1 failed in 1.4ms.
 ```
 
 ## Locating a failing assertion
@@ -167,7 +169,7 @@ shop: 1 test
     actual    ["milk"; "bread"]
 ──────────────────────────────────────────────────────────
 
-1 failed in 0.6ms.
+1 failed in 1.7ms.
 ```
 
 ## Comparing values of your own types
@@ -176,7 +178,8 @@ A container witness takes the witnesses of its components, as in
 `list string`, `option item` or `pair string int`. For a type of your
 own, `Testable.make` builds the witness from a printer and an equality,
 and `Testable.with_compare` adds an order, which the ordering verbs
-need. `Windtrap.Testable` has the other constructors. `Law.equivalence`
+need. `Windtrap.Testable` has the other constructors, listed in
+[`lib/testable.mli`](../../lib/testable.mli). `Law.equivalence`
 and `Law.order` check a witness's equality and order, and `Law` states
 the other textbook laws (see
 [Stating a textbook law](property-testing.md#stating-a-textbook-law)).
@@ -223,15 +226,16 @@ shop: 2 tests
     actual    Some bread x2 at 250
 ──────────────────────────────────────────────────────────
 
-2 failed in 0.8ms.
+2 failed in 2.1ms.
 ```
 
 ## Comparing part of a value
 
 `Testable.contramap f w` compares and prints a value as `w` does `f` of
 it. Here two items are equal when their names are. `slist w cmp`
-compares two lists in any order, and `pass` in place of a component
-ignores it, as in `pair string pass`.
+compares two lists as multisets, in any order, and its failure lists
+what is missing and what is extra rather than the two lists. `pass` in
+place of a component ignores it, as in `pair string pass`.
 
 `test/test_assertions.ml`:
 
@@ -261,7 +265,7 @@ shop: 1 test
     actual    ["bread"]
 ──────────────────────────────────────────────────────────
 
-1 failed in 0.5ms.
+1 failed in 1.4ms.
 ```
 
 ## Comparing floats
@@ -294,10 +298,28 @@ shop: 1 test
 
     expected  744.
     actual    124.
+    tolerance at examples/02-assertions/test_assertions.ml:47: largest error 620 of 1e-09 allowed, over 1 comparison
 ──────────────────────────────────────────────────────────
 
-1 failed in 0.6ms.
+1 failed in 1.4ms.
 ```
+
+Each `equal` under a tolerance records, at its call site, the largest
+error it saw against the bound it allowed, and the report states it in
+a failure's block, under `-v` and in `--json`. A tolerance far above
+every error it saw checks less than it reads, and the line says so:
+
+```
+$ dune exec examples/02-assertions/test_assertions.exe -- -v -f with_tax
+shop: 1 test
+  PASS  with_tax › adds the rate to the price      0.1ms
+    tolerance at examples/02-assertions/test_assertions.ml:47: largest error 0 of 1e-09 allowed, over 1 comparison
+1 passed in 1.2ms.
+```
+
+A comparison inside a container witness, as `list (float 1e-9)`,
+counts too. A call in tail position without `~__POS__` is recorded at
+the test's declaration.
 
 ## Comparing multi-line text
 
@@ -340,7 +362,7 @@ shop: 1 test
     + total              370
 ──────────────────────────────────────────────────────────
 
-1 failed in 0.6ms.
+1 failed in 0.9ms.
 ```
 
 ## Checking a bound or a predicate
@@ -388,7 +410,7 @@ shop: 2 tests
     actual    77
 ──────────────────────────────────────────────────────────
 
-2 failed in 0.6ms.
+2 failed in 1.2ms.
 ```
 
 ## Unwrapping an option or a result
@@ -431,15 +453,16 @@ shop: 2 tests
     actual    Error "not a quantity:  3 "
 ──────────────────────────────────────────────────────────
 
-1 passed, 1 failed in 0.6ms.
+1 passed, 1 failed in 1.6ms.
 ```
 
 ## Searching a string
 
 `contains ~sub` checks that a string occurs in another, and
-`not_contains` that it does not. `starts_with` and `ends_with` check an
-`~affix`, and `in_order ~subs` checks that strings occur one after the
-other. `mem` checks that a list holds an element.
+`not_contains` that it does not. `starts_with ~prefix` and
+`ends_with ~suffix` check either end, with the labels of
+`String.starts_with` and `String.ends_with`, and `in_order ~subs` checks
+that strings occur one after the other. `mem` checks that a list holds an element.
 
 `test/test_assertions.ml`:
 
@@ -448,7 +471,7 @@ let label =
   group "label"
     [
       test "starts with the name" (fun () ->
-          starts_with ~__POS__ ~affix:"bread" (Shop.label bread));
+          starts_with ~__POS__ ~prefix:"bread" (Shop.label bread));
       test "shows the quantity then the price" (fun () ->
           in_order ~__POS__ ~subs:[ "2"; "250" ] (Shop.label bread));
     ]
@@ -471,7 +494,7 @@ shop: 2 tests
                      ~~~
 ──────────────────────────────────────────────────────────
 
-1 passed, 1 failed in 0.8ms.
+1 passed, 1 failed in 1.3ms.
 ```
 
 ## Checking that code raises
@@ -493,8 +516,8 @@ let validation =
             (Invalid_argument "Shop.item: quantity must be positive") (fun () ->
               Shop.item "eggs" ~price:30 ~quantity:0));
       test "rejects a negative quantity" (fun () ->
-          raises_match ~__POS__ (Exn.invalid_arg ~substring:"quantity")
-            (fun () -> Shop.item "eggs" ~price:30 ~quantity:(-1)));
+          raises_match ~__POS__ (Exn.invalid_arg ~sub:"quantity") (fun () ->
+              Shop.item "eggs" ~price:30 ~quantity:(-1)));
     ]
 ```
 
@@ -514,23 +537,74 @@ shop: 2 tests
 
   FAIL  validation › rejects a negative quantity
     examples/02-assertions/test_assertions.ml:114
-      114 │ raises_match ~__POS__ (Exn.invalid_arg ~substring:"quantity")
+      114 │ raises_match ~__POS__ (Exn.invalid_arg ~sub:"quantity") (fun () ->
 
     expected an exception, but none was raised
 ──────────────────────────────────────────────────────────
 
-2 failed in 0.6ms.
+2 failed in 1.3ms.
 ```
+
+## Checking inside a callback, or until a claim holds
+
+A failing verb records its failure in the running test before it
+raises. A library that ignores what its callbacks raise, as a cache
+that calls `on_evict` and drops its exception does, cannot turn the
+failure into a pass, and neither can a `try … with _ -> ()`:
+
+```ocaml
+(* fragment: Cache.add evicts through on_evict, and ignores what it raises *)
+test "evicts the oldest entry" (fun () ->
+    let cache =
+      Cache.create ~capacity:1 ~on_evict:(fun key _ ->
+          equal ~__POS__ string "a" key)
+    in
+    Cache.add cache "a" 1;
+    Cache.add cache "b" 2)
+```
+
+If the cache evicted the newest entry, the block says the failure was
+caught before it reached the runner:
+
+```
+  FAIL  evicts the oldest entry
+    test/test_cache.ml:5
+      5 │ equal ~__POS__ string "a" key)
+
+    failed, then caught
+    expected  "a"
+    actual    "b"
+```
+
+A verb works on a domain the test spawned: its failure is recorded on
+the test whether or not `Domain.join` raises it again. Inside the law
+of a property the failure is the case's, which shrinks as usual.
+
+`eventually ~within f` is the one way to catch a failing verb on
+purpose, for a claim that holds after a while. It calls `f` again while
+it fails, every 10 ms for at most `within` seconds, and the test fails
+with the last call's failure:
+
+```ocaml
+(* fragment: Worker drains the queue on a domain of its own *)
+test "the worker drains the queue" (fun () ->
+    Worker.start queue;
+    eventually ~within:2. (fun () -> equal int 0 (Queue.length queue)))
+```
+
+A choice between claims is `mem`, `satisfies` or a `match` on the
+value, never one verb caught to try another.
 
 ## Adding context to a failure
 
 Every verb but `fail` and `failf` takes `~msg`, a line the failure
 prints above the values. In a loop it names the iteration that failed,
 and the loop stops there. `cases`, in
-[Resources and structure](resources-and-structure.md), makes one test
-per input instead, and
+[Resources and structure](resources-and-structure.md), is a table: one
+test that runs every input, goes on past a failing one and reports each
+that failed by its id, and
 [`subtest`](resources-and-structure.md#naming-the-parts-of-one-test)
-keeps the loop going and names each failing part.
+keeps a loop going and names each failing part.
 `fail` and `failf` fail the test with a message of their own, in a
 branch the test must not reach, and `skip` ends the test as skipped.
 
@@ -565,5 +639,5 @@ shop: 1 test
     actual    0.
 ──────────────────────────────────────────────────────────
 
-1 failed in 0.5ms.
+1 failed in 1.4ms.
 ```

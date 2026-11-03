@@ -92,6 +92,12 @@ val merge : t -> t -> (t, error) result
 val files : t -> string list
 (** [files t] is the file names of [t], in the order of [String.compare]. *)
 
+val keep : (file:string -> point -> bool) -> t -> t
+(** [keep f t] is [t] with only the points [p] of each file for which
+    [f ~file p] holds, each with its count, in the order of the point table. A
+    file left with no point is dropped. The point tables of the result differ
+    from those of [t], so {!merge} refuses to combine the two. *)
+
 (** {1:ondisk Dumps}
 
     When an instrumented process that registered a file exits, it writes the
@@ -148,6 +154,28 @@ val load : string -> (t * identity option, error) result
     - [Error (Point_mismatch _)] when two entries of one file carry different
       point tables. Two entries with an equal table are accepted, and their
       counts are added. *)
+
+(** {1:handover Counts across processes}
+
+    A process forked from one that counts holds the counts of before the fork as
+    well as its own. These two calls let a process hand only its own to another,
+    which dumps them with its own: windtrap's worker processes do, so a run
+    leaves one dump whatever its number of workers. *)
+
+val hand_over : self:(unit -> bool) -> unit
+(** [hand_over ~self] stops the process from writing its dump when it exits
+    while [self ()] holds: that process hands its counts to another with
+    {!take}. [self] tells it from a process it forks later, which still writes
+    its own. *)
+
+val take : unit -> t
+(** [take ()] is what this process counted since it loaded, or since its
+    previous [take], and sets every count to zero. *)
+
+val absorb : t -> unit
+(** [absorb t] adds the counts of [t] to those of this process, for each file
+    whose point table this process registered equal to that of [t], so its dump
+    holds them. The counts of any other file are dropped. *)
 
 (** {1:reports Report data}
 

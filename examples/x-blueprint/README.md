@@ -67,8 +67,8 @@ session prints nothing:
 ```
 $ dune runtest
 issue-1: 1 expected failure in 0.5ms.
-stats: 4 passed in 86ms (seed s1:8faef35f5af54995).
-slug: 9 passed in 17ms (seed s1:5285379db091fe55).
+stats: 5 passed in 86ms (seed s1:8faef35f5af54995).
+slug: 3 passed in 3.6ms (seed s1:b10cb9968b654b58).
 windtrap_example_blueprint_expect/expect_slug.ml: 1 passed in 0.6ms.
 ```
 
@@ -90,8 +90,8 @@ dumps. `--min 80` makes it exit 1 below 80% (see
 
 ```
 $ dune runtest --instrument-with ppx_windtrap.coverage
-stats: 4 passed in 139ms (seed s1:86285a8e0eb4e567).
-slug: 9 passed in 42ms (seed s1:c8e2d1bdbbcbb528).
+stats: 5 passed in 139ms (seed s1:86285a8e0eb4e567).
+slug: 3 passed in 3.6ms (seed s1:b10cb9968b654b58).
 issue-1: 1 expected failure in 0.5ms.
 windtrap_example_blueprint_expect/expect_slug.ml: 1 passed in 0.7ms.
 $ dune exec windtrap -- coverage --min 80
@@ -123,7 +123,7 @@ any executable killed it:
 
 ```
 $ dune exec windtrap -- mutants
-mutants: 21 reached, 21 killed, 4 executables, score 100.0%
+mutants: 27 reached, 27 killed, 4 executables
 ```
 
 It exits 1 when a mutant survived every executable that reached it.
@@ -140,7 +140,7 @@ $ dune exec test/failures/issue_1.exe -- -v
 issue-1: 1 test
   XFAIL  keeps UTF-8 letters                       0.1ms (expected failure: issue #1)
     test/failures/issue_1.ml:13
-      13 │ (test "keeps UTF-8 letters" (fun () ->
+      13 │ @@ test "keeps UTF-8 letters" (fun () ->
 
     expected  "caf\195\169"
     actual    "caf"
@@ -165,47 +165,74 @@ let clamp n =
 The mutant `n > 0 → n >= 0` differs from the original at zero only,
 where both branches return 0. No test can kill it, and the attribute
 dismisses the site with its reason. The site is neither tested nor
-counted, and the stats suite reaches three mutants, all in `render` (see
+counted, and the stats suite reaches five mutants: the `0` of `clamp`
+and four in `render` (see
 [Dismissing an equivalent mutant](../../doc/manual/mutation.md#dismissing-an-equivalent-mutant)).
+`slugify`'s separator flag starts `false` under the same attribute:
+`true` gives the same slug, since a separator never opens the empty
+buffer.
 
 ## The weak law
 
 The property `prints one line per row plus the total`, in
 `test/unit/test_stats.ml`, counts lines. A mutant that changes the
-arithmetic inside a line keeps the count. Mutation testing the property
-alone reaches three mutants. The property kills the `tail` mutant, which
-drops the total line, and shows the two mutants that it does not kill:
+arithmetic or a constant inside a line keeps the count. Mutation testing
+the property alone shows the five mutants it reaches and does not
+kill:
 
 ```
 $ dune exec --instrument-with ppx_windtrap.mutate test/unit/test_stats.exe -- --mutate -f 'one line per row'
 stats: 1 passed in 91ms (seed s1:f57d4071ad6eed49).
 
 ─────────────────────── survivors ────────────────────────
+File "lib/stats.ml", line 6, characters 73-74:
+  SURVIVED  lib/stats.ml:6:73:int  0 → 1
+      6 │ if (n > 0) [@mutate off "both arms yield zero marks at 0"] then n else 0
+
+    1 test ran this line and did not fail:
+      render › prints one line per row plus the total  test/unit/test_stats.ml:29
+
+File "lib/stats.ml", line 10, characters 73-74:
+  SURVIVED  lib/stats.ml:10:73:int  0 → 1
+      10 │ List.fold_left (fun acc (label, _) -> max acc (String.length label)) 0 rows
+
+    1 test ran this line and did not fail:
+      render › prints one line per row plus the total  test/unit/test_stats.ml:29
+
+File "lib/stats.ml", line 14, characters 18-47:
   SURVIVED  lib/stats.ml:14:18:add  width - (String.length label) → width + (String.length label)
       14 │ ^ String.make (width - String.length label) ' '
 
     1 test ran this line and did not fail:
       render › prints one line per row plus the total  test/unit/test_stats.ml:29
 
+File "lib/stats.ml", line 18, characters 48-61:
   SURVIVED  lib/stats.ml:18:48:sub  acc + (clamp n) → acc - (clamp n)
+      18 │ let total = List.fold_left (fun acc (_, n) -> acc + clamp n) 0 rows in
+
+    1 test ran this line and did not fail:
+      render › prints one line per row plus the total  test/unit/test_stats.ml:29
+
+File "lib/stats.ml", line 18, characters 63-64:
+  SURVIVED  lib/stats.ml:18:63:int  0 → 1
       18 │ let total = List.fold_left (fun acc (_, n) -> acc + clamp n) 0 rows in
 
     1 test ran this line and did not fail:
       render › prints one line per row plus the total  test/unit/test_stats.ml:29
 ──────────────────────────────────────────────────────────
 
-reproduce: dune exec --instrument-with ppx_windtrap.mutate test/unit/test_stats.exe -- --arm lib/stats.ml:14:18:add -f 'one line per row'
+reproduce: dune exec --instrument-with ppx_windtrap.mutate test/unit/test_stats.exe -- --arm lib/stats.ml:6:73:int -f 'one line per row'
 windtrap: verdicts not saved: this run's selection narrows the suite, and a partial run's verdicts would stand in the project merge as the whole.
-mutants: 2 survived of 3 reached by the 1 selected test, 1 killed, score 33.3%
+mutants: 5 survived of 5 reached by the 1 selected test
 ```
 
-The three tests beside it pin the rendered text and kill the two
-survivors, and the suite's whole run reports no survivor:
+The four tests beside it pin the rendered text and kill all five, and
+the suite's whole run reports no survivor:
 
 ```
 $ dune exec --instrument-with ppx_windtrap.mutate test/unit/test_stats.exe -- --mutate
-stats: 4 passed in 110ms (seed s1:7eec2ad33b9c5707).
-mutants: 3 reached by this suite, 3 killed, score 100.0%
+stats: 5 passed in 110ms (seed s1:7eec2ad33b9c5707).
+mutants: 5 reached by this suite, 5 killed
 ```
 
 To judge a new test the same way, pass its name to `-f` with
@@ -228,9 +255,9 @@ dune exec windtrap -- mutants
 ```
 
 A run under a prefix keeps the verdicts that an earlier run of the same
-suite and build saved for other files, and the merge counts them. To
-drop them, delete `_build/_mutants` before the run. A coverage report
-takes no prefix. After
+build saved for other files, and the merge counts them. To drop them,
+delete `_build/_mutants` before the run. A coverage report takes no
+prefix. After
 `dune runtest examples/x-blueprint --instrument-with ppx_windtrap.coverage`,
 `dune exec windtrap -- coverage --min 80` lists windtrap's library too
 and fails the 80% minimum.

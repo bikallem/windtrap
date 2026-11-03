@@ -20,12 +20,24 @@ let repeat n s = String.concat "" (List.init n (fun _ -> s))
 let exe = `Exe "./t.exe"
 let armed = "lib/calc.ml:9:12:add"
 
-let entry ?(ansi = false) ?(terminal = ansi) ?excerpt ?hints ?filter ?invocation
-    ?armed ?workers f =
-  Format.asprintf "%a"
-    (Sections.pp_failure ~ansi ~terminal ?excerpt ?hints ?filter ?invocation
-       ?armed ?workers)
-    f
+(* An entry as a block prints it, then the hint lines a transport away from
+   the report adds. *)
+let entry ?(ansi = false) ?(terminal = ansi) ?(excerpt = false) ?(hints = true)
+    ?filter ?invocation ?armed f =
+  let hint_lines =
+    if not hints then []
+    else
+      let tests = `Filter filter in
+      List.map
+        (fun h -> [ Sections.plain h ])
+        (Sections.hints ?armed [ f ]
+        @ Option.to_list (Sections.accept ?armed ?invocation ~tests [ f ])
+        @ Option.to_list (Sections.replay ?armed ?invocation ~tests [ f ]))
+  in
+  String.concat ""
+    (List.map
+       (fun l -> Sections.render ~ansi (Sections.indented "    " l) ^ "\n")
+       ((Sections.entry ~seen:(ansi && terminal) ~excerpt f).lines @ hint_lines))
 
 let printed ?(ansi = false) sections =
   Format.asprintf "%a" (fun ppf -> Sections.print ~out:ppf ~ansi) sections
@@ -48,9 +60,10 @@ let controls s =
     (List.of_seq (String.to_seq s))
 
 let raised_by f =
-  match f () with
-  | () -> None
-  | exception Failure.Check_failure f -> Some { f with Failure.loc = None }
+  match Failure.catch f with
+  | Ok () -> None
+  | Error (`Assertion f) -> Some { f with Failure.loc = None }
+  | Error c -> Failure.reraise c
 
 (* The failure a verb raised, so that an entry is of a real payload. Its
    location is this file's, which a gallery does not pin. *)
@@ -118,6 +131,17 @@ let long_headline = "expected " ^ repeat 71 "\u{00e9}" ^ "\u{2026}"
 let headline_rows =
   [
     ("equality", (unequal "true" "false", "expected true, got false"));
+    ( "a multiset's difference",
+      ( Failure.equality
+          ~multiset:
+            {
+              Windtrap.Private.Multiset.missing = "[2; 3]";
+              missing_count = 2;
+              extra = "[4]";
+              extra_count = 1;
+            }
+          ~expected:"[1; 2; 2; 3]" ~actual:"[1; 2; 4]" (),
+        "multisets differ: 2 missing, 1 extra" ) );
     ( "a negated equality",
       ( Failure.equality ~not_:true ~expected:"3" ~actual:"3" (),
         "both sides equal: 3" ) );
@@ -140,9 +164,6 @@ let headline_rows =
     ( "a predicate's claim is the expected side",
       ( Failure.predicate ~claim:"a power of two" "12",
         "expected a power of two, got 12" ) );
-    ( "a predicate's claim beside a value of two lines",
-      ( Failure.predicate ~claim:"a sorted list" "[2;\n 1]",
-        "expected a sorted list, got [2;  1]" ) );
     ("equal renderings", (unequal "nan" "nan", "both sides render as: nan"));
     ( "a diff counts the lines the block prints",
       (unequal "a\nb\nc" "a\nB\nc", "expected and actual differ (5 diff lines)")
@@ -153,8 +174,8 @@ let headline_rows =
       ( unequal "a\nb" "a\nb\n",
         "values differ only by a trailing newline (on the actual side)" ) );
     ( "a missing file baseline",
-      (Fixtures.snap_missing, {|expect_file "test/help.expected": no baseline|})
-    );
+      ( Fixtures.snap_missing,
+        {|expect_file ~file:"test/help.expected": no baseline|} ) );
     ("a literal mismatch", (Fixtures.snap_mismatch, "expect: mismatch"));
     ( "an exact literal mismatch",
       ( Failure.baseline
@@ -165,7 +186,7 @@ let headline_rows =
     ( "an unresolvable path",
       ( Failure.baseline (Failure.File "../x")
           (Failure.Unresolvable { candidate = "/tmp/x" }),
-        {|expect_file "../x": cannot resolve the path under the project root|}
+        {|expect_file ~file:"../x": cannot resolve the path under the project root|}
       ) );
     ( "a property",
       ( Fixtures.prop_failure,
@@ -187,13 +208,6 @@ let headline_rows =
       ( prop ~shrink_end:Failure.Budget_spent ~case:4 ~steps:50 "9",
         "property failed (case 4, shrunk 50 steps, shrink limit reached): 9" )
     );
-    ( "a candidate that raised",
-      ( prop
-          ~shrink_end:
-            (Failure.Candidate_raised
-               (Failure.text {|Failure("no small values")|}))
-          ~case:4 ~steps:3 "9",
-        "property failed (case 4, shrunk 3 steps, shrinking stopped): 9" ) );
     ( "an example carries no shrink clause",
       ( prop ~shrink_end:Failure.Budget_spent ~examples:true ~case:0 ~steps:0 "9",
         "property failed (example 1): 9" ) );
@@ -371,8 +385,6 @@ let equality_entries () =
       entry (unequal "line one \nline two" "line one\nline two") );
     ( "an inserted trailing run is marked at its columns",
       entry (unequal "ab\nline two" "ab  \nline two") );
-    ( "a ~ counts an accented letter before it as one column",
-      entry (unequal "caf\u{00e9} \nline two" "caf\u{00e9}\nline two") );
     ( "a trailing tab: the ~ line repeats the line's tabs, context keeps its \
        blanks",
       entry (unequal "a\tx\t\ncommon \ny" "a\tx\ncommon \ny") );
@@ -554,16 +566,14 @@ let baseline_entries () =
   let proposal n = String.concat "" (List.init n (strf "line %d\n")) in
   let file = file_mismatch "p.expected" "a\n" "b\n" in
   [
-    ( "a missing file: the proposal under its count, then the command that \
-       creates the file and promotes it",
+    ( "a missing file: the proposal under its count, and no command, which the \
+       summary gives",
       entry Fixtures.snap_missing );
     ( "under a launcher, the command is -u for the block's test",
       entry ~invocation:(`Exe "./_build/default/qa/x/t.exe")
         ~filter:"cli \u{203a} cli help" Fixtures.snap_missing );
-    ( "a literal: its hunks with no head, then dune promote of its source file",
-      entry Fixtures.snap_mismatch );
-    ( "a file: dune promote of its path",
-      entry (file_mismatch "test/help.expected" "a\n" "b\n") );
+    ("a literal: its hunks with no head", entry Fixtures.snap_mismatch);
+    ("a file: its hunks", entry (file_mismatch "test/help.expected" "a\n" "b\n"));
     ( "a quote in the test's path is closed around",
       entry ~invocation:exe ~filter:"it's" Fixtures.snap_mismatch );
     ("expect names the flexible verb", entry (literal false "a\n" "b\n"));
@@ -641,13 +651,6 @@ let property_entries () =
       entry (prop ~shrink_end:(Failure.Timed_out 0.3) ~case:4 ~steps:2 "9") );
     ( "a spent budget says so under the counterexample",
       entry (prop ~shrink_end:Failure.Budget_spent ~case:4 ~steps:50 "9") );
-    ( "a candidate that raised is named, then the search's stop",
-      entry
-        (prop
-           ~shrink_end:
-             (Failure.Candidate_raised
-                (Failure.text {|Failure("no small values")|}))
-           ~case:4 ~steps:3 "9") );
     ( "an inner failure without a location is which failed with",
       entry
         (Failure.property ~inner:(unequal "true" "false") ~rendered:"7"
@@ -673,6 +676,30 @@ let property_entries () =
            ~inner:(Failure.raised ~actual:"Dune__exe__V.Boom(50)" ())
            ~rendered:"50" ~case_index:3 ~shrink_steps:2 ~root ~examples:false ())
     );
+    ( "a counterexample that prints as OCaml is kept as an example to paste",
+      entry
+        (Failure.property ~rendering:Failure.Ocaml ~rendered:"(3, \"a\")"
+           ~token:"r1:AwE:5f2b0a91" ~case_index:0 ~shrink_steps:4 ~root
+           ~examples:false ()) );
+    ( "any other is kept as its replay token",
+      entry
+        (Failure.property ~rendered:"Rect (1, 0)" ~token:"r1:AQEA:3e9ef408"
+           ~case_index:0 ~shrink_steps:1 ~root ~examples:false ()) );
+    ( "a domain checked whole reports every value it refuted, keeping none",
+      entry
+        (Failure.property ~rendered:"1" ~token:"r1:AQ:aa" ~domain:4
+           ~case_index:1 ~shrink_steps:0 ~root ~examples:false
+           ~also:
+             [
+               Failure.property ~inner:(unequal "0" "3") ~rendered:"3"
+                 ~token:"r1:Aw:bb" ~domain:4 ~case_index:3 ~shrink_steps:0 ~root
+                 ~examples:false ();
+             ]
+           ()) );
+    ( "a replayed case is named so, and keeps its token",
+      entry
+        (Failure.property ~rendered:"Rect (1, 0)" ~token:"r1:AQEA:3e9ef408"
+           ~case_index:0 ~shrink_steps:0 ~root ~examples:true ()) );
   ]
 
 let law_term name value = Failure.Term { name; value = Failure.text value }
@@ -855,6 +882,11 @@ let entry_entries () =
       entry ~excerpt:true (at_source ~file:"does_not_exist.ml" 2) );
     ( "a subtest's name, in the column of the values under it",
       entry (Fixtures.subtest_failure "shape [0]") );
+    ( "a failure that code caught says so before its message",
+      entry { (located (Failure.message "boom")) with Failure.caught = true } );
+    ( "and under colour in yellow",
+      entry ~ansi:true
+        { (located (Failure.message "boom")) with Failure.caught = true } );
     ( "a ?msg keeps its lines, control bytes escaped",
       entry
         (Failure.equality ~msg:"first\nsecond\x07" ~expected:"1" ~actual:"2" ())
@@ -868,35 +900,6 @@ let entry_entries () =
     ( "and in an armed run",
       entry ~invocation:exe ~armed ~filter:"math \u{203a} adds"
         (Failure.message "b") );
-    ( "an armed property's replay keeps --mutate-workers",
-      entry ~invocation:exe ~armed ~workers:true ~filter:"math \u{203a} adds"
-        Fixtures.prop_failure );
-    ( "and under a build action, as its mirror",
-      entry ~armed ~workers:true ~filter:"math \u{203a} adds"
-        Fixtures.prop_failure );
-    ( "a replay outside an armed run leaves out --mutate-workers",
-      entry ~invocation:exe ~workers:true ~filter:"math \u{203a} adds"
-        Fixtures.prop_failure );
-    ( "a replay of a run's tests keeps --mutate-workers only under mutation",
-      String.concat "\n"
-        (List.filter_map
-           (fun mutation ->
-             let armed =
-               match mutation with
-               | Run.Armed id -> Some id
-               | Run.No_mutation | Run.Loop _ -> None
-             in
-             Sections.replay ?armed ~invocation:exe
-               ~tests:
-                 (`Run
-                    {
-                      (Run.default_config ()) with
-                      Run.mutation;
-                      mutate_workers = true;
-                    })
-               [ Fixtures.prop_failure ])
-           [ Run.No_mutation; Run.Armed armed ])
-      ^ "\n" );
     ( "a message's escape prints as text",
       entry (Failure.message (hostile ^ " boom")) );
     ( "and under colour as text too",
@@ -1026,7 +1029,7 @@ let diff_bound () =
          [ "    @@"; "    -"; "    +" ]
   in
   equal int 200 (List.length (List.filter hunk_line (lines e)));
-  ends_with ~affix:"    \u{2026} (+801 more diff lines)\n" e
+  ends_with ~suffix:"    \u{2026} (+801 more diff lines)\n" e
 
 let diff_at_bound () =
   not_contains ~sub:"more diff lines"
@@ -1037,8 +1040,7 @@ let baseline_diff_bound () =
     entry
       (file_mismatch "p.expected" (side 'e' 300 ^ "\n") (side 'a' 300 ^ "\n"))
   in
-  ends_with
-    ~affix:"(+401 more diff lines)\n    accept: dune promote p.expected\n" e
+  ends_with ~suffix:"(+401 more diff lines)\n" e
 
 let e n = repeat n "\u{00e9}"
 
@@ -1105,7 +1107,7 @@ let cut_marker = "... (truncated; 70000 bytes total)"
 
 let cut_message () =
   ends_with
-    ~affix:(String.make 20 'm' ^ cut_marker ^ "\n")
+    ~suffix:(String.make 20 'm' ^ cut_marker ^ "\n")
     (entry (Failure.message (String.make 70_000 'm')))
 
 let cut_value () =
@@ -1121,7 +1123,7 @@ let one_side_cut () =
       (unequal ("a\n" ^ String.make 70_000 'x') ("a\n" ^ String.make 100 'x'))
   in
   ends_with
-    ~affix:
+    ~suffix:
       "    (the diff covers the first 65536 of the 70002 bytes of expected)\n"
     b;
   not_contains ~sub:"truncated" b
@@ -1273,6 +1275,27 @@ let absolute_source () =
              (Failure.message ~loc:{ Loc.file; line = 1; column = 0 } "m")))
        1)
 
+(* A multiset's failure shows its difference, and not the two lists. *)
+let multiset_lines () =
+  let f =
+    Failure.equality
+      ~multiset:
+        {
+          Windtrap.Private.Multiset.missing = "[2; 3]";
+          missing_count = 2;
+          extra = "[4]";
+          extra_count = 1;
+        }
+      ~expected:"[1; 2; 2; 3]" ~actual:"[1; 2; 4]" ()
+  in
+  expect (entry ~hints:false f)
+  @@ __POS_OF__
+       {|
+    multisets differ: 2 missing, 1 extra
+    missing   [2; 3]
+    extra     [4]
+  |}
+
 let under_dune () =
   let f =
     Failure.equality
@@ -1282,14 +1305,16 @@ let under_dune () =
   in
   contains ~sub:"\n      1 \u{2502} (*---" (entry ~excerpt:true f)
 
-let hints_default () =
-  let entry ?hints f =
-    Format.asprintf "%a"
-      (fun ppf f -> Sections.pp_failure ~ansi:false ?hints ppf f)
-      f
+let hints_away () =
+  let summary, lines =
+    Sections.unstyled_entry ~filter:None Fixtures.prop_failure
   in
-  contains ~sub:"replay:" (entry Fixtures.prop_failure);
-  not_contains ~sub:"replay:" (entry ~hints:false Fixtures.prop_failure)
+  let entry = Sections.entry ~excerpt:false Fixtures.prop_failure in
+  equal string (Sections.headline Fixtures.prop_failure) summary;
+  equal string entry.summary summary;
+  contains ~sub:"replay:" (String.concat "\n" lines);
+  not_contains ~sub:"replay:"
+    (String.concat "\n" (List.map (Sections.render ~ansi:false) entry.lines))
 
 (* Hints and the run's commands *)
 
@@ -1317,74 +1342,34 @@ let all_kinds =
 
 let hint_rows =
   [
-    ("a message has none", (None, `Mirrors, [ plain_failure ], []));
-    ( "a literal under a build action: dune promote of its source file",
-      ( None,
-        `Mirrors,
-        [ Fixtures.snap_mismatch ],
-        [ "accept: dune promote test/test_cli.ml" ] ) );
-    ( "a file under a build action: dune promote of its path",
-      ( None,
-        `Mirrors,
-        [ file_mismatch "test/help.expected" "a\n" "b\n" ],
-        [ "accept: dune promote test/help.expected" ] ) );
-    ( "a missing file under a build action: touch it first",
-      ( None,
-        `Mirrors,
-        [ Fixtures.snap_missing ],
-        [
-          "accept: touch 'test/help.expected' && dune runtest; dune promote \
-           test/help.expected";
-        ] ) );
-    ( "two files under a build action: two lines",
-      ( None,
-        `Mirrors,
-        [ Fixtures.snap_mismatch; Fixtures.snap_missing ],
-        [
-          "accept: dune promote test/test_cli.ml";
-          "accept: touch 'test/help.expected' && dune runtest; dune promote \
-           test/help.expected";
-        ] ) );
-    ( "equal lines print once",
-      ( None,
-        `Mirrors,
-        [ Fixtures.snap_mismatch; Fixtures.snap_mismatch ],
-        [ "accept: dune promote test/test_cli.ml" ] ) );
-    ("by hand, no command: the report accepts once", (None, exe, all_kinds, []));
+    ("a message has none", (None, [ plain_failure ], []));
+    ( "a baseline whose correction is kept has none: the report accepts once",
+      (None, all_kinds, []) );
     ( "an armed run's baseline failures have none",
-      ( Some armed,
-        `Mirrors,
-        [ Fixtures.snap_mismatch; Fixtures.snap_missing ],
-        [] ) );
+      (Some armed, [ Fixtures.snap_mismatch; Fixtures.snap_missing ], []) );
     ( "a withheld correction is a fact line, once, and nothing after it",
       ( None,
-        exe,
         [
           plain_failure;
           outside Fixtures.snap_mismatch;
           outside Fixtures.snap_missing;
         ],
         [ kept_none ] ) );
-    ( "a withheld correction under a build action: no command either",
-      (None, `Mirrors, [ outside Fixtures.snap_mismatch ], [ kept_none ]) );
     ( "a property beside it adds no line: the report replays it",
       ( None,
-        exe,
         [ Fixtures.prop_failure; outside Fixtures.snap_mismatch ],
         [ kept_none ] ) );
     ( "a skip beside the expectation has its own reason",
       ( None,
-        exe,
         [ Failure.with_withheld Failure.Skipped Fixtures.snap_mismatch ],
         [
           "no correction was kept: the test also skipped; skip before the \
            expectation or not at all, and rerun";
         ] ) );
     ( "a refused literal beside a kept one: its fact",
-      (None, exe, [ refused 4; Fixtures.snap_mismatch ], [ refused_fact 4 ]) );
+      (None, [ refused 4; Fixtures.snap_mismatch ], [ refused_fact 4 ]) );
     ( "each refused literal has its line, then a fact of the attempt",
       ( None,
-        exe,
         [
           plain_failure;
           outside (refused 4);
@@ -1394,7 +1379,6 @@ let hint_rows =
         [ refused_fact 4; refused_fact 9; kept_none ] ) );
     ( "a conflict has its own fact",
       ( None,
-        exe,
         [ Failure.with_withheld Failure.Conflict Fixtures.snap_mismatch ],
         [
           "no correction was kept: another check of this baseline produced a \
@@ -1402,7 +1386,6 @@ let hint_rows =
         ] ) );
     ( "an unresolvable path never had a correction",
       ( None,
-        exe,
         [
           outside
             (Failure.baseline (Failure.File "../x")
@@ -1410,17 +1393,50 @@ let hint_rows =
         ],
         [] ) );
     ( "an armed run says nothing of corrections",
-      (Some armed, exe, [ plain_failure; outside Fixtures.snap_mismatch ], [])
-    );
+      (Some armed, [ plain_failure; outside Fixtures.snap_mismatch ], []) );
   ]
+
+let hint_row (_, (armed, failures, expected)) =
+  equal (list string) expected (Sections.hints ?armed failures)
+
+let promotion_rows =
+  [
+    ( "a literal of a run that exits 0: dune promote of its source file",
+      ( `Held,
+        [ Fixtures.snap_mismatch ],
+        Some "accept: dune promote test/test_cli.ml" ) );
+    ( "a file of a run that exits 0: dune promote of its path",
+      ( `Held,
+        [ file_mismatch "test/help.expected" "a\n" "b\n" ],
+        Some "accept: dune promote test/help.expected" ) );
+    ( "two files: one command over both, each once",
+      ( `Held,
+        [
+          Fixtures.snap_mismatch;
+          file_mismatch "test/help.expected" "a\n" "b\n";
+          Fixtures.snap_mismatch;
+        ],
+        Some "accept: dune promote test/test_cli.ml test/help.expected" ) );
+    ( "a missing file that alone makes the run exit 1: touch it first",
+      ( `Once_created,
+        [ Fixtures.snap_missing; Fixtures.snap_mismatch ],
+        Some
+          "accept: touch 'test/help.expected' && dune runtest; dune promote \
+           test/help.expected test/test_cli.ml" ) );
+    ( "a run that other failures make exit 1: dune holds nothing",
+      (`Withheld, [ plain_failure; Fixtures.snap_mismatch ], None) );
+    ( "no baseline: none",
+      (`Held, [ plain_failure; Fixtures.prop_failure ], None) );
+    ( "a withheld correction: none",
+      (`Held, [ outside Fixtures.snap_mismatch ], None) );
+  ]
+
+let promotion_row (_, (held, failures, expected)) =
+  equal (option string) expected (Sections.promotion ~held failures)
 
 (* A row under [`Mirrors] leaves the invocation to its default. *)
 let default_or (invocation : Run.invocation) =
   match invocation with `Mirrors -> None | `Exe _ -> Some invocation
-
-let hint_row (_, (armed, invocation, failures, expected)) =
-  equal (list string) expected
-    (Sections.hints ?armed ?invocation:(default_or invocation) failures)
 
 let narrowed =
   {
@@ -1438,7 +1454,7 @@ let qa = `Exe "./_build/default/qa/x/t.exe"
 
 let accept_rows =
   [
-    ( "under a build action there is none: each block names its file",
+    ( "under a build action there is none: dune promote accepts",
       (None, `Mirrors, `Filter (Some "t"), all_kinds, None) );
     ( "none without a baseline",
       ( None,
@@ -1665,19 +1681,21 @@ let replay_row (_, (armed, invocation, tests, failures, expected)) =
 let failure_projections =
   group "Failure projections"
     [
-      cases "a headline is one line of the failure's facts" ~name:fst
+      test "a multiset's failure shows what is missing and what is extra"
+        multiset_lines;
+      cases "a headline is one line of the failure's facts" ~id:fst
         headline_rows headline_row;
       test "a headline past 80 code points is cut and ends in an ellipsis"
         headline_cut;
       test "a headline turns TAB, CR and LF into spaces and keeps other bytes"
         headline_whitespace;
       cases "is_subtest_failure holds iff the failure was recorded in a subtest"
-        ~name:fst subtest_rows (fun (_, (f, expected)) ->
+        ~id:fst subtest_rows (fun (_, (f, expected)) ->
           equal bool expected (Sections.is_subtest_failure f));
-      cases "labeled_msg is the subtest's label, then the message" ~name:fst
+      cases "labeled_msg is the subtest's label, then the message" ~id:fst
         labeled_rows (fun (_, (f, expected)) ->
           equal (option string) expected (Sections.labeled_msg f));
-      group "pp_failure"
+      group "entry"
         [
           test "equality entries print as their gallery" (fun () ->
               gallery "equality" (equality_entries ()));
@@ -1694,14 +1712,14 @@ let failure_projections =
           test "an entry's lines print as their gallery" (fun () ->
               gallery "entry" (entry_entries ()));
           cases "on a terminal, colour replaces the ~ lines and nothing else"
-            ~name:fst refinement_pairs colour_replaces_marks;
+            ~id:fst refinement_pairs colour_replaces_marks;
           cases "the ~ lines print under colour where colour cannot show"
-            ~name:fst plain_rows colour_keeps_marks;
-          cases "no ~ line prints where it would not align" ~name:fst
+            ~id:fst plain_rows colour_keeps_marks;
+          cases "no ~ line prints where it would not align" ~id:fst
             unaligned_rows no_mark;
-          cases "a plain entry holds no control byte but LF and TAB" ~name:fst
+          cases "a plain entry holds no control byte but LF and TAB" ~id:fst
             hostile_rows no_control;
-          cases "a payload's sequence never runs under colour" ~name:fst
+          cases "a payload's sequence never runs under colour" ~id:fst
             never_runs_rows never_runs;
           test "equality compares the raw bytes and the payload keeps them"
             raw_bytes;
@@ -1712,7 +1730,10 @@ let failure_projections =
           test "an entry reads an absolute path as given" absolute_source;
           test "a path relative to the project root is found under dune"
             under_dune;
-          test "an entry carries its hints by default" hints_default;
+          test
+            "an entry away from the report carries its hints, a block's does \
+             not"
+            hints_away;
           group "bounds"
             [
               test "max_lines is 10" (fun () -> equal int 10 Sections.max_lines);
@@ -1720,8 +1741,7 @@ let failure_projections =
                 "a diff prints 200 lines of hunks, then the count of the rest"
                 diff_bound;
               test "a diff of 200 lines of hunks prints whole" diff_at_bound;
-              test "a baseline's diff is bounded and keeps its accept"
-                baseline_diff_bound;
+              test "a baseline's diff is bounded" baseline_diff_bound;
               test
                 "a value over 800 bytes keeps 400 of each end, cut on code \
                  points"
@@ -1752,11 +1772,21 @@ let failure_projections =
                 occurrence_left_behind;
             ];
         ];
-      cases "hints are the block's fact lines and dune promote lines" ~name:fst
-        hint_rows hint_row;
-      cases "accept is one -u line under a launcher" ~name:fst accept_rows
+      cases "hints are the block's fact lines, and no command" ~id:fst hint_rows
+        hint_row;
+      cases
+        "promotion is one dune promote line, when dune holds the corrections"
+        ~id:fst promotion_rows promotion_row;
+      test "selecting a test excludes the paths that hold its own" (fun () ->
+          equal string
+            "-f 'a \u{203a} b' -e 'a \u{203a} b c' -e 'x a \u{203a} b'"
+            (Sections.selecting
+               ~paths:
+                 [ "a"; "a \u{203a} b"; "a \u{203a} b c"; "x a \u{203a} b" ]
+               "a \u{203a} b"));
+      cases "accept is one -u line under a launcher" ~id:fst accept_rows
         accept_row;
-      cases "replay reruns the tests with the values they drew" ~name:fst
+      cases "replay reruns the tests with the values they drew" ~id:fst
         replay_rows replay_row;
     ]
 
@@ -1787,9 +1817,9 @@ let names =
     [
       test "release_title is fixture release" (fun () ->
           equal string "fixture release" Sections.release_title);
-      cases "shell_word" ~name:fst shell_rows (fun (_, (s, expected)) ->
+      cases "shell_word" ~id:fst shell_rows (fun (_, (s, expected)) ->
           equal string expected (Sections.shell_word s));
-      cases "dune_exec" ~name:fst dune_exec_rows
+      cases "dune_exec" ~id:fst dune_exec_rows
         (fun (_, (mutate, path, expected)) ->
           let command = function `Exe cmd -> Some cmd | `Mirrors -> None in
           equal string expected
@@ -1862,10 +1892,10 @@ let print_flushes () =
   equal string "x\n" (Buffer.contents b)
 
 let long_rule () =
-  let label = String.make 30 'l' in
-  let r = Sections.rule ~width:20 (Some label) in
+  let label = String.make 70 'l' in
+  let r = String.trim (printed [ Sections.Rule (Some label) ]) in
   contains ~sub:label r;
-  greater int ~than:20 (Text.length_utf8 r)
+  greater int ~than:58 (Text.length_utf8 r)
 
 let vocabulary =
   group "The section vocabulary"
@@ -1880,15 +1910,16 @@ let vocabulary =
       test "render leaves an empty styled span bare" (fun () ->
           equal string ""
             (Sections.render ~ansi:true [ Sections.styled `Faint "" ]));
-      cases "render writes each style's sequence" ~name:fst style_rows
+      cases "render writes each style's sequence" ~id:fst style_rows
         (fun (_, (style, code)) ->
           equal string
             ("\027[" ^ code ^ "mx\027[0m")
             (Sections.render ~ansi:true [ Sections.styled style "x" ]));
       test "width counts each escape's four columns" (fun () ->
           equal int 15 (Sections.width hostile_line));
-      test "a rule is width columns" (fun () ->
-          equal int 20 (Text.length_utf8 (Sections.rule ~width:20 None)));
+      test "a rule is 58 columns" (fun () ->
+          equal int 58
+            (Text.length_utf8 (String.trim (printed [ Sections.Rule None ]))));
       test "a long label is whole and takes the rule past its width" long_rule;
       test "print writes a hint unstyled" (fun () ->
           equal string "cmd --flag\n"
@@ -2146,7 +2177,8 @@ let outcome_colour_rows =
         3,
         "coverage: \027[31m66.7%\027[0m (2/3 points), minimum 66.7%: " ^ failed
       ) );
-    ("no point: 100% and plain", (None, 0, 0, "coverage: 100.0% (0/0 points)"));
+    ( "no point: nothing to measure, and no gate",
+      (Some 100., 0, 0, "coverage: no point to measure (0/0 points)") );
     ( "the minimum prints as given",
       ( Some 99.99999,
         1,
@@ -2168,15 +2200,15 @@ let coverage_group =
           equal float_exact 100. (Sections.percent ~visited:0 ~total:0));
       test "percent is unrounded" (fun () ->
           equal (float 1e-9) (200. /. 3.) (Sections.percent ~visited:2 ~total:3));
-      cases "coverage_line colours the percentage and the gate" ~name:fst
+      cases "coverage_line colours the percentage and the gate" ~id:fst
         outcome_colour_rows outcome_colour;
       test "coverage reports print as their gallery" (fun () ->
           gallery "coverage" (coverage_entries ()));
-      cases "the outcome is the last line in every mode" ~name:fst outcome_rows
+      cases "the outcome is the last line in every mode" ~id:fst outcome_rows
         (fun (_, (mode, min, c, expected)) ->
           equal string expected (last_line (coverage ~mode ?min c)));
       test "the outcome prints once, the gate with it" outcome_once;
-      cases "a row shows eight ranges, then the count of the rest" ~name:fst
+      cases "a row shows eight ranges, then the count of the rest" ~id:fst
         range_rows (fun (_, (n, name, expected)) ->
           equal string expected (range_row n name));
     ]
@@ -2199,8 +2231,27 @@ let witness ?exe ?file test line =
     exe;
   }
 
+(* The mutant [id] names, spanning [before] on its line. *)
+let shown_mutant ?source id line before after =
+  let file, col =
+    match String.split_on_char ':' id with
+    | [ file; _; col; _ ] -> (file, int_of_string col)
+    | _ -> invalid_arg id
+  in
+  {
+    Sections.id;
+    file;
+    line;
+    col;
+    end_line = line;
+    end_col = col + String.length before;
+    before;
+    after;
+    source;
+  }
+
 let mutant ?(source = calc_source) id line before after =
-  { Sections.id; line; before; after; source = Some source }
+  shown_mutant ~source id line before after
 
 let add_survivor =
   {
@@ -2210,7 +2261,6 @@ let add_survivor =
         witness ~file:"test/test_calc.ml" "subtraction \u{203a} stays positive"
           19;
       ];
-    runs = 1;
   }
 
 let ge_survivor =
@@ -2221,7 +2271,6 @@ let ge_survivor =
         witness ~file:"test/test_calc.ml" "sign of a negative" 31;
         witness ~file:"test/test_calc.ml" "sign of a positive" 30;
       ];
-    runs = 1;
   }
 
 let memo_missed =
@@ -2231,43 +2280,33 @@ let memo_missed =
         ~source:(source_of [ (4, "  | None -> let v = a + b in") ])
         "lib/memo.ml:4:17:sub" 4 "a + b" "a - b";
     invocation = `Exe "./test_memo.exe";
-    failed = None;
   }
 
-(* The mutants whose verdict changed class, as the producers spell them. *)
-let sub_change =
+let hung =
   {
-    Sections.id = "lib/calc.ml:13:9:sub";
-    exe = None;
-    previous = `Survived;
-    verdict = `Killed;
+    Sections.mutant =
+      mutant
+        ~source:(source_of [ (9, "  while i < n do incr i done") ])
+        "lib/spin.ml:9:8:le" 9 "i < n" "i <= n";
+    reason = "test_spin.exe: its run passed its deadline of 1.5s";
+    invocation = `Exe "./test_spin.exe";
   }
 
-let sub_flaky =
+let property_refused =
   {
-    Sections.mutant = mutant "lib/calc.ml:13:9:sub" 13 "a - b" "a + b";
-    test = "calc \u{203a} subtracts on two domains";
-    failure = "expected 6, got 5";
-    exe = None;
-  }
-
-let drop_change =
-  {
-    Sections.id = "lib/calc.ml:22:4:drop";
-    exe = None;
-    previous = `Killed;
-    verdict = `Not_evaluated;
+    Sections.executable = "test_property.exe";
+    reason = "the suite is not deterministic: the probe failed 2 tests";
+    mutants = 27;
   }
 
 let loop_report =
   {
     Sections.survivors = [ add_survivor; ge_survivor ];
     not_evaluated = [];
-    flaky = [];
-    unstable = [];
+    unknown = [];
+    refused = [];
     unreached = [ ("lib/calc.ml", 40); ("lib/calc.ml", 41) ];
     outside_tests = [];
-    filtered = [];
     killed = 3;
     not_tested = 0;
     scope = Sections.Suite;
@@ -2287,7 +2326,6 @@ let eq_survivor =
         witness ~exe:"test_eval.exe" "division \u{203a} rounds toward zero" 0;
         witness ~exe:"test_printer.exe" "round trip \u{203a} arithmetic" 0;
       ];
-    runs = 1;
   }
 
 let not_survivor =
@@ -2303,20 +2341,18 @@ let not_survivor =
         witness ~exe:"test_parser.exe" "errors \u{203a} unexpected end of input"
           0;
       ];
-    runs = 1;
   }
 
 let merge_report =
   {
     Sections.survivors = [ eq_survivor; not_survivor ];
     not_evaluated = [];
-    flaky = [];
-    unstable = [];
+    unknown = [];
+    refused = [];
     unreached =
       List.map (fun line -> ("lib/text.ml", line)) [ 12; 13; 14; 32 ]
       @ [ ("lib/run.ml", 40); ("lib/run.ml", 40); ("lib/report.ml", 61) ];
     outside_tests = [];
-    filtered = [];
     killed = 16;
     not_tested = 0;
     scope = Sections.Executables 3;
@@ -2325,30 +2361,14 @@ let merge_report =
 let merge_invocation =
   `Exe "dune exec --instrument-with ppx_windtrap.mutate test/test_eval.exe --"
 
-let at_rest ?(ansi = false) ?(invocation = `Mirrors) ?min m =
-  printed ~ansi (Sections.mutation_report ~invocation ~min m)
+let at_rest ?(ansi = false) ?(invocation = `Mirrors) m =
+  printed ~ansi (Sections.mutation_report ~invocation m)
 
 let closing ?(ansi = false) ?(invocation = exe) ?(config = Fun.id) m =
   printed ~ansi
     (Sections.mutation_closing
        ~config:(config { (Run.default_config ()) with Run.invocation })
        m)
-
-let with_workers c =
-  {
-    c with
-    Run.mutation =
-      Run.Loop
-        {
-          scope = [];
-          jobs = 1;
-          since = None;
-          children = Run.Auto;
-          skip_killed = false;
-          retry = None;
-        };
-    mutate_workers = true;
-  }
 
 let with_source source (s : Sections.survivor) =
   let m : Sections.mutant = s.mutant in
@@ -2359,13 +2379,18 @@ let reached_report =
 
 let mutation_entries () =
   [
+    ( "a merge with an unknown mutant and a suite not mutation-tested",
+      at_rest
+        {
+          loop_report with
+          Sections.survivors = [ ge_survivor ];
+          unknown = [ hung ];
+          refused = [ property_refused ];
+          scope = Sections.Executables 3;
+        } );
     ( "a survivor's block: its rewrite, its source line, the tests that ran it",
       printed ~ansi:true (Sections.survivor_block ~exe_width:None ge_survivor)
     );
-    ( "a survivor of three runs: the runs after the title",
-      printed
-        (Sections.survivor_block ~exe_width:None
-           { add_survivor with Sections.runs = 3 }) );
     ( "a survivor on line 1",
       printed
         (Sections.survivor_block ~exe_width:None
@@ -2373,7 +2398,6 @@ let mutation_entries () =
              Sections.mutant =
                mutant ~source:"let x = 1\n" "a.ml:1:8:add" 1 "1" "2";
              witnesses = [ witness "t" 0 ];
-             runs = 1;
            }) );
     ( "an executable column at least exe_width wide, empty for a test that \
        names none",
@@ -2404,23 +2428,9 @@ let mutation_entries () =
     ( "a merge's report: survivors counted, the executables one column",
       at_rest ~ansi:true ~invocation:merge_invocation merge_report );
     ("and without colour", at_rest ~invocation:merge_invocation merge_report);
-    ( "a merge under a gate it misses: the score red, and FAILED",
-      at_rest ~ansi:true ~min:90. { merge_report with Sections.unreached = [] }
-    );
-    ( "and under a gate it meets: the score plain, and ok",
-      at_rest ~ansi:true ~min:88.8 { merge_report with Sections.unreached = [] }
-    );
     ( "never reached alone: its rule, its rows, the outcome",
       at_rest { merge_report with Sections.survivors = [] } );
     ("survivors alone", at_rest { merge_report with Sections.unreached = [] });
-    ( "a merge's survivor of four runs: the runs after the title, the rows \
-       unchanged",
-      at_rest ~invocation:merge_invocation
-        {
-          merge_report with
-          Sections.survivors =
-            [ { eq_survivor with Sections.runs = 4 }; not_survivor ];
-        } );
     ( "neither: the outcome alone",
       at_rest { merge_report with Sections.survivors = []; unreached = [] } );
     ( "never reached: one row per file, the count right-aligned",
@@ -2428,8 +2438,8 @@ let mutation_entries () =
         {
           Sections.survivors = [];
           not_evaluated = [];
-          flaky = [];
-          unstable = [];
+          unknown = [];
+          refused = [];
           unreached =
             List.init 60 (fun i -> ("lib/report.ml", (i * 3) + 10))
             @ List.init 60 (fun i -> ("lib/report.ml", (i * 3) + 10))
@@ -2440,64 +2450,12 @@ let mutation_entries () =
                 ("lib/b.ml", 1);
               ];
           outside_tests = [];
-          filtered = [];
           killed = 1;
           not_tested = 0;
           scope = Sections.Executables 1;
         } );
     ( "not evaluated: each mutant with the command that arms it",
       at_rest ~ansi:true reached_report );
-    ( "not evaluated after a failure: the failure that the mutant did not \
-       cause, under its mutant",
-      at_rest ~ansi:true
-        {
-          reached_report with
-          Sections.not_evaluated =
-            [
-              { memo_missed with Sections.failed = Some "memo \u{203a} adds" };
-              {
-                memo_missed with
-                Sections.mutant =
-                  { memo_missed.mutant with id = "lib/memo.ml:9:4:add" };
-                failed = None;
-              };
-            ];
-        } );
-    ( "unstable: one row per mutant, its previous verdict and its verdict, \
-       after not evaluated",
-      at_rest ~ansi:true
-        { reached_report with Sections.unstable = [ sub_change; drop_change ] }
-    );
-    ( "unstable in a merge: the executable first",
-      at_rest
-        {
-          merge_report with
-          Sections.survivors = [];
-          unstable =
-            [
-              { sub_change with Sections.exe = Some "test_calc.exe" };
-              { drop_change with Sections.exe = Some "test_eval.exe" };
-            ];
-        } );
-    ( "flaky: each mutant with its test and its failure with no mutant, after \
-       not evaluated",
-      at_rest ~ansi:true { reached_report with Sections.flaky = [ sub_flaky ] }
-    );
-    ( "flaky in a merge: the executable before the test",
-      at_rest
-        {
-          merge_report with
-          Sections.survivors = [];
-          flaky = [ { sub_flaky with Sections.exe = Some "test_calc.exe" } ];
-        } );
-    ( "flaky alone, in a loop: a blank line opens it",
-      closing
-        {
-          loop_report with
-          Sections.survivors = [];
-          unreached = [];
-          flaky = [ sub_flaky ];
-        } );
     ( "evaluated outside tests follows never reached",
       at_rest
         {
@@ -2505,45 +2463,6 @@ let mutation_entries () =
           Sections.survivors = [];
           outside_tests =
             [ ("lib/table.ml", 7); ("lib/calc.ml", 1); ("lib/calc.ml", 2) ];
-        } );
-    ( "filtered follows evaluated outside tests, one row per reason",
-      at_rest
-        {
-          loop_report with
-          Sections.survivors = [];
-          outside_tests = [ ("lib/table.ml", 7) ];
-          filtered =
-            [
-              "zero operand";
-              "same branches";
-              "logging call";
-              "same branches";
-              "logging call";
-              "logging call";
-              "logging call";
-              "logging call";
-              "logging call";
-              "logging call";
-              "logging call";
-              "logging call";
-            ];
-        } );
-    ( "filtered: the most mutants first, a tie by reason, the counts \
-       right-aligned",
-      at_rest
-        {
-          loop_report with
-          Sections.survivors = [];
-          unreached = [];
-          filtered =
-            [
-              "same branches";
-              "failure message";
-              "logging call";
-              "same branches";
-              "logging call";
-            ]
-            @ List.init 10 (fun _ -> "zero operand");
         } );
     ( "a loop's closing: the rule, the sections, the command, the outcome",
       closing ~ansi:true
@@ -2556,10 +2475,6 @@ let mutation_entries () =
       closing
         ~config:(fun c -> { c with Run.filter = [ "memoized" ] })
         reached_report );
-    ( "a loop's commands keep --mutate-workers",
-      closing ~config:with_workers reached_report );
-    ( "a loop's commands keep --mutate-workers under the mirrors",
-      closing ~invocation:`Mirrors ~config:with_workers loop_report );
     ( "outside tests alone, in a loop: a blank line opens it",
       closing
         {
@@ -2567,22 +2482,6 @@ let mutation_entries () =
           Sections.survivors = [];
           unreached = [];
           outside_tests = [ ("lib/table.ml", 7) ];
-        } );
-    ( "filtered alone, in a loop: a blank line opens it",
-      closing
-        {
-          loop_report with
-          Sections.survivors = [];
-          unreached = [];
-          filtered = [ "same body as the next case" ];
-        } );
-    ( "unstable alone, in a loop: a blank line opens it",
-      closing
-        {
-          loop_report with
-          Sections.survivors = [];
-          unreached = [];
-          unstable = [ sub_change ];
         } );
     ( "an interrupted loop counts what it did not test",
       closing
@@ -2598,19 +2497,18 @@ let mutation_entries () =
         } );
   ]
 
-let summary ?(survivors = []) ?(not_evaluated = []) ?(flaky = [])
-    ?(unstable = []) ?(unreached = []) ?(outside_tests = []) ?(filtered = [])
-    ?(not_tested = 0) ?min ~killed scope =
+let summary ?(survivors = []) ?(not_evaluated = []) ?(unknown = [])
+    ?(refused = []) ?(unreached = []) ?(outside_tests = []) ?(not_tested = 0)
+    ~killed scope =
   last_line
-    (at_rest ?min
+    (at_rest
        {
          Sections.survivors;
          not_evaluated;
-         flaky;
-         unstable;
+         unknown;
+         refused;
          unreached;
          outside_tests;
-         filtered;
          killed;
          not_tested;
          scope;
@@ -2623,19 +2521,19 @@ let summary_rows =
   [
     ( "a suite, clean",
       (fun () -> summary ~killed:5 Sections.Suite),
-      "mutants: 5 reached by this suite, 5 killed, score 100.0%" );
+      "mutants: 5 reached by this suite, 5 killed" );
     ( "a selection, clean",
       (fun () -> summary ~killed:2 (Sections.Selected 2)),
-      "mutants: 2 reached by the 2 selected tests, 2 killed, score 100.0%" );
+      "mutants: 2 reached by the 2 selected tests, 2 killed" );
     ( "one selected test",
       (fun () -> summary ~killed:1 (Sections.Selected 1)),
-      "mutants: 1 reached by the 1 selected test, 1 killed, score 100.0%" );
+      "mutants: 1 reached by the 1 selected test, 1 killed" );
     ( "executables, clean",
       (fun () -> summary ~killed:14 (Sections.Executables 3)),
-      "mutants: 14 reached, 14 killed, 3 executables, score 100.0%" );
+      "mutants: 14 reached, 14 killed, 3 executables" );
     ( "one executable",
       (fun () -> summary ~killed:3 (Sections.Executables 1)),
-      "mutants: 3 reached, 3 killed, 1 executable, score 100.0%" );
+      "mutants: 3 reached, 3 killed, 1 executable" );
     ( "nothing reached, nothing killed",
       (fun () -> summary ~killed:0 Sections.Suite),
       "mutants: 0 reached by this suite" );
@@ -2645,85 +2543,44 @@ let summary_rows =
       "mutants: 0 reached, 2 never reached, 1 executable" );
     ( "a suite with a survivor",
       (fun () -> summary ~survivors:s ~killed:4 Sections.Suite),
-      "mutants: 1 survived of 5 reached by this suite, 4 killed, score 80.0%" );
+      "mutants: 1 survived of 5 reached by this suite, 4 killed" );
     ( "a selection with a survivor",
       (fun () -> summary ~survivors:s ~killed:1 (Sections.Selected 3)),
-      "mutants: 1 survived of 2 reached by the 3 selected tests, 1 killed, \
-       score 50.0%" );
+      "mutants: 1 survived of 2 reached by the 3 selected tests, 1 killed" );
     ( "executables, survivors and never reached",
       (fun () ->
         summary ~survivors:s ~unreached:two_lines ~killed:11
           (Sections.Executables 3)),
       "mutants: 1 survived of 12 reached, 11 killed, 2 never reached, 3 \
-       executables, score 91.7%" );
+       executables" );
     ( "no killed term when none was killed",
       (fun () -> summary ~survivors:s ~killed:0 Sections.Suite),
-      "mutants: 1 survived of 1 reached by this suite, score 0.0%" );
+      "mutants: 1 survived of 1 reached by this suite" );
     ( "what an interrupted loop did not test is reached, and last",
       (fun () ->
         summary ~survivors:s ~unreached:two_lines ~not_tested:3 ~killed:2
           Sections.Suite),
       "mutants: 1 survived of 6 reached by this suite, 2 killed, 2 never \
-       reached, 3 not tested, score 66.7%" );
+       reached, 3 not tested" );
     ( "a site evaluated outside tests is not reached",
       (fun () ->
         summary ~survivors:s ~unreached:two_lines
           ~outside_tests:[ ("lib/calc.ml", 3) ]
           ~killed:2 Sections.Suite),
       "mutants: 1 survived of 3 reached by this suite, 2 killed, 2 never \
-       reached, 1 evaluated outside tests, score 66.7%" );
-    ( "a filtered mutant is neither reached nor scored",
+       reached, 1 evaluated outside tests" );
+    ( "an unknown mutant is reached, and so is what a refused suite holds",
       (fun () ->
-        summary ~survivors:s
-          ~filtered:[ "zero operand"; "same branches" ]
-          ~killed:2 Sections.Suite),
-      "mutants: 1 survived of 3 reached by this suite, 2 killed, 2 filtered, \
-       score 66.7%" );
+        summary ~survivors:s ~unknown:[ hung ] ~refused:[ property_refused ]
+          ~killed:2 (Sections.Executables 2)),
+      "mutants: 1 survived of 31 reached, 2 killed, 28 unknown, 2 executables, \
+       1 not mutation-tested" );
     ( "a mutant its child did not evaluate is reached",
       (fun () ->
         summary ~survivors:s ~not_evaluated:[ memo_missed ] ~killed:2
           Sections.Suite),
       "mutants: 1 survived of 4 reached by this suite, 2 killed, 1 not \
-       evaluated, score 50.0%" );
-    ( "a mutant not evaluated is scored, as no mutant killed",
-      (fun () ->
-        summary ~not_evaluated:[ memo_missed ] ~killed:0 Sections.Suite),
-      "mutants: 1 reached by this suite, 1 not evaluated, score 0.0%" );
-    ( "a flaky mutant is reached and not scored",
-      (fun () ->
-        summary ~survivors:s ~flaky:[ sub_flaky ] ~killed:2 Sections.Suite),
-      "mutants: 1 survived of 4 reached by this suite, 2 killed, 1 flaky, \
-       score 66.7%" );
-    ( "flaky alone gives no score",
-      (fun () -> summary ~flaky:[ sub_flaky ] ~killed:0 Sections.Suite),
-      "mutants: 1 reached by this suite, 1 flaky" );
-    ( "a gate over flaky alone reads 100",
-      (fun () ->
-        summary ~flaky:[ sub_flaky ] ~killed:0 ~min:50. (Sections.Executables 1)),
-      "mutants: 1 reached, 1 flaky, 1 executable, score 100.0%, minimum 50%: ok"
-    );
-    ( "the score is of the killed among the scored, unrounded under a gate",
-      (fun () ->
-        summary ~survivors:s ~not_evaluated:[ memo_missed ] ~killed:1 ~min:33.4
-          Sections.Suite),
-      "mutants: 1 survived of 3 reached by this suite, 1 killed, 1 not \
-       evaluated, score 33.3%, minimum 33.4%: FAILED" );
-    ( "the unstable rows change no count and not the score",
-      (fun () ->
-        summary
-          ~unstable:[ sub_change; drop_change ]
-          ~survivors:s ~killed:4 Sections.Suite),
-      "mutants: 1 survived of 5 reached by this suite, 4 killed, score 80.0%" );
-    ( "a gate met at its bound",
-      (fun () -> summary ~survivors:s ~killed:3 ~min:75. Sections.Suite),
-      "mutants: 1 survived of 4 reached by this suite, 3 killed, score 75.0%, \
-       minimum 75%: ok" );
-    ( "a gate gives the score of no scored mutant, which is 100",
-      (fun () ->
-        summary ~unreached:two_lines ~killed:0 ~min:100.
-          (Sections.Executables 1)),
-      "mutants: 0 reached, 2 never reached, 1 executable, score 100.0%, \
-       minimum 100%: ok" );
+       evaluated" );
   ]
 
 let block witnesses =
@@ -2749,7 +2606,7 @@ let sentence_rows =
   ]
 
 let sentence (_, (witnesses, expected)) =
-  equal string expected (List.nth (lines (block witnesses)) 3)
+  equal string expected (List.nth (lines (block witnesses)) 4)
 
 let padded_names () =
   equal (list string)
@@ -2758,7 +2615,7 @@ let padded_names () =
       "      eval \u{203a} Sub node     test/test_eval.ml:31";
     ]
     (List.filteri
-       (fun i _ -> i >= 4 && i < 6)
+       (fun i _ -> i >= 5 && i < 7)
        (lines (block [ calc_one; eval_one ])))
 
 let exe_column () =
@@ -2776,20 +2633,6 @@ let exe_column () =
       \      test_calc.exe  calc \u{203a} sub to zero  test/test_calc.ml:19\n\
       \                     eval \u{203a} Sub node     test/test_eval.ml:31\n"
     (at_rest [ named; eval_one ])
-
-let runs_suffix () =
-  let title runs =
-    List.nth
-      (lines
-         (printed
-            (Sections.survivor_block ~exe_width:None
-               { add_survivor with Sections.runs })))
-      0
-  in
-  not_contains ~sub:"runs" (title 1);
-  equal string
-    "  SURVIVED  lib/calc.ml:13:11:add  a - b \u{2192} a + b  (3 runs)"
-    (title 3)
 
 let reproduce ?invocation ?config m =
   List.filter
@@ -2903,41 +2746,33 @@ let arm_mirror () =
                  [ { memo_missed with Sections.invocation = `Mirrors } ];
              })))
 
-let unstable_score () =
-  equal float_exact
-    (Sections.mutation_score loop_report)
-    (Sections.mutation_score
-       { loop_report with Sections.unstable = [ sub_change; drop_change ] })
-
-let flaky_score () =
-  equal float_exact
-    (Sections.mutation_score loop_report)
-    (Sections.mutation_score
-       { loop_report with Sections.flaky = [ sub_flaky ] })
+let diagnostics () =
+  let one = mutant "lib/calc.ml:13:11:add" 13 "a - b" "a + b" in
+  equal string {|File "lib/calc.ml", line 13, characters 11-16:|}
+    (Sections.diagnostic one);
+  equal string {|File "lib/calc.ml", lines 13-15, characters 11-3:|}
+    (Sections.diagnostic { one with end_line = 15; end_col = 3 })
 
 let mutation_group =
   group "Mutation"
     [
+      test "a mutant's location is the compiler's, over the lines it spans"
+        diagnostics;
       test "survivor blocks and reports print as their gallery" (fun () ->
           gallery "mutation" (mutation_entries ()));
-      cases "the reproduce command arms the first survivor" ~name:fst
+      cases "the reproduce command arms the first survivor" ~id:fst
         reproduce_rows reproduce_row;
       test "a not-evaluated mutant's arm command under a build action"
         arm_mirror;
-      test "the unstable rows change no score" unstable_score;
-      test "the flaky mutants change no score" flaky_score;
       cases "the outcome line"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         summary_rows
         (fun (_, summary, expected) -> equal string expected (summary ()));
       cases "the sentence counts the reaching tests and their executables"
-        ~name:fst sentence_rows sentence;
+        ~id:fst sentence_rows sentence;
       test "the reaching tests' names are padded to the widest" padded_names;
       test "the executable column appears when a reaching test names one"
         exe_column;
-      test
-        "the title of a survivor ends with its runs when they are more than 1"
-        runs_suffix;
     ]
 
 let () =

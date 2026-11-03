@@ -66,12 +66,6 @@
     shrinking stopped after 50 steps; counterexample may not be minimal
     replay: WINDTRAP_SEED=s1:7be1d2c904aa31f5 dune runtest
 
-=== a candidate that raised is named, then the search's stop
-    counterexample (case 4, shrunk 3 steps): 9
-    shrinking stopped after 3 steps: a candidate raised Failure("no small values")
-    counterexample may not be minimal
-    replay: WINDTRAP_SEED=s1:7be1d2c904aa31f5 dune runtest
-
 === an inner failure without a location is which failed with
     counterexample (case 0): 7
     which failed with:
@@ -103,3 +97,25 @@
       uncaught exception:
         Dune__exe__V.Boom(50)
     replay: WINDTRAP_SEED=s1:7be1d2c904aa31f5 dune runtest
+
+=== a counterexample that prints as OCaml is kept as an example to paste
+    counterexample (case 0, shrunk 4 steps): (3, "a")
+    keep it: ~examples:[ (3, "a") ]
+    replay: WINDTRAP_SEED=s1:7be1d2c904aa31f5 dune runtest
+
+=== any other is kept as its replay token
+    counterexample (case 0, shrunk 1 step): Rect (1, 0)
+    replay it: --replay r1:AQEA:3e9ef408
+    replay: WINDTRAP_SEED=s1:7be1d2c904aa31f5 dune runtest
+
+=== a domain checked whole reports every value it refuted, keeping none
+    counterexample (value 2 of 4): 1
+
+    counterexample (value 4 of 4): 3
+    which failed with:
+      expected  0
+      actual    3
+
+=== a replayed case is named so, and keeps its token
+    counterexample (replayed case): Rect (1, 0)
+    replay it: --replay r1:AQEA:3e9ef408

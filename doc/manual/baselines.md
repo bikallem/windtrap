@@ -13,17 +13,19 @@ greeting.
 
 ```ocaml
 let help () =
-  String.concat "\n"
-    [
-      "Usage: mytool [OPTIONS] COMMAND";
-      "";
-      "Commands:";
-      "  build    Build the project";
-      "  test     Run the tests";
-      "";
-      "Options:";
-      "  --help   Show this help";
-    ]
+  String.concat ""
+    (List.map
+       (fun line -> line ^ "\n")
+       [
+         "Usage: mytool [OPTIONS] COMMAND";
+         "";
+         "Commands:";
+         "  build    Build the project";
+         "  test     Run the tests";
+         "";
+         "Options:";
+         "  --help   Show this help";
+       ])
 
 let report ~rows = Printf.sprintf "processed %d rows\nstatus: ok" rows
 let greet name = Printf.printf "Hello, %s!\n" name
@@ -63,7 +65,10 @@ stale baseline (see `Windtrap.expect`).
 root whatever the working directory. Under dune the root is the
 directory that holds the build directory, here windtrap's repository,
 and `WINDTRAP_PROJECT_ROOT` sets another. The file holds the text as it
-is.
+is. CR LF reads as LF, and the final newline counts: a text that lacks
+the file's final newline fails, and its block says
+`values differ only by a trailing newline (on the expected side)`.
+Each line of the help, the last included, ends with one.
 
 `test/help.expected`:
 
@@ -89,8 +94,9 @@ let messages =
     [
       test "the report counts the rows" report_counts_the_rows;
       test "the help lists the commands" (fun () ->
-          expect_file (Mytool.help ()) "examples/05-baselines/help.expected");
-      cases "the greeting names the user" ~name:fst
+          expect_file ~file:"examples/05-baselines/help.expected"
+            (Mytool.help ()));
+      cases "the greeting names the user" ~id:fst
         [
           ("Ada", __POS_OF__ {| Hello, Ada! |});
           ("Grace", __POS_OF__ {| Hello, Grace! |});
@@ -119,8 +125,22 @@ other text.
 A row of `cases` can carry its own literal, as the greeting's rows do.
 `expect` checks each row against its literal, and `dune promote` or
 `-u` rewrites the literals of the stale rows alone (see
-`Windtrap.expect`). A literal written in the body of `cases` is shared,
-and every row must produce its one text.
+`Windtrap.expect`). Each row keeps or withholds its corrections as a
+test of its own would: a row that also fails another way keeps none,
+and the rows after it are compared with the baselines it left as they
+were. A literal written in the body of `cases` is shared, and every row
+must produce its one text.
+
+## Expectations in a property
+
+A property's law claims what it checks for every value it draws, and no
+one literal can hold for all of them. An `expect` in a `prop` or
+`stateful` law therefore fails its case as `equal` would: the case
+shrinks, the report shows the one counterexample with its mismatch, and
+no correction is written for the literal, under `--corrected` and `-u`
+alike. The mismatch says so in one line, `no correction: a property's
+law claims this for every value, and one text cannot hold for them all`.
+A table is the place for a literal per input.
 
 ## Running expectations under dune
 
@@ -135,9 +155,14 @@ let () = exit (run "mytool" [ messages ])
 The stanza runs the suite with `--corrected`, which writes the
 correction of a stale baseline beside its file as `<file>.corrected`.
 Each `diff?` then compares one file that holds baselines with its
-correction. `(deps …)` names every file an `expect_file` reads. The
-stanza spells a path from its own directory, as `help.expected`, where
-the call spells it from the project root.
+correction, and `concurrent` runs every `diff?` whatever the others
+find, so that dune holds the correction of each stale file and one
+`dune promote` takes them all (it needs `(lang dune 3.8)`). In a
+`progn` the first `diff?` that fails would end the action, and each
+further stale file would take another run and another promotion.
+`(deps …)` names every file an `expect_file` reads. The stanza spells a
+path from its own directory, as `help.expected`, where the call spells
+it from the project root.
 
 `test/dune`:
 
@@ -150,8 +175,9 @@ the call spells it from the project root.
  (action
   (progn
    (run %{test} --corrected)
-   (diff? test_mytool.ml test_mytool.ml.corrected)
-   (diff? help.expected help.expected.corrected))))
+   (concurrent
+    (diff? test_mytool.ml test_mytool.ml.corrected)
+    (diff? help.expected help.expected.corrected)))))
 ```
 
 With every baseline current, `dune runtest` prints the suite's line and
@@ -159,21 +185,22 @@ one line per file of the library's expect tests (see below):
 
 ```
 $ dune runtest
-mytool: 4 passed in 0.9ms.
 tokenizer/timing.ml: 1 passed in 0.8ms.
-tokenizer/tokens.ml: 2 passed in 1.6ms.
+tokenizer/tokens.ml: 2 passed in 1.3ms.
+mytool: 3 passed in 1.9ms.
 ```
 
 ## Reading a stale expectation
 
 To see a stale expectation, change `processed` to `read` in
 `Mytool.report` and run the tests again. The block shows the baseline's
-lines with `-`, the produced lines with `+`, and the command that
-accepts the change. Dune then prints its own diff of the source file:
+lines with `-` and the produced lines with `+`, and the line above the
+summary is the command that accepts every correction of the run. Dune
+then prints its own diff of the source file:
 
 ```
 $ dune runtest
-mytool: 4 tests
+mytool: 3 tests
 ──────────────────────── failures ────────────────────────
   FAIL  messages › the report counts the rows
     examples/05-baselines/test_mytool.ml:5
@@ -184,16 +211,16 @@ mytool: 4 tests
     - processed 42 rows
     + read 42 rows
       status: ok
-    accept: dune promote examples/05-baselines/test_mytool.ml
 ──────────────────────────────────────────────────────────
 
 corrections (1):
   wrote examples/05-baselines/test_mytool.ml.corrected (1 expectation)
 
-3 passed, 1 failed, 1 correction written in 1.1ms.
+accept: dune promote examples/05-baselines/test_mytool.ml
+2 passed, 1 failed, 1 correction written in 2.2ms.
 File "examples/05-baselines/test_mytool.ml", line 1, characters 0-0:
 diff --git a/_build/default/examples/05-baselines/test_mytool.ml b/_build/default/examples/05-baselines/test_mytool.ml.corrected
-index fd329b0..8d0b6e0 100644
+index 0251ed5..4ccaf5c 100644
 --- a/_build/default/examples/05-baselines/test_mytool.ml
 +++ b/_build/default/examples/05-baselines/test_mytool.ml.corrected
 @@ -3,7 +3,7 @@ open Windtrap
@@ -217,13 +244,32 @@ correction dune holds. Review the change with `git diff`, and the next
 
 Dune forgets a correction at its next command, so run `dune promote`
 right after the failing `dune runtest`. It keeps one only from a run
-that exits 0, so another failing test of the suite withholds it, and the
-run says so on standard error.
+that exits 0, so another failing test of the suite withholds it: the
+report then prints no `accept:` line, and the run says on standard
+error what does accept it, fixing the failures first or `-u` now:
 
-The stanza's action stops at its first `diff?` that fails, so dune holds
-at most one correction per stanza and run. When two files are stale, the
-second file's `accept:` line finds nothing to promote until the first is
-accepted and the tests run again.
+```
+windtrap: warning: dune registers a correction for promotion only when the run that wrote it exits 0, so the failures above withhold the correction written here. Fix the failures, rerun, then 'dune promote'. To accept it now: dune exec examples/05-baselines/test_mytool.exe -- -u
+```
+
+A file baseline that does not exist yet is the one exception: once the
+missing files are all that fail, the line creates them first,
+`accept: touch 'examples/05-baselines/help.expected' && dune runtest; dune promote …`.
+
+The `accept:` line names every file whose correction dune holds, which
+under the stanza above is every stale file of the run. A stanza whose
+`diff?` sit in the `progn` itself holds only the first stale file's:
+wrap them in `concurrent`.
+
+Under CI a stale baseline fails the run itself, whatever its mode. A
+`--corrected` run exits 0 on a mismatch only so that a `diff?` can hand
+the correction to `dune promote`, and no one promotes under CI: a stanza
+that lacks the file's `diff?` would pass. The run still writes the
+correction, and says on standard error why it exits 1:
+
+```
+windtrap: warning: CI is set, so a baseline mismatch fails the run: no one promotes the correction written here under CI. To accept it, rerun outside CI, then 'dune promote'.
+```
 
 ## Accepting without dune promote
 
@@ -233,7 +279,7 @@ A suite run by hand writes no correction. Its report closes on one
 
 ```
 $ dune exec examples/05-baselines/test_mytool.exe
-mytool: 4 tests
+mytool: 3 tests
 ──────────────────────── failures ────────────────────────
   FAIL  messages › the report counts the rows
     examples/05-baselines/test_mytool.ml:5
@@ -247,7 +293,7 @@ mytool: 4 tests
 ──────────────────────────────────────────────────────────
 
 accept: dune exec examples/05-baselines/test_mytool.exe -- -u
-3 passed, 1 failed in 1.7ms.
+2 passed, 1 failed in 1.5ms.
 ```
 
 To accept, run the line. `-u` rewrites every stale literal in place, and
@@ -256,22 +302,22 @@ next run:
 
 ```
 $ dune exec examples/05-baselines/test_mytool.exe -- -u
-mytool: 4 tests
+mytool: 3 tests
 corrections (1):
   accepted examples/05-baselines/test_mytool.ml (1 expectation; rebuild before the tests see it)
 
-4 passed, 1 correction accepted in 0.9ms.
+3 passed, 1 correction accepted in 1.4ms.
 ```
 
 Review the change with `git diff`. `-u` is refused under CI (see
 [Running tests](running-tests.md)).
 
-## Reading a block with no `accept:` line
+## Reading a correction that was not kept
 
 A test that also failed outside its expectations, or skipped, keeps no
 correction until that is fixed. Its block says `no correction was kept:`
-and why, in place of the `accept:` line. A correction the source cannot
-take, as when the file changed since the build, says
+and why, and no `accept:` line accepts it. A correction the source
+cannot take, as when the file changed since the build, says
 `correction refused (line N):` and the reason.
 
 ## Writing expect tests inside a library

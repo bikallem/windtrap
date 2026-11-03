@@ -2,7 +2,8 @@
 
 This page explains why windtrap is shaped as it is. Each section states
 one decision and the reasons for it. The how-to pages show how to use
-what the decisions give, and `lib/windtrap.mli` is the reference.
+what the decisions give, and `lib/windtrap.mli` is the reference, with
+`Windtrap.Testable`'s constructors in `lib/testable.mli`.
 
 ## A suite is an executable, and `run` returns its exit code
 
@@ -32,10 +33,13 @@ A test is named by its groups and its own name, and that path keys what
 the runner keeps about it: the seed of a property, the record `--failed`
 reads, and the bucket of `--shard`. A position or an index changes when
 a test is added above another, while a name changes only when its author
-renames it. This is why `cases` requires `~name`: a child named by its
-index would take a new seed and lose its record each time a row is
-inserted before it. For the same reason a suite in which two tests share
-a path is refused.
+renames it. For the same reason a suite in which two tests share a path
+is refused. A row of a table is a case of its test, not a test, and is
+identified the same way, by what it is and not where it sits: by its
+id, a string the table computes from the row, a key of it or its
+printing. A row named by its index would lose its record each time a
+row is inserted before it. Two rows with one id are refused, as two
+tests of one path are.
 
 ## A witness is a printer and an equality
 
@@ -78,16 +82,52 @@ A law takes no tolerance, since its witness carries one. A witness's
 order must agree with its equality, and `float_exact` orders `-0.`
 below `0.` because its equality tells them apart.
 
-## Generators shrink as they generate
+## Generators parse choices
 
-A generator draws a value together with the tree of its smaller
-variants. Every generator therefore shrinks, and one built with `map`,
-`bind` or `such_that` shrinks through its parts and keeps their
-constraints, so a counterexample still satisfies what its generator
-promised and no shrinker is written by hand. A generator carries its
-printer too: a composite prints when its parts do, and a value computed
-by a function with no printer prints the input it was computed from.
-`Gen.with_pp` attaches a printer where none derives.
+A generator parses its value from a sequence of bounded choices, and a
+case is the sequence it read. Shrinking edits the sequence of a failing
+case and parses it again: it deletes what one generator call read,
+deletes runs of choices, and lowers each choice, keeping an edit that
+still fails and reads a smaller sequence. Every generator therefore
+shrinks, every candidate is a value of the generator, and no shrinker
+is written by hand. Because a candidate is parsed afresh, it can take a
+shape that no tree of smaller variants holds: two inner lists merged
+into one, a node replaced by its subterm, a value drawn with `Gen.bind`
+from what an earlier draw decided. The generators only encode what they
+drew, so the sequence of choices decides how values shrink, and the
+distributions what a run draws: an integer range is uniform, a whole
+integer type such as `Gen.int` comes small or at an edge of a power of
+two first, and a value may repeat an earlier value of its
+generator in the case, so that collections hold duplicates. A
+generator carries its printer too: a composite prints when its parts
+do, and a value computed by a function with no printer prints the input
+it was computed from. `Gen.with_pp` attaches a printer where none
+derives.
+
+## A counterexample is kept by hand
+
+A failing property prints the line that keeps its counterexample: an
+entry to paste into `~examples` where the generators print OCaml, and
+otherwise a replay token that `--replay` checks. Nothing writes the
+source, so a regression is kept by a gesture the test's author makes
+and reviews. The token is the case's choices with a digest of its
+printing, so it survives a renamed test and another machine, and a
+token whose generator now parses another value is refused as stale
+rather than checking that value. Tokens stay out of the source: a
+change to a generator stales a token, and measured over raven's test
+commits one in seven would have staled one silently.
+
+## A case is also bytes
+
+`--case PATH` checks one case of one property, read from a file's bytes
+so that every file is a case: the statement "for every byte string,
+this law holds" is then a command, over the executable, for whatever
+produces bytes. The bytes are the token's choices, in the token's LEB128,
+read totally, so a case file and a token are two spellings of one case,
+the token adding the digest that refuses a stale one. Windtrap depends
+on no fuzzer: a long random run is `--prop-count`, and a mode guided by
+windtrap's own coverage would be built only once measured to find bugs
+that a random run of the same length misses.
 
 ## Seeds replay from the path
 
@@ -120,6 +160,21 @@ legality is decided when it runs. Shrinking can then delete any call
 with no repair step, and the printed program is the record of the run
 that failed, never a replay: a skipped call is absent, and a value
 prints as the name that run gave it.
+
+A program is parsed from choices, as any generator's value is, so it
+shrinks by the same passes and its failure has a replay token. A call
+takes a value as the k-th newest of its type, which a deletion of an
+earlier call can move: the parse records which makers a value counts
+past, and a deletion lowers it by those it removed, so a call keeps
+its value with no extra pass, and only deleting its own maker moves it
+to the next older one.
+
+On several domains an order that explains the outcomes keeps real
+time: a call that returned before another began comes first. Without
+it, a read on one domain that began after a write on another returned
+could pass while missing the write. Each call reads the monotonic
+clock on its own domain as it begins and as it returns; a shared
+counter would do the same job, but every domain would write it.
 
 A call runs the system first, and the reference judges its outcome. One
 order serves every signature: an outcome the API leaves open reaches
@@ -196,6 +251,21 @@ GitHub annotations read the same failures, so they cannot disagree. A
 projection formats and truncates; it never changes a status, a count or
 an exit code.
 
+## A failing verb records before it raises
+
+A verb fails by raising, so that the code after it does not run, but
+the raise alone is not the verdict: the failure is first written into
+the running test. A library that ignores what its callbacks raise, an
+eviction hook or an event handler, would otherwise turn a true failure
+into a pass, and the test would read as a regression test that can
+never fail. The report says `failed, then caught` when the exception
+never reached windtrap. The record belongs to the attempt, so a retry
+starts clean, and to the case inside a property, so a candidate the
+search rejects leaves nothing behind. A deliberate catch, for a claim
+that holds after a while, is `eventually`, which bounds the wait and
+ends on the claim's own failure; nothing hands a failure back to be
+ignored.
+
 ## The report ends on its outcome
 
 A run with nothing to report prints one line. A failure prints as a
@@ -206,11 +276,13 @@ says about itself, a refusal, a warning or a usage error, goes to
 standard error behind `windtrap:`, so a log keeps the two apart.
 
 A block ends with a command only when the command says something the
-block does not: the file that `accept:` promotes under dune, the mutant
-in `reproduce:`. A command that reruns the tests belongs to the run, not
-to a block, so a report states it once, above the summary. By hand, one
-`accept:` line reruns the run's tests with `-u`, and one `replay:` line
-reruns them with the run's seed, each failed test on the values it drew.
+block does not: the test and token of `replay it:`, the mutant in
+`reproduce:`. A command that acts on the run belongs to the run, not to
+a block, so a report states it once, above the summary, when it knows
+how the run ended: one `accept:` line, `dune promote` and the files
+under dune when dune holds the corrections, the run's tests with `-u`
+by hand, and one `replay:` line that reruns them with the run's seed,
+each failed test on the values it drew.
 Running the tests again is the ordinary next step and needs no line.
 
 ## Three exit codes
@@ -231,11 +303,58 @@ command line is read from the working directory.
 
 ## A test cannot end the run
 
-A call to `exit` in code under test is intercepted and recorded as the
-failure of its test. Without the interception, a function that exits 0
-on some path would end the run green with tests unrun. Only `Sys.Break`
-and `Out_of_memory` end a run from inside a test; a `Stack_overflow` is
-an ordinary failure, since OCaml 5 recovers from it.
+The process that calls `run` runs no test: it starts worker processes,
+which run them, and decides each verdict from what a worker reports, how
+it ends and how long it takes. Code under test that calls `exit` or
+`Unix._exit`, segfaults, runs out of memory or loops in C past its limit
+ends its worker, never the run, and the test fails saying which. A run
+in one process could only intercept such an end, and every interception
+leaked: a catch-all around `exit` swallowed it, `Unix._exit` bypassed
+it, and an `at_exit` handler set the code of a failed run to 0. The
+parent's exit code is its own, decided once.
+
+A worker is the test executable started again, so a test sees what a
+fresh start of the program builds, which is what 0.2 and `--in-process`
+gave. A fork of the declaring process would start a worker faster and
+pay for module initialisation once, but a test would then see the
+declaration's values as `fork` leaves them, and a library that refuses
+to cross `fork` leaves them dead: a device, a GPU context, a connection,
+a thread. Ported to forked workers, the suites of raven, an ML library
+whose tests open GPU devices as they are declared, took 57 accessor
+bindings and still could not run on the GPU; started again, their 0.2
+code passed unchanged. The price is one module initialisation per worker
+start, about a millisecond more per worker on top, and one rule: a suite
+must declare the same tests each time the program starts, which a digest
+of the suite checks in every worker.
+
+Only the first `run` of the program's own process starts the program
+again. A later `run`'s worker would have to skip the calls before it,
+and a new start never reaches a `run` that only a forked child makes, so
+those fork, before any test runs. A process that spawned a domain cannot
+fork, so there a later `run` starts the program again, its worker
+skipping the earlier calls with the codes they returned, and a `run` in
+a forked child runs its tests in the child.
+
+Tests run one at a time in one worker by default, as they did in one
+process, so a fixture is acquired once and process state never races;
+`-j N` is an opt-in. A test that spawns a domain retires its worker,
+since the domain could run into the next test. A test that timed out
+retires its worker as well: its timeout stopped it at no point of its
+choosing, and the state it left belongs to no later test. One gap is left: a domain
+that outlives its test dies with that test's worker, so an exit it would
+call later is never made, and no test records it.
+
+`--in-process` runs one test in the process that was started, for a
+debugger. It accepts one test and no more, so it cannot become a way to
+run a suite.
+
+A test that hangs is also a test that does not end the run: every
+attempt has a limit, ten minutes unless `~timeout` or `--timeout` says
+otherwise. A hang reported by name beats a build killed with none, and
+the two errors cost unequally: a limit too low fails honest slow tests,
+one too high only reports a hang later, so the default is high, as Go's
+whole-binary default is. `--in-process` has none, since a debugger
+holds a test as long as it likes.
 
 ## Coverage is measured by runs and reported by a command
 
@@ -267,37 +386,33 @@ dune's cache restores a rebuilt artifact with its original time. No
 option keeps a stale file, since a number computed from another build's
 data describes a program that no longer exists.
 
-`--mutate-skip-killed` follows the same rule. A suite uses the verdict
-file of another suite only when a report keeps it. A file that no run
-replaces, as the file of a suite that no longer runs, thus cannot cause
-a skip after a build. Its verdict file names the executable of each kill
-that it used. Thus the merge can tell when that kill is not in the
-merge.
-
 ## A suite is its own mutation runner
 
 The test executable runs its own mutation run under `--mutate`. It is
-the process that knows which test is running, so it can record which
-tests evaluate each mutant and name them in a survivor's block, which
-turns a score into a list of tests to strengthen. It forks one child per
-reached mutant from its own warm state, and each child runs only the
-tests that reach its mutant, up to the first failure in or after the
-first test that evaluates its site. When the suite
-started a domain and the mode is auto (the default), or under
-`--mutate-children=exec`, each child is a new process of the suite
-instead, with no warm state. A tool outside
-the suite would rebuild or restart the suite for each mutant, and could
-not name the tests.
+the program that knows its tests, so its workers can report which tests
+evaluate each mutant and the report name them in a survivor's block,
+which turns a score into a list of tests to strengthen. Each reached
+mutant runs in a worker of its own, started as a run's workers are, and
+the worker runs only the tests that reach its mutant, up to the first
+failure. A tool outside the suite would rebuild the suite for each
+mutant, and could not name the tests.
 
-A child inherits what the dry run cached, so a test can pass in it
-without evaluating the mutant's site. The child counts the evaluations
-of its armed site, and a mutant whose site it never evaluated is not
-evaluated. Called a survivor, it would send a reader to strengthen
-tests that were never given the mutant. An `--arm` run starts in a new
-process and judges it.
+A worker that ran another mutant, or the dry run, keeps what they
+cached: measured on windtrap's suites, reusing workers changed a
+verdict. A fresh one starts from module initialization, so a memoised
+site is judged on what its tests do. Its run still counts the
+evaluations of its armed site, and a mutant whose site it never
+evaluated is not evaluated. Called a survivor, it would send a reader
+to strengthen tests that were never given the mutant.
 
-Module initialization runs before a child can arm a mutant, and a
-fixture release belongs to no test, so no child tests a site that only
+The cases of a property derive from the root seed and the test's path,
+and a mutation run fixes the root, so the same mutant meets the same
+cases on every run of one binary. With a random root, a mutant that only
+some cases kill would flip between killed and survived from run to run,
+and the merge would change with no change to the code.
+
+Module initialization runs before a worker can arm a mutant, and a
+fixture release belongs to no test, so no run tests a site that only
 they evaluate. Such a site ran and the tests may depend on it. Listed
 as never reached, it would read as a line no test covers, so the report
 lists it as evaluated outside tests.
@@ -313,6 +428,19 @@ one ill-typed mutant would break the whole build: a comparison is
 mutated only in a condition, where it is a `bool`. The catalogue of
 mutants is a literal in the binary and cannot go stale against the code.
 
+## A survivor asks for a test
+
+A survivor is a request for a test, so a mutant is worth compiling only
+where its survivor would be one worth writing. Dropping a statement asks
+whether a test sees its effect, and a nudged literal whether a test pins
+the decision it encodes; a string literal is mostly message text, and a
+removed match case mostly a fast path, so neither is a rewrite. The same
+reason leaves some code without a mutant: a resource release, whose loss
+no test observes, a capacity, which no test should pin, a nudge that
+repeats a comparison's or an arithmetic operator's own mutant, an OS
+flag, and a literal or a statement that runs before any test, which no
+run can judge.
+
 ## A mutant killed anywhere is killed
 
 A mutation run sees only what its own executable's tests reach, and a
@@ -323,6 +451,15 @@ anywhere winning, and a build gates on its exit code; a single mutation
 run exits 0 whatever it finds. A run whose selection narrows the suite
 saves no verdict, since its partial answer would stand for the whole
 suite in the merge.
+
+What no run could judge is unknown, and an unknown mutant is never a
+survivor. A suite that could not be mutation-tested still writes its
+file, which says why and holds its mutants as unknown. Left out of the
+merge, it would let the other suites' survivors stand for mutants it
+might have killed, and the merge names it and fails. A mutant whose own
+run ended early, by a crash, an exit or its deadline, is listed with the
+reason and does not fail the merge: the run ended on the mutant, so a
+gate on it would hold a project to a mutant the tests already notice.
 
 ## A known bug tests no mutant
 
@@ -344,17 +481,6 @@ when the code moves, and `git blame` says who decided it and when. There
 is no suppression file to drift from the source, and windtrap never
 writes the attribute itself, since an automatic dismissal would hide
 defects as readily as equivalent mutants.
-
-The rewriter filters some mutants without an attribute, but only when
-the syntax alone shows the result: `x + 0` and `x - 0` are equal on
-integers, and in `if c then e else e` the value of `c` changes nothing.
-A mutant that changes only a log or the text of a failure is filtered
-too, because such a survivor seldom shows a missing test. Each filter
-is a rule of the syntax, and no filter guesses what the code means. The
-report counts the filtered mutants under their reasons, and
-`-no-filter` tests them all. A mutant that is equivalent only because
-of what the code means, as `n >= 0` above, stays a decision of the
-reader, in the source.
 
 ## Nothing depends on dune
 

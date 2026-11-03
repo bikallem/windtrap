@@ -18,7 +18,9 @@
     and starts from an empty baseline registry. The operations of
     {{!section-body}the running test} reach the record through
     {{!section-ambient}one ambient slot}. Nothing here is thread-safe, and an
-    operation called from another domain raises there (see {!current_frame}). *)
+    operation called from another domain raises there (see {!current_frame}).
+
+    @canonical Windtrap.Private.Run *)
 
 (** {1:config Configuration} *)
 
@@ -31,39 +33,27 @@ type invocation = [ `Exe of string | `Mirrors ]
       [--corrected] run, the inline runner's included, and of a run without
       [argv.(0)]. *)
 
-(** The type for how the mutation loop starts a child. *)
-type children =
-  | Auto
-      (** The loop forks each child. If the process spawned a domain, the loop
-          starts each child as a new process of the executable, because OCaml
-          refuses [Unix.fork] in that process. *)
-  | Fork  (** The loop forks each child. *)
-  | Exec  (** The loop starts each child as a new process of the executable. *)
+type scope = {
+  prefixes : string list;
+      (** [--mutate=PREFIX,…]: a mutant is in scope when its recorded source
+          path starts with one of the prefixes. The bare flag gives the empty
+          list, which keeps every file. *)
+  lines : Lines.t option;
+      (** [--lines] and [--diff]: a mutant is in scope when it lies on one of
+          these lines, by its recorded file and line. [None] keeps every line.
+      *)
+}
+(** The type for the mutants that a mutation loop tests: those that both fields
+    keep. *)
+
+val every_mutant : scope
+(** [every_mutant] keeps every mutant: no prefix and no line set. *)
 
 (** The type for what a run does with the mutants of an executable built for
     mutation testing. *)
 type mutation =
   | No_mutation  (** An ordinary run. The mutants are inert. *)
-  | Loop of {
-      scope : string list;
-      jobs : int;
-      since : string option;
-      children : children;
-      skip_killed : bool;
-      retry : int option;
-    }
-      (** [--mutate[=PREFIX,…]]: the mutation loop, over the mutants whose
-          recorded source path starts with one of the prefixes of [scope]. The
-          bare flag gives the empty list, which keeps every mutant. [jobs] is
-          [--mutate-jobs]: the most CPUs that the children of the loop use at
-          once. It is from [1] to [256]. [since] is [--mutate-since]: a git
-          revision, and the loop then keeps only the mutants on a line that
-          changed since that revision ({!Changed_lines.of_git}). [children] is
-          [--mutate-children]. [skip_killed] is [--mutate-skip-killed]: the loop
-          starts no child for a reached mutant that the verdict file of another
-          suite killed. [retry] is [--mutate-retry]: the more runs of the child
-          of a survivor, from [0] to [100]. [None] lets the loop choose
-          ({!Mutate_loop}). *)
+  | Loop of scope  (** [--mutate]: the mutation loop, over this scope. *)
   | Armed of string
       (** [--arm ID]: one ordinary run with the mutant [ID] armed. The
           identifier is kept as typed, and its grammar is that of
@@ -80,6 +70,13 @@ type broadcast = {
 }
 (** The type for the parts of a configuration that the environment gave and the
     command line did not. *)
+
+type case_file = {
+  file : string;  (** The path that [--case] gave, as it was given. *)
+  choices : int64 array;
+      (** The choices its bytes decode to (see {!Choice.of_bytes}). *)
+}
+(** The type for a case file, read once, before any test runs. *)
 
 type config = {
   seed : Seed.seed;  (** [--seed]: the root seed of the run. *)
@@ -102,27 +99,43 @@ type config = {
   stream : bool;
       (** [--stream]: the tests write to the real descriptors, and the capture
           state of the run is {!Capture.disabled}. *)
+  jobs : int;
+      (** [-j]: the number of worker processes of a supervised run, at least [1]
+          (see [Supervisor]). {!execute} does not read it. *)
+  in_process : bool;
+      (** [--in-process]: the run is {!execute}'s, in the calling process, and
+          its selection must hold one test at most (see {!In_process_selects}).
+      *)
   baseline : Baseline.mode;
       (** [-u] is {!Baseline.Update}, [--corrected] is {!Baseline.Corrected},
           and neither is {!Baseline.Check}. {!execute} refuses [Update] under
           [CI] (see {!Update_refused_in_ci}). *)
   timeout : float option;
       (** [--timeout]: the limit, in seconds, of a test that declares none, and
-          [None] for no limit. It must be finite and positive, which {!Cli}
-          guarantees and {!execute} does not check. *)
+          [None] to leave such a test [default_timeout]. It must be finite and
+          positive, which {!Cli} guarantees and {!execute} does not check. *)
+  default_timeout : float;
+      (** The limit, in seconds, of a test that declares none under a [None]
+          [timeout] (see {!limit}). No flag sets it: {!Cli} keeps
+          {!default_config}'s, and windtrap's own suites set a short one to
+          stand in for it. *)
   prop_count : int option;
-      (** [--prop-count]: the generated cases of a property that declares no
-          [count] (see {!prop}). *)
+      (** [--prop-count]: the generated cases of a property, where it raises the
+          declared or default count (see {!prop}). *)
+  replay : string option;
+      (** [--replay]: the replay token that every property of the run checks
+          alone, in place of its examples and generated cases (see
+          {!Property.run}). *)
+  case_file : case_file option;
+      (** [--case]: the case that the one selected test, a property, checks
+          alone, in place of [replay], the last-failed store's cases, its
+          examples and its generated cases (see {!Property.run}). The selection
+          must hold one test (see {!Case_selects}), and a test that checks no
+          property under it fails. *)
   log_dir : string;
       (** [-o]: the root directory of the capture logs and of the last-failed
           store. {!execute} uses it as given, so a relative one follows a test
           that changes the working directory. *)
-  store : bool;
-      (** Whether {!execute} rewrites {{!section-store}the last-failed store}.
-      *)
-  allow_focus : bool;
-      (** Whether a suite that holds a focused test runs under [CI] (see
-          {!Focused_in_ci}). *)
   color : Os.color_mode;
       (** [--color]: the colour preference. Whoever builds a report resolves it
           against the sink of that report ({!Os.resolve_color}). *)
@@ -135,14 +148,11 @@ type config = {
   junit : string option;
       (** [--junit]: a file, or a directory, where a JUnit report is written
           too. [None] writes none. *)
-  mutation : mutation;
-      (** [--mutate], [--mutate-jobs], [--mutate-retry], [--mutate-since],
-          [--mutate-children], [--mutate-skip-killed] and [--arm]. *)
-  mutate_workers : bool;
-      (** [--mutate-workers]: under [--mutate] and [--arm], a stateful test on
-          several domains spawns its worker domains, as it does without mutation
-          testing. When it is [false], such a test runs each program on the
-          domain of the test under mutation testing (see {!Stateful}). *)
+  json : string option;
+      (** [--json]: a file, or a directory, where a JSON report of the results
+          and their scope is written too ({!Report_json}). [None] writes none.
+      *)
+  mutation : mutation;  (** [--mutate] and [--arm]. *)
   github : bool;
       (** Whether the report is written for GitHub Actions, with its group and
           its annotations (see {!Report}). *)
@@ -152,47 +162,21 @@ type config = {
   broadcast : broadcast;
       (** Which of the selection and the {!Loop} came from the environment
           alone. The executor does not read it. *)
-  unused_since : string option;
-      (** The source of a revision that no {!Loop} reads: ["--mutate-since"] or
-          ["WINDTRAP_MUTATE_SINCE"] when [mutation] is {!No_mutation}, and
-          [None] otherwise. The entry point of a suite says on standard error
-          that the run tests no mutant. The executor does not read it. *)
 }
 (** The type for the configuration of a run: what one invocation resolves from
     its command line, its mirrors and the defaults, in that precedence (see
     {!Cli.settings}). It is resolved once, and nothing reads a flag or a mirror
     again while the run executes. {!Report} alone reads [color],
-    [slow_threshold], [verbose], [junit], [github] and [invocation], so they
-    change no outcome and no exit code. *)
+    [slow_threshold], [verbose], [junit], [json], [github] and [invocation], so
+    they change no outcome and no exit code. *)
 
 val default_config : unit -> config
 (** [default_config ()] is the configuration of a run given no flag: no
-    selection, every boolean [false] but [store], {!Baseline.Check}, no limit
-    and no count, [color = Os.Auto], [slow_threshold = 1.], {!No_mutation},
-    [`Mirrors], nothing broadcast and no [unused_since]. Every call draws [seed]
-    from {!Seed.random} and takes [log_dir] from {!Os.default_log_dir}. *)
-
-val for_subset : config -> log_dir:string -> bail:bool -> config
-(** [for_subset config ~log_dir ~bail] is [config] for a run over part of the
-    selection of a run under [config].
-    - [filter], [exclude], [shard] and [failed_only] are cleared, because the
-      allowlist is that selection.
-    - [tags], [exclude_tags] and [seed] are kept, so the child selects within
-      the tags of its parent and draws the property cases its parent drew.
-    - [baseline] is {!Baseline.Check}, [junit] is [None], nothing is broadcast
-      and [allow_focus] is [true].
-    - [mutation] and [mutate_workers] are kept, so a test that reads them runs
-      in the child as in the run the child was forked from. A stateful test on
-      several domains runs in the same way in the two runs. No child reads them
-      to test mutants.
-    - [stream] is [false] and [log_dir] is the argument.
-    - [store] is [false]. The parent removes the log directory of a child, so no
-      run reads a store there, and a write of it only takes time.
-    - [bail] is the argument, and every other field is [config]'s.
-
-    A selection field added to {!type-config} must be cleared here. A child
-    otherwise applies a selection that the tree of its parent already applied,
-    and a deterministic suite then looks non-deterministic. *)
+    selection, every boolean [false], no replay and no case file,
+    {!Baseline.Check}, no [timeout], a [default_timeout] of [600.] seconds, ten
+    minutes, no count, [color = Os.Auto], [slow_threshold = 1.], {!No_mutation},
+    [`Mirrors] and nothing broadcast. Every call draws [seed] from
+    {!Seed.random} and takes [log_dir] from {!Os.default_log_dir}. *)
 
 (** {1:runs Run records} *)
 
@@ -244,10 +228,10 @@ val current_frame : unit -> frame
 (** [current_frame ()] is the frame of the attempt that is running. Raises
     [Invalid_argument] if no test is running.
 
-    Called from a domain other than the one that called {!execute}, it raises a
-    [Failure.Check_failure], a message failure located by {!Loc.capture}, in
-    that domain, and records nothing. The failure fails the running test when it
-    reaches the test's domain, as through [Domain.join]. *)
+    Called from a domain other than the one that called {!execute}, it refuses
+    ({!Failure.refuse}) a message failure located by {!Loc.capture}, in that
+    domain, and records nothing on the frame. The failure fails the running
+    test, since the domain records it in the scope it was spawned in. *)
 
 val current : unit -> t
 (** [current ()] is the record of the run that the frame of {!current_frame}
@@ -278,28 +262,29 @@ val prop_context : unit -> Property.context option
     on the frame lasts for the attempt, and the runner undoes it when the
     attempt ends (see {{!section-attempts}attempts}). *)
 
-(* What a test's author is told about these operations, about [fixture] and
-   about [prop] is stated in windtrap.mli. This file states what the other
-   modules of the library rely on. *)
+(* The facade ([{1:body}] in windtrap.mli) states each operation's contract,
+   and those of [fixture] and [prop], for a test's author. The docs here state
+   only what it does not: what the other modules of the library rely on. *)
 
 val current_test : unit -> string list
-(** [current_test ()] is the path of the running test, outermost group first. It
-    is the same in every attempt, and {!Test_tree.path_to_string} of it is the
+(** See the facade's [current_test]. {!Test_tree.path_to_string} of it is the
     string that the filters match. *)
 
 val subtest : string -> (unit -> unit) -> unit
-(** [subtest name fn] runs [fn ()] as a named part of the running test. A
-    {!Failure.Check_failure} of [fn] is added to the frame and [subtest]
-    returns. Any other exception is added as a {!Failure.Raise} failure with its
-    backtrace, located at the declaration of the test. Every {!Failure.Control}
-    passes through, so a skip, a timeout or an [exit] ends the whole test, and
-    an [assume] inside a subtest inside a law discards the case.
+(** [subtest name fn] runs [fn ()] as a named part of the running test, in a
+    scope of its own ({!Failure.recording}). A {!Failure.Check_failure} of [fn]
+    is added to the frame and [subtest] returns. Any other exception is added as
+    a {!Failure.Raise} failure with its backtrace, located at the declaration of
+    the test. A failure caught in [fn] is added before them. Every
+    {!Failure.Control} passes through, after the failures are added, so a skip,
+    a timeout or an [exit] ends the whole test, and an [assume] inside a subtest
+    inside a law discards the case.
 
-    Inside a law, where the frame has a property context, the failure is raised
-    as {!Failure.Check_failure} instead of added, so the engine fails the case
-    and shrinks it as an assertion's. The failure of an exception then has no
-    location, as {!Failure.of_fault} makes it. Every function of a stateful test
-    runs inside its law.
+    Inside a law, where the frame has a property context, the first of those
+    failures is refused ({!Failure.refuse}) instead of added, so the engine
+    fails the case and shrinks it as an assertion's. The failure of an exception
+    then has no location, as {!Failure.of_fault} makes it. Every function of a
+    stateful test runs inside its law.
 
     The failure carries its label as data, in its [subtest] field and never in
     its [msg]. The label is the name of the test, then the names of the open
@@ -313,13 +298,20 @@ val check_baseline : ?loc:Loc.t -> Baseline.subject -> string -> unit
     recorded and not raised. A {!Failure.Missing} or {!Failure.Mismatch} failure
     is added to the frame and the call returns. Inside a {!subtest} the failure
     is labelled as {!subtest} labels one. A {!Failure.Unresolvable} failure is
-    raised as {!Failure.Check_failure}.
+    refused ({!Failure.refuse}).
 
     [loc] is the location of the failure: the position of a literal, the end of
     the body for a {!Baseline.Trailing} text, or the site of the call for a
     file. Without it the failure takes the declaration site (see
     {{!section-attempts}attempts}). Under {!Baseline.Update} a baseline that
     differs records its correction and nothing fails.
+
+    Inside a law, where the frame has a property context, the check is made at
+    once with [~correct:false], in every mode and in a worker too, and a failure
+    is refused, withheld as {!Failure.In_law}: the law claims the check for
+    every value, so a mismatch refutes the case, which the engine shrinks, and
+    no correction is recorded. A table's row runs outside the law's context (see
+    {!row}), so its checks are a test's.
 
     Raises [Sys_error] as {!Baseline.check} does, and [Invalid_argument] if no
     test is running. *)
@@ -332,17 +324,14 @@ val check_baseline : ?loc:Loc.t -> Baseline.subject -> string -> unit
     ends the run. *)
 
 val temp_dir : ?prefix:string -> unit -> string
-(** [temp_dir ?prefix ()] is a fresh directory in the temporary directory of the
-    attempt, with mode [0o700]. [prefix] starts its name, after
-    {!Os.sanitize_component}, and defaults to ["dir"]. Raises [Unix.Unix_error]
-    if a directory cannot be made, and [Invalid_argument] if no test is running.
-*)
+(** [temp_dir ?prefix ()] makes its directory in that of the attempt, with mode
+    [0o700], and passes [prefix] through {!Os.sanitize_component}. See the
+    facade's [temp_dir]. *)
 
 val temp_file : ?suffix:string -> unit -> string
-(** [temp_file ?suffix ()] is the path of a fresh empty file in the same
-    directory, with mode [0o600]. [suffix] ends its name, after
-    {!Os.sanitize_component} unless it is empty, and defaults to [""]. Raises as
-    {!temp_dir} does. *)
+(** [temp_file ?suffix ()] makes its file in that of the attempt, with mode
+    [0o600], and passes a non-empty [suffix] through {!Os.sanitize_component}.
+    See the facade's [temp_file]. *)
 
 val remove_tree : string -> unit
 (** [remove_tree path] removes [path] and what is under it, as far as it can. It
@@ -359,41 +348,44 @@ val remove_tree : string -> unit
 
 val setenv : string -> string option -> unit
 (** [setenv name value] is {!Os.setenv}[ name value], after which the frame
-    records what [name] held before. The frame keeps what the first [setenv] of
-    [name] in the attempt found, and a later call leaves that record alone.
-
-    Raises as {!Os.setenv} does. Raises [Invalid_argument] if no test is
-    running, before the process is touched. *)
+    records what [name] held before, unless an earlier [setenv] of [name] in the
+    attempt did. Raises as {!Os.setenv} does, and [Invalid_argument] if no test
+    is running, before the process is touched. *)
 
 val chdir : string -> unit
-(** [chdir dir] is [Unix.chdir dir]. The first [chdir] of the attempt records
-    the working directory on the frame before it moves, and a later call leaves
-    that record alone.
-
-    Raises [Unix.Unix_error] if [dir] cannot be entered, [Sys_error] if the
-    first call cannot read the current directory, and [Invalid_argument] if no
-    test is running. *)
+(** [chdir dir] is [Unix.chdir dir], before which the first [chdir] of the
+    attempt records the working directory on the frame. Raises [Sys_error] if
+    that first call cannot read the current directory. See the facade's [chdir].
+*)
 
 (** {2:fixtures Fixtures} *)
 
 val fixture : ?teardown:('a -> unit) -> (unit -> 'a) -> unit -> 'a
-(** [fixture ?teardown create] is an accessor for a resource that a run shares.
-    The accessor holds no state. The record of the run caches the outcome of its
-    first call, so nothing is acquired twice in a run.
-
-    The first call is [create ()], inside the failure boundary of the calling
-    test, and its outcome is a value, an exception with its backtrace, or a
-    [Failure.Control (`Skip _)] with its reason. Only a value acquired with a
-    [teardown] is registered for the {{!section-release}release} at the end of
-    the run.
+(** [fixture ?teardown create] is the facade's [fixture]. The accessor holds no
+    state: the record of the run caches the outcome of its first call,
+    [create ()] inside the failure boundary of the calling test, as a value, an
+    exception with its backtrace, or a [Failure.Control (`Skip _)] with its
+    reason. Only a value acquired with a [teardown] is registered for the
+    {{!section-release}release}.
 
     The accessor is named [fixture (<file:line>)] after the site where [fixture]
     was applied, or [fixture #<n>] when {!Loc.capture} finds none. An
-    {!event.Fixture_release} and the failure of a release carry that name.
-    Raises [Invalid_argument] if the accessor is called while no test is
-    running. *)
+    {!event.Fixture_release} and the failure of a release carry that name. *)
 
 (** {1:results Results} *)
+
+(** The type for a case within a test, as the
+    {{!section-store}last-failed store} names it. *)
+type case_id =
+  | Row of string  (** A row of a table, by its id. *)
+  | Replay of string
+      (** A counterexample of a property, by its replay token. *)
+
+type skipped_rows = {
+  count : int;  (** The rows that skipped, at least [1]. *)
+  reason : string option;  (** The reason that the first gave, if any. *)
+}
+(** The type for the rows of a table that skipped (see {!row}). *)
 
 type result = {
   path : string list;  (** The path of the test, outermost group first. *)
@@ -405,8 +397,8 @@ type result = {
       (** [true] iff the row counts as failed. An attempt that fails counts iff
           the test has no {!Test_tree.val-xfail} annotation, one that passes iff
           it has one, and one that skips never. Retries, [config.bail] and the
-          last-failed store follow this field, and {!outcome.exit_code} follows
-          it with one exception. A [Fail] row that does not count is an expected
+          last-failed store follow this field, and {!exit_code} follows it with
+          one exception. A [Fail] row that does not count is an expected
           failure, and a renderer classifies a failing row from this field and
           [xfail] alone. *)
   xfail : Test_tree.xfail option;
@@ -424,7 +416,27 @@ type result = {
           {!Property.cover} demands, for a property whose engine returned an
           outcome, which a timeout in a case does. [None] for any other test,
           and for a property that a skip ended, or a timeout outside its cases.
-      *)
+          A table's [cases] are the rows that passed, and leave out the rows
+          that skipped. *)
+  table : bool;
+      (** [true] iff the test is a table: its property was given [table] (see
+          {!property}), so its cases are rows. *)
+  skipped_rows : skipped_rows option;
+      (** The rows of a table that skipped in the last attempt, [None] when none
+          did. A table that a skip ended, every row that ran having skipped, has
+          its count too. *)
+  tolerances : Check.tolerance list;
+      (** What each site of [equal] under a tolerance saw in the last attempt
+          ({!Check.val-tolerances}), read in the process that ran it, so a
+          worker's reach its parent with the row. [[]] for a test that compared
+          under no tolerance, and for a row the parent made of a lost worker. *)
+  refuted : case_id list;
+      (** For a row that counts as failed, the cases that its last attempt
+          refuted, when each of its failures belongs to one: the rows of a table
+          that failed, by a failure they recorded or by their law raising, or
+          the counterexamples of a property, each with its token. [[]] when a
+          failure belongs to no case, as a timeout or an example's does, and for
+          every other row. *)
 }
 (** The type for result rows, one per executed test. A row carries every fact
     that a renderer needs, so no consumer derives a decision of the runner from
@@ -438,13 +450,6 @@ val stopped : t -> string list option
 (** [stopped t] is the path of the test after which {!stop} ended the run, and
     [None] when nothing did. *)
 
-val fixture_seconds : t -> float
-(** [fixture_seconds t] is the seconds that the fixtures of [t] used: the sum of
-    the times of each acquisition, also an acquisition that raised, and of the
-    release at the end of the run. The duration of the test that acquired a
-    fixture also has its acquisition. The mutation loop uses this time for the
-    deadline of each child. *)
-
 (** {1:props Properties} *)
 
 val property :
@@ -453,23 +458,40 @@ val property :
   ?max_discard:int ->
   ?examples:'a list ->
   ?summary:('a -> string option) ->
-  ?prints_run:bool ->
-  ?cost:int ->
-  ?deterministic:bool ->
+  ?runs:int ->
+  ?only:(int -> bool) ->
+  ?table:bool ->
   'a Gen.t ->
   ('a -> unit) ->
-  unit
+  Property.stats
 (** [property gen law] is the body of the test that {!prop} declares, [loc]
-    being its declaration site. It returns [()] on a [Pass] and raises the
-    failure of any other outcome as a [Failure.Check_failure] (see {!prop}).
-    [prints_run], [cost] and [deterministic] are {!Property.run}'s. Raises as
-    {!current_frame} does.
+    being its declaration site. It returns the statistics of a [Pass] and raises
+    the failure of any other outcome as a [Failure.Check_failure] (see {!prop}).
+    [runs] and [only] are {!Property.run}'s. [table], [false] by default, says
+    that the test is a table, whose row says so ([table]). A table's row that
+    skipped ({!row}) is no row that passed: the statistics leave it out of
+    [cases], and a table whose engine passed with no row that passed, every row
+    that ran having skipped, raises the first row's skip, with no statistics.
+    Raises as {!current_frame} does.
 
-    The [output] of {!Property.run} is what a run of [law] wrote from its start,
-    or from the last {!restart_law_output} in it, to its end, as
-    {!Capture.output_tail} gives it within two {!Capture.mark}s. The failure of
-    a [Fail] thus carries the output of the run that failed on its
-    counterexample, and keeps it through {!execute}.
+    [config.replay] is the token that the engine replays. Otherwise, under
+    [config.failed_only], the {!val-recorded} counterexamples of the test are
+    replayed in its place, one engine run each: a failure of each but the last
+    is added to the frame, and the last one's outcome is the property's, with
+    the replays that passed before it counted in its [cases] and [replayed]. A
+    recorded {!Row} fails the test with a message that says so, as stale. With
+    [only] the test is a table, which selects its rows itself, and nothing
+    recorded is replayed.
+
+    The engine runs [law] through {!Failure.catch}, so each run of it is a scope
+    of its own: a verb's failure that the law caught fails that run, and what a
+    run records reaches neither another run nor the frame. A candidate that the
+    search rejects thus leaves the test nothing.
+
+    The [output] of {!Property.run} is what a run of [law] wrote from its start
+    to its end, as {!Capture.output_tail} gives it within two {!Capture.mark}s.
+    The failure of a [Fail] thus carries the output of the run that failed on
+    its counterexample, and keeps it through {!execute}.
 
     Its [shrinking] gives the search to the observer of the run, as {!Shrinking}
     events, and [property] gives {!Shrunk} when {!Property.run} returns or
@@ -479,11 +501,29 @@ val property :
     its backtrace ends on the law's own frames once
     {!Failure.backtrace_to_string} drops the trailing run of windtrap's. *)
 
-val restart_law_output : unit -> unit
-(** [restart_law_output ()] makes the output of the running law's run start
-    here, for a law that runs its case several times: the output that the
-    failure of a case shows is then that of the run that failed. It does nothing
-    outside a law, and on a domain other than the run's. *)
+val recorded : unit -> case_id list
+(** [recorded ()] is the cases of the running test that the last-failed store
+    names under [config.failed_only], and [[]] for the whole test or any other
+    run. Raises as {!current_frame} does. *)
+
+val row : tag:string -> id:string -> (unit -> unit) -> unit
+(** [row ~tag ~id fn] runs [fn ()], the law of a table on its row [id], as a
+    part of the running attempt that settles alone, as the attempt of a test of
+    its own would: in the order of the rows, it keeps its corrections iff [fn]
+    returned and every failure added while it ran is a baseline failure, and
+    otherwise each such failure is withheld ({!Failure.with_withheld}), as
+    {!Failure.Skipped} when [fn] raised a skip or a discard. A run that makes
+    its checks as they come settles the row as it ends; a worker that leaves its
+    checks to the parent sends the row's bounds with the attempt, and
+    {!val-verdict} settles it there. A failure added while it runs is labelled
+    as {!subtest} labels one, with [tag] as the innermost name. A row is chosen,
+    not drawn, so [fn] runs with no property context, as a test's body does:
+    {!prop_context} is [None], a {!subtest} adds its failure, and a law demands
+    nothing. A skip that [fn] raises, a {!subtest}'s or a fixture's included,
+    ends the row alone when the row added no failure: [row] returns, and the row
+    counts in {!result.skipped_rows}. Anything else that [fn] raises is raised
+    again. The row counts in {!result.refuted} when it added a failure or [fn]
+    raised a fault. Raises as {!current_frame} does. *)
 
 val without_labels : (unit -> 'a) -> 'a
 (** [without_labels fn] is [fn ()] with the labels of the running law going to a
@@ -493,7 +533,6 @@ val without_labels : (unit -> 'a) -> 'a
 
 val prop :
   ?__POS__:Loc.pos ->
-  ?tags:string list ->
   ?timeout:float ->
   ?count:int ->
   ?max_discard:int ->
@@ -507,20 +546,23 @@ val prop :
     {!Property.run} over [gen] and [law], then turns the {!Property.outcome}
     into the outcome of the test. It takes no [retries] of its own, and those of
     an enclosing group apply to it as to any test.
-    - [__POS__], [tags] and [timeout] are {!Test_tree.test}'s. The property is
-      one body, so [timeout] covers generation and shrinking together (see
+    - [__POS__] and [timeout] are {!Test_tree.test}'s. The property is one body,
+      so [timeout] covers generation and shrinking together (see
       {!Property.run}).
-    - [count] is the number of generated cases. A declared [count] wins over
-      [config.prop_count], which wins over the default of the engine, and the
-      engine is told which of the two it was given.
+    - [count] is the number of generated cases: the declared [count], or else
+      {!Property.default_count}, raised to [config.prop_count] when that is
+      larger and the count is not [0], and the engine is told which of the two
+      it was given.
     - [max_discard], [examples] and [summary] are {!Property.run}'s.
 
-    [prop] adds no tag, so a caller must add {!Test_tree.Tag.prop} to [tags].
+    [prop] adds no tag, so a caller must add {!Test_tree.Tag.prop} with
+    {!Test_tree.tag}.
 
     The engine draws from [config.seed] and from the path string of the test.
     Its context is {!prop_context} while [law] runs. A [Fail] adds the
-    {!Failure.Property} failure of the engine. [Coverage_failed] and [Gave_up]
-    each add a message failure, located at the declaration of the test.
+    {!Failure.Property} failure of the engine. A [Vacuous] outcome adds a
+    {!Failure.Vacuous} failure, located at the declaration of the test, whose
+    one line says why.
 
     Raises [Invalid_argument] as {!Test_tree.test} does. A negative [count] or
     [max_discard] makes {!Property.run} raise inside the body, which fails the
@@ -543,12 +585,15 @@ type event =
       suite : string;
       total : int;
       selected : int;
-      properties : bool;
+      seeded : bool;
     }
       (** The startup checks passed, and [selected] of the [total] tests of
           [suite] are about to run. It is the first event, given once, for an
-          empty selection too. [properties] is [true] iff a selected test
-          carries {!Test_tree.Tag.prop}. *)
+          empty selection too. [seeded] is [true] iff a selected test carries
+          {!Test_tree.Tag.prop} and draws its cases from [config.seed]: a
+          property draws nothing under [config.replay] or [config.case_file],
+          nor under [config.failed_only] when every case the store records of it
+          is a {!Replay}. *)
   | Test_started of { path : string list }
       (** The test at [path] is about to run. It is given once per test, before
           its first attempt and before anything of the test runs. *)
@@ -571,18 +616,35 @@ type event =
   | Interrupted of {
       running : string list option;
       releasing : string option;
+      starting : starting option;
       results : result list;
       duration : float;
     }
       (** A signal is ending the run (see {{!section-signals}signals}).
           [running] is the path of the test it stopped, and [None] outside a
           test. [releasing] is the name of the fixture whose release it stopped,
-          if any. [results] are the rows recorded so far, and [duration] the
-          seconds the run took so far. It is the last event and it is given
-          once. What the observer raises on it is ignored, and the process then
-          dies by the signal. *)
+          if any. [starting] is a worker that had not yet reached its run, the
+          one that had been starting longest, if any. [results] are the rows
+          recorded so far, and [duration] the seconds the run took so far. It is
+          the last event and it is given once. What the observer raises on it is
+          ignored, and the process then dies by the signal. *)
+
+and starting = { seconds : float; output : string }
+(** The type for a worker still in module initialisation when a signal came: the
+    [seconds] since it was started, and the end of what it wrote, at most
+    {!Failure.tail_bytes} bytes. *)
 
 (** {1:startup Startup errors} *)
+
+(** The type for why [--failed] has nothing to rerun. *)
+type nothing_recorded =
+  | Never_recorded  (** No last-failed store exists for the suite. *)
+  | Last_run_passed
+      (** The store holds no entry: the last run that wrote it failed nothing.
+      *)
+  | Unreadable_record
+      (** The store cannot be read, or does not start with its magic line. *)
+  | Undeclared_tests  (** The store names no declared test. *)
 
 (** The type for the refusals of a run, decided before any test executes. The
     checks run in the order of the constructors and the first that fails is
@@ -595,19 +657,25 @@ type startup_error =
       (** The suite holds a focused node and [CI] is set. The payload is the
           declaration sites of the focused nodes, in declaration order, a
           focused group counting once. The check reads the declared tree,
-          whatever the selection, and [config.allow_focus] lifts it. *)
+          whatever the selection. *)
   | Update_refused_in_ci
       (** [config.baseline] is {!Baseline.Update} and [CI] is set. Nothing lifts
           it. *)
-  | No_recorded_failures
+  | No_recorded_failures of nothing_recorded
       (** [config.failed_only] is set, and the last-failed store names no
-          declared test that [allowlist] admits. The store is read against the
+          declared test, for the reason given. The store is read against the
           declared paths, so a filter that keeps none of the recorded tests
           gives an empty selection and not this error. *)
-
-val startup_exit_code : startup_error -> int
-(** [startup_exit_code error] is the exit code of a run that [error] refused:
-    [2] for {!No_recorded_failures}, since nothing ran, and [1] otherwise. *)
+  | In_process_selects of int
+      (** [config.in_process] is set and the selection holds this many tests,
+          more than one. *)
+  | Case_selects of int
+      (** [config.case_file] is set and the selection holds this many tests,
+          other than one. *)
+  | Mutation_refused of string
+      (** A mutation run ({!Loop} or {!Armed}) could not score the suite, for
+          this reason, which it has said. It is no check of {!select}: the
+          mutation loop gives it, after its dry run or in place of it. *)
 
 val startup_message : startup_error -> string
 (** [startup_message error] explains [error] to a user in plain text. It is not
@@ -617,10 +685,9 @@ val startup_message : startup_error -> string
 
     {!execute} makes the {{!section-startup}startup checks}, selects the tests
     and runs them one at a time, in declaration order. It then
-    {{!section-release}releases the fixtures}, updates the last-failed store
-    when [config.store] is [true], writes the kept corrections and computes the
-    exit code. The subsections after {!list_selection} say what each step
-    guarantees. *)
+    {{!section-release}releases the fixtures}, updates the last-failed store,
+    writes the kept corrections and computes the exit code. The subsections
+    after {!list_selection} say what each step guarantees. *)
 
 (* What a test's author is told about limits, retries, scopes, expected
    failures, corrections, exits and signals is stated in windtrap.mli. The
@@ -629,9 +696,8 @@ val startup_message : startup_error -> string
 type outcome = {
   run : t;  (** The record of the run. *)
   selected : Test_tree.case list;
-      (** The selected tests, in the order of execution. Under [config.bail],
-          after [stop_after] gives [true], or after a {!stop}, some tests do not
-          execute, and those have no row. *)
+      (** The selected tests, in the order of execution. Under [config.bail] or
+          after a {!stop} some may not have executed, and those have no row. *)
   total : int;  (** The tests that the suite declares, before any selection. *)
   focus_active : bool;
       (** [true] iff the suite holds a focused node, selected or not. *)
@@ -642,23 +708,19 @@ type outcome = {
   duration : float;
       (** The seconds the run took, from its startup checks to the writing of
           its corrections. *)
-  exit_code : int;
-      (** [1] when a row counts as failed, when a release failed, or when a
-          correction could not be written (a {!Baseline.Refused} entry). A test
-          whose failures are all kept corrections does not count here, because
-          under [--corrected] the [diff?] that follows the run decides.
-          Otherwise [2] when no test executed, in an empty suite and in an empty
-          selection, and else [0]. A selection whose tests all skipped gives
-          [0], and so does a run whose only failures were expected. A caller may
-          return another code. *)
+  uncorrected : bool;
+      (** [true] iff a row counts as failed and some failure of its last attempt
+          carries no kept correction. *)
+  failed_in_ci : bool;
+      (** [true] iff [selection.in_ci] and a row counts as failed, kept
+          corrections or not. A correction leaves a run's exit code [0] only for
+          [dune promote] to accept it, and no one promotes under CI. *)
 }
 (** The type for finished runs: what a report renders, and what the caller needs
-    to exit. *)
+    to exit ({!exit_code}). *)
 
 val execute :
   ?on_event:(event -> unit) ->
-  ?stop_after:(result -> bool) ->
-  ?allowlist:string list ->
   config ->
   suite:string ->
   Test_tree.t list ->
@@ -668,21 +730,15 @@ val execute :
     anything executes.
     - [on_event] receives the {!type-event}s. Defaults to a function that
       ignores them.
-    - [stop_after] receives the result of each test after [on_event] receives
-      its [Test_finished]. If it gives [true], no later test executes, as under
-      [config.bail]. Defaults to a function that gives [false].
-    - [allowlist] keeps the tests whose path string is in the list, within every
-      other layer of the {{!section-selection}selection}. Defaults to no
-      narrowing.
     - [suite] names the directory of the capture logs and of the last-failed
       store, under [config.log_dir].
 
     [execute] reads [CI] once, at startup, and writes the capture logs unless
-    [config.stream], the store if [config.store] and the kept corrections. On
-    the process, it registers the exit guard and turns the recording of
-    backtraces on (see {{!section-exits}exits}), handles three
-    {{!section-signals}signals} while it runs, and owns the state that
-    {{!section-attempts}attempts} names during each of them.
+    [config.stream], the store and the kept corrections. On the process, it
+    registers the exit guard and turns the recording of backtraces on (see
+    {{!section-exits}exits}), handles three {{!section-signals}signals} while it
+    runs, and owns the state that {{!section-attempts}attempts} names during
+    each of them.
 
     An exception that [on_event] raises leaves [execute], except on
     {!Interrupted}, {!Shrinking} and {!Shrunk}, where it is ignored. The run
@@ -715,6 +771,19 @@ val list_selection :
     directory and rewrites no store. Raises [Invalid_argument] as {!execute}
     does. *)
 
+val exit_code : (outcome, startup_error) Stdlib.result -> int
+(** [exit_code result] is the exit code of a run that ended with [result], the
+    one rule every runner applies for the facade's exit codes:
+    - [1] when [outcome.uncorrected] or [outcome.failed_in_ci], when a release
+      failed, or when a correction could not be written (a {!Baseline.Refused}
+      entry).
+    - Otherwise [0] when a test executed, or when [config.broadcast] says the
+      environment alone gave a selection that keeps none of the tests of a suite
+      that declares some, and else [2].
+    - For a refused startup, [2] for {!No_recorded_failures},
+      {!In_process_selects} and {!Case_selects}, and [1] otherwise,
+      {!Mutation_refused} included. *)
+
 (** {2:selection Selection}
 
     A test runs iff every layer below admits it. The layers intersect, and an
@@ -723,8 +792,7 @@ val list_selection :
       [config.filter] and none of [config.exclude].
     - Its tags hold every tag of [config.tags] and none of
       [config.exclude_tags].
-    - [allowlist] admits it, and under [config.failed_only] so does the
-      last-failed store.
+    - Under [config.failed_only] the last-failed store names it.
     - It falls in the bucket of [config.shard].
     - It is focused, when the suite holds a focused node.
 
@@ -736,21 +804,21 @@ val list_selection :
 
 (** {2:attempts Attempts}
 
-    Around the three phases of an attempt the runner seeds the global [Random]
-    state from the path of the test alone, whatever [config.seed], and restores
-    the saved state afterwards. Unless [config.stream], it redirects the output
-    into the log file of the test, truncated first ({!Capture.with_capture}). A
-    capture that cannot be set up or restored is a {!Failure.Raise} failure of
-    the body, and the run goes on.
+    Around the three phases of an attempt the runner seeds [Random] as the
+    facade's [test] states, whatever [config.seed]. Unless [config.stream], it
+    redirects the output into the log file of the test, truncated first
+    ({!Capture.with_capture}). A capture that cannot be set up or restored is a
+    {!Failure.Raise} failure of the body, and the run goes on.
 
-    The limit of a test is its own, or else [config.timeout]. It is a [SIGALRM]
-    timer over the three phases, so the runner owns that signal during the
-    attempt, and it puts the previous handler back afterwards. On Windows no
-    timer is set, and the limit is not enforced.
+    The limit of a test is {!limit}'s, the facade's [SIGALRM] timer over the
+    three phases, and the runner puts the previous handler back afterwards.
 
     The frame keeps every failure that is added to it, so a body failure and a
-    teardown failure are two entries. What a phase raises becomes such a
-    failure, with that phase set:
+    teardown failure are two entries. Each phase runs in a scope of its own
+    ({!Failure.recording}): a failure caught in it is added, with its [caught]
+    set and that phase, when the phase ends and before what it raised. A failure
+    that a domain records after its phase ended is lost. What a phase raises
+    becomes such a failure, with that phase set:
     - a {!Failure.Check_failure} keeps its payload;
     - a [`Timeout] is a failure of the phase it interrupted, and an [`Exit] one
       of the phase that called [exit];
@@ -765,38 +833,37 @@ val list_selection :
 
     What {!Failure.catch} never returns is not caught (see {!execute}). After
     every attempt, on every path where it regains control, the fatal one
-    included, the runner undoes what the attempt changed, outside the window of
-    the limit and outside the capture. It returns to the directory that {!chdir}
-    recorded, then restores the bindings that {!setenv} recorded, then removes
-    the temporary directory. A restoration that fails is added to the frame as a
-    {!Failure.Teardown} message failure, located at the call that made the
-    change, and so fails the test. *)
+    included, the runner undoes what the attempt changed, in the order of the
+    facade's [chdir], outside the window of the limit and outside the capture. A
+    restoration that fails is a {!Failure.Teardown} message failure, located at
+    the call that made the change. *)
 
 (** {2:scoped Scoped tests}
 
     The body of a {!Test_tree.Scoped} test runs inside the callback that the
-    runner gives to [scope], and a {!Test_tree.bracket} is such a test. The
-    runner adds the failure of the body before it raises it again through
-    [scope], and does not add it a second time on its way out. Whatever else
-    leaves [scope] is attributed by how far the callback got: {!Failure.Setup}
-    before it was called, {!Failure.Teardown} after the body left it, and
-    {!Failure.Body} in between.
+    runner gives to [scope], as the facade's [scoped] states, and a
+    {!Test_tree.bracket} is such a test. The runner raises the failure of the
+    body again unrecorded, and does not add it a second time on its way out. A
+    failure caught in [scope] itself is one of {!Failure.Setup} when the
+    callback was never called, and of {!Failure.Teardown} otherwise. Whatever
+    else leaves [scope] is attributed by how far the callback got:
+    {!Failure.Setup} before it was called, {!Failure.Teardown} after the body
+    left it, and {!Failure.Body} in between.
 
     A second call of the callback runs nothing and returns, and the attempt then
     fails with a body message that gives the number of calls. A scope that
-    returns without calling back fails the attempt with a setup message. A scope
-    that raised or skipped instead has said what happened, and gets no such
-    message. *)
+    returns without calling back, and neither raised nor skipped, fails the
+    attempt with a setup message. *)
 
 (** {2:retries Retries}
 
-    A test with [retries = n] runs again while its attempt counts as failed
-    ({!result.counted}), up to [n + 1] attempts. An attempt that kept a
-    correction is the last whatever [n], because the next one would be compared
-    with the text it recorded. Its first failure carries the tail of what that
-    attempt wrote ({!Capture.output_tail}), unless [config.stream], or unless it
-    is a {!Failure.Property} failure, which carries that of its counterexample's
-    run (see {!property}). *)
+    A test runs again while its attempt counts as failed ({!result.counted}),
+    within the facade's [retries], and an attempt that kept a correction is the
+    last, because the next one would be compared with the text it recorded. Its
+    first failure carries the tail of what that attempt wrote
+    ({!Capture.output_tail}), unless [config.stream], or unless it is a
+    {!Failure.Property} failure, which carries that of its counterexample's run
+    (see {!property}). *)
 
 (** {2:corrections Corrections}
 
@@ -816,39 +883,47 @@ val list_selection :
 
 (** {2:release Fixture release}
 
-    After the last test, under [config.bail] too and outside any limit, the
-    runner releases the fixtures that the run acquired, the latest first. Before
-    each teardown it gives an {!event.Fixture_release} to the observer.
-
-    A teardown that raises adds a {!Failure.Release} message failure, located at
-    the site of the fixture, and the releases after it still run. A fatal
-    exception from a teardown leaves {!execute} at once and the fixtures not yet
-    released are never released, as when the observer raises on the event (see
-    {!execute}). *)
+    The runner releases the fixtures as the facade's [fixture] states, and gives
+    an {!event.Fixture_release} to the observer before each teardown. A teardown
+    that raises adds a {!Failure.Release} message failure, located at the site
+    of the fixture. A fatal exception from a teardown leaves {!execute} at once
+    and the fixtures not yet released are never released, as when the observer
+    raises on the event (see {!execute}). *)
 
 (** {2:store The last-failed store}
 
-    The store is the file [<log_dir>/<suite>/.last-failed], with [suite] through
-    {!Os.sanitize_component}. {!execute} rewrites it atomically
-    ({!Os.atomic_write}) at the end of every run that passed its startup checks,
-    a run that executed nothing included. {!list_selection} does not touch it.
-    Nor does a run under [config.store = false], a run that an exception ended,
-    or a {{!section-signals}signal} before this point.
+    The store is the file [<log_dir>/<suite>/.last-failed-<exe>], with [suite]
+    through {!Os.sanitize_component}, and [<exe>] the hexadecimal MD5 of the
+    running executable's {!Windtrap_runtime.Instr.exe_identity}, which gives the
+    facade's one record per executable and suite, a run under dune, in its
+    sandbox, included. {!execute} rewrites it atomically ({!Os.atomic_write}) at
+    the end of every run that passed its startup checks, a run that executed
+    nothing included. {!list_selection} does not touch it. Nor does a run that
+    an exception ended, or a {{!section-signals}signal} before this point.
 
-    A test that counted as failed is recorded once, and an executed test that
-    did not is cleared. The entry of a test that the run did not execute
-    survives. A run that executed the whole declared suite also drops the
-    entries of paths that no longer exist. The format is not stable, and a file
-    that is not recognised reads as empty. Every I/O error is ignored, because
-    the store only feeds [config.failed_only]. A store that cannot be opened or
-    read, a directory at its path for example, reads as empty, and one that
-    cannot be written keeps its content. *)
+    A test that counted as failed is recorded once, with the cases of its
+    {!result.refuted}, and an executed test that did not is cleared. A run that
+    executed the whole declared suite also drops the entries of paths that no
+    longer exist.
+
+    The file opens on the line [windtrap-last-failed 2], then holds one line per
+    entry: the test's path through [String.escaped], alone for the whole test,
+    or followed by a tab, [row] or [replay], a tab, and the case through
+    [String.escaped], a row's id or a counterexample's token. A test with
+    several cases has a line for each, and a line that names it alone makes it
+    whole. A case of a kind this version does not know names its test whole. The
+    format is not stable, and a file that is not recognised reads as empty, as
+    one that cannot be read does. One that cannot be written keeps its content.
+    The record of 0.2.0 is [<log_dir>/<suite>/.last-failed]. *)
 
 (** {2:exits Exits and backtraces}
 
     {!execute} and {!list_selection} turn the recording of backtraces on
     ([Printexc.record_backtrace]) and leave it on. They register an [at_exit]
-    function, the exit guard.
+    function, the exit guard. A supervised run ([Supervisor]) registers none: a
+    worker that code under test exits ends, and its parent records it. The guard
+    serves the runs that stay in one process: [--in-process], Windows, and a
+    process that can start no worker ([Supervisor.execute]).
 
     While a run is {!active}, a call to [exit] raises [Failure.Control `Exit]
     from the guard and the process does not end. The exception is classified
@@ -887,3 +962,167 @@ val list_selection :
     that acts earlier updates no store and writes no correction. A process that
     a test forked inherits the handlers and not the run, and a signal kills it
     as the default disposition would. *)
+
+(** {1:supervision Serving a supervisor}
+
+    A supervised run ([Supervisor]) splits {!execute} across processes. Its
+    parent selects, reports, keeps the store, writes the corrections and decides
+    the exit code, with the functions below. Each worker process runs {!serve}:
+    the attempts, frames, fixtures and signals above, unchanged, one case per
+    {!request}, and tells its parent what happened with {!report}s. Every value
+    that crosses holds no closure. *)
+
+type selection = {
+  cases : Test_tree.case list;  (** The selected tests, in declaration order. *)
+  total : int;  (** The tests that the suite declares. *)
+  focus_active : bool;  (** [true] iff the suite holds a focused node. *)
+  recorded : (string * case_id list) list;
+      (** Under [config.failed_only], the tests whose cases the store names,
+          with those cases. *)
+  in_ci : bool;
+      (** [true] iff [CI] was set ({!Os.in_ci}) when the startup checks read it,
+          once for the run. *)
+}
+(** The type for what a run selected. *)
+
+val limit : config -> Test_tree.case -> float option
+(** [limit config case] is the limit of each attempt of [case], in seconds: its
+    own, or else [config.timeout], or else [None] under [config.in_process], the
+    debugger's run, and [config.default_timeout] otherwise. {!execute} sets it
+    as the alarm of each attempt, and [Supervisor] kills a worker past three
+    times it (see [Supervisor.execute]). *)
+
+val select :
+  config ->
+  suite:string ->
+  Test_tree.t list ->
+  (selection, startup_error) Stdlib.result
+(** [select config ~suite tests] makes the startup checks and the
+    {{!section-selection}selection} of {!execute}, and turns the recording of
+    backtraces on. It registers no exit guard. Raises as {!execute} does. *)
+
+val run_started : config -> suite:string -> selection -> event
+(** [run_started config ~suite selection] is the {!Run_started} event of a run
+    over [selection]. *)
+
+type attempt
+(** The type for an attempt as data: its failures, the baseline checks it left
+    to the parent, the bounds of a table's rows, and its skip. *)
+
+type verdict
+(** The type for the settlement of an attempt: its outcome, whether its failures
+    all carry kept corrections, whether it must be the last, and the cases it
+    refuted. *)
+
+type served = {
+  result : result;  (** The row of the case. *)
+  corrected : bool;
+      (** Whether every failure of its last attempt carries a kept correction.
+      *)
+  deferred : (attempt * Failure.tail option) option;
+      (** The last attempt and its output tail, when its checks are still the
+          parent's to make: [result] is then the parent's to rebuild. *)
+}
+(** The type for what a case left once its attempts ended. *)
+
+(** The type for what a parent asks of its worker. *)
+type request =
+  | Case of string  (** Run the case of this path string. *)
+  | Verdict of verdict  (** The verdict that a {!Judge} waited for. *)
+  | Ack  (** The event just sent is shown, under [config.stream]. *)
+  | Finish  (** Run no more cases: release the fixtures, and end the process. *)
+
+(** The type for what a worker tells its parent. *)
+type report =
+  | Event of event
+      (** An event of the run. Under [config.stream] the worker waits for an
+          {!Ack} after each, but {!Interrupted}. *)
+  | Judge of attempt
+      (** An attempt that a retry may follow, whose checks the parent must make
+          first; the worker waits for its {!Verdict}. *)
+  | Done of { served : served; stopped : bool; retire : bool }
+      (** The case ended. [stopped] is {!stop}'s, and [retire] says that the
+          worker must not run another case: the case spawned a domain, which may
+          still run, a limit of the case expired, which stopped its code where
+          it stood, or the case raised [Out_of_memory] or [Sys.Break]. *)
+  | Released of Failure.t list
+      (** The fixtures are released, with these release failures. *)
+  | Exited  (** Code under test called [exit] in the case that runs. *)
+  | Outside of Failure.t
+      (** A failure that belongs to no case: an [at_exit] function that a test
+          registered raised, located at the test, or code under test called
+          [exit] outside a case. It is a {!Failure.Release} failure. *)
+
+val exit_text : string
+(** [exit_text] is what every failure for a call to [exit] tells the user to do
+    instead. *)
+
+val serve :
+  config ->
+  suite:string ->
+  Test_tree.t list ->
+  temp_dir:string ->
+  own_exits:bool ->
+  send:(report -> unit) ->
+  receive:(interrupted:(unit -> unit) -> request) ->
+  last:(unit -> unit) ->
+  'a
+(** [serve config ~suite tests ~temp_dir ~own_exits ~send ~receive ~last] is the
+    life of a worker process: it runs each case that [receive] asks for, of the
+    flattened [tests], with the attempts of {!execute}, and sends what happens.
+    [receive] calls [interrupted] when a signal interrupts its wait. On
+    {!Finish} it releases the fixtures, then runs the [at_exit] functions that
+    its tests registered. The functions that the process held before run after
+    them when [own_exits], as in a worker that started the executable again,
+    whose module initialisation registered them, and not in a fork, whose
+    parent's they are. One of them that raises is sent as {!Outside}. It ends
+    the process with [Unix._exit 0], after [last ()], and never returns.
+    - Temporary directories are made under [temp_dir].
+    - Under {!Baseline.Check} the worker judges its checks. Under a correcting
+      mode it checks in a {!Baseline.Check} registry only to prove the path and
+      read the file, and leaves each check to the parent: in the {!attempt} of
+      {!Judge} when a retry may follow, else in {!served.deferred}.
+    - A call to [exit] in code under test ends the process: the worker sends
+      {!Exited}, or {!Outside} when no case runs, runs the functions the process
+      held before when [own_exits], then [last ()].
+    - A signal acts as in {!execute}, with its {!Interrupted} event sent. *)
+
+val supervising : config -> suite:string -> t
+(** [supervising config ~suite] is the record of a supervised run's parent: an
+    empty registry under [config.baseline], and the capture state that reads the
+    log a worker left. *)
+
+val in_run : t -> (unit -> 'a) -> 'a
+(** [in_run t fn] is [fn ()] with [t] in the ambient slot, so that {!active}
+    holds while the parent runs. *)
+
+val add_result : t -> result -> unit
+(** [add_result t result] records [result] as the next row of [t]. *)
+
+val verdict : t -> Test_tree.case -> attempt -> verdict
+(** [verdict t case attempt] makes the checks of [attempt] in the registry of
+    [t], each where it fell among the attempt's other failures, and settles the
+    attempt as {!execute} would. A registry that sees the attempts in the order
+    of the selection holds what an in-process run's would. *)
+
+val adjudicate : t -> Test_tree.case -> served -> result * bool
+(** [adjudicate t case served] is the row of [case] and whether its failures all
+    carry kept corrections: [served]'s, or rebuilt from its {!served.deferred}
+    attempt by {!val-verdict}. *)
+
+val lost : t -> Test_tree.case -> Failure.t -> duration:float -> result
+(** [lost t case failure ~duration] is the row of a case whose worker died: it
+    failed with [failure] alone, carrying the tail of the log the worker left.
+*)
+
+val conclude :
+  t ->
+  selection ->
+  suite:string ->
+  started:Os.counter ->
+  uncorrected:bool ->
+  release_failures:Failure.t list ->
+  outcome
+(** [conclude t selection ~suite ~started ~uncorrected ~release_failures]
+    updates the store and writes the corrections of [t], as {!execute} does
+    after the release, and is the outcome. *)

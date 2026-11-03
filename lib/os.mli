@@ -6,7 +6,9 @@
 
 (** Operating-system access: the monotonic clock, the process environment,
     atomic file writes, the paths that a run resolves and prints, standard
-    error, and signals. *)
+    error, and signals.
+
+    @canonical Windtrap.Private.Os *)
 
 (** {1:clock Monotonic clock}
 
@@ -26,15 +28,16 @@ val count_s : counter -> float
 (** [count_s start] is the time elapsed since [start], in seconds. It is never
     negative. *)
 
-val cpu_wait : unit -> float
-(** [cpu_wait ()] is the seconds that the calling thread waited for a CPU since
-    it started, from [/proc/thread-self/schedstat]. It is [0.] where the system
-    does not give this time. It never raises. *)
+val earlier : counter -> counter -> bool
+(** [earlier a b] is [true] iff [a] is a point before [b]. Two points read on
+    different domains compare as the platform's clock orders them. *)
 
-val thread_id : unit -> int option
-(** [thread_id ()] is the id that the system gives the calling thread, from
-    [/proc/thread-self]. It is [None] where the system does not give it. It
-    never raises. *)
+external spin_ns : unit -> (int[@untagged])
+  = "ocaml_windtrap_clock_spin_ns_byte" "ocaml_windtrap_clock_spin_ns"
+[@@noalloc]
+(** [spin_ns ()] is the same monotonic clock in nanoseconds from an arbitrary
+    origin, read without allocating, raising or polling, as a bounded spin
+    needs. It is positive, and [0] where the clock fails. *)
 
 (** {1:env Environment variables}
 

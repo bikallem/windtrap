@@ -31,7 +31,8 @@ OPTIONS:
       Stop after the first failure.
 
   --timeout=SECONDS (env WINDTRAP_TIMEOUT)
-      Default per-test timeout in seconds.
+      Limit each attempt of a test that declares no timeout to SECONDS (default
+      600; none under --in-process).
 
   --slow-threshold=SECONDS (env WINDTRAP_SLOW_THRESHOLD)
       Warn when an untagged test runs longer than SECONDS (0 disables).
@@ -40,7 +41,13 @@ OPTIONS:
       Root seed for property tests (s1:<16 hex>).
 
   --prop-count=N (env WINDTRAP_PROP_COUNT)
-      Generated cases per property.
+      Raise every property's generated cases to at least N.
+
+  --replay=TOKEN (env WINDTRAP_REPLAY)
+      Check each selected property on the one case of TOKEN alone.
+
+  --case=PATH
+      Check the one selected property on the one case of the bytes of PATH.
 
   -u, --update
       Accept baseline changes in place (refused under CI).
@@ -51,12 +58,22 @@ OPTIONS:
   -s, --stream (env WINDTRAP_STREAM)
       Stream test output instead of capturing it.
 
+  -j N, --jobs=N (env WINDTRAP_JOBS)
+      Run the tests in N worker processes at once (default 1).
+
+  --in-process
+      Run the one selected test in this process, for a debugger.
+
   -v, --verbose (env WINDTRAP_VERBOSE)
       One status line per test.
 
   --junit=PATH (env WINDTRAP_JUNIT)
       Also write a JUnit XML report to PATH, or to PATH/<suite>.xml when PATH
       does not end in .xml.
+
+  --json=PATH (env WINDTRAP_JSON)
+      Also write a JSON report of the results and their scope to PATH, or to
+      PATH/<suite>.json when PATH does not end in .json.
 
   --color=MODE (env WINDTRAP_COLOR)
       Color output: always, never or auto.
@@ -67,24 +84,12 @@ OPTIONS:
   --mutate[=PREFIX,...] (env WINDTRAP_MUTATE)
       Test this executable's mutants, all or those under PREFIX.
 
-  --mutate-jobs=N (env WINDTRAP_MUTATE_JOBS)
-      Test mutants at once on up to N CPUs, or on each CPU for auto (default 1).
+  --lines=FILE:A-B,... (env WINDTRAP_LINES)
+      Test only the mutants on these lines of these files (with --mutate).
 
-  --mutate-retry=N (env WINDTRAP_MUTATE_RETRY)
-      Run the child of a survivor up to N more times (default 0, or 2 when the
-      suite spawned a domain).
-
-  --mutate-since=REV (env WINDTRAP_MUTATE_SINCE)
-      Test only the mutants on lines changed since git revision REV.
-
-  --mutate-skip-killed (env WINDTRAP_MUTATE_SKIP_KILLED)
-      Skip the mutants that the verdict file of another suite killed.
-
-  --mutate-children=MODE (env WINDTRAP_MUTATE_CHILDREN)
-      Test each mutant in a fork, a new process (exec), or auto (default).
-
-  --mutate-workers (env WINDTRAP_MUTATE_WORKERS)
-      Spawn the worker domains of stateful tests under mutation testing.
+  --diff=FILE (env WINDTRAP_DIFF)
+      Test only the mutants on the lines that FILE, the output of git diff -U0,
+      adds or changes (with --mutate).
 
   --arm=ID (env WINDTRAP_MUTATE_ARM)
       Run once with mutant ID armed.

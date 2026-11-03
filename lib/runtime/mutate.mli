@@ -26,17 +26,17 @@ type id = { file : string; line : int; col : int; rewrite : string }
 (** The type for mutant identifiers. [file] is the path of the source file as
     the instrumenter read it, which under dune is relative to the workspace
     root, as [lib/calc.ml]. [line] is the 1-based line and [col] the 0-based
-    column of the first byte of the mutated expression, or of the pattern of the
-    case that ["drop"] removes. [rewrite] is a name of {!rewrites}. *)
+    column of the first byte of the mutated expression. [rewrite] is a name of
+    {!rewrites}. *)
 
 val rewrites : string list
 (** [rewrites] is the closed vocabulary of rewrite names, in this order:
     ["not"], the comparisons ["lt"], ["le"], ["gt"], ["ge"], ["eq"] and ["neq"],
     the arithmetic ["add"], ["sub"], ["fadd"] and ["fsub"], the connectives
-    ["and"] and ["or"], ["drop"] for a case of a match, ["skip"] for a call, the
-    literals ["inc"], ["one"], ["zero"] and ["flip"], and ["none"] and ["tail"]
-    for a value of [Some] and of [(::)]. A name is that of the replacement,
-    never that of the operator in the source. *)
+    ["and"] and ["or"], then ["del"], which drops a statement, ["int"], which
+    nudges an integer literal, and ["bool"], which flips a boolean one. A name
+    is that of the replacement, never that of the operator in the source, but
+    for the last three, which name what they change. *)
 
 val id_to_string : id -> string
 (** [id_to_string id] is [<file>:<line>:<col>:<rewrite>], as
@@ -50,34 +50,23 @@ val compare_id : id -> id -> int
 (** {1:catalogue Sites and the catalogue}
 
     Generated code is the only caller of {!register}. Generated code names the
-    labels of {!register} and the six fields of {!type-site}, in their order, so
-    a record that drifts is a compile error in every instrumented file. *)
-
-(** The type for the reasons why a site is not tested. *)
-type dismissal =
-  | Off of string
-      (** The expression, or the pattern of a dropped case, carries
-          [[@mutate off]], with this reason, or [""] when it gives none. *)
-  | Filtered of string
-      (** The rewriter found from the syntax that the mutant is equivalent to
-          the original, or that it changes a logging call or a failure message
-          alone. The text gives the reason, and the rewriter states each one. *)
+    labels of {!register} and the eight fields of {!type-site}, in their order,
+    so a record that drifts is a compile error in every instrumented file. *)
 
 type site = {
   line : int;
-      (** The 1-based line of the first byte of the mutated expression, or of
-          the pattern of a dropped case. *)
+      (** The 1-based line of the first byte of the mutated expression. *)
   col : int;  (** The 0-based column of that byte. *)
+  end_line : int;
+      (** The 1-based line of the byte that follows the mutated expression. *)
+  end_col : int;  (** The 0-based column of that byte. *)
   rewrite : string;  (** The name of the replacement, from {!rewrites}. *)
-  before : string;
-      (** The text of the original site, printed from the parsetree: an
-          expression, or the pattern and the guard of a dropped case, with [...]
-          for its body. *)
-  after : string;  (** The text of the mutant, in the same form. *)
-  dismissed : dismissal option;
-      (** [Some d] when the site is not tested, for the reason [d]. The site is
+  before : string;  (** The original expression, printed from the parsetree. *)
+  after : string;  (** The armed expression, printed from the parsetree. *)
+  dismissed : string option;
+      (** [Some reason] when the expression carries [[@mutate off]]. The site is
           then catalogued and carries no guard, so a caller must leave it out of
-          what it tests. *)
+          what it tests and counts. *)
 }
 (** The type for mutation sites: one entry of the site table of a file. *)
 
@@ -95,39 +84,33 @@ val register : file:string -> sites:site array -> int -> bool
     + It is [true] iff site [i] is the armed one. It raises {!Runaway} instead
       if the count of the armed site is above the budget given to {!arm}.
 
-    The guard is not synchronized, but each site keeps its mark in a slot of its
-    own. Thus guards that run on several domains at the same time do not lose
-    the marks of other guards. {!drain} gets each mark that a domain made before
-    a [Domain.join] or other synchronization with the domain that calls [drain].
-    Without that synchronization, a mark can stay for a later [drain], or
-    [drain] can lose it. Guards on several domains can lose evaluations of one
-    site. Then the count of evaluations of the site is too low, but a drained
-    count is never below 1. The guard raises [Invalid_argument] if [i] is
-    outside [sites], which only a broken instrumenter causes.
+    The guard is not synchronized. A site that several domains evaluate at once
+    can lose evaluations and, when an epoch starts, its mark. The reach map is
+    then a lower bound, which can miss a mutant and never invents one. The guard
+    raises [Invalid_argument] if [i] is outside [sites], which only a broken
+    instrumenter causes.
 
     When [file] is registered again with an equal table, as when one source is
     compiled into two modules, the two registrations arm together, and
     {!val-catalogue} and {!drain} report each mutant once. Two tables are equal
-    when their sites agree on the six fields. A table that differs from an
+    when their sites agree on the eight fields. A table that differs from an
     earlier one for [file] is dropped. One line then goes to standard error,
     behind [windtrap: warning:], when the module loads and whatever the flags of
     a run. The guard that is returned answers [false] at every index, counts
     nothing and never raises.
 
-    Raises [Invalid_argument] if a site has [line < 1], [col < 0] or a [rewrite]
-    outside {!rewrites}. Only a broken instrumenter produces such a table, and
-    the exception is raised when the module loads. [file] is not checked, and
-    [""] is accepted. *)
+    Raises [Invalid_argument] if a site has [line < 1], [col < 0], an end before
+    its start or a [rewrite] outside {!rewrites}. Only a broken instrumenter
+    produces such a table, and the exception is raised when the module loads.
+    [file] is not checked, and [""] is accepted. *)
 
 type mutant = {
   id : id;  (** The identifier of the mutant. *)
-  before : string;
-      (** The text of the original site, printed from the parsetree: an
-          expression, or the pattern and the guard of a dropped case, with [...]
-          for its body. *)
-  after : string;  (** The text of the mutant, in the same form. *)
-  dismissed : dismissal option;
-      (** Why the mutant is not tested, if it is not. *)
+  end_line : int;  (** The [end_line] of its site. *)
+  end_col : int;  (** The [end_col] of its site. *)
+  before : string;  (** The original expression, printed from the parsetree. *)
+  after : string;  (** The armed expression, printed from the parsetree. *)
+  dismissed : string option;  (** The reason of [[@mutate off]], if any. *)
 }
 (** The type for catalogued mutants: a {!type-site} with its file. *)
 
@@ -171,18 +154,13 @@ val id_of_string : string -> (id, arm_error) result
     [id_of_string (id_to_string id)] is [Ok id] for every identifier of
     {!val-catalogue}, unless its file was registered under the name [""]. *)
 
-val arm :
-  ?budget:int ->
-  ?on_evaluation:(unit -> unit) ->
-  id ->
-  (mutant, arm_error) result
-(** [arm ?budget ?on_evaluation id] arms the mutant that [id] names and is that
-    mutant, or an {!Uncatalogued}, {!Unmatched} or {!Ambiguous} error. The
-    mutant that was armed before is disarmed first, whether or not [id]
-    resolves. From then on the guard of the site answers [true], in every module
-    that registered an equal table for its file. [arm] does not read
-    [dismissed]. Arming a dismissed mutant succeeds, and no guard ever evaluates
-    its site.
+val arm : ?budget:int -> id -> (mutant, arm_error) result
+(** [arm ?budget id] arms the mutant that [id] names and is that mutant, or an
+    {!Uncatalogued}, {!Unmatched} or {!Ambiguous} error. The mutant that was
+    armed before is disarmed first, whether or not [id] resolves. From then on
+    the guard of the site answers [true], in every module that registered an
+    equal table for its file. [arm] does not read [dismissed]. Arming a
+    dismissed mutant succeeds, and no guard ever evaluates its site.
 
     [budget] bounds the evaluations of the armed site. With a budget of [n],
     evaluation [n + 1] raises {!Runaway}. There is no bound by default. The
@@ -191,23 +169,13 @@ val arm :
     {!reset_reach}, and not since this call, so a caller that inherited counts,
     as a forked child does, must call {!reset_reach} after [arm].
 
-    The guard calls [on_evaluation] at each evaluation of the armed site, before
-    it compares the count with [budget]. The default does nothing. A process
-    that the program forks has a copy of the arming, and its counts stay in that
-    process. Thus a caller that must know if such a process evaluated the site
-    gives an [on_evaluation] that writes to memory that the processes share.
-    Guards on several domains can call [on_evaluation] at the same time. An
-    exception of [on_evaluation] escapes into the mutated program. The next
-    [arm] drops [on_evaluation], also when it refuses its [id].
-
     Raises [Invalid_argument] if [budget] is not positive, and nothing is
     disarmed then. *)
 
 val armed_hits : unit -> int
 (** [armed_hits ()] is the number of evaluations of the armed site since the
     last {!reset_reach}, added over every module that registered its file. It
-    saturates at [max_int], and it is [0] when nothing is armed. It does not
-    count the evaluations in a process that this process forked. *)
+    saturates at [max_int], and it is [0] when nothing is armed. *)
 
 exception Runaway of { id : id; hits : int; budget : int }
 (** Raised by the guard of the armed site [id] when [hits], its count of
@@ -219,8 +187,8 @@ exception Runaway of { id : id; hits : int; budget : int }
 
 (** {1:reach The reach map}
 
-    The runtime keeps an epoch counter and a mark for each site, and takes no
-    position on what an epoch means.
+    The runtime keeps an epoch counter and the list of the sites marked in the
+    current epoch, and takes no position on what an epoch means.
 
     To learn which mutants one test evaluates, a caller must call {!drain} and
     then {!next_epoch} when the test starts, and {!drain} when it finishes. The
@@ -245,18 +213,15 @@ val drain : unit -> reached list
 (** [drain ()] is the mutants marked since the previous [drain], ordered by
     {!compare_id} on [id] and without duplicates. Each comes with its
     evaluations, counted from the one that marked it up to this call. [drain]
-    then removes the marks. It examines every site of every registration, so its
-    cost increases with the number of registered sites. A mutant that two
-    modules registered for one file appears once, with the sum of its
-    evaluations.
+    then empties the list of marks. A mutant that two modules registered for one
+    file appears once, with its evaluations added up.
 
     A site marks itself at its first evaluation in an epoch, and only then. When
     it is evaluated again in that epoch after a [drain], no later [drain]
     reports those evaluations. A drained count is a lower bound of what an armed
-    run of the same tests evaluates, also on domains that synchronize with
-    [drain] (see {!register}). Thus a budget that a caller derives from a
-    drained count needs headroom. *)
+    run of the same tests evaluates, so a budget that is derived from one needs
+    headroom. *)
 
 val reset_reach : unit -> unit
-(** [reset_reach ()] sets every count of evaluations to zero, removes the marks
-    and opens a new epoch. It does not disarm. *)
+(** [reset_reach ()] sets every count of evaluations to zero, empties the list
+    of marks and opens a new epoch. It does not disarm. *)

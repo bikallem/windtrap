@@ -80,10 +80,6 @@ val build_dir : path:string -> string option
     matching component decides whatever it names, so every path below
     [/home/u/_build_farm] has that directory as its build directory. *)
 
-val build_root : path:string -> string option
-(** [build_root ~path] is the parent directory of [build_dir ~path], or [None]
-    when there is none. *)
-
 val exe_identity : exe:string -> string
 (** [exe_identity ~exe] is the normalized path of [exe] below its build
     directory, without the sandbox prefix, or its normalized absolute path when
@@ -92,48 +88,6 @@ val exe_identity : exe:string -> string
     directory, so an executable whose own name starts with [_build] lies below
     none. The build context is part of the result, as in [default/test/t.exe],
     and the build directory is not. *)
-
-val exe_location : path:string -> string -> (string * string) option
-(** [exe_location ~path exe] is the path of the executable whose {!exe_identity}
-    is [exe], for a file at [path] that this executable wrote, and the spelling
-    of that path from the project root. An absolute [exe] is its own path and
-    spelling. A relative [exe] lies below [build_dir ~path], and its spelling
-    starts with the name of that directory, as in [_build/default/test/t.exe].
-    It is [None] when [exe] is relative and [path] lies below no build
-    directory. *)
-
-(** The type for the freshness of a file, judged from the {!type-identity} that
-    it records. [Orphan] and [Stale] carry the path of the recorded executable
-    relative to the parent of its build directory, as
-    [_build/default/test/t.exe], or its absolute path when it lies below no
-    build directory. *)
-type freshness =
-  | Fresh
-      (** The executable at the recorded path has the recorded digest, or
-          nothing can be judged (see {!val-freshness}). *)
-  | Orphan of string  (** No executable exists at the recorded path. *)
-  | Stale of string
-      (** The executable at the recorded path does not have the recorded digest,
-          so another build wrote the file. *)
-
-val freshness :
-  digests:(string, string option) Hashtbl.t ->
-  path:string ->
-  identity option ->
-  freshness
-(** [freshness ~digests ~path identity] is the freshness of the file at [path],
-    which recorded [identity]. An absolute [identity.exe] is the path of the
-    executable. A relative one is resolved below the build directory of [path]
-    ({!build_dir}). The comparison is by {!file_digest} and never by
-    modification time.
-
-    Three files cannot be judged and are [Fresh]: one that records no identity,
-    which was written by hand or merged, one whose identity is relative and
-    which lies in no build directory, and one whose executable exists and cannot
-    be read.
-
-    [digests] holds the digest of each executable that an earlier call with the
-    same table read, so that a caller reads each executable one time. *)
 
 val data_dir : format -> build_dir:string -> string
 (** [data_dir f ~build_dir] is [<build_dir>/_<f.dir>]. *)

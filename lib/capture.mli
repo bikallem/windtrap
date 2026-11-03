@@ -12,20 +12,18 @@
     captures, and {!disabled} that of a run under [--stream], which captures
     nothing.
 
-    The redirection is a [dup2] of the descriptors, so the writes of C stubs and
-    of the subprocesses that inherit them are captured too. Both descriptors
-    write through one open file, so a log holds standard output and standard
-    error as one text, in the order in which the bytes reached the descriptors.
-    A buffer that holds bytes back changes that order.
-
-    The log of a test is [<log_dir>/<suite>/<groups...>/<test>.output], with
-    every component passed through {!Os.sanitize_component}. The path depends on
-    the identity of the test alone, so a run overwrites the logs of the run
-    before it. Each attempt truncates the log, so it holds the whole output of
-    the last attempt.
+    The redirection is a [dup2] of the descriptors, both writing through one
+    open file, which gives the facade's capture: C stubs and subprocesses
+    included, the two streams one text. The log of a test is the facade's path,
+    with every component passed through {!Os.sanitize_component}. The path
+    depends on the identity of the test alone, so a run overwrites the logs of
+    the run before it. Each attempt truncates the log, so it holds the whole
+    output of the last attempt.
 
     The module keeps no state outside a {!t}, but descriptors 1 and 2 and the
-    buffers that a drain flushes belong to the process. *)
+    buffers that a drain flushes belong to the process.
+
+    @canonical Windtrap.Private.Capture *)
 
 (** {1:state Capture state} *)
 
@@ -50,9 +48,11 @@ val disabled : t
 
 val drain : unit -> unit
 (** [drain ()] forces buffered output through to descriptors 1 and 2. It flushes
-    the two standard formatters of [Format], the [stdout] and [stderr] channels
-    and the C stdio streams of the same names. It reaches no other buffer, such
-    as a formatter of the user's or the buffers of a child process.
+    the calling domain's two standard formatters of [Format]
+    ([Format.get_std_formatter] and [Format.get_err_formatter]), the [stdout]
+    and [stderr] channels and the C stdio streams of the same names. It reaches
+    no other buffer, such as another domain's formatters, a formatter of the
+    user's or the buffers of a child process.
 
     Raises [Sys_error] if a flush fails, as on a closed descriptor. *)
 
@@ -96,6 +96,12 @@ val outside : t -> (unit -> 'a) -> 'a
     last one fails. What [fn] raised wins over a failed last drain. Raises
     [Unix.Unix_error] if a descriptor cannot be duplicated. *)
 
+val adopt_log : t -> groups:string list -> test_name:string -> unit
+(** [adopt_log t ~groups ~test_name] makes the log of that test the current log
+    of [t], from its first byte, or leaves [t] with no current log when the file
+    does not exist. It is for a process that reads the log another process
+    wrote, the parent of a worker that died in the test. *)
+
 val abandon : t -> unit
 (** [abandon t] ends the redirection of an attempt that is still running, from
     outside {!with_capture}, for a run that stops inside a test and never
@@ -110,14 +116,11 @@ val abandon : t -> unit
 (** {1:reading Reading captured output} *)
 
 val output : ?__POS__:Loc.pos -> t -> string
-(** [output t] is the bytes that the current attempt wrote since the previous
-    call, or since it started. It drains first, and moves its cursor past what
-    it returns.
+(** [output t] is the facade's [output] of the current attempt. It drains first,
+    and moves its cursor past what it returns. It is also [""] when the log was
+    truncated below the cursor, and when [t] has no current log.
 
-    It is [""] when everything was read already, when the log was truncated
-    below the cursor, and when [t] has no current log.
-
-    Raises [Failure.Check_failure] when no bytes can be returned, with a
+    Refuses ({!Failure.refuse}) a failure when no bytes can be returned, with a
     {!Failure.Message} located at [Loc.resolve ?__POS__ ()]:
     - when [t] is {!disabled}, the message reads
       [this test requires capture; rerun without --stream];

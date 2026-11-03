@@ -15,6 +15,7 @@ module Cli = Windtrap.Private.Cli
 module Os = Windtrap.Private.Os
 module Run = Windtrap.Private.Run
 module Seed = Windtrap.Private.Seed
+module Lines = Windtrap.Private.Lines
 
 let strf = Printf.sprintf
 let words items = "[" ^ String.concat "; " items ^ "]"
@@ -25,11 +26,6 @@ let color_name = function
   | Os.Never -> "never"
   | Os.Auto -> "auto"
 
-let children_name = function
-  | Run.Auto -> "auto"
-  | Run.Fork -> "fork"
-  | Run.Exec -> "exec"
-
 let error_row = function
   | Cli.Unknown_flag flag -> "unknown " ^ flag
   | Cli.Missing_value flag -> "missing value " ^ flag
@@ -37,6 +33,7 @@ let error_row = function
       strf "invalid %s %S" source value
   | Cli.Incompatible_flags (first, second) ->
       strf "incompatible %s %s" first second
+  | Cli.Requires (flag, needed) -> strf "%s requires %s" flag needed
 
 let pp_error ppf e = Format.pp_print_string ppf (error_row e)
 
@@ -44,49 +41,49 @@ let expected_of = function
   | Error (Cli.Invalid_value { expected; _ }) -> Some expected
   | _ -> None
 
-(* A [bool option] prints [false] beside its name, so a [Some false] shows. *)
+(* The fields of the flags a record says it was given, by the name of their
+   flag's field. *)
 let flags (p : Cli.parsed) =
+  let c = p.config in
+  let gave flag = List.mem flag p.given in
   let list name = function [] -> [] | l -> [ name ^ " " ^ words l ] in
-  let some name show = function
+  let some flag name show v =
+    if gave flag then [ name ^ " " ^ show v ] else []
+  in
+  let opt name show = function
     | None -> []
     | Some v -> [ name ^ " " ^ show v ]
-  in
-  let switch name = function
-    | None -> []
-    | Some true -> [ name ]
-    | Some false -> [ name ^ " false" ]
   in
   let bool name b = if b then [ name ] else [] in
   match
     List.concat
       [
-        list "filter" p.filter;
-        list "exclude" p.exclude;
-        list "tags" p.tags;
-        list "exclude_tags" p.exclude_tags;
-        some "shard" (fun (k, n) -> strf "%d/%d" k n) p.shard;
-        switch "failed_only" p.failed_only;
-        switch "list_only" p.list_only;
-        switch "bail" p.bail;
-        switch "stream" p.stream;
-        switch "update" p.update;
-        switch "corrected" p.corrected;
-        some "seed" Seed.to_string p.seed;
-        some "timeout" (strf "%g") p.timeout;
-        some "slow_threshold" (strf "%g") p.slow_threshold;
-        some "prop_count" string_of_int p.prop_count;
-        switch "verbose" p.verbose;
-        some "junit" Fun.id p.junit;
-        some "color" color_name p.color;
-        some "log_dir" Fun.id p.log_dir;
-        some "mutate" words p.mutate;
-        some "mutate_jobs" string_of_int p.mutate_jobs;
-        some "mutate_retry" string_of_int p.mutate_retry;
-        some "mutate_since" Fun.id p.mutate_since;
-        switch "mutate_skip_killed" p.mutate_skip_killed;
-        some "mutate_children" children_name p.mutate_children;
-        switch "mutate_workers" p.mutate_workers;
-        some "arm" Fun.id p.arm;
+        list "filter" c.filter;
+        list "exclude" c.exclude;
+        list "tags" c.tags;
+        list "exclude_tags" c.exclude_tags;
+        opt "shard" (fun (k, n) -> strf "%d/%d" k n) c.shard;
+        bool "failed_only" c.failed_only;
+        bool "list_only" p.list_only;
+        bool "bail" c.bail;
+        bool "stream" c.stream;
+        some "--jobs" "jobs" string_of_int c.jobs;
+        bool "in_process" c.in_process;
+        bool "update" (c.baseline = Baseline.Update);
+        bool "corrected" (c.baseline = Baseline.Corrected);
+        some "--seed" "seed" Seed.to_string c.seed;
+        opt "timeout" (strf "%g") c.timeout;
+        some "--slow-threshold" "slow_threshold" (strf "%g") c.slow_threshold;
+        opt "prop_count" string_of_int c.prop_count;
+        bool "verbose" c.verbose;
+        opt "junit" Fun.id c.junit;
+        opt "json" Fun.id c.json;
+        some "--color" "color" color_name c.color;
+        some "--output" "log_dir" Fun.id c.log_dir;
+        (match c.mutation with
+        | Run.Loop { prefixes; _ } -> [ "mutate " ^ words prefixes ]
+        | Run.Armed id -> [ "arm " ^ id ]
+        | Run.No_mutation -> []);
         bool "help" p.help;
         bool "version" p.version;
       ]
@@ -98,22 +95,14 @@ let parsed_argv argv =
   match Cli.parse argv with Ok p -> flags p | Error e -> error_row e
 
 let parse args = Cli.parse (Array.of_list ("windtrap-test" :: args))
+let unflagged () = require_ok (parse [])
 let parsed args = parsed_argv (Array.of_list ("windtrap-test" :: args))
 
 let mutation_name = function
   | Run.No_mutation -> "none"
-  | Run.Loop { scope; jobs; since; children; skip_killed; retry } ->
-      String.concat ""
-        [
-          "loop ";
-          words scope;
-          (if jobs = 1 then "" else strf " jobs %d" jobs);
-          Option.fold ~none:"" ~some:(strf " since %s") since;
-          (if children = Run.Auto then ""
-           else " children " ^ children_name children);
-          (if skip_killed then " skip_killed" else "");
-          Option.fold ~none:"" ~some:(strf " retry %d") retry;
-        ]
+  | Run.Loop { prefixes; lines = None } -> "loop " ^ words prefixes
+  | Run.Loop { prefixes; lines = Some lines } ->
+      strf "loop %s lines %s" (words prefixes) (Lines.to_string lines)
   | Run.Armed id -> "armed " ^ id
 
 let baseline_name = function
@@ -148,24 +137,23 @@ let changes (c : Run.config) =
         field "failed_only" bool (fun c -> c.Run.failed_only);
         field "bail" bool (fun c -> c.Run.bail);
         field "stream" bool (fun c -> c.Run.stream);
+        field "jobs" string_of_int (fun c -> c.Run.jobs);
+        field "in_process" bool (fun c -> c.Run.in_process);
         field "baseline" baseline_name (fun c -> c.Run.baseline);
         field "timeout" (opt (strf "%g")) (fun c -> c.Run.timeout);
         field "prop_count" (opt string_of_int) (fun c -> c.Run.prop_count);
         field "log_dir" Fun.id (fun c -> c.Run.log_dir);
-        field "store" bool (fun c -> c.Run.store);
-        field "allow_focus" bool (fun c -> c.Run.allow_focus);
         field "color" color_name (fun c -> c.Run.color);
         field "slow_threshold" (strf "%g") (fun c -> c.Run.slow_threshold);
         field "verbose" bool (fun c -> c.Run.verbose);
         field "junit" (opt Fun.id) (fun c -> c.Run.junit);
+        field "json" (opt Fun.id) (fun c -> c.Run.json);
         field "mutation" mutation_name (fun c -> c.Run.mutation);
-        field "mutate_workers" bool (fun c -> c.Run.mutate_workers);
         field "github" bool (fun c -> c.Run.github);
         field "invocation" invocation_name (fun c -> c.Run.invocation);
         field "broadcast selection" bool (fun c ->
             c.Run.broadcast.Run.selection);
         field "broadcast mutate" bool (fun c -> c.Run.broadcast.Run.mutate);
-        field "unused_since" (opt Fun.id) (fun c -> c.Run.unused_since);
       ]
   with
   | [] -> "defaults"
@@ -206,7 +194,7 @@ let config ?env args =
 
 let mirror_rows name rows =
   cases name
-    ~name:(fun (var, value, _) -> strf "%s=%S" var value)
+    ~id:(fun (var, value, _) -> strf "%s=%S" var value)
     rows
     (fun (var, value, row) ->
       equal string row (resolved ~env:[ (var, value) ] []))
@@ -214,14 +202,14 @@ let mirror_rows name rows =
 (* A mirror's value is trimmed and a flag's is not, so no row holds a space. *)
 let refused_alike (var, flag, value) =
   let expected = require_match expected_of (parse [ flag; value ]) in
-  let refusal = settings ~env:[ (var, value) ] Cli.empty in
+  let refusal = settings ~env:[ (var, value) ] (unflagged ()) in
   equal (pair string string)
     (strf "invalid %s %S" var value, expected)
     ( Result.fold ~ok:changes ~error:error_row refusal,
       require_match expected_of refusal )
 
 let boolean_wording () =
-  let refusal = settings ~env:[ ("WINDTRAP_STREAM", "maybe") ] Cli.empty in
+  let refusal = settings ~env:[ ("WINDTRAP_STREAM", "maybe") ] (unflagged ()) in
   equal string Os.bool_expected (require_match expected_of refusal)
 
 let mirrors =
@@ -242,8 +230,10 @@ let mirrors =
           ("WINDTRAP_SLOW_THRESHOLD", "3", "slow_threshold 3");
           ("WINDTRAP_PROP_COUNT", "7", "prop_count 7");
           ("WINDTRAP_STREAM", "1", "stream");
+          ("WINDTRAP_JOBS", "4", "jobs 4");
           ("WINDTRAP_VERBOSE", "1", "verbose");
           ("WINDTRAP_JUNIT", "/reports/junit.xml", "junit /reports/junit.xml");
+          ("WINDTRAP_JSON", "/reports/run.json", "json /reports/run.json");
           ("WINDTRAP_COLOR", "never", "color never");
           ("WINDTRAP_OUTPUT", "/custom-logs", "log_dir /custom-logs");
         ];
@@ -253,7 +243,7 @@ let mirrors =
       cases
         "a mirror refuses what its flag refuses, naming the variable and the \
          value as typed, in the flag's words"
-        ~name:(fun (var, _, value) -> strf "%s=%S" var value)
+        ~id:(fun (var, _, value) -> strf "%s=%S" var value)
         [
           ("WINDTRAP_SHARD", "--shard", "9/2");
           ("WINDTRAP_TIMEOUT", "--timeout", "-5");
@@ -265,13 +255,7 @@ let mirrors =
           ("WINDTRAP_SEED", "--seed", "not-a-seed");
           ("WINDTRAP_PROP_COUNT", "--prop-count", "0");
           ("WINDTRAP_PROP_COUNT", "--prop-count", "1O0");
-          ("WINDTRAP_MUTATE_JOBS", "--mutate-jobs", "0");
-          ("WINDTRAP_MUTATE_JOBS", "--mutate-jobs", "all");
-          ("WINDTRAP_MUTATE_JOBS", "--mutate-jobs", "257");
-          ("WINDTRAP_MUTATE_RETRY", "--mutate-retry", "x");
-          ("WINDTRAP_MUTATE_RETRY", "--mutate-retry", "101");
-          ("WINDTRAP_MUTATE_SINCE", "--mutate-since", "-HEAD");
-          ("WINDTRAP_MUTATE_CHILDREN", "--mutate-children", "spawn");
+          ("WINDTRAP_JOBS", "--jobs", "0");
           ("WINDTRAP_COLOR", "--color", "sometimes");
         ]
         refused_alike;
@@ -313,10 +297,6 @@ let mirrors =
         [
           ("WINDTRAP_STREAM", "yes", "stream");
           ("WINDTRAP_VERBOSE", " OFF ", "defaults");
-          ("WINDTRAP_MUTATE_WORKERS", "true", "mutate_workers");
-          ( "WINDTRAP_MUTATE_SKIP_KILLED",
-            "maybe",
-            {|invalid WINDTRAP_MUTATE_SKIP_KILLED "maybe"|} );
           ("WINDTRAP_STREAM", "maybe", {|invalid WINDTRAP_STREAM "maybe"|});
         ];
       test "a boolean mirror refuses another word in Os.bool_expected's words"
@@ -351,8 +331,18 @@ let mirrors =
 let parsed_flags =
   group "Parsed flags"
     [
-      test "empty is the record with every flag absent" (fun () ->
-          equal string "empty" (flags Cli.empty));
+      test "a command line with no flag gives none" (fun () ->
+          equal
+            (pair (list string) string)
+            ([], "empty")
+            ((unflagged ()).given, flags (unflagged ())));
+      test "given names each flag once, by its long name, in the order given"
+        (fun () ->
+          equal (list string)
+            [ "--filter"; "--verbose"; "--tag" ]
+            (require_ok
+               (parse [ "p"; "-v"; "--tag=a"; "-f"; "q"; "--tag"; "b" ]))
+              .given);
     ]
 
 (* Errors *)
@@ -381,13 +371,11 @@ let messages () =
         [ "--slow-threshold"; "-1" ];
         [ "--prop-count"; "0" ];
         [ "--color"; "sometimes" ];
-        [ "--mutate-jobs"; "257" ];
-        [ "--mutate-retry"; "101" ];
-        [ "--mutate-since=--all" ];
       ]
   in
   let mirror =
-    require_error (settings ~env:[ ("WINDTRAP_PROP_COUNT", "0") ] Cli.empty)
+    require_error
+      (settings ~env:[ ("WINDTRAP_PROP_COUNT", "0") ] (unflagged ()))
   in
   expect
     (String.concat "\n"
@@ -408,9 +396,6 @@ let messages () =
     invalid value '-1' for --slow-threshold: expected a non-negative number
     invalid value '0' for --prop-count: expected a positive integer
     invalid value 'sometimes' for --color: expected always, never or auto
-    invalid value '257' for --mutate-jobs: expected a positive integer up to 256, or auto
-    invalid value '101' for --mutate-retry: expected a non-negative integer up to 100
-    invalid value '--all' for --mutate-since: expected a git revision, which does not start with -
     invalid value '0' for WINDTRAP_PROP_COUNT: expected a positive integer
     |}
 
@@ -429,7 +414,7 @@ let errors =
       cases
         "an unknown long flag's message suggests the nearest long flag when \
          one is near"
-        ~name:fst
+        ~id:fst
         [
           ("--fliter", Some "--filter");
           ("--colour", Some "--color");
@@ -458,7 +443,7 @@ let errors =
 
 let parse_rows name rows =
   cases name
-    ~name:(fun (args, _) -> joined args)
+    ~id:(fun (args, _) -> joined args)
     rows
     (fun (args, row) -> equal string row (parsed args))
 
@@ -467,17 +452,13 @@ let every_flag () =
     "filter [pat], exclude [ex], tags [a; b], exclude_tags [c], shard 2/4, \
      failed_only, list_only, bail, stream, update, seed s1:00000000000000ff, \
      timeout 2.5, slow_threshold 3, prop_count 50, verbose, junit out.xml, \
-     color never, log_dir logs, mutate [lib/a.ml; lib/b.ml], mutate_jobs 3, \
-     mutate_retry 2, mutate_since main, mutate_skip_killed, mutate_children \
-     exec, mutate_workers, arm lib/a.ml:1:0:add"
+     color never, log_dir logs, arm lib/a.ml:1:0:add"
     (parsed
        (String.split_on_char ' '
           "-f pat -e ex --tag a --tag b --exclude-tag c --shard 2/4 --failed \
            -l -x -s -u --seed s1:00000000000000ff --timeout 2.5 \
            --slow-threshold 3 --prop-count 50 -v --junit out.xml --color never \
-           -o logs --mutate=lib/a.ml,lib/b.ml --mutate-jobs 3 --mutate-retry 2 \
-           --mutate-since main --mutate-skip-killed --mutate-children exec \
-           --mutate-workers --arm lib/a.ml:1:0:add"))
+           -o logs --mutate=lib/a.ml,lib/b.ml --arm lib/a.ml:1:0:add"))
 
 (* Whole arguments: each valueless flag in both spellings, value flags with a
    good value, and misspellings and separators, so that most vectors parse
@@ -504,24 +485,13 @@ let argv_chunks =
       [ "" ];
     ]
 
-let never_some_false args =
+let names_once args =
   match parse args with
   | Error _ -> ()
   | Ok p ->
-      equal
-        (list (option bool))
-        []
-        (List.filter
-           (Option.equal Bool.equal (Some false))
-           [
-             p.Cli.failed_only;
-             p.list_only;
-             p.bail;
-             p.stream;
-             p.update;
-             p.corrected;
-             p.verbose;
-           ])
+      equal (list string)
+        (List.sort_uniq String.compare p.Cli.given)
+        (List.sort String.compare p.given)
 
 let refused_value (flag, value) =
   equal string (strf "invalid %s %S" flag value) (parsed [ flag; value ])
@@ -561,9 +531,13 @@ let parsing =
           ([ "--corrected" ], "corrected");
           ([ "-s" ], "stream");
           ([ "--stream" ], "stream");
+          ([ "-j"; "4" ], "jobs 4");
+          ([ "--jobs=2" ], "jobs 2");
+          ([ "--in-process" ], "in_process");
           ([ "-v" ], "verbose");
           ([ "--verbose" ], "verbose");
           ([ "--junit"; "out.xml" ], "junit out.xml");
+          ([ "--json"; "out.json" ], "json out.json");
           ([ "--color"; "never" ], "color never");
           ([ "--color=ALWAYS" ], "color always");
           ([ "--color"; "Auto" ], "color auto");
@@ -571,19 +545,6 @@ let parsing =
           ([ "--output=logs" ], "log_dir logs");
           ([ "--mutate" ], "mutate []");
           ([ "--mutate=lib/a.ml, lib/b.ml" ], "mutate [lib/a.ml; lib/b.ml]");
-          ([ "--mutate-jobs"; "4" ], "mutate_jobs 4");
-          ([ "--mutate-jobs=1" ], "mutate_jobs 1");
-          ([ "--mutate-jobs=256" ], "mutate_jobs 256");
-          ([ "--mutate-retry"; "3" ], "mutate_retry 3");
-          ([ "--mutate-retry=0" ], "mutate_retry 0");
-          ([ "--mutate-retry=100" ], "mutate_retry 100");
-          ([ "--mutate-since"; "origin/main" ], "mutate_since origin/main");
-          ([ "--mutate-since=HEAD~2" ], "mutate_since HEAD~2");
-          ([ "--mutate-skip-killed" ], "mutate_skip_killed");
-          ([ "--mutate-children"; "fork" ], "mutate_children fork");
-          ([ "--mutate-children=EXEC" ], "mutate_children exec");
-          ([ "--mutate-children=Auto" ], "mutate_children auto");
-          ([ "--mutate-workers" ], "mutate_workers");
           ([ "--arm"; "lib/a.ml:1:0:add" ], "arm lib/a.ml:1:0:add");
           ([ "--arm=x" ], "arm x");
           ([ "-h" ], "help");
@@ -642,7 +603,6 @@ let parsing =
           ([ "--list=x" ], {|invalid --list "x"|});
           ([ "--fail-fast=2" ], {|invalid --fail-fast "2"|});
           ([ "--verbose=1" ], {|invalid --verbose "1"|});
-          ([ "--mutate-skip-killed=1" ], {|invalid --mutate-skip-killed "1"|});
         ];
       test "a flag that takes no value refuses one with expected no argument"
         (fun () ->
@@ -651,7 +611,7 @@ let parsing =
       cases
         "a flag refuses a value outside its field's description, naming the \
          value as typed"
-        ~name:(fun (flag, value) -> strf "%s %S" flag value)
+        ~id:(fun (flag, value) -> strf "%s %S" flag value)
         [
           ("--shard", "0/4");
           ("--shard", "5/4");
@@ -678,19 +638,8 @@ let parsing =
           ("--prop-count", "0");
           ("--prop-count", "-3");
           ("--prop-count", "many");
-          ("--mutate-jobs", "0");
-          ("--mutate-jobs", "-2");
-          ("--mutate-jobs", "many");
-          ("--mutate-jobs", "autom");
-          ("--mutate-jobs", "257");
-          ("--mutate-retry", "-1");
-          ("--mutate-retry", "101");
-          ("--mutate-retry", "many");
-          ("--mutate-retry", "");
-          ("--mutate-since", "");
-          ("--mutate-since", "-p");
-          ("--mutate-children", "");
-          ("--mutate-children", "forks");
+          ("-j", "0");
+          ("--jobs", "two");
           ("--seed", "42");
           ("--color", "sometimes");
         ]
@@ -725,16 +674,16 @@ let parsing =
           ([ "-u"; "--corrected" ], "incompatible -u --corrected");
           ([ "--corrected"; "--update" ], "incompatible -u --corrected");
         ];
-      prop "parse never raises and never gives Some false"
+      prop "parse never raises and names each flag it gave once"
         Gen.(map List.concat (list (of_list argv_chunks)))
-        never_some_false;
+        names_once;
     ]
 
 (* Resolution *)
 
 let resolve_rows name rows =
   cases name
-    ~name:(fun (env, args, _) ->
+    ~id:(fun (env, args, _) ->
       match List.map fst env @ args with
       | [] -> "no variable and no flag"
       | words -> String.concat " " words)
@@ -769,17 +718,28 @@ let resolution =
     [
       test "with no flag and no mirror, every field but the seed is the default"
         (fun () -> equal string "defaults" (resolved []));
-      test "store is true, allow_focus is false and invocation is `Mirrors"
+      test "--mutate and --arm fix the seed, which --seed still gives"
         (fun () ->
-          let c = config [] in
-          equal (triple bool bool string) (true, false, "mirrors")
-            (c.store, c.allow_focus, invocation_name c.invocation));
+          let seed args = Seed.to_string (config args).seed in
+          equal (list string)
+            [
+              Seed.to_string Cli.mutation_seed;
+              Seed.to_string Cli.mutation_seed;
+              "s1:0000000000000005";
+            ]
+            [
+              seed [ "--mutate" ];
+              seed [ "--arm"; "a.ml:1:0:add" ];
+              seed [ "--mutate"; "--seed"; "s1:0000000000000005" ];
+            ]);
+      test "invocation is `Mirrors" (fun () ->
+          equal string "mirrors" (invocation_name (config []).invocation));
       test "list_only, help and version are ignored" (fun () ->
           equal string "defaults"
             (settled
                {
-                 Cli.empty with
-                 list_only = Some true;
+                 (unflagged ()) with
+                 list_only = true;
                  help = true;
                  version = true;
                }));
@@ -867,16 +827,13 @@ let resolution =
       cases
         "baseline is Update under update, else Corrected under corrected, else \
          Check"
-        ~name:fst
+        ~id:fst
         [
-          ("update", ({ Cli.empty with update = Some true }, "baseline update"));
-          ( "corrected",
-            ({ Cli.empty with corrected = Some true }, "baseline corrected") );
-          ( "both",
-            ( { Cli.empty with update = Some true; corrected = Some true },
-              "baseline update" ) );
+          ("update", ([ "-u" ], "baseline update"));
+          ("corrected", ([ "--corrected" ], "baseline corrected"));
+          ("neither", ([], "defaults"));
         ]
-        (fun (_, (p, row)) -> equal string row (settled p));
+        (fun (_, (args, row)) -> equal string row (resolved args));
       resolve_rows "mutation is Loop of --mutate and Armed of --arm"
         [
           ([], [ "--mutate" ], "mutation loop []");
@@ -887,142 +844,21 @@ let resolution =
             [ "--arm"; "lib/a.ml:9:12:add" ],
             "mutation armed lib/a.ml:9:12:add" );
         ];
-      resolve_rows
-        "the jobs of a loop are --mutate-jobs, else its mirror, else 1, and \
-         nothing else reads them"
+      resolve_rows "--lines scopes --mutate, and needs it on the command line"
         [
-          ([], [ "--mutate"; "--mutate-jobs"; "4" ], "mutation loop [] jobs 4");
-          ( [ ("WINDTRAP_MUTATE_JOBS", " 3 ") ],
+          ( [],
+            [ "--mutate"; "--lines=lib/a.ml:3-4,9" ],
+            "mutation loop [] lines lib/a.ml:3-4,9" );
+          ( [ ("WINDTRAP_LINES", "lib/a.ml:3") ],
             [ "--mutate=lib/" ],
-            "mutation loop [lib/] jobs 3" );
-          ( [ ("WINDTRAP_MUTATE_JOBS", "3") ],
-            [ "--mutate"; "--mutate-jobs=2" ],
-            "mutation loop [] jobs 2" );
-          ([ ("WINDTRAP_MUTATE_JOBS", "3") ], [], "defaults");
+            "mutation loop [lib/] lines lib/a.ml:3" );
+          ([], [ "--lines=lib/a.ml:3" ], "--lines requires --mutate");
+          ([], [ "--diff=x.diff" ], "--diff requires --mutate");
+          ([ ("WINDTRAP_LINES", "lib/a.ml:3") ], [], "defaults");
           ( [],
-            [ "--arm"; "lib/a.ml:9:12:add"; "--mutate-jobs"; "4" ],
-            "mutation armed lib/a.ml:9:12:add" );
+            [ "--mutate"; "--lines=lib/a.ml:0" ],
+            "invalid --lines \"lib/a.ml:0\"" );
         ];
-      resolve_rows
-        "--mutate-retry or its mirror sets the retry of a loop, and nothing \
-         else reads it"
-        [
-          ([], [ "--mutate"; "--mutate-retry"; "2" ], "mutation loop [] retry 2");
-          ([], [ "--mutate"; "--mutate-retry=0" ], "mutation loop [] retry 0");
-          ([], [ "--mutate" ], "mutation loop []");
-          ( [ ("WINDTRAP_MUTATE_RETRY", "5") ],
-            [ "--mutate"; "--mutate-retry=1" ],
-            "mutation loop [] retry 1" );
-          ( [ ("WINDTRAP_MUTATE_RETRY", " 2 ") ],
-            [ "--mutate=lib/" ],
-            "mutation loop [lib/] retry 2" );
-          ([ ("WINDTRAP_MUTATE_RETRY", "1") ], [], "defaults");
-          ( [],
-            [ "--arm"; "lib/a.ml:9:12:add"; "--mutate-retry"; "2" ],
-            "mutation armed lib/a.ml:9:12:add" );
-        ];
-      resolve_rows
-        "the children of a loop are --mutate-children, else its mirror, else \
-         auto, and nothing else reads them"
-        [
-          ( [],
-            [ "--mutate"; "--mutate-children"; "exec" ],
-            "mutation loop [] children exec" );
-          ( [ ("WINDTRAP_MUTATE_CHILDREN", "fork") ],
-            [ "--mutate=lib/" ],
-            "mutation loop [lib/] children fork" );
-          ( [ ("WINDTRAP_MUTATE_CHILDREN", "fork") ],
-            [ "--mutate"; "--mutate-children=exec" ],
-            "mutation loop [] children exec" );
-          ([], [ "--mutate" ], "mutation loop []");
-          ([ ("WINDTRAP_MUTATE_CHILDREN", "exec") ], [], "defaults");
-          ( [],
-            [ "--arm"; "lib/a.ml:9:12:add"; "--mutate-children"; "exec" ],
-            "mutation armed lib/a.ml:9:12:add" );
-        ];
-      resolve_rows
-        "--mutate-skip-killed or its mirror sets the skip_killed of a loop, \
-         and nothing else reads it"
-        [
-          ( [],
-            [ "--mutate"; "--mutate-skip-killed" ],
-            "mutation loop [] skip_killed" );
-          ( [ ("WINDTRAP_MUTATE_SKIP_KILLED", "1") ],
-            [ "--mutate=lib/" ],
-            "mutation loop [lib/] skip_killed" );
-          ( [ ("WINDTRAP_MUTATE_SKIP_KILLED", "0") ],
-            [ "--mutate" ],
-            "mutation loop []" );
-          ([ ("WINDTRAP_MUTATE_SKIP_KILLED", "1") ], [], "defaults");
-          ( [],
-            [ "--arm"; "lib/a.ml:9:12:add"; "--mutate-skip-killed" ],
-            "mutation armed lib/a.ml:9:12:add" );
-        ];
-      resolve_rows
-        "--mutate-workers or its mirror sets mutate_workers, and nothing else \
-         reads it"
-        [
-          ( [],
-            [ "--mutate"; "--mutate-workers" ],
-            "mutation loop [], mutate_workers" );
-          ( [ ("WINDTRAP_MUTATE_WORKERS", "1") ],
-            [ "--arm"; "lib/a.ml:9:12:add" ],
-            "mutation armed lib/a.ml:9:12:add, mutate_workers" );
-          ( [ ("WINDTRAP_MUTATE_WORKERS", "0") ],
-            [ "--mutate" ],
-            "mutation loop []" );
-          ([], [ "--mutate-workers" ], "mutate_workers");
-        ];
-      resolve_rows
-        "the revision of a loop is --mutate-since, else its mirror, and \
-         nothing else reads it"
-        [
-          ( [],
-            [ "--mutate"; "--mutate-since"; "main" ],
-            "mutation loop [] since main" );
-          ( [ ("WINDTRAP_MUTATE_SINCE", " HEAD~1 ") ],
-            [ "--mutate=lib/" ],
-            "mutation loop [lib/] since HEAD~1" );
-          ( [ ("WINDTRAP_MUTATE_SINCE", "main") ],
-            [ "--mutate"; "--mutate-since=HEAD" ],
-            "mutation loop [] since HEAD" );
-          ( [ ("WINDTRAP_MUTATE_SINCE", "main"); ("WINDTRAP_MUTATE", "1") ],
-            [],
-            "mutation loop [] since main, broadcast mutate" );
-          ( [],
-            [ "--arm"; "lib/a.ml:9:12:add"; "--mutate-since"; "main" ],
-            "mutation armed lib/a.ml:9:12:add" );
-        ];
-      resolve_rows
-        "a revision without a loop or an armed mutant names its source, which \
-         the run reports"
-        [
-          ( [ ("WINDTRAP_MUTATE_SINCE", "main") ],
-            [],
-            "unused_since WINDTRAP_MUTATE_SINCE" );
-          ([], [ "--mutate-since=main" ], "unused_since --mutate-since");
-          ( [ ("WINDTRAP_MUTATE_SINCE", "main") ],
-            [ "--mutate-since"; "HEAD" ],
-            "unused_since --mutate-since" );
-          ( [ ("WINDTRAP_MUTATE_SINCE", "main"); ("WINDTRAP_MUTATE_ARM", "x") ],
-            [],
-            "mutation armed x" );
-        ];
-      test "--mutate-jobs auto, in any case, is one job per CPU, up to 256"
-        (fun () ->
-          let cpus =
-            resolved
-              [
-                "--mutate";
-                strf "--mutate-jobs=%d"
-                  (min 256 (Domain.recommended_domain_count ()));
-              ]
-          in
-          equal (list string) [ cpus; cpus ]
-            [
-              resolved [ "--mutate"; "--mutate-jobs=auto" ];
-              resolved ~env:[ ("WINDTRAP_MUTATE_JOBS", "Auto") ] [ "--mutate" ];
-            ]);
       resolve_rows "--mutate with --arm is refused, whichever layer gave each"
         [
           ([], [ "--mutate"; "--arm"; "x" ], "incompatible --mutate --arm");
@@ -1089,7 +925,7 @@ let resolution =
           equal string "mutation loop [lib/]"
             (resolved ~env:[ ("WINDTRAP_MUTATE", "1") ] [ "--mutate=lib/" ]));
       cases "the seed is the command line's, else WINDTRAP_SEED's"
-        ~name:(fun (env, args, _) -> joined (List.map snd env @ args))
+        ~id:(fun (env, args, _) -> joined (List.map snd env @ args))
         [
           ( [ ("WINDTRAP_SEED", "s1:00000000000000aa") ],
             [],
@@ -1102,7 +938,7 @@ let resolution =
       test "without a seed in any layer, each call draws another" (fun () ->
           not_equal string (seed_of [] []) (seed_of [] []));
       cases "color_mode reads WINDTRAP_COLOR by the parser of --color"
-        ~name:(fun (value, _) ->
+        ~id:(fun (value, _) ->
           Option.fold ~none:"unset" ~some:(strf "%S") value)
         [
           (None, "auto");
@@ -1142,9 +978,8 @@ let help =
       test
         "help is the page of every flag, then of every setting no flag spells"
         (fun () ->
-          expect_file
-            (Cli.help ~prog:"/some/path/mytests.exe")
-            "test/unit/expected/test_cli/help.expected");
+          expect_file ~file:"test/unit/expected/test_cli/help.expected"
+            (Cli.help ~prog:"/some/path/mytests.exe"));
       test "every line of help fits 80 columns" (fun () ->
           at_most int ~than:80 (longest_line (Cli.help ~prog:"mytests.exe")));
       test "help ends with a newline" (fun () ->

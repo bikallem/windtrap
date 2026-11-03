@@ -70,7 +70,9 @@ type 'a printer = Format.formatter -> 'a -> unit
 (** The type for value printers. *)
 
 module Testable = Testable
-(** Witness constructors and accessors. *)
+(** Witness constructors and accessors: [make], [with_compare], [structural],
+    [of_equal], [contramap], [pp], [equal], [compare] and [to_string], with the
+    witnesses below. Their reference is [lib/testable.mli]. *)
 
 type 'a testable = 'a Testable.t
 (** The type for witnesses of ['a] values: a printer, an equality and an
@@ -90,27 +92,49 @@ type 'a testable = 'a Testable.t
     selects and the bucket of [--shard]. Renaming or regrouping a test changes
     all three.
 
-    {!val:test}, {!group}, {!slow}, {!cases}, {!bracket} and {!scoped} take the
-    same four optional arguments.
+    {!val:test}, {!group}, {!cases}, {!bracket} and {!scoped} take the same
+    three optional arguments. A mark that means the same on any test or group, a
+    {{!section-annotations}tag}, a focus or an expected failure, wraps the
+    declaration instead, as [slow @@ test "n" f].
     - [__POS__] is the declaration site.
-    - [tags] are tag names, added to those of the enclosing groups. A tag named
-      by both [--tag] and [--exclude-tag] is excluded.
     - [timeout] is the test's limit in seconds. Defaults to the limit of the
-      nearest enclosing group that declares one, then to [--timeout], then to no
-      limit.
+      nearest enclosing group that declares one, then to [--timeout], then to
+      ten minutes, and under [--in-process] to no limit.
     - [retries] is the number of extra attempts a failing test gets. Defaults to
       the [retries] of the nearest enclosing group that declares one, then to
       [0].
 
     {b Timeouts.} The limit covers setup, body and teardown. Setup and body
     share the window, and a teardown gets what is left of it. When they spent it
-    all, the teardown gets a fresh window.
+    all, the teardown gets a fresh window. The limit is wall-clock time, so the
+    time a test waits for a processor on a loaded machine counts towards it.
 
-    The limit is a [SIGALRM] interval timer, so it has no effect on Windows and
-    cannot interrupt a blocked C call. The runner owns [SIGALRM] while a test
-    with a limit runs. A domain that the test spawned may take the signal: the
-    timeout is then raised on that domain, and ends the test only when it
-    reaches the test's domain, as through [Domain.join].
+    Every attempt has a limit, ten minutes unless [timeout] or [--timeout] says
+    otherwise, so a test that hangs fails by name rather than hold the run until
+    something outside it kills the build. The one run without a default limit is
+    [--in-process], where a debugger may hold a test as long as it likes.
+
+    The limit is a [SIGALRM] interval timer, so the teardown runs after a body
+    that timed out. The runner owns [SIGALRM] while a test with a limit runs,
+    which outside [--in-process] is every test. A domain that the test spawned
+    may take the signal: the timeout is then raised on that domain, and ends the
+    test only when it reaches the test's domain, as through [Domain.join].
+
+    The timeout is an exception that the alarm's handler raises at the next
+    point where the test's OCaml code polls: an allocation, a loop or a call, or
+    the return from a blocking call such as a contended [Mutex.lock]. It can
+    land between taking a resource and the handler that would release it: after
+    [Mutex.lock m] and before [Fun.protect ~finally:(fun () -> Mutex.unlock m)],
+    it leaves [m] locked. [Mutex.protect m f], since OCaml 5.1, releases [m]
+    whatever exception arrives. A test that timed out retires its worker after
+    its last attempt (see {!run}), so what it left locked stays with that
+    worker; its own retries run in the same worker.
+
+    The alarm cannot interrupt a C call that does not return to OCaml: a test
+    still running three limits after it started, for each of its attempts, is
+    killed with its worker process (see {!run}), and times out. On Windows,
+    where the tests run in the calling process and no alarm exists, no limit has
+    an effect, the default included: a test that hangs there hangs the run.
 
     {b Retries.} Each attempt is a fresh setup, body, teardown and capture. A
     skip is never retried. An {!xfail} test is retried on an unexpected pass,
@@ -121,7 +145,6 @@ type 'a testable = 'a Testable.t
 
 val test :
   ?__POS__:pos ->
-  ?tags:string list ->
   ?timeout:float ->
   ?retries:int ->
   string ->
@@ -134,51 +157,67 @@ val test :
     path, and it is restored afterwards. *)
 
 val group :
-  ?__POS__:pos ->
-  ?tags:string list ->
-  ?timeout:float ->
-  ?retries:int ->
-  string ->
-  test list ->
-  test
+  ?__POS__:pos -> ?timeout:float -> ?retries:int -> string -> test list -> test
 (** [group name tests] is the group [name] over [tests]. A group has no hooks.
     {!bracket}, {!scoped} and {!fixture} scope resources. *)
 
-val slow :
-  ?__POS__:pos ->
-  ?tags:string list ->
-  ?timeout:float ->
-  ?retries:int ->
-  string ->
-  (unit -> unit) ->
-  test
-(** [slow name fn] is {!val:test} with the tag ["slow"] added to [tags]. The
-    report lists under [slow tests] every test without the tag that ran for at
-    least [--slow-threshold] seconds. *)
-
 val cases :
   ?__POS__:pos ->
-  ?tags:string list ->
   ?timeout:float ->
   ?retries:int ->
-  name:('a -> string) ->
+  ?label:('a -> string) ->
+  id:('a -> string) ->
   string ->
   'a list ->
   ('a -> unit) ->
   test
-(** [cases ~name base inputs fn] is the group [base] whose children, in the
-    order of [inputs], run [fn input] under the name [name input]. Every child
-    reports the [cases] call as its declaration site. The optional arguments sit
-    on the group, so [timeout] and [retries] apply to each child.
+(** [cases name ~id rows fn] is the table [name]: the test that checks [fn] on
+    every row of [rows]. A table is a {!prop} over [Gen.of_list rows] printed by
+    [id], whose domain is finite and so {{!section-properties} checked whole}:
+    every row runs, in order, and the test fails when [fn] raises on a row or a
+    row records a failure. Every row refuted is reported, each as it was given,
+    none shrunk, and [-v] says [holds on all N rows] of a table that passed.
 
-    [inputs] is evaluated at declaration, and [name] is applied to each input
-    then, outside any test. *)
+    {b Rows.} [id] is the row's identity: [id row] identifies the row, and
+    [--failed] records it. Two rows with one id, byte for byte, are duplicates,
+    and the table then fails with a message that names their positions and runs
+    no row. [id] may give a key of the row, as [~id:fst] does for rows that
+    start with a name, or print the row whole: [~id:(Testable.to_string w)] with
+    a witness [w], or [~id:(Printf.sprintf "%S")] for rows that are strings,
+    which keeps an empty or blank row visible. A row shows as [row 2 of 5: ID],
+    its id cut to one line of 80 bytes, and in full where the report prints a
+    counterexample. [label row], when given, shows beside the row's position, as
+    in [row 2 of 5, LABEL], and identifies nothing; an empty label shows as
+    none. A table with no row is {{!section-vacuity}vacuous}, since it checks
+    nothing.
+
+    {b Baselines.} Each row settles its baseline corrections alone, as a test of
+    its own would: a row whose failures are all baseline failures keeps its
+    corrections under [--corrected] and [-u], and a row on which [fn] raises
+    keeps none, whatever the other rows did. A failure that a row records names
+    the row as a subtest's names the subtest.
+
+    {b Skipping.} A {!skip} in a row, a {!subtest}'s or a {!fixture}'s included,
+    skips that row alone, and the table goes on with the next. A row that
+    recorded a failure before it skipped fails. The table fails if a row failed,
+    reported as above; otherwise it passes if a row passed, and it is skipped,
+    with the first row's reason, only when every row skipped. [-v] says how many
+    rows of a passing table skipped, and why the first did, as
+    [holds on 2 of 3 rows, 1 skipped: REASON], and a failing table's [scope:]
+    counts them too.
+
+    {b Rerunning.} Under [--failed] a table runs the rows that failed last, and
+    no other. A recorded row that the table no longer has is stale: the table
+    then fails and says so, rather than pass on the rows that remain.
+
+    [rows] is evaluated at declaration. [id] and [label] run in the test, once
+    per row. [timeout] covers the whole table, and a retry runs it whole again.
+    A table carries no tag of its own, since its rows depend on no seed. *)
 
 (** {2:resources Resources} *)
 
 val bracket :
   ?__POS__:pos ->
-  ?tags:string list ->
   ?timeout:float ->
   ?retries:int ->
   setup:(unit -> 'r) ->
@@ -199,7 +238,6 @@ val bracket :
 val scoped :
   (('r -> unit) -> unit) ->
   ?__POS__:pos ->
-  ?tags:string list ->
   ?timeout:float ->
   ?retries:int ->
   string ->
@@ -243,6 +281,11 @@ val fixture : ?teardown:('a -> unit) -> (unit -> 'a) -> unit -> 'a
     failure, and the other releases still run. Without [teardown] nothing is
     released.
 
+    The fixture belongs to the worker process that runs the test (see
+    {{!section-process}the process}). Under [-j N] each worker acquires its own,
+    and a worker that retires after a test, or that a test ended, is replaced by
+    one that acquires again. A worker that a test ended releases nothing.
+
     {b Warning.} No timeout covers a release.
 
     Raises [Invalid_argument] if the accessor is called while no test is
@@ -250,9 +293,22 @@ val fixture : ?teardown:('a -> unit) -> (unit -> 'a) -> unit -> 'a
 
 (** {2:annotations Annotations}
 
-    An annotation wraps a declared test or group, which keeps its declaration
-    site. On a group it reaches every test under it. The annotation nearest a
-    test wins. *)
+    An annotation wraps a declared test or group, written [focus @@ test "n" f]
+    or [tag "gpu" @@ group "g" tests], and the test or group keeps its
+    declaration site. On a group it reaches every test under it. Tags add up: a
+    test carries its own and those of its enclosing groups. Of the other
+    annotations, the one nearest a test wins. *)
+
+val tag : string -> test -> test
+(** [tag name t] is [t] tagged [name]. [--tag] keeps the tests that carry every
+    tag it names, and [--exclude-tag] drops those that carry one, so a tag named
+    by both is excluded. A {!prop} carries the tag ["prop"], and a {!stateful}
+    test ["prop"] and ["stateful"]. *)
+
+val slow : test -> test
+(** [slow t] is [tag "slow" t]. The tag keeps a test out of the report's
+    [slow tests], which lists every test without it that ran for at least
+    [--slow-threshold] seconds. *)
 
 val focus : test -> test
 (** [focus t] is [t] focused. When a suite holds a focused test, only focused
@@ -278,6 +334,17 @@ val xfail : ?reason:string -> test -> test
     verb but {!fail} and {!failf} takes [?msg], text the report prints above the
     values. A failure keeps at most 64 KiB of a printed value.
 
+    A failing verb records its failure in the running test before it raises, so
+    the test fails even when code catches the exception, as a library that
+    ignores what its callbacks raise does. The report then says
+    [failed, then caught] above the values. A verb also works on a domain that
+    the test spawned: its failure is recorded on the test whether or not the
+    exception reaches the test's domain, if it fails before the body, or the
+    scope, that spawned the domain returns. Inside the law of a property the
+    failure is recorded on the case, which fails and shrinks as when the law
+    raises it. Each attempt of a retried test starts with nothing recorded.
+    {!eventually} is the one way to catch a failing verb on purpose.
+
     Outside a run a failure or a skip is an uncaught exception. *)
 
 (** {2:comparisons Equality and order}
@@ -286,15 +353,22 @@ val xfail : ?reason:string -> test -> test
     The four ordering verbs read its order and never its equality.
 
     An ordering verb on a witness without order raises [Invalid_argument],
-    whether or not its claim holds. The {{!section-witnesses}witnesses} section
-    says which witnesses carry an order. *)
+    whether or not its claim holds, with a message that names the verb and
+    [Testable.with_compare]. The {{!section-witnesses}witnesses} section says
+    which witnesses carry an order. *)
 
 val equal : ?__POS__:pos -> ?msg:string -> 'a testable -> 'a -> 'a -> unit
 (** [equal t expected actual] asserts that [expected] and [actual] are equal
-    under [t]. *)
+    under [t]. Under a witness with a tolerance, {!float} or {!float_rel} alone
+    or in a container, the call also records at its site the largest error it
+    saw against the bound it allowed; the report states it on failure, under
+    [-v] and in [--json], so a tolerance far looser than the errors shows. A
+    call with no location, as in tail position without [~__POS__], is recorded
+    at the test's declaration. *)
 
 val not_equal : ?__POS__:pos -> ?msg:string -> 'a testable -> 'a -> 'a -> unit
-(** [not_equal t a b] asserts that [a] and [b] are not equal under [t]. *)
+(** [not_equal t a b] asserts that [a] and [b] are not equal under [t]. Its
+    failure prints [a] and never [b]. *)
 
 val less : ?__POS__:pos -> ?msg:string -> 'a testable -> than:'a -> 'a -> unit
 (** [less t ~than v] asserts that [v] is strictly below [than] under [t]'s
@@ -340,11 +414,11 @@ val satisfies :
 
     The string verbs compare bytes. *)
 
-val starts_with : ?__POS__:pos -> ?msg:string -> affix:string -> string -> unit
-(** [starts_with ~affix s] asserts that [s] begins with [affix]. *)
+val starts_with : ?__POS__:pos -> ?msg:string -> prefix:string -> string -> unit
+(** [starts_with ~prefix s] asserts that [s] begins with [prefix]. *)
 
-val ends_with : ?__POS__:pos -> ?msg:string -> affix:string -> string -> unit
-(** [ends_with ~affix s] asserts that [s] ends with [affix]. *)
+val ends_with : ?__POS__:pos -> ?msg:string -> suffix:string -> string -> unit
+(** [ends_with ~suffix s] asserts that [s] ends with [suffix]. *)
 
 val contains : ?__POS__:pos -> ?msg:string -> sub:string -> string -> unit
 (** [contains ~sub s] asserts that [sub] occurs in [s]. The empty string occurs
@@ -410,9 +484,10 @@ val raises : ?__POS__:pos -> ?msg:string -> exn -> (unit -> 'a) -> unit
     [e].
 
     An exception that carries what structural equality cannot compare, such as a
-    function, needs {!raises_match}. A verb's failure, a {!skip}, a timeout, a
-    call to [exit] or an {!assume} that [f] raises is not the exception [raises]
-    waits for. It passes through. *)
+    function, can make the comparison raise [Invalid_argument], which escapes
+    [raises] in place of what [f] raised: it needs {!raises_match}. A verb's
+    failure, a {!skip}, a timeout, a call to [exit] or an {!assume} that [f]
+    raises is not the exception [raises] waits for. It passes through. *)
 
 val raises_match :
   ?__POS__:pos -> ?msg:string -> (exn -> bool) -> (unit -> 'a) -> unit
@@ -422,18 +497,19 @@ val raises_match :
 
 (** Exception predicates for {!raises_match}.
 
-    A predicate checks the constructor, and the message when [substring] is
-    given. An empty [substring] matches every message. *)
+    A predicate checks the constructor, and the message, as bytes, when [sub] is
+    given, as {!contains} does. An empty [sub] matches every message. A
+    predicate never raises. *)
 module Exn : sig
-  val invalid_arg : ?substring:string -> exn -> bool
-  (** [invalid_arg ?substring e] is [true] iff [e] is [Invalid_argument m] and
-      [m] contains [substring], when given. *)
+  val invalid_arg : ?sub:string -> exn -> bool
+  (** [invalid_arg ?sub e] is [true] iff [e] is [Invalid_argument m] and [m]
+      contains [sub], when given. *)
 
-  val failure : ?substring:string -> exn -> bool
-  (** [failure ?substring e] is {!invalid_arg} for [Failure m]. *)
+  val failure : ?sub:string -> exn -> bool
+  (** [failure ?sub e] is {!invalid_arg} for [Failure m]. *)
 
-  val sys_error : ?substring:string -> exn -> bool
-  (** [sys_error ?substring e] is {!invalid_arg} for [Sys_error m]. *)
+  val sys_error : ?sub:string -> exn -> bool
+  (** [sys_error ?sub e] is {!invalid_arg} for [Sys_error m]. *)
 end
 
 (** {2:laws Laws}
@@ -658,6 +734,36 @@ module Law : sig
       satisfy [inv]. *)
 end
 
+(** {2:polling Polling} *)
+
+val eventually : within:float -> (unit -> 'a) -> 'a
+(** [eventually ~within f] calls [f ()] until a call returns, and is its value:
+    for a claim that comes to hold, on what another domain, a process or a timer
+    builds. A call that fails or raises is followed by another after at most ten
+    milliseconds, until [within] seconds have passed on the monotonic clock
+    since the first began, and no pause runs past them. The last call's failure
+    fails the test, and those of the calls before it are not recorded. A
+    {!skip}, a timeout, a call to [exit] or an {!assume} ends it at once.
+
+    {[
+    test "the worker drains the queue" (fun () ->
+        Worker.start queue;
+        eventually ~within:2. (fun () -> equal int 0 (Queue.length queue)))
+    ]}
+
+    It is the one scoped catch of a failing verb because it is the smallest one
+    that cannot hide a failure. An [attempt : (unit -> 'a) -> ('a, _) result]
+    would hand the failure to the caller, and [ignore (attempt f)] would be the
+    catch-all that recording closes, under a name. A
+    [passes : (unit -> unit) -> bool] would be the same in one word less. A poll
+    ends on its claim, held or failed, and needs one argument, the bound; the
+    pause between calls is fixed, since it changes how long a test takes and not
+    what it checks. A choice between claims is {!mem}, {!satisfies} or a [match]
+    on the value.
+
+    Raises [Invalid_argument] if [within] is not finite and positive, before any
+    call. *)
+
 (** {2:ending Failing and skipping} *)
 
 val fail : ?__POS__:pos -> string -> 'a
@@ -667,8 +773,9 @@ val failf : ?__POS__:pos -> ('a, Format.formatter, unit, 'b) format4 -> 'a
 (** [failf fmt ...] is {!fail} with the message [fmt] formats. *)
 
 val skip : ?reason:string -> unit -> 'a
-(** [skip ?reason ()] skips the running test. A skip is not a failure, and a
-    selection whose every test skipped exits [0]. *)
+(** [skip ?reason ()] skips the running test or, in a row of a {!cases} table,
+    that row alone (see {!cases}). A skip is not a failure, and a selection
+    whose every test skipped exits [0]. *)
 
 (** {1:witnesses Witnesses}
 
@@ -733,9 +840,13 @@ val nativeint : nativeint testable
     {!float_exact}, every NaN equals every NaN and [0.] differs from [-0.]. *)
 
 val float_exact : float testable
-(** [float_exact] compares floats bit for bit. It prints the shortest decimal
-    that round-trips to the value, and the infinities and NaN as [infinity],
-    [neg_infinity] and [nan]. *)
+(** [float_exact] compares floats by their bits, except that every NaN equals
+    every NaN whatever its payload and sign: two floats are equal iff both are
+    NaN or [Int64.bits_of_float] gives them one value, so [0.] differs from
+    [-0.]. It prints the shortest decimal that round-trips to the value,
+    [0.1 +. 0.2] as [0.30000000000000004], and the infinities and NaN as
+    [infinity], [neg_infinity] and [nan]. Two unequal floats never print alike.
+*)
 
 val float : float -> float testable
 (** [float eps] compares with absolute tolerance [eps]. [a] and [b] are equal
@@ -755,28 +866,49 @@ val float_rel : rel:float -> abs:float -> float testable
     it is given. {!pass} in the place of a component ignores that component. *)
 
 val option : 'a testable -> 'a option testable
-(** [option t] is the witness for ['a option] with elements under [t]. *)
+(** [option t] is the witness for ['a option] with elements under [t]. [Some a]
+    and [Some b] are equal iff [a] and [b] are equal under [t]. [None] is equal
+    only to [None]. *)
 
 val result : 'a testable -> 'e testable -> ('a, 'e) result testable
 (** [result ok error] is the witness for [('a, 'e) result], [ok] for the [Ok]
-    side and [error] for the [Error] side. *)
+    side and [error] for the [Error] side. Two values are equal iff they are on
+    the same side and equal under that side's witness. *)
 
 val either : 'a testable -> 'b testable -> ('a, 'b) Either.t testable
 (** [either left right] is {!result} for [Either.t], [left] for the [Left] side
-    and [right] for the [Right] side. *)
+    and [right] for the [Right] side. A value prints as [Left (v)] or
+    [Right (v)]. *)
 
 val list : 'a testable -> 'a list testable
-(** [list t] is the witness for ['a list] with elements under [t]. *)
+(** [list t] is the witness for ['a list] with elements under [t]. Two lists are
+    equal iff they have the same length and are equal element by element. A list
+    prints as [[a; b; c]]. *)
 
 val array : 'a testable -> 'a array testable
-(** [array t] is {!list} for ['a array]. *)
+(** [array t] is {!list} for ['a array]. An array prints as [[|a; b; c|]]. *)
 
 val slist : 'a testable -> ('a -> 'a -> int) -> 'a list testable
-(** [slist t cmp] is [Testable.contramap (List.sort cmp) (list t)]. *)
+(** [slist t cmp] is the witness for lists as multisets under [t]'s equality:
+    two lists are equal when their elements pair off, each with an element of
+    the other list equal to it under [t]. A list prints as {!list} prints it
+    sorted with [cmp], and [slist] has no order.
+
+    [cmp] sorts both lists to find the pairs, and needs only to put equal
+    elements next to each other: it may be coarser than [t]'s equality, as an
+    order on one field of a record is. With an equality that is not an
+    equivalence, as a tolerance's, the pairs are sought in the order of [cmp],
+    so two lists can differ though another pairing would make them equal.
+
+    A failing {!equal} under [slist] shows what is missing and what is extra,
+    the elements of the expected list that the actual one lacks and those it has
+    beyond them, in place of the two lists:
+    [multisets differ: 2 missing, 1 extra]. *)
 
 val pair : 'a testable -> 'b testable -> ('a * 'b) testable
 (** [pair a b] is the witness for pairs, [a] for the first component and [b] for
-    the second. *)
+    the second. Two pairs are equal iff their components are equal under [a] and
+    [b]. *)
 
 val triple :
   'a testable -> 'b testable -> 'c testable -> ('a * 'b * 'c) testable
@@ -824,11 +956,96 @@ val pass : 'a testable
     report prints the counterexample as it was drawn, and a failing example as
     it was given, whatever the law did to them.
 
-    Shrinking runs the law at most [10_000] times, accepted and rejected
-    candidates alike, and a search stopped there reports that the counterexample
-    may not be minimal. It also stops when a function of the generator raises on
-    a candidate. A function of the generator that raises while a case is drawn
-    fails the case. *)
+    {b Shrinking.} A case is the sequence of bounded choices that its generator
+    read, and shrinking edits the sequence of a failing case and parses the edit
+    again, so every candidate is a value of the generator. Three passes run to a
+    fixed point: delete the choices that one generator call read (a list element
+    and its "one more" choice are one such call), delete runs of 8, 4, 2 and 1
+    choices, and lower each choice by binary search. A step is kept when the
+    case still fails and its choices are fewer, or as many and smaller.
+    Shrinking runs the law at most [10_000] times, and a search stopped there
+    reports that the counterexample may not be minimal. A candidate on which a
+    function of the generator raises is skipped, and a function of the generator
+    that raises while a case is drawn fails the case.
+
+    {b Finite domains are checked whole.} A generator whose domain has at most
+    [count] values, as [Gen.bool], [Gen.of_list], a small range and their
+    products have, is not sampled: every value runs, in order, the verdict
+    ([-v]) says [holds on all N values], and every value refuted is reported,
+    each as it was drawn, none shrunk. A domain without end, or larger than
+    [count], is sampled as above, and its first failure stops the cases and
+    shrinks. Finding which a domain is parses the generator's first sequences
+    once, before any case, and runs no law.
+
+    {b Keeping a counterexample.} Under its counterexample, a failure prints the
+    line that keeps it. Where the generators print OCaml, it is an entry to
+    paste into [~examples], [keep it: ~examples:[ (3, "a") ]]. Otherwise it is a
+    token behind the flags that select its test alone,
+    [replay it: -f PATH --replay r1:...], with an [-e] for each other test whose
+    path holds [PATH]. Pasted after the executable, it checks that one case
+    again: the token is the case's choices and a digest of its printing, so it
+    replays on any machine and survives a renamed test, while its generator
+    reads its choices as it did. A token whose generator now parses another
+    value is reported stale, and never checks another value. Its digest is of
+    the printing, so where a value prints as its pre-image, a change to the
+    function of a {!Gen.map} goes unseen; a printer from {!Gen.with_pp} makes
+    the token check the value. Nothing writes the source.
+
+    A replayed case that passes passes the test, which says so under [-v] and in
+    a [replayed (N):] section above the summary: [the replayed case passed]. A
+    case of a {!stateful} test on several domains runs as many times as the
+    search runs each of its programs, 50, and stops at the first run that fails,
+    so one that passes reads
+    [its schedule is not replayed: the case passed 50 times]. A replay draws
+    nothing, so it is judged for no {{!section-vacuity}vacuity}: neither a
+    {!cover} demand nor a command never called fails it.
+
+    {b A case from bytes.} [--case PATH] with [-f] selecting one property or
+    stateful test checks the one case that the bytes of [PATH] decode to, in
+    place of its examples and generated cases: the statement that the law holds
+    for every string of bytes. The bytes are the case's choices in unsigned
+    LEB128, least significant group first, read totally: a choice ends at a byte
+    below [0x80] or at the end of the file, bits past the 64th are dropped, a
+    choice past the end of the file reads [0] and one above its bound reads as
+    the bound. So every file is some case, and an empty one is the case of
+    zeros. They are the bytes that a replay token's choices spell in base64url,
+    between [r1:] and the digest: decoding that field gives the file of a
+    counterexample, though [--replay] with the token itself checks that case and
+    also refuses it once stale. A failure is reported as a replayed case's, with
+    the token of the choices read, and exits [1]; a case that passes is reported
+    as a replayed case that passes is (see above). A case that times out fails
+    after the test's limit. A case that the generator or the law discards is
+    outside the law's domain and checks nothing, so the test skips, saying why.
+    A test that checks no property fails. A selection of another number of tests
+    than one, a file that cannot be read and a [--replay] beside it are refused,
+    and exit [2].
+
+    {2:vacuity Vacuity}
+
+    A test that refuted nothing and checked less than it claims is {e vacuous},
+    a verdict of its own that fails, as a failure does. Its report block is
+    tagged [VACUOUS], with one line that says why, the summary counts it as
+    [N vacuous] apart from the failures, and [--json] gives it the verdict
+    ["vacuous"]. A test is vacuous when:
+    - every case of a generated run was discarded, or more than its
+      [max_discard] were, which reads [property gave up: …]. A case that
+      [--case] reads from bytes and the law discards is no such run: bytes from
+      elsewhere that fall outside the law's domain say nothing of the property,
+      so the test skips (see above), and failing it would only be noise;
+    - a table has no row;
+    - no case and no example ran, as under [~count:0] without [~examples];
+    - a {!cover} demand is unmet, which reads [never covered: …];
+    - a {!stateful} command that a passing program could call was never called,
+      which reads [never called: …].
+
+    Vacuity is a judgement of a generated run. A run of replayed cases alone,
+    under [--replay], [--failed] or [--case], is judged for none.
+
+    A vacuous test returns the exit code of a failure, [1]: a run that claims
+    more than it checked must not end green, and a gate that reads the code has
+    no other remedy for it than for a failure, an edit of the test. The two
+    differ only in what the reader is told, and the report and [--json] tell it.
+    A vacuous test enters the record that [--failed] reads. *)
 
 (**/**)
 
@@ -840,8 +1057,11 @@ module Gen_engine = Gen.Engine
 module Gen : sig
   (** Random generators with integrated shrinking and printing.
 
-      {b Shrinking.} Every generator shrinks, and a shrink candidate satisfies
-      the constraints of its generator.
+      {b Shrinking.} A generator parses a sequence of choices, and shrinking
+      edits the sequence (see {{!section-properties}Properties}), so every
+      generator shrinks, a candidate satisfies the constraints of its generator,
+      and a {!bind} shrinks as any generator does. Each generator states its
+      target, the value it parses from choices that are all zero.
 
       {b Printing.} A counterexample prints with its generator's printer. The
       generators of base types print OCaml expressions: literals, and
@@ -861,7 +1081,33 @@ module Gen : sig
       generator first samples.
 
       {b Purity.} The functions given to {!map}, {!bind} and {!such_that} must
-      be pure, because the search for a counterexample runs them again. *)
+      be pure, because the search for a counterexample runs them again.
+
+      {b Recursion.} A generator of a recursive type takes a depth, draws a leaf
+      at depth [0] and passes [depth - 1] to each recursive call, and the test
+      draws the depth, as [let* depth = int_range 0 4 in tree depth]. A
+      probability of drawing a leaf does not bound a tree by itself: at one
+      expected child per node the mean size of a tree is infinite, and above one
+      a draw runs until the stack or the memory gives out. A generator that
+      overflows the stack fails its case, and the report names that likely
+      cause.
+
+      {b Repetition.} A draw may repeat a value that the same generator drew
+      earlier in the case, with probability 1/8, each earlier value equally
+      likely, so that a collection holds duplicates and two components collide:
+      [pair int int] draws an equal pair about one time in eight, and a list of
+      two or more [int]s a duplicate about two times in five. Every integer
+      generator of one type and range is the same generator here, so
+      [pair (int_range 0 9) (int_range 0 9)] repeats too, and [pair nat int]
+      does not. The distribution each generator states is that of a draw that
+      repeats nothing.
+
+      A repeat applies at every level of a nested generator: a record built with
+      [let+ … and+], a pair or an element of an inner list repeats as a whole,
+      and so carries its fields along. So a field of a record, or an element of
+      an inner list, equals the same field of an earlier value more often than
+      1/8: it has a chance of 1/8 at its own generator and another at each
+      generator that encloses it. *)
 
   type 'a t = 'a Gen.t
   (** The type for generators of ['a] values. The equation is not part of the
@@ -869,12 +1115,32 @@ module Gen : sig
 
   (** {1:numeric Numbers}
 
+      The thirteen generators print OCaml literals, as [3], [3l], [3L] and [3n],
+      and a finite float as the shortest decimal that round-trips.
+
       {!int}, {!int32}, {!int64}, {!nativeint}, {!float} and their ranges draw a
-      corner case with probability 0.1 and draw uniformly otherwise. The corners
+      corner case with probability 0.1, each corner equally likely. The corners
       of a range are its bounds, the point closest to [0] and that point's
-      neighbours inside the range, and [-0.] too for a float range whose [low]
-      is negative and whose [high] is not. The corners of a whole integer type
-      are [0], [1], [-1] and the type's two extremes. *)
+      neighbours inside the range ([Float.pred] and [Float.succ] of a float),
+      and [-0.] too for a float range whose [low] is negative and whose [high]
+      is not. The corners of a whole integer type are [0], [1], [-1] and the
+      type's two extremes.
+
+      Otherwise a float draws as it states, and an integer range draws
+      uniformly, since a range states the domain its values come from:
+      [int_range 1 1000] draws above 200 three times in four (75%), and at most
+      100 about one time in six (16%), its corners included.
+
+      A whole integer type, {!int}, {!int32}, {!int64}, {!nativeint} and a range
+      over the type's own [min_int] to [max_int], has no domain to spread over,
+      so it draws small values and the edges of powers of two first, since a
+      program that fails almost always fails in some simple case. It draws
+      either side of [0] about equally often, then at least half of its values
+      within 256 of [0], and about one value in four at an edge of a power of
+      two (2{^ k-1}, 2{^ k} - 1 or 2{^ k} away from it); the others spread over
+      the bit lengths up to the type's. Of {!int}, about 58% of the values lie
+      in \[[-256];[256]\]. A range one value short of the whole type is a range,
+      and draws uniformly. *)
 
   val int : int t
   (** [int] generates an integer over the whole [int] range. It shrinks toward
@@ -886,8 +1152,9 @@ module Gen : sig
       shrinks toward [0]. *)
 
   val small_int : int t
-  (** [small_int] generates an integer of either sign whose magnitude follows
-      {!nat}, so a value in \[[-9_999];[9_999]\]. It shrinks toward [0]. *)
+  (** [small_int] generates an integer whose magnitude follows {!nat}, negated
+      with probability 0.5, so a value in \[[-9_999];[9_999]\]. It shrinks
+      toward [0]. *)
 
   val int_range : int -> int -> int t
   (** [int_range low high] generates an integer in \[[low];[high]\]. It shrinks
@@ -922,21 +1189,23 @@ module Gen : sig
       corners are [0.], [-0.], [1.], [-1.], and of each sign the least
       subnormal, the least normal and the greatest finite float. Unlike {!int}
       and {!char}, it leaves out part of its type, the non-finite values;
-      {!any_float} draws them. It shrinks toward [0.], and [-0.] shrinks to
-      [0.]. *)
+      {!any_float} draws them. It shrinks toward [0.], an integer before a
+      fraction and a fraction with fewer bits before one with more, and [-0.]
+      shrinks to [0.]. *)
 
   val any_float : float t
   (** [any_float] generates [nan], [infinity] or [neg_infinity] with probability
-      0.1, each equally likely, and a {!float} otherwise. A non-finite value
-      shrinks to [0.]. NaN is equal to nothing under a tolerance, so a law over
-      [any_float] compares under {!Windtrap.float_exact}. *)
+      0.1, each equally likely, and a {!float} otherwise. It shrinks as {!float}
+      does, and a non-finite value toward a finite one. NaN is equal to nothing
+      under a tolerance, so a law over [any_float] compares under
+      {!Windtrap.float_exact}. *)
 
   val float_range : float -> float -> float t
   (** [float_range low high] generates a finite float in \[[low];[high]\],
       uniformly apart from its corners. It shrinks toward the point of the range
       closest to [0.], and toward [-0.] when [high] is [-0.]. Sampling raises
-      [Invalid_argument] if [high < low], if a bound is not finite, or if
-      [high -. low] overflows. *)
+      [Invalid_argument] if a bound is not finite, if [high < low], or if
+      [high -. low] overflows, checked in that order. *)
 
   (** {1:base Unit, booleans, characters and strings} *)
 
@@ -948,23 +1217,34 @@ module Gen : sig
       to [false]. *)
 
   val char : char t
-  (** [char] generates a byte uniformly: each of the 256 characters, ['\x00']
-      and the bytes above 127 included. It shrinks toward ['a']. *)
+  (** [char] is [char_range '\x00' '\xff']: every byte, ['\x00'] and the bytes
+      above 127 included, with no lean toward text. Its corners are ['\x00'],
+      ['\x7f'], ['\x80'], ['\xff'], ['a'], ['`'] and ['b'], each drawn 1.8% of
+      the time, against 0.35% for any other byte, so a default [string] holds a
+      NUL about one time in thirteen. Printable ASCII is 38% of the draws and
+      the bytes above 127 are 48%. It shrinks toward ['a'], and prints with
+      [%C]. *)
 
   val char_range : char -> char -> char t
   (** [char_range low high] generates a character in \[[low];[high]\], in byte
-      order, uniformly. It shrinks toward the character of the range closest to
-      ['a']: [char_range 'A' 'Z'] toward ['Z'], [char_range '0' '9'] toward
-      ['9']. Sampling raises [Invalid_argument] if [high < low]. *)
+      order. It draws a corner with probability 0.1, each corner equally likely,
+      as an integer range does: [low], [high], the character of the range
+      closest to ['a'] and that character's neighbours inside the range, and
+      ['\x7f'] and ['\x80'] when they are inside, the two sides of the sign bit
+      that C code and decoders get wrong. Otherwise it draws uniformly. It
+      shrinks toward the character of the range closest to ['a']:
+      [char_range 'A' 'Z'] toward ['Z'], [char_range '0' '9'] toward ['9'].
+      Sampling raises [Invalid_argument] if [high < low]. *)
 
   val uchar : Uchar.t t
   (** [uchar] generates a Unicode scalar value, never a surrogate. Its UTF-8
-      encoding is 1, 2, 3 or 4 bytes long with equal probability, so ASCII is
-      drawn as often as all the 4-byte values together. It draws a corner with
-      probability 0.1: the bounds of the lengths (U+0000, U+007F, U+0080,
+      encoding is 1, 2, 3 or 4 bytes long with equal probability, and the value
+      uniform among those of that length, so ASCII is drawn as often as all the
+      4-byte values together. It draws a corner with probability 0.1, each
+      corner equally likely: the bounds of the lengths (U+0000, U+007F, U+0080,
       U+07FF, U+0800, U+FFFF, U+10000, U+10FFFF), the edges of the surrogates
       (U+D7FF, U+E000) and U+FFFD. It shrinks toward [Uchar.of_char 'a'], and
-      prints as [Uchar.of_int 0xE9]. *)
+      prints as [Uchar.of_int 0xE9], the code point in uppercase hexadecimal. *)
 
   val string : string t
   (** [string] is [string_of char]. *)
@@ -972,9 +1252,9 @@ module Gen : sig
   val string_of : ?size:int t -> char t -> string t
   (** [string_of ?size char] generates a string whose length follows [size] and
       whose characters follow [char]. [size] defaults to the length of {!list}.
-      It shrinks as {!list} does. It always prints, as a quoted string, even
-      when [char] has no printer. Sampling raises [Invalid_argument] if [size]
-      generates a negative length. *)
+      It shrinks as {!list} does. It always prints, with [%S], from the values
+      of its characters: [char]'s printer is never used, and none is needed.
+      Sampling raises [Invalid_argument] as {!list} does. *)
 
   val bytes : bytes t
   (** [bytes] is [bytes_of char]. *)
@@ -986,42 +1266,53 @@ module Gen : sig
 
   val list : ?size:int t -> 'a t -> 'a list t
   (** [list ?size gen] generates a list of [gen] values whose length follows
-      [size]. Without [size], the length is below [64] and about 5 on average.
+      [size]. It prints as [[a; b; c]].
 
-      A list shrinks to shorter lists and by shrinking its elements, in an order
-      that is not part of the contract. With an explicit [size] the length
-      shrinks as [size] does, so [~size:(int_range 2 5)] holds for every
-      candidate.
+      Without [size], the length is below [4] in 50% of the draws, below [8] in
+      25%, below [16] in 20%, below [64] in 4% and below [256] in 1%, uniformly
+      within each stratum. The mean is about 5.7, so a [list (list int)] holds
+      about 32 integers and a case draws in microseconds. A length of 64 or more
+      comes once in 133 lists, so a law that fails only on a long list is found
+      by a longer run, and none is out of reach below 256. [~size] states the
+      scale a law needs, as [~size:(int_range 0 1000)] does.
+
+      A list shrinks toward [[]]: a candidate drops elements, shrinks them or,
+      in a list of lists, merges two lists, in an order that is not part of the
+      contract. With an explicit [size] the length shrinks as [size] does, so
+      [~size:(int_range 2 5)] holds for every candidate.
 
       Sampling raises [Invalid_argument] if [size] generates a negative length.
-  *)
+      The message names [Gen.list], whichever of {!list}, {!array}, {!string_of}
+      and {!bytes_of} raised. *)
 
   val array : ?size:int t -> 'a t -> 'a array t
-  (** [array ?size gen] is {!list} for arrays. *)
+  (** [array ?size gen] is {!list} for arrays. It prints as [[|a; b; c|]]. *)
 
   val option : 'a t -> 'a option t
   (** [option gen] generates [None] with probability 0.15 and [Some v]
-      otherwise, with [v] drawn from [gen]. [Some v] shrinks first to [None],
-      then as [v] does. *)
+      otherwise, with [v] drawn from [gen]. It shrinks toward [None], and [v] as
+      [gen] does. A drawn [None] prints as [None] even when [gen] has no
+      printer. *)
 
   val result : 'a t -> 'e t -> ('a, 'e) result t
   (** [result ok error] generates [Ok] of an [ok] value with probability 0.75
-      and [Error] of an [error] value otherwise. A payload shrinks with its
-      generator, and no candidate changes constructor. *)
+      and [Error] of an [error] value otherwise. It shrinks toward [Ok], and a
+      payload with its generator. *)
 
   val either : 'a t -> 'b t -> ('a, 'b) Either.t t
   (** [either left right] generates [Left] of a [left] value or [Right] of a
-      [right] value with equal probability. It shrinks as {!result} does. *)
+      [right] value with equal probability. It shrinks toward [Left], and a
+      payload with its generator. *)
 
   val pair : 'a t -> 'b t -> ('a * 'b) t
-  (** [pair a b] generates both components. It shrinks the first component, then
-      the second. *)
+  (** [pair a b] generates both components, the first first, and shrinks both.
+  *)
 
   val triple : 'a t -> 'b t -> 'c t -> ('a * 'b * 'c) t
-  (** [triple a b c] is {!pair} for three components, shrunk from the left. *)
+  (** [triple a b c] is {!pair} for three components. *)
 
   val quad : 'a t -> 'b t -> 'c t -> 'd t -> ('a * 'b * 'c * 'd) t
-  (** [quad a b c d] is {!pair} for four components, shrunk from the left. *)
+  (** [quad a b c d] is {!pair} for four components. *)
 
   (** {1:choice Constants, choices and filters} *)
 
@@ -1040,16 +1331,15 @@ module Gen : sig
       necessarily adjacent, in their order in [values]. Its length is drawn as
       [int_range 0 n] draws one, [n] being the length of [values], and every
       choice of that many positions is equally likely. It shrinks by dropping
-      elements, toward [[]]. [pp] prints an element; without it the subsequence
-      has no printer until {!with_pp} gives one. *)
+      elements, toward [[]]. [pp] prints an element, and a subsequence prints as
+      [[a; b; c]]; without [pp] it has no printer until {!with_pp} gives one. *)
 
   val permutation : ?pp:(Format.formatter -> 'a -> unit) -> 'a list -> 'a list t
   (** [permutation ~pp values] generates [values] shuffled, every ordering
-      equally likely. It shrinks toward [values] as given: each candidate has
-      fewer pairs of elements out of their order in [values], and every swap of
-      two adjacent elements that are out of order is a candidate. [pp] prints an
-      element; without it the permutation has no printer until {!with_pp} gives
-      one. *)
+      equally likely. It shrinks toward [values] as given, a candidate moving an
+      element left past elements that come later in [values]. [pp] prints an
+      element, and a permutation prints as [[a; b; c]]; without [pp] it has no
+      printer until {!with_pp} gives one. *)
 
   val one_of : 'a t list -> 'a t
   (** [one_of gens] generates with one generator of [gens], each with equal
@@ -1059,16 +1349,17 @@ module Gen : sig
 
   val frequency : (int * 'a t) list -> 'a t
   (** [frequency weighted] generates with one generator of [weighted], each with
-      a probability proportional to its weight. The value shrinks with the
-      generator that drew it, and every candidate is a value of one of the
-      generators. Sampling raises [Invalid_argument] if [weighted] is empty, if
-      a weight is negative, or if the weights sum to less than [1]. *)
+      a probability proportional to its weight. It shrinks toward the first
+      generator of positive weight, as {!one_of} does, and every candidate is a
+      value of one of the generators of positive weight. Sampling raises
+      [Invalid_argument] if [weighted] is empty, if a weight is negative, or if
+      the weights sum to less than [1], checked in that order. *)
 
   val such_that : ('a -> bool) -> 'a t -> 'a t
   (** [such_that p gen] generates [gen] values that satisfy [p], in at most 100
       draws. When none of them satisfies [p] the case is discarded, as
-      {!Windtrap.reject} discards one. Shrink candidates that fail [p] are
-      dropped. It keeps [gen]'s printer.
+      {!Windtrap.reject} discards one. Every candidate satisfies [p]: shrinking
+      drops the draws that failed it. It keeps [gen]'s printer.
 
       Prefer a generator that satisfies a structural constraint by construction.
   *)
@@ -1081,9 +1372,10 @@ module Gen : sig
 
   val bind : 'a t -> ('a -> 'b t) -> 'b t
   (** [bind gen f] generates [v] with [gen], then a value with [f v]. It shrinks
-      [v] first, and generates again with [f] for each candidate. It then
-      shrinks the inner value. The value prints as the inner value when [f v]
-      prints, and as the pre-image [v -> inner] otherwise. *)
+      [v] and the inner value together: a candidate of [v] parses the inner
+      value from what follows. The value prints as the inner value does. When
+      the inner value prints as a pre-image, the value prints as the pre-image
+      [v -> inner], or not at all when [v] does not print. *)
 
   val with_pp : (Format.formatter -> 'a -> unit) -> 'a t -> 'a t
   (** [with_pp pp gen] is [gen] printing with [pp], which wins over a pre-image
@@ -1101,7 +1393,6 @@ end
 
 val prop :
   ?__POS__:pos ->
-  ?tags:string list ->
   ?timeout:float ->
   ?count:int ->
   ?max_discard:int ->
@@ -1113,10 +1404,15 @@ val prop :
 (** [prop name gen law] is the property [name], whose [law] must hold for every
     value of [gen].
     - [count] is the number of generated cases that must pass. Defaults to
-      [--prop-count], then to [100]. With [0] the examples run alone.
+      [100]. [--prop-count] raises it, and never lowers it, so a long run scales
+      every property. With [0] the examples run alone, whatever [--prop-count]
+      says, and a property with none is {{!section-vacuity}vacuous}.
     - [max_discard] is the number of discarded cases (see {!assume}) past which
-      the property gives up and fails. Defaults to twice the effective [count].
-      No flag sets it.
+      the property gives up, and is {{!section-vacuity}vacuous}. Defaults to ten
+      times the effective [count], QuickCheck's ratio: a law that keeps one case
+      in three passes, and one that keeps fewer than one in ten gives up. The
+      budget only stops a run that cannot reach its count, since a pass still
+      needs [count] cases. No flag sets it.
     - [examples] are inputs that the law runs on before any generated case. They
       are not shrunk and do not depend on the seed.
     - [timeout] covers generation and shrinking together. When it expires before
@@ -1160,14 +1456,44 @@ val classify : string -> bool -> unit
 (** [classify label cond] is [collect label] if [cond] and [()] otherwise.
     Raises as {!collect} does, whatever [cond]. *)
 
-val cover : string -> bool -> unit
-(** [cover label cond] is [classify label cond] with a demand. The property
-    fails unless a passing case marked [label]. The demand is on presence, never
-    on a proportion.
+val cover : ?share:float -> string -> bool -> unit
+(** [cover label cond] is [classify label cond] with a demand. The property is
+    {{!section-vacuity}vacuous} unless a passing case marked [label].
 
-    The demand registers when [cover] is called, whatever [cond], so a [cover]
-    the law does not always reach may register nothing. It is judged when the
-    property has run all its cases. Raises as {!collect} does. *)
+    [cover ~share:p label cond] demands instead that a share [p] of the cases
+    mark [label], with [0. < p <= 1.]. Where the cases are drawn, the share is
+    judged over the generated cases by a sequential test, QuickCheck's
+    [checkCoverage]: at [count] cases, then at each doubling of them up to
+    [1024 * count], the Wilson interval of the share at 1 − 10{^ -9} is
+    computed. The demand is met once it puts the share at [0.9 *. p] or above,
+    and unmet once it puts it below [p]; while neither holds the property draws
+    more cases, and a share still undecided after the last doubling is unmet. So
+    the test decides rather than looks once: at [count] [100] a one-look test of
+    [~share:0.1] could never fail. A share whose true value is at least [p] is
+    reported unmet, and one below [0.9 *. p] met, with a probability below
+    6·10{^ -9}. A domain checked whole and examples alone are no sample, and
+    their share is exact: at least [p] of the passing cases.
+
+    The report states the bound established, as
+    [cover "accepted" ~share:0.2: 31.0% of 400 cases, at least 24.6%], under
+    [-v], on failure and in [--json]; an unmet share is vacuous with
+    [cover "accepted" ~share:0.2: 4.0% of 400 cases, at most 9.1%]. Extending
+    the cases costs their time, and a share near its demand takes the most.
+
+    A demand is a statement about the case, and registers when [cover] is
+    called, whatever [cond]. So compute [cond] and call [cover] on every case,
+    before any branch:
+    {[
+    let r = Codec.decode s in
+    cover "decoded" (Result.is_ok r);
+    match r with Ok v -> equal string s (Codec.encode v) | Error _ -> ()
+    ]}
+    and not in the branch it describes, [| Ok v -> cover "decoded" true; …],
+    which registers nothing when no case reaches the branch, the one run the
+    demand exists to catch, so that the property passes though it checked
+    nothing. The demand is judged when the property has run all its cases.
+    Raises [Invalid_argument] unless [0. < p <= 1.], and raises as {!collect}
+    does. *)
 
 (** {1:stateful_tests Stateful tests}
 
@@ -1262,10 +1588,10 @@ val cover : string -> bool -> unit
 
     {b Labels.} {!collect}, {!classify} and {!cover} in a command's functions, a
     [~pre], the [candidates] of an {!among} type, an invariant or a release
-    count once per case, in the run that executes it. Shrinking counts nothing.
+    count once per case, in the runs that execute it. Shrinking counts nothing.
     On several domains the reference runs again for every order the judge tries,
     and those runs count nothing: the labels of the calls after the prefix count
-    along the order the judge accepted for the case's first run.
+    along the order the judge accepted in each run of the case.
 
     {b The reference behaves the same from run to run}, since shrinking and
     retries run it again. Drift comes from [Random], a [Hashtbl] whose order a
@@ -1371,10 +1697,8 @@ val among :
       [~pre] fails.
     - The element is drawn with the program as a place in the list relative to
       its length, so deleting an earlier call, which changes the list, keeps the
-      element's place in it. It shrinks as a drawn index does, toward the head
-      of the list: each candidate takes an element from an earlier place in the
-      list that its run lists, never from its parent's place, so a failure from
-      index [1] on shrinks to index [1] however long the list.
+      element's place in it. It shrinks toward the head of the list, so a
+      failure from index [1] on shrinks to index [1] however long the list.
     - The same element goes to the reference, the [~pre] and the system, so
       neither side may mutate it. The report prints it as [w] prints it, in
       parentheses as a drawn argument is, and [w]'s equality is not used.
@@ -1418,9 +1742,10 @@ val ( ^-> ) :
 (** [t ^-> fn] takes a value of [t] that an earlier call made: its reference
     side for the reference and [~pre], its system side for the system. It is
     drawn as one of the earlier calls that make a value of [t], and takes the
-    value that call made. When that call made none, as when shrinking deleted
-    it, it takes the newest value of [t]. It shrinks toward the newest value,
-    and deleting other calls never moves it off the value its call made.
+    value that call made. When that call made none, it takes the newest value of
+    [t]. It shrinks toward the newest value. Shrinking that deletes other calls
+    keeps it on the value its call made, and shrinking that deletes that call
+    moves it to the next older maker's.
 
     When [t] is an {!among} type, [t ^-> fn] takes an element that a value of
     the call lists instead, read, drawn and shrunk as {!among} says. *)
@@ -1494,7 +1819,6 @@ val command :
 
 val stateful :
   ?__POS__:pos ->
-  ?tags:string list ->
   ?timeout:float ->
   ?count:int ->
   ?steps:int ->
@@ -1512,15 +1836,19 @@ val stateful :
     - [count] and [timeout] are {!prop}'s. So are [--prop-count], the seed, the
       bound on shrinking and the [replay:] line.
 
-    Shrinking removes calls, shrinks arguments and, on several domains, moves a
-    parallel call out of its branch. It runs every candidate again.
+    Shrinking removes calls, shrinks arguments, turns a command into one earlier
+    in [commands] and, on several domains, moves a parallel call out of its
+    branch. It runs every candidate again. A failing program prints the token
+    that checks it alone, [replay it: -f PATH --replay TOKEN], as a {!prop}
+    does.
 
     {b Commands never called.} When every case has passed, a command that a
-    passing case could draw and that no passing case ran fails the test with a
-    message that starts [never called: "pop" (over 100 passing cases)]. This is
-    a demand on presence over the whole run, like {!cover}'s, so a [count] or
-    [steps] too small can miss a legal command. A command listed twice is one
-    command. Under [~count:0] nothing is judged.
+    passing case could draw and that no passing case ran makes the test
+    {{!section-vacuity}vacuous}, with a line that starts
+    [never called: "pop" (over 100 passing cases)]. This is a demand on presence
+    over the whole run, like {!cover}'s, so a [count] or [steps] too small can
+    miss a legal command. A command listed twice is one command. Under
+    [~count:0] no program runs, and the test is vacuous.
 
     A stateful test carries the tags ["prop"] and ["stateful"]. Like a {!prop},
     it inherits the [retries] of an enclosing group, and every retry replays the
@@ -1541,21 +1869,21 @@ val stateful :
     ends. Branch [i] runs its system functions on domain [i], every branch at
     once, and the prefix and the suffix run on the test's domain. Each program
     runs 50 times from no value, and the test fails when no order of the calls,
-    each branch keeping its order and the suffix last, replayed on the
-    reference, gives every outcome the system gave where the reference predicts,
-    and is accepted where it judges. The search follows program order and never
-    real time, so every linearizable history passes. The invariant runs after
-    the prefix's calls only.
+    each branch keeping its order, a call that returned before another began
+    first and the suffix last, replayed on the reference, gives every outcome
+    the system gave where the reference predicts, and is accepted where it
+    judges. The test thus checks linearizability against the reference: a
+    history passes iff some order that keeps real time explains it. The
+    invariant runs after the prefix's calls only.
 
     The contract differs from one domain's in five ways:
     - a replay draws the same programs, not the same schedules, and may pass;
     - a counterexample does not run once more after the search, except under
-      [--mutate] and [--arm] without [--mutate-workers];
+      [--mutate] and [--arm];
     - the test takes no retries and ignores a group's;
     - under [--mutate] and [--arm] each program runs once on the test's domain,
       the prefix, branch 1 to [n], then the suffix, so a kill does not depend on
-      a schedule. [--mutate-workers] spawns the workers as without mutation
-      testing, and a kill can then depend on a schedule;
+      a schedule;
     - a call still running one limit after the test's limit expired fails the
       test as timed out, and the run stops after it, since its domain would run
       this test's code inside the next test. On Windows, where no limit is
@@ -1605,12 +1933,24 @@ val stateful :
     is compiled into the executable, so after [-u] has rewritten one the
     executable must be built again before the next run.
 
-    [-u] is refused under [CI], and [-u] with [--corrected] is a usage error.
+    {b Under [CI]} a baseline mismatch fails the run's exit code in every mode.
+    A [--corrected] run exits [0] on a mismatch only for a [diff?] to hand the
+    correction to [dune promote], and no one promotes under [CI], so a stanza
+    that lacks the file's [diff?] would pass. The run still writes the
+    correction, and says on standard error why it exits [1]. [-u] is refused
+    under [CI], and [-u] with [--corrected] is a usage error.
 
     A correction is kept only for a test whose every failure is a baseline
     mismatch. An assertion failure, another exception or a skip beside the
     mismatch withholds it. An {!xfail} test keeps none. A test is not retried
-    past an attempt whose corrections were kept, whatever its [retries].
+    past an attempt whose corrections were kept, whatever its [retries]. Each
+    row of a {!cases} table keeps or withholds its own, as a test would.
+
+    {b In a law.} The law of a {!prop} or a {!stateful} test claims what it
+    checks for every value, so there a mismatch fails the case as any failing
+    verb does: the case is shrunk, and the report shows the one counterexample
+    with its mismatch. It is never a correction, in any mode, since no one text
+    can hold for every value, and the failure says so.
 
     A correction that the source cannot take fails its test. The kept
     corrections are written once, after the last test. One that cannot be
@@ -1632,10 +1972,11 @@ val expect : string -> pos * string -> unit
     ]}
 
     A mismatch records a failure located at the line of [__POS_OF__] and
-    returns. The position is the compiler's, so a call that moves keeps its
-    baseline. Every test that checks one literal, as a {!cases} body does for
-    each row, must produce one text. A literal each row carries, as in
-    [(input, __POS_OF__ {|…|})], is checked and corrected for its row alone.
+    returns, except in a law (see {{!section-baselines}Baselines}). The position
+    is the compiler's, so a call that moves keeps its baseline. Every test that
+    checks one literal, as a {!cases} body does for each row, must produce one
+    text. A literal each row carries, as in [(input, __POS_OF__ {|…|})], is
+    checked and corrected for its row alone.
 
     When the source changed since the build, or cannot be read, a correcting run
     keeps no correction for the literal: the expectation fails, under [-u] too.
@@ -1648,21 +1989,24 @@ val expect_exact : string -> pos * string -> unit
     byte. The correction of an [actual] that holds a CR is a quoted literal,
     with the CR written [\r]. *)
 
-val expect_file : ?__POS__:pos -> string -> string -> unit
-(** [expect_file actual path] compares [actual] with the file at [path],
+val expect_file : ?__POS__:pos -> file:string -> string -> unit
+(** [expect_file ~file actual] compares [actual] with the file [file], a path
     relative to the project root whatever the working directory. A mismatch
     records a failure and returns. A missing file is a mismatch that [-u]
     corrects by writing the file.
 
-    The comparison is of lines of text. CR and CRLF read as LF, and both sides
-    are given a final newline. Text in which those bytes matter must be encoded
-    first, as with [String.escaped].
+    The comparison is of lines of text. CR and CRLF read as LF on both sides,
+    and the final newline is compared as any other byte: an [actual] that lacks
+    the file's final newline is a mismatch, and when it is the only difference
+    the failure says so, as {!expect_exact}'s does. Text in which a CR matters
+    must be encoded first, as with [String.escaped]. A correction, [-u]'s or
+    [--corrected]'s, writes [actual] byte for byte.
 
     Under dune the run reads dune's copy of the file. Under [--corrected] a
     missing file gets no correction and fails the run, so a new baseline starts
     as an empty file or is accepted once with [-u].
 
-    [__POS__] is the failure's location (see {!type:pos}). A [path] that cannot
+    [__POS__] is the failure's location (see {!type:pos}). A [file] that cannot
     be proven to lie under the project root fails the test at once, as an
     assertion does. Raises [Sys_error] if the file exists and cannot be read,
     and [Invalid_argument] if no test is running. *)
@@ -1705,9 +2049,9 @@ val output : unit -> string
     functions on domains that it joins before it ends. Nothing here is
     thread-safe. Every function here, {!output}, the
     {{!section-baselines}baseline} checks, {!collect}, {!classify}, {!cover} and
-    a {!fixture}'s accessor raise a failure when called from another domain,
-    which fails the running test when it reaches the test's domain, as through
-    [Domain.join].
+    a {!fixture}'s accessor raise a failure when called from another domain, and
+    record it as a verb does, so it fails the running test even when the
+    exception never reaches the test's domain.
 
     A directory, a binding or a working directory made here lasts until the
     attempt ends. Each attempt of a retried test starts without them, and all
@@ -1721,15 +2065,16 @@ val current_test : unit -> string list
 val subtest : string -> (unit -> unit) -> unit
 (** [subtest name fn] runs [fn ()] as a named part of the running test. A
     failure of [fn], a verb's or any other exception, is recorded and [subtest]
-    returns. The subtests after it still run, and the test fails at the end with
-    every failure recorded.
+    returns, and so is a verb's failure that [fn] caught. The subtests after it
+    still run, and the test fails at the end with every failure recorded.
 
     A {!skip}, a timeout or a call to [exit] ends the whole test, which still
     fails on what was recorded, and inside the law of a property an {!assume}
-    discards the case. [-f] cannot select a subtest. Inside the law of a
-    property or a function of a {!stateful} test, a failure of [fn] is not
-    recorded: it fails the case, which shrinks as any failing case does, and the
-    report names the subtest under the counterexample. *)
+    discards the case. A skip in a row of a {!cases} table ends that row alone.
+    [-f] cannot select a subtest. Inside the law of a property or a function of
+    a {!stateful} test, a failure of [fn] is not recorded: it fails the case,
+    which shrinks as any failing case does, and the report names the subtest
+    under the counterexample. *)
 
 val temp_dir : ?prefix:string -> unit -> string
 (** [temp_dir ?prefix ()] is a fresh empty directory under the system temporary
@@ -1777,10 +2122,11 @@ val chdir : string -> unit
 val run : ?argv:string array -> string -> test list -> int
 (** [run ?argv suite tests] parses the {{!section-command_line}command line}
     [argv] and executes the selected tests of [tests], one at a time, in
-    declaration order. It writes the report to standard output, returns the
-    {{!section-exit_codes}exit code} and never exits the
-    {{!section-process}process}. Usage errors, refusals, warnings and the line
-    of an interrupted run go to standard error behind [windtrap:].
+    declaration order, in a worker process (see
+    {{!section-process}the process}). It writes the report to standard output,
+    returns the {{!section-exit_codes}exit code} and never exits the process.
+    Usage errors, refusals, warnings and the line of an interrupted run go to
+    standard error behind [windtrap:].
 
     [suite] names the run in its report, and names the directory of the capture
     logs and of the last failed tests. [argv] defaults to [Sys.argv]. [argv.(0)]
@@ -1795,25 +2141,40 @@ val run : ?argv:string array -> string -> test list -> int
     {!run} returns:
     - [0] when no selected test failed. A skip and an expected failure are no
       failure. [--help], [--version] and [-l] print and return [0].
-    - [1] when a test failed, or when a fixture's release or the writing of a
-      correction failed. It is also the code of a run refused before anything
-      executed, under [-l] too. The refusals are two tests with one path, a
-      {!focus} under [CI] and [-u] under [CI].
+    - [1] when a test failed or was {{!section-vacuity}vacuous}, or when a
+      fixture's release or the writing of a correction failed. It is also the
+      code of a run refused before anything executed, under [-l] too. The
+      refusals are two tests with one path, a {!focus} under [CI] and [-u] under
+      [CI]. A test that ended its worker process is a failed test.
     - [2] when no test ran, as with a mistyped filter, or when the command line
       does not parse. An empty [--shard] bucket and a [--failed] with nothing
       recorded are cases of the first, and the second returns [2] under [-l]
-      too.
+      too. So does [--in-process] over a selection of more than one test, and
+      [--case] over a selection of other than one.
 
     Under [--corrected] a test whose failures are all kept corrections leaves
-    the code alone. It still stops a run under [-x], and it still enters the
-    record that [--failed] reads. *)
+    the code alone, except under [CI], where no one promotes them and it returns
+    [1] (see {{!section-baselines}Baselines}). It still stops a run under [-x],
+    and it still enters the record that [--failed] reads. *)
 
 (** {2:command_line Command line and environment}
 
     [--help] lists the flags, each with its mirror when it has one. A mirror is
     a [WINDTRAP_*] variable that sets the flag under [dune runtest]. [-l],
-    [--failed], [-x], [-u], [--corrected], [-h] and [-V] have none. The command
-    line wins over the environment.
+    [--failed], [-x], [-u], [--corrected], [--in-process], [--case], [-h] and
+    [-V] have none. The command line wins over the environment.
+
+    [-j N] ([WINDTRAP_JOBS]) runs the tests in [N] worker processes at once, one
+    test at a time in each, and defaults to [1]. The report, the exit code and
+    the corrections are those of [-j 1], but tests in two workers share no
+    {!fixture} and race on the process state that {!setenv} and {!chdir} change,
+    and on the files they write. Under [--stream] the tests run one at a time
+    whatever [-j] says.
+
+    [--in-process] runs the one selected test in the process that called {!run},
+    for a debugger, and refuses a selection of more than one. It has no mirror.
+    There the test can end the process, as the next section says no other run
+    lets it.
 
     [--tag] and [--exclude-tag] add up, across repeated flags, across the
     comma-separated list of their mirrors, and across both. [WINDTRAP_FILTER]
@@ -1828,9 +2189,13 @@ val run : ?argv:string array -> string -> test list -> int
       makes it [2].
     - [WINDTRAP_MUTATE] on an executable that has no mutant to test, or whose
       selection keeps no test, runs the suite without mutation. [--mutate] there
-      returns [1].
-    - A relative path in [WINDTRAP_JUNIT] or [WINDTRAP_OUTPUT] is read from the
-      project root, and one on the command line from the working directory.
+      returns [1]. Over lines ([--lines] or [--diff]) that name no line, or that
+      hold no mutation site of an instrumented file they name, as a change to
+      comments does, [--mutate] instead runs the suite without mutation, says
+      so, and returns [0] when the suite passes.
+    - A relative path in [WINDTRAP_JUNIT], [WINDTRAP_JSON] or [WINDTRAP_OUTPUT]
+      is read from the project root, and one on the command line from the
+      working directory.
 
     {b Warning.} A changed variable does not make dune run a test again. On a
     stanza that already passed, a mirror does nothing without
@@ -1840,10 +2205,21 @@ val run : ?argv:string array -> string -> test list -> int
     by a frozen hash of each path. The buckets cover every test once, the same
     on every machine and whatever else the suite holds.
 
-    [--failed] selects the last failed tests. The tests a run executes update
-    that record, and a test it did not execute, under a filter or after [-x],
-    keeps its entry. A run never fails because it cannot read or write the
-    record, and a record it cannot read counts as empty.
+    [--failed] selects the last failed tests, and within each the cases that
+    failed: a {!cases} table reruns the rows that failed, by their id, and a
+    {!prop} or a {!stateful} test checks each counterexample it recorded again,
+    by its token, as [--replay] does, and one that now passes leaves the record
+    as any passing test does. A test whose failure belongs to no case, as a
+    timeout's or an example's, reruns whole. A recorded case that the test no
+    longer has, a row gone or a token stale, fails the test with a message that
+    names it, and is never passed over. The tests a run executes update that
+    record, and a test it did not execute, under a filter or after [-x], keeps
+    its entry. A run never fails because it cannot read or write the record, and
+    a record it cannot read counts as empty. Each executable keeps its own
+    record of a suite, so two executables that give their suites one name do not
+    erase each other's, and [dune runtest] and [dune exec] of one executable
+    share one. The record that windtrap 0.2 wrote names the suite alone, so it
+    may be another executable's, and is never read.
 
     Beyond the mirrors {!run} reads [WINDTRAP_PROJECT_ROOT] (see
     {{!section-baselines}baselines}), [CI], [GITHUB_ACTIONS], [INSIDE_DUNE],
@@ -1854,20 +2230,79 @@ val run : ?argv:string array -> string -> test list -> int
 
 (** {2:process The process}
 
-    A call to [exit] in code under test does not end the run. It is recorded as
-    the failure of its test. A handler that catches every exception around the
-    call defeats this. {!run} turns the recording of backtraces on and leaves it
-    on.
+    The process that calls {!run} runs no test. It starts a worker process, and
+    the worker runs the tests and reports on each; {!run} decides every verdict
+    from what the worker reports, how it ends and how long it takes, and returns
+    its own code. A worker is a session of its own, with its own directory for
+    {!temp_dir}.
 
-    While it executes, and not on Windows, {!run} handles [SIGINT], [SIGTERM]
-    and [SIGHUP]. It removes the attempt's temporary files and releases the
-    fixtures still held. It does not run the teardown of the interrupted test,
-    writes no correction and dies by the same signal.
+    A worker is the test executable started again, with the same command line,
+    so a test sees what a fresh start of the program builds, as under 0.2 and
+    [--in-process]: a value made as the module initialises, such as an open
+    device, a connection or a domain pool, is the worker's own. Module
+    initialisation runs again in each worker the run starts, a worker that
+    replaces a retired one included, and the worker's own call of {!run} runs
+    the tests. Work that is expensive at declaration is paid once per worker
+    start: make it [lazy], or a {!fixture}. An [at_exit] function that
+    initialisation registers runs in each worker as it ends, and work that
+    writes or clears a shared path runs once per worker, at the same time under
+    [-j]. What a worker writes before its tests start is not shown, since the
+    process that called {!run} showed it; a worker that ends before then fails
+    its test with how it ended and what it wrote. On Linux a worker starts the
+    executable that the run started as, even once another file took its place.
 
-    When the private environment variable [WINDTRAP_MUTATE_CHILD] is set and not
-    empty, {!run} is a child of the mutation loop. It runs the request of the
-    loop and exits the process. If the request is for another suite, {!run} runs
-    nothing and returns [0]. Do not set the variable. *)
+    A suite must declare the same tests each time the program starts. A worker
+    whose module initialisation declares another suite, with names taken from
+    the clock, a random generator or a directory listing that changes, runs none
+    of it, and the tests it was to run fail, saying so. Nor may a declaration
+    wait on what the process that called {!run} holds, such as a lock it took or
+    a device it opened exclusively: the worker then never starts, and an
+    interrupt of the run says that a worker was still in module initialisation,
+    with what it wrote.
+
+    Only the first call of {!run} in the process the program started as starts
+    the program again. A later call, and a call in a process forked from it,
+    forks its workers from the calling process before any test runs, so a worker
+    starts from what that process built and nothing a test left. A process that
+    spawned a domain before {!run} cannot fork. There a later call starts the
+    program again too, its worker's earlier calls returning at once the codes
+    they returned in that process, and a call in a forked process runs its tests
+    in that process, as under [--in-process].
+
+    Code under test cannot end the run. A test whose worker ends, by a call to
+    [exit] or [Unix._exit], by a signal such as [SIGSEGV], by [Out_of_memory] or
+    [Sys.Break], or by the kill of its {{!section-declaring}limit}, fails,
+    saying how, and the tests after it run in a new worker. The worker's process
+    group is killed and its temporary directory removed, so the children it
+    started and the files it left go with it; its {!fixture}s are not released.
+    A test that spawns a domain retires its worker after it, which releases the
+    fixtures: the domain cannot run into the next test. So does a test that
+    timed out, since its timeout stopped its code where it stood, and the state
+    that code left half changed, a mutex it held included, must not reach the
+    next test.
+
+    An [at_exit] function that a test registers runs as its worker ends, and the
+    code it exits with is the worker's. One that raises fails the run as a
+    release does, naming the test that registered it. The [at_exit] functions
+    the program registered before {!run} run in the process that called it, and
+    in no worker.
+
+    One escape is left: a domain that outlives the test that spawned it dies
+    with that test's worker, so an [exit] it would call later is never made and
+    no test records it.
+
+    {!run} turns the recording of backtraces on and leaves it on. While it
+    executes, and not on Windows, {!run} handles [SIGINT], [SIGTERM] and
+    [SIGHUP], and sends each worker the signal. A worker removes the attempt's
+    temporary files and releases the fixtures still held, without the teardown
+    of the interrupted test; then {!run} writes no correction and dies by the
+    same signal. A worker that receives one of these signals itself ends the run
+    so too.
+
+    On Windows, and under [--in-process], the tests run in the process that
+    called {!run}. There a call to [exit] in code under test is recorded as the
+    failure of its test, unless a handler that catches every exception surrounds
+    the call, and the rest of this section does not hold. *)
 
 (** {1:private Private} *)
 
@@ -1878,25 +2313,30 @@ val run : ?argv:string array -> string -> test list -> int
 module Private : sig
   module Baseline = Baseline
   module Capture = Capture
-  module Changed_lines = Changed_lines
   module Check = Check
+  module Choice = Choice
   module Cli = Cli
   module Diff = Diff
   module Failure = Failure
   module Gen_engine = Gen_engine
+  module Lines = Lines
   module Loc = Loc
+  module Multiset = Multiset
   module Mutate_loop = Mutate_loop
   module Os = Os
   module Pp = Pp
   module Property = Property
   module Report = Report
   module Report_junit = Report_junit
+  module Report_json = Report_json
   module Report_sections = Report_sections
   module Run = Run
   module Seed = Seed
+  module Shrink = Shrink
   module Source_patch = Source_patch
   module Stateful = Stateful
   module Test_tree = Test_tree
   module Text = Text
+  module Tolerance = Tolerance
   module Workers = Workers
 end

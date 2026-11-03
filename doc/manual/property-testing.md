@@ -63,7 +63,9 @@ let () =
          codec;
          witness;
          combine;
+         turn;
          scaling;
+         part_of;
        ])
 ```
 
@@ -76,13 +78,18 @@ them.
 
 `prop name gen law` is a test that runs `law` on the values `gen` draws
 and asserts with the verbs of [Assertions](assertions.md). `~count` sets
-its number of cases, and `--prop-count` sets it for the properties
-without one, 100 by default. `Gen` has a generator for each type that
-has a witness, under the same name, and composes them with `map`, `let+`
-and `one_of`. `Gen.with_pp` gives a generator the printer its
-counterexamples print with, and `Gen.of_list ~pp` and `Gen.constant ~pp`
-take it with the values they list. Without one, a value that `map` or `let+`
-computed prints as what it was computed from, after `computed from`.
+its number of cases, 100 by default, and `--prop-count` raises the count
+of every property whose count is smaller, so a long run scales them all.
+A generator with no more values than the count, as `Gen.bool`,
+`Gen.int_range 0 3` or a pair of them, is not sampled: the law runs on
+every value once, `-v` says `holds on all N values`, and a failure
+reports every value refuted, none shrunk. `Gen` has a generator for each
+type that has a witness, under the same name, and composes them with
+`map`, `let+` and `one_of`. `Gen.with_pp` gives a generator the printer
+its counterexamples print with, and `Gen.of_list ~pp` and `Gen.constant
+~pp` take it with the values they list. Without one, a value that `map`
+or `let+` computed prints as what it was computed from, after `computed
+from`.
 
 `test/test_geo.ml`:
 
@@ -113,16 +120,23 @@ A run that holds a property prints its seed on the summary line:
 
 ```
 $ dune runtest
-geo: 17 passed in 6.0ms (seed s1:296aaf2e3762014b).
+geo: 20 passed in 8.7ms (seed s1:d430b0f8408b6706).
 ```
 
 ## Reading a counterexample
 
 When the law fails, the property shrinks the value to a counterexample
 and prints it with the case that found it, the number of shrink steps,
-and the assertion that failed. The counterexample prints as the
-generator drew it, and a failing example as the test gave it, even when
-the law changed it in place, as a law that sorts its array does. What
+the line that keeps it, and the assertion that failed. A generator
+parses its value from a sequence of bounded choices, and shrinking
+edits the choices of the failing case and parses them again: it deletes
+what one generator call read, such as a list element, deletes runs of
+choices, and lowers each choice, keeping an edit that still fails. So
+every candidate is a value of the generator, a counterexample needs no
+shrinker written by hand, and a value drawn with `Gen.bind` shrinks as
+well as any other. The counterexample prints as the generator drew it,
+and a failing example as the test gave it, even when the law changed it
+in place, as a law that sorts its array does. What
 the law printed in the run that failed on the counterexample, and in no
 other run, follows under `captured output`. The report closes on one
 `replay:` line, above the summary, which runs the run's tests again
@@ -153,7 +167,7 @@ let to_string =
 ```
 
 If `of_string` swapped the sides of a rectangle, shrinking would reduce
-the failing rectangle to `Rect (0, 1)`:
+the failing rectangle to `Rect (1, 0)`:
 
 ```
 $ dune exec examples/03-property-testing/test_geo.exe -- --seed s1:5b58964be30f69a8 -f to_string
@@ -163,18 +177,19 @@ geo: 1 test (seed s1:5b58964be30f69a8)
     examples/03-property-testing/test_geo.ml:27
       27 │ prop "is read back by of_string" gen_shape (fun s ->
 
-    counterexample (case 0, shrunk 7 steps): Rect (0, 1)
+    counterexample (case 0, shrunk 1 step): Rect (1, 0)
+    replay it: -f 'to_string › is read back by of_string' --replay r1:AQEA:3e9ef408
     which failed at:
       examples/03-property-testing/test_geo.ml:28
         28 │ equal ~__POS__ (option shape) (Some s)
-      expected  Some Rect (0, 1)
+      expected  Some Rect (1, 0)
                            ~  ~
-      actual    Some Rect (1, 0)
+      actual    Some Rect (0, 1)
                            ~  ~
 ──────────────────────────────────────────────────────────
 
 replay: dune exec examples/03-property-testing/test_geo.exe -- --seed s1:5b58964be30f69a8 -f 'to_string'
-1 failed in 2.1ms.
+1 failed in 1.6ms.
 ```
 
 ## Keeping a counterexample as a regression
@@ -183,6 +198,42 @@ replay: dune exec examples/03-property-testing/test_geo.exe -- --seed s1:5b58964
 whatever the seed. A counterexample pasted there stays tested. A failing
 example is reported as `example N`, unshrunk, and fails again under any
 seed.
+
+The line under a counterexample says how to keep it. Where its
+generators print OCaml values, as the generators of base types and
+their containers do, it is an entry to paste, `keep it: ~examples:[ 0 ]`.
+Where a printer of the test's own prints it, as `Gen.with_pp` gives one,
+windtrap cannot know the text is OCaml, and the line is a token behind
+the flags that select its test alone,
+`replay it: -f 'to_string › is read back by of_string' --replay r1:AQEA:3e9ef408`.
+Pasted after the test executable, `--replay` checks that one case: the
+`-f` keeps the one test, with an `-e` for each other test whose path
+holds its own, since a token given to another property is stale there.
+The token holds the case's choices and
+a digest of its printing, so it replays on any machine and under a
+renamed test, and a token whose generator now parses another value is
+reported stale rather than checking it. Nothing writes the source.
+
+`--case PATH` checks the case that a file's bytes decode to, for a
+property or a stateful test that `-f` selects alone: the statement that
+the law holds whatever bytes it is given. The bytes are the choices that
+a token holds, each in unsigned LEB128, read so that every file is some
+case: a file shorter than the case reads 0 past its end, so an empty
+file is the case of zeros, and a choice above its bound reads as the
+bound. A failure is reported as `replayed case`, with the line that
+keeps it, and exits 1; a case that hangs times out at the test's limit;
+a case that the law or its generator discards checks nothing, so the
+test skips. The token's field between `r1:` and the digest is the file's
+bytes in base64url, but for a counterexample of windtrap's own the
+token is the better record: it also refuses the case once its generator
+parses another value. Windtrap ships no fuzzer, and a long random run is
+`--prop-count` with `--timeout`.
+
+`--failed` keeps the token for you: a run records each failed
+property with its counterexample's token, and `--failed` checks that
+counterexample again as `--replay` would, drawing nothing, until it
+passes. A table (`cases`) is a property over its rows, and `--failed`
+reruns the rows that failed.
 
 `test/test_geo.ml`:
 
@@ -205,7 +256,7 @@ before any generated case:
 
 ```
 $ dune exec examples/03-property-testing/test_geo.exe -- -f 'k squared'
-geo: 1 test (seed s1:96b69c9ed18d0547)
+geo: 1 test (seed s1:3cc0be06278f6fb2)
 ──────────────────────── failures ────────────────────────
   FAIL  scale › multiplies the area by k squared
     examples/03-property-testing/test_geo.ml:37
@@ -217,20 +268,45 @@ geo: 1 test (seed s1:96b69c9ed18d0547)
         41 │ equal ~__POS__ close (k *. k *. Geo.area s) (Geo.area (Geo.scale k s)));
       expected  12.
       actual    6.
+    tolerance at examples/03-property-testing/test_geo.ml:41: largest error 6 of 1.2e-08 allowed, over 1 comparison
 ──────────────────────────────────────────────────────────
 
-1 failed in 1.4ms.
+1 failed in 1.3ms.
 ```
 
 ## Discarding and labelling cases
 
 `assume cond` discards a case the law does not apply to (see
 `Windtrap.assume`). A property that discards more than `~max_discard`
-cases fails with `property gave up:` and its counts. A precondition on
-the value's structure belongs in the generator, built in or with
-`Gen.such_that`. `classify` and `collect` label a case, and `cover`
-fails the property when no passing case carries its label (see
-`Windtrap.cover`). `undoes scale by k` holds only where `1. /. k` is
+cases is vacuous, with `property gave up:` and its counts. The default
+is ten discards per case: a law that keeps one case in three passes,
+and one that keeps fewer than one in ten gives up. A
+precondition on the value's structure belongs in the generator, built in
+or with `Gen.such_that`. `classify` and `collect` label a case, and
+`cover` makes the property vacuous when no passing case carries its
+label (see `Windtrap.cover`).
+
+`cover ~share:p` demands a share instead of a presence: `p` of the
+cases must carry the label, as a decoder must accept a fifth of its
+inputs for a property over them to say much. The property does not
+judge the share at its count alone, where a hundred cases could not
+tell 5% from 20%: it runs QuickCheck's sequential test, doubling its
+cases while the Wilson interval of the share at 1 − 10⁻⁹ neither puts
+it at `0.9 *. p` or above (met) nor below `p` (unmet), up to 1024
+times its count, and a share still undecided then is unmet. The report
+states the bound it established, as
+`cover "accepted" ~share:0.2: 27.9% of 800 cases, at least 19.3%`, and
+an unmet share makes the property vacuous with
+`cover "accepted" ~share:0.2: 9.0% of 800 cases, at most 17.1%`. A
+domain checked whole is judged exactly (see `Windtrap.cover`).
+
+A vacuous test refuted nothing and checked less than it claims. Its
+block is tagged `VACUOUS` above one line that says why, the summary
+counts it apart from the failures, as `1 vacuous`, and it exits `1` as
+a failure does. Every case discarded, a table with no row, a property of
+`~count:0` with no example, an unmet `cover` and a stateful command
+never called are vacuous (see the vacuity section of
+`lib/windtrap.mli`). `undoes scale by k` holds only where `1. /. k` is
 finite: `float_range 0. 10.` draws `0.` and the least subnormal float
 among its corners, and their reciprocals are `infinity`.
 
@@ -251,26 +327,49 @@ let inverse =
     ]
 ```
 
-Under `-v` the passing property prints the share of its cases under each
-label:
+Under `-v` the passing property says what it ran, its cases and its
+discards, prints the share of its cases under each label, and says how
+close the comparisons of each `equal` under a tolerance came to it:
+here `close`'s `1e-9` allows far more than the errors it saw.
 
 ```
 $ dune exec examples/03-property-testing/test_geo.exe -- -v --seed s1:5b58964be30f69a8 --prop-count 1000 -f 'undoes scale'
 geo: 1 test (seed s1:5b58964be30f69a8)
-  PASS  inverse › undoes scale by k                1.7ms
+  PASS  inverse › undoes scale by k                4.3ms (1000 cases, 77 discards)
     labels (1000 passing cases):
        51.0%  circle
        49.0%  rect
-1 passed in 2.3ms.
+    tolerance at examples/03-property-testing/test_geo.ml:54: largest error 7.28e-12 of 1.33e-05 allowed, over 1000 comparisons
+1 passed in 5.2ms.
 ```
 
-A `cover` belongs where its scenario is observed. In a stateful test,
-a scenario that a bug needs matters only when a later call reads it, so
-its `cover` goes in the reference function of that call. In a cache's
-model, a `cover` in `to_list` that marks a list that a hit reordered
-counts only the cases where a call listed the reordered cache; the same
-`cover` in `find` also counts cases where no call looked. The demand is
-on presence, so a correct system can fail it by chance: a scenario that
+A demand is a statement about the case, so its condition is computed
+and `cover` called on every case, before any branch, as `"rect"` is
+above. A `cover` inside the branch it describes registers nothing when
+no case reaches the branch, which is the one run the demand exists to
+catch, and the property passes though it checked nothing:
+
+```ocaml
+(* Wrong: when no case decodes, nothing is demanded. *)
+match Codec.decode s with
+| Ok v ->
+    cover "decoded" true;
+    equal string s (Codec.encode v)
+| Error _ -> ()
+
+(* Right: every case states whether it decoded. *)
+let r = Codec.decode s in
+cover "decoded" (Result.is_ok r);
+match r with Ok v -> equal string s (Codec.encode v) | Error _ -> ()
+```
+
+In a stateful test, a scenario that a bug needs matters only when a
+later call reads it, so its `cover` goes in the reference function of
+that call, which states the condition each time the call runs. In a
+cache's model, a `cover` in `to_list` of whether a hit reordered the
+list counts only the cases where a call listed the reordered cache; the
+same `cover` in `find` also counts cases where no call looked. The
+demand is on presence, so a correct system can fail it by chance: a scenario that
 each case reaches with probability `p` is reached by none of `count`
 cases with probability `(1 - p)^count`. At the default count of 100,
 that is 37% for `p = 1/100` and 0.6% for `p = 1/20`, so a demand fits a
@@ -279,10 +378,34 @@ needs a larger `~count` or a generator that reaches it more often.
 
 ## Generating a recursive type
 
-A generator of a recursive type takes a depth and draws a leaf at depth
-zero. `let*` draws the depth first, from a small range. `~size` bounds the
-length of a list, which is otherwise below 64 and about 5 on average.
-`Geo` groups shapes in drawings.
+A generator of a recursive type takes a depth, draws a leaf at depth
+zero, and passes `depth - 1` to every recursive call. `let*` draws the
+depth first, from a small range, so the depth bounds every tree the
+property sees, and the test states it.
+
+The depth is what bounds the tree; a probability of drawing a leaf does
+not. Without it, each node draws its children afresh, which is a
+branching process: what decides its size is the number of children a
+node has on average. Below one, the trees stay small. At exactly one, as
+a leaf drawn half the time beside a node of two children, every tree is
+finite but their mean size is infinite: of a thousand such trees the
+median has 3 nodes and the largest 1.4 million, and drawing it took 8
+seconds. Above one, a tree is infinite with a positive probability, and
+the draw runs until the stack or the memory gives out, after a minute or
+more. The generator below without its depth would be such a case: three
+nodes in four, with two children each on average, is 1.5 children per
+node. The report of a generator that overflowed the stack says so, and
+names the likely cause.
+
+Weight the nodes above depth zero, or most cases are a single leaf, and
+bound a list of children with `~size`, whose length is otherwise drawn
+for a list of values, not a branching factor. With `one_of` between a
+leaf and a node and a depth from `int_range 0 3`, 63% of the drawings
+are a single shape. With the weights and depths below, 41% are: a depth
+of zero comes a fifth of the time, and a quarter of the nodes above it
+are leaves, which keeps the small drawings that a counterexample shrinks
+to. The drawings hold 6.6 nodes on average, and at most 341. `Geo`
+groups shapes in drawings.
 
 `test/geo.ml`:
 
@@ -307,15 +430,17 @@ let rec total_area = function
 
 ```ocaml
 let rec gen_drawing depth =
-  if depth = 0 then Gen.map (fun s -> Geo.Shape s) gen_shape
+  let shape = Gen.map (fun s -> Geo.Shape s) gen_shape in
+  if depth = 0 then shape
   else
     Gen.(
-      one_of
+      frequency
         [
-          map (fun s -> Geo.Shape s) gen_shape;
-          map
-            (fun ds -> Geo.Group ds)
-            (list ~size:(int_range 0 4) (gen_drawing (depth - 1)));
+          (1, shape);
+          ( 3,
+            map
+              (fun ds -> Geo.Group ds)
+              (list ~size:(int_range 0 4) (gen_drawing (depth - 1))) );
         ])
 
 let total_area =
@@ -324,7 +449,7 @@ let total_area =
       prop "is never negative"
         Gen.(
           with_pp Geo.pp_drawing
-            (let* depth = int_range 0 3 in
+            (let* depth = int_range 0 4 in
              gen_drawing depth))
         (fun d -> at_least ~__POS__ float_exact ~than:0. (Geo.total_area d));
     ]
@@ -338,20 +463,69 @@ $ dune exec examples/03-property-testing/test_geo.exe -- --seed s1:5b58964be30f6
 geo: 1 test (seed s1:5b58964be30f69a8)
 ──────────────────────── failures ────────────────────────
   FAIL  total_area › is never negative
-    examples/03-property-testing/test_geo.ml:72
-      72 │ prop "is never negative"
+    examples/03-property-testing/test_geo.ml:74
+      74 │ prop "is never negative"
 
-    counterexample (case 6, shrunk 7 steps): Group [Circle 1]
+    counterexample (case 18, shrunk 8 steps): Group [Circle 1]
+    replay it: -f 'total_area › is never negative' --replay r1:AQEBAAE:a9de575d
     which failed at:
-      examples/03-property-testing/test_geo.ml:77
-        77 │ (fun d -> at_least ~__POS__ float_exact ~than:0. (Geo.total_area d));
+      examples/03-property-testing/test_geo.ml:79
+        79 │ (fun d -> at_least ~__POS__ float_exact ~than:0. (Geo.total_area d));
       expected  at least 0.
       actual    -3.141592653589793
+    scope: 18 cases passed
 ──────────────────────────────────────────────────────────
 
 replay: dune exec examples/03-property-testing/test_geo.exe -- --seed s1:5b58964be30f69a8 -f 'total_area'
-1 failed in 26ms.
+1 failed in 1.5ms.
 ```
+
+## Generating strings and alphabets
+
+`Gen.string` draws every byte, which is the claim of a law over any
+`string`: a decoder, a parser or a binary format that must accept or
+refuse whatever it is given, a hash, a buffer. Code over text claims
+less, and its generator should state its alphabet, or most of its cases
+are bytes it never meets: half of `Gen.char`'s draws are above `'\127'`.
+Among them `Gen.char` draws the bytes that byte code gets wrong as
+corners, `'\000'`, `'\127'`, `'\128'` and `'\255'`, each 1.8% of the
+time.
+
+Printable ASCII is a range:
+
+```ocaml
+let printable = Gen.(string_of (char_range ' ' '~'))
+```
+
+The characters that a format gives a role, its delimiters, quotes and
+escapes, are rare in a range of 95 characters, and they are where its
+bugs are. `frequency` draws them often, beside the range:
+
+```ocaml
+let csv_field =
+  Gen.(
+    string_of
+      (frequency [ (8, char_range ' ' '~'); (1, of_list [ ','; '"'; '\n' ]) ]))
+```
+
+Valid UTF-8 is a list of scalar values, encoded: `Gen.uchar` draws
+each length of encoding equally, and its corners include the bounds of
+each length and the surrogates' edges.
+
+```ocaml
+let utf_8 =
+  Gen.(
+    map
+      (fun us ->
+        let b = Buffer.create 16 in
+        List.iter (Buffer.add_utf_8_uchar b) us;
+        Buffer.contents b)
+      (list uchar))
+```
+
+A string with no `~size` is drawn at the length of a list (see
+`Windtrap.Gen.list`). `~size` states a scale where one matters, as
+`string_of ~size:(int_range 0 1000) char` does.
 
 ## Drawing from a list of generators
 
@@ -407,7 +581,7 @@ let codec =
     [
       prop "reads back what it prints" gen_shape
         (Law.round_trip shape string Geo.to_string read);
-      cases ~name:Fun.id "prints what it reads"
+      cases "prints what it reads" ~id:(Printf.sprintf "%S")
         [ "circle 1"; "rect 2 0.5" ]
         (Law.round_trip string shape read Geo.to_string);
       test "reads back a unit circle" (fun () ->
@@ -416,40 +590,45 @@ let codec =
 ```
 
 If `to_string` printed a rectangle's width twice, the property and the
-second row would fail, each naming its first function `f` and its second
-`g`:
+table's second row would fail, each naming its first function `f` and
+its second `g`:
 
 ```
 $ dune exec examples/03-property-testing/test_geo.exe -- --seed s1:5b58964be30f69a8 -f codec
-geo: 4 tests (seed s1:5b58964be30f69a8)
+geo: 3 tests (seed s1:5b58964be30f69a8)
 ──────────────────────── failures ────────────────────────
   FAIL  codec › reads back what it prints
-    examples/03-property-testing/test_geo.ml:85
-      85 │ prop "reads back what it prints" gen_shape
+    examples/03-property-testing/test_geo.ml:87
+      87 │ prop "reads back what it prints" gen_shape
 
-    counterexample (case 0, shrunk 2 steps): Rect (0, 1)
+    counterexample (case 1, shrunk 6 steps): Rect (1, 0)
+    replay it: -f 'codec › reads back what it prints' --replay r1:AQEA:3e9ef408
     which failed with:
       round trip: g (f x) = x
-      f x      "rect 0 0"
-      g (f x)  Rect (0, 0)
+      f x      "rect 1 1"
+      g (f x)  Rect (1, 1)
                         ~
-      x        Rect (0, 1)
+      x        Rect (1, 0)
                         ~
+    scope: 1 case passed
 
-  FAIL  codec › prints what it reads › rect 2 0.5
-    examples/03-property-testing/test_geo.ml:87
-      87 │ cases ~name:Fun.id "prints what it reads"
+  FAIL  codec › prints what it reads
+    examples/03-property-testing/test_geo.ml:89
+      89 │ cases "prints what it reads" ~id:(Printf.sprintf "%S")
 
-    round trip: g (f x) = x
-    f x      Rect (2, 0.5)
-    g (f x)  "rect 2 2"
-                     ~
-    x        "rect 2 0.5"
-                     ~~~
+    counterexample (row 2 of 2): "rect 2 0.5"
+    which failed with:
+      round trip: g (f x) = x
+      f x      Rect (2, 0.5)
+      g (f x)  "rect 2 2"
+                       ~
+      x        "rect 2 0.5"
+                       ~~~
+    scope: 1 of 2 rows passed
 ──────────────────────────────────────────────────────────
 
 replay: dune exec examples/03-property-testing/test_geo.exe -- --seed s1:5b58964be30f69a8 -f 'codec'
-2 passed, 2 failed in 2.0ms.
+1 passed, 2 failed in 2.2ms.
 ```
 
 ### Checking a witness's equality and order
@@ -488,7 +667,7 @@ let drawing =
 let any_drawing =
   Gen.(
     with_pp Geo.pp_drawing
-      (let* depth = int_range 0 3 in
+      (let* depth = int_range 0 4 in
        gen_drawing depth))
 
 let regroup d = Geo.Group [ d ]
@@ -515,11 +694,12 @@ equality:
 $ dune exec examples/03-property-testing/test_geo.exe -- --seed s1:5b58964be30f69a8 -f witness
 geo: 3 tests (seed s1:5b58964be30f69a8)
 ──────────────────────── failures ────────────────────────
-  FAIL  witness › equal_drawing is an equivalence
-    examples/03-property-testing/test_geo.ml:110
-      110 │ prop "equal_drawing is an equivalence"
+  VACUOUS  witness › equal_drawing is an equivalence
+    examples/03-property-testing/test_geo.ml:112
+      112 │ prop "equal_drawing is an equivalence"
 
     never covered: "equivalence: an unequal pair" (over 100 passing cases)
+    scope: 100 cases passed
     labels (100 passing cases):
       100.0%  equivalence: r a differs from a
     covered labels:
@@ -527,20 +707,21 @@ geo: 3 tests (seed s1:5b58964be30f69a8)
       equivalence: r a differs from a  100
 
   FAIL  witness › compare_drawing is a total order
-    examples/03-property-testing/test_geo.ml:113
-      113 │ prop "compare_drawing is a total order"
+    examples/03-property-testing/test_geo.ml:115
+      115 │ prop "compare_drawing is a total order"
 
-    counterexample (case 0, shrunk 12 steps): (Circle 0, Circle 0, Circle 1)
+    counterexample (case 0, shrunk 8 steps): (Circle 1, Circle 0, Circle 0)
+    replay it: -f 'witness › compare_drawing is a total order' --replay r1:AAABAAAAAAAA:1f5931c0
     which failed with:
-      order (agrees with equal): cmp a c = 0 iff a = c
-      a        Circle 0
-      c        Circle 1
-      cmp a c  -1
-      a = c    true
+      order (agrees with equal): cmp a b = 0 iff a = b
+      a        Circle 1
+      b        Circle 0
+      cmp a b  1
+      a = b    true
 ──────────────────────────────────────────────────────────
 
 replay: dune exec examples/03-property-testing/test_geo.exe -- --seed s1:5b58964be30f69a8 -f 'witness'
-1 passed, 2 failed in 2.0ms.
+1 passed, 1 failed, 1 vacuous in 5.3ms.
 ```
 
 ### Choosing a law for what you wrote
@@ -620,27 +801,52 @@ let turn =
 ```
 
 If `undo` returned `3 - t`, one quarter turn short, the inverse would
-fail with the turn it returned:
+fail on each of the four turns, which `turns` draws all of, with the
+turn it returned:
 
 ```
 $ dune exec examples/03-property-testing/test_geo.exe -- --seed s1:5b58964be30f69a8 -f turn
 geo: 3 tests (seed s1:5b58964be30f69a8)
 ──────────────────────── failures ────────────────────────
   FAIL  turn › has undo as its inverse
-    examples/03-property-testing/test_geo.ml:143
-      143 │ prop "has undo as its inverse" turns
+    examples/03-property-testing/test_geo.ml:145
+      145 │ prop "has undo as its inverse" turns
 
-    counterexample (case 0, shrunk 1 step): 0
+    counterexample (value 1 of 4): 0
     which failed with:
       invertible: op x (inv x) = e
       x             0
       inv x         3
       op x (inv x)  3
       e             0
+
+    counterexample (value 2 of 4): 1
+    which failed with:
+      invertible: op x (inv x) = e
+      x             1
+      inv x         2
+      op x (inv x)  3
+      e             0
+
+    counterexample (value 3 of 4): 2
+    which failed with:
+      invertible: op x (inv x) = e
+      x             2
+      inv x         1
+      op x (inv x)  3
+      e             0
+
+    counterexample (value 4 of 4): 3
+    which failed with:
+      invertible: op x (inv x) = e
+      x             3
+      inv x         0
+      op x (inv x)  3
+      e             0
+    scope: 0 of 4 values passed
 ──────────────────────────────────────────────────────────
 
-replay: dune exec examples/03-property-testing/test_geo.exe -- --seed s1:5b58964be30f69a8 -f 'turn'
-2 passed, 1 failed in 0.9ms.
+2 passed, 1 failed in 1.7ms.
 ```
 
 ### Stating a law with no name
@@ -735,24 +941,20 @@ let part_of =
     ]
 ```
 
-If the property gave the law its three drawings as drawn, no case would
-form a chain:
+If the property gave the law its three drawings as drawn, few cases
+would form a chain, and the law would check transitivity on those few
+alone:
 
 ```
-$ dune exec examples/03-property-testing/test_geo.exe -- --seed s1:5b58964be30f69a8 -f part_of
+$ dune exec examples/03-property-testing/test_geo.exe -- -v --seed s1:5b58964be30f69a8 -f part_of
 geo: 1 test (seed s1:5b58964be30f69a8)
-──────────────────────── failures ────────────────────────
-  FAIL  part_of › is a partial order
-    examples/03-property-testing/test_geo.ml:166
-      166 │ prop "is a partial order"
-
-    never covered: "partial order: a strict chain" (over 100 passing cases)
-──────────────────────────────────────────────────────────
-
-1 failed in 2.2ms.
+  PASS  part_of › is a partial order               1.1ms (100 cases)
+    labels (100 passing cases):
+        5.0%  partial order: a strict chain
+1 passed in 3.3ms.
 ```
 
-A demand that no passing case met fails the property with
+A demand that no passing case met would make the property vacuous, with
 `never covered:` and its label, the law's name followed by one of these:
 
 - `an unequal pair`: the witness's equality holds on every pair, as in

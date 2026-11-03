@@ -15,7 +15,10 @@
     payloads in them, written under one [ansi] decision made at {!create}.
     Nothing here alters a status, a count or the scheduling of a run. The
     entries of a failure block and the sections of a mutation report are
-    {!Report_sections}', and the JUnit document is {!Report_junit}'s. *)
+    {!Report_sections}', the JUnit document is {!Report_junit}'s and the JSON
+    document {!Report_json}'s.
+
+    @canonical Windtrap.Private.Report *)
 
 (** {1:renderer The renderer} *)
 
@@ -24,16 +27,24 @@ type t
     counts the results and the blocks that it committed. *)
 
 val create :
-  out:Format.formatter -> ansi:bool -> ?terminal:bool -> Run.config -> t
+  out:Format.formatter ->
+  ansi:bool ->
+  ?terminal:bool ->
+  ?paths:string list ->
+  Run.config ->
+  t
 (** [create ~out ~ansi config] is a renderer that writes to [out].
     - [ansi] is whether styling is emitted.
+    - [paths] are the path strings of the suite's tests, from which the
+      [replay it:] line of a failure selects its test alone
+      ({!Report_sections.selecting}). Defaults to [[]].
     - [terminal] is whether [out] is a terminal that a reader watches. Defaults
-      to [false]. It is the [terminal] of every {!Report_sections.pp_failure}
-      entry. It is also whether {!begin_test}, {!shrinking}, {!note} and
-      {!mutation_testing} draw the live line, which the next write erases. The
-      live line is off whatever [terminal] is under [ansi:false] and under
-      [config.stream]. It is the one line that is cut to a width, which is 80
-      columns ([columns] in [report.ml]).
+      to [false]. Under [ansi] it is the [seen] of every
+      {!Report_sections.val-entry}. It is also whether {!begin_test},
+      {!shrinking}, {!note} and {!mutation_testing} draw the live line, which
+      the next write erases. The live line is off whatever [terminal] is under
+      [ansi:false] and under [config.stream]. It is the one line that is cut to
+      a width, which is 80 columns ([columns] in [report.ml]).
 
     The renderer keeps [config]. [create] reads [config.stream],
     [config.slow_threshold] and the identifier of a [config.mutation] that is
@@ -42,13 +53,14 @@ val create :
     Raises [Invalid_argument] if [config.slow_threshold] is negative or not
     finite. *)
 
-val terminal : Run.config -> t
-(** [terminal config] is the renderer of a run on [Format.std_formatter].
-    Styling is {!Os.resolve_color} of [config.color], of whether standard output
-    is a terminal, of {!Os.inside_dune} and of {!Os.term_dumb}. Its [terminal]
-    holds iff standard output is a terminal and the run is not under GitHub
-    Actions ({!Os.in_github_actions}). [terminal] thus reads the terminal status
-    of standard output and, through these functions, [INSIDE_DUNE], [TERM],
+val terminal : ?paths:string list -> Run.config -> t
+(** [terminal config] is the renderer of a run on [Format.std_formatter], with
+    [paths] as {!create} takes them. Styling is {!Os.resolve_color} of
+    [config.color], of whether standard output is a terminal, of
+    {!Os.inside_dune} and of {!Os.term_dumb}. Its [terminal] holds iff standard
+    output is a terminal and the run is not under GitHub Actions
+    ({!Os.in_github_actions}). [terminal] thus reads the terminal status of
+    standard output and, through these functions, [INSIDE_DUNE], [TERM],
     [NO_COLOR], [CI] and [GITHUB_ACTIONS]. *)
 
 (** {1:transcript The transcript}
@@ -112,17 +124,25 @@ val result : t -> Run.result -> unit
     finished test and in the order of the tests, because {!finish} relies on the
     order of the blocks.
 
-    Under [config.verbose] every result commits a row. A failing [r] with
+    Under [config.verbose] every result commits a row. A passing property's row
+    says what it ran, as [(100 cases, 2 examples, 14 discards)] or
+    [(holds on all 3 rows)], a count of zero left out, and its label table, the
+    shares its {!Property.cover} demands established and the tolerance lines of
+    its block, below, follow it; so do a plain test's tolerance lines. No line
+    holds what every run of every test would print. A failing [r] with
     [r.counted = false] is an excused expected failure. A compact run prints
     nothing of an excused failure.
 
     A counted failure commits its block in both kinds of run. In a compact run
     nothing else prints, and the first block follows the header and the rule
     that opens the failures. A block holds, in this order:
-    - the title.
-    - one {!Report_sections.pp_failure} entry per failure of [r], with its
-      source line.
-    - the label table of a property.
+    - the title, tagged [VACUOUS] when every failure of [r] is a
+      {!Failure.Vacuous} one, and [FAIL] otherwise.
+    - one {!Report_sections.val-entry} per failure of [r], with its source line.
+    - what a property ran ([scope: 37 cases passed, 3 discards]), its label
+      table and the share each met {!Property.cover} share established.
+    - one line per site of [equal] under a tolerance ({!Check.val-tolerances}),
+      its largest error against the bound it allowed.
     - the captured output of the first failure of [r] that carries a
       {!type:Failure.tail}.
     - {!Report_sections.hints} for the whole test. The {!Report_sections.accept}
@@ -183,6 +203,7 @@ val finish :
   duration:float ->
   ?baselines:Baseline.t ->
   ?stopped:string list ->
+  ?held:[ `Held | `Once_created | `Withheld ] ->
   ?before_summary:(unit -> unit) ->
   unit ->
   unit
@@ -192,27 +213,28 @@ val finish :
       in order, the results that {!result} was given, because [finish] skips as
       many of its first counted failures as [t] committed blocks.
     - one block for each of [release_failures], titled
-      {!Report_sections.release_title}, then its {!Report_sections.pp_failure}
-      entry with its source line.
+      {!Report_sections.release_title}, then its {!Report_sections.val-entry}
+      with its source line.
     - in a compact run that committed a block, the rule that closes the
       failures.
     - the sections that have rows: slow tests, flaky tests, corrections. A
       compact run that has printed no header prints it before the first.
     - what [before_summary ()] writes. It runs after [out] is flushed and
       defaults to doing nothing.
-    - the {!Report_sections.accept} line and then the {!Report_sections.replay}
-      line of the failures of the counted failed results, each when it is
-      [Some _]. They act on the whole run, so no block carries them. Both are
-      over the run's selection ([`Run config]), save the [accept:] of a
-      [config.bail] run, which is over the path of its one counted failed
-      result.
+    - the {!Report_sections.promotion} line under [held], which defaults to
+      [`Withheld], then the {!Report_sections.accept} line and the
+      {!Report_sections.replay} line of the failures of the counted failed
+      results, each when it is [Some _]. They act on the whole run, so no block
+      carries them. The last two are over the run's selection ([`Run config]),
+      save the [accept:] of a [config.bail] run, which is over the path of its
+      one counted failed result.
     - with [stopped], the path of the test after which {!Run.stop} ended the
       run, the line
       [run stopped after <path>: a call on another domain outlived the test's
        limit]. The summary counts the tests it kept from running as not run.
-    - the summary. It is the last line of the transcript, save the one hint of
-      an empty run. The verdict of an armed run and the report of a loop follow
-      it (see {{!section-mutation}mutation lines}).
+    - the summary. It is the last line of the transcript. The verdict of an
+      armed run and the report of a loop follow it (see
+      {{!section-mutation}mutation lines}).
 
     {b Slow tests.} One row per result whose duration is at least
     [config.slow_threshold], slowest first. A skip and a test tagged [slow]
@@ -228,15 +250,16 @@ val finish :
     there is no section and the summary has no corrections term.
 
     {b Summary.} A flaky test counts as passed, an excused result as an expected
-    failure only, and a failed fixture release as failed although it is no test.
-    The tests not run are the [tests] of {!header} less the length of [results],
+    failure only, a counted failure tagged [VACUOUS] as vacuous and not as
+    failed, and a failed fixture release as failed although it is no test. The
+    tests not run are the [tests] of {!header} less the length of [results],
     never below [0]. Subtest failures are the entries of counted failures for
-    which {!is_subtest_failure} holds, and corrections and files not written
-    count files.
+    which {!Report_sections.is_subtest_failure} holds, and corrections and files
+    not written count files.
 
     A run with no result at all says instead that no tests ran, with the reason
     of {!empty_selection_reason} when there is one. When a selection emptied a
-    suite that declares tests, one line that says how to list them follows the
+    suite that declares tests, one line that says how to list them precedes the
     summary, unless the environment gave the selection
     ([config.broadcast.selection]). *)
 
@@ -244,6 +267,7 @@ val interrupted :
   t ->
   ?before_summary:(unit -> unit) ->
   ?releasing:string ->
+  ?starting:Run.starting ->
   running:string list option ->
   results:Run.result list ->
   duration:float ->
@@ -252,12 +276,14 @@ val interrupted :
 (** [interrupted t ~running ~results ~duration ()] ends the transcript of a run
     that a signal is stopping. It first says on standard error ({!Os.say}) what
     the signal interrupted: the test at [running], or when [running] is [None]
-    the release of the fixture [releasing], or else the gap between two tests.
-    It then ends as {!finish} does over [results], with [before_summary],
-    without [baselines] and with no failed release, since a signal stops the
-    release before it returns any failure. No [accept:] or [replay:] line
-    prints: each would run the tests that the signal kept from running, and [-u]
-    would accept baselines that the transcript does not show. *)
+    the release of the fixture [releasing], or else a worker still [starting],
+    how long after it started and the last ten lines it wrote, or else the gap
+    between two tests. It then ends as {!finish} does over [results], with
+    [before_summary], without [baselines] and with no failed release, since a
+    signal stops the release before it returns any failure. No [accept:] or
+    [replay:] line prints: each would run the tests that the signal kept from
+    running, and [-u] would accept baselines that the transcript does not show.
+*)
 
 (** {1:github The GitHub Actions envelope}
 
@@ -278,35 +304,26 @@ val group_end : string
 (** [group_end] is the command that closes the section that {!group_start}
     opened. *)
 
-val annotation :
-  ?invocation:Run.invocation ->
-  ?armed:string ->
-  ?workers:bool ->
-  path:string list ->
-  Failure.t ->
-  string
-(** [annotation ~path f] is the [::error] command for [f], a failure of the test
-    at [path]. Its [file] and [line] are those of the location of [f], when it
-    has one, and its title is [Test failure: <path>]. The message is the
-    {!Report_sections.pp_failure} entry of [f] without styling and without the
-    source line, hint lines included, with [path] as their filter. An annotation
-    is read alone, away from the transcript, so its [accept:] and its [replay:]
-    name the test. [invocation] and [armed] are those of
-    {!Report_sections.hints}, and [invocation] defaults to [`Mirrors]. [workers]
-    is that of {!Report_sections.replay}. *)
-
 val annotations :
   ?invocation:Run.invocation ->
   ?armed:string ->
-  ?workers:bool ->
+  ?paths:string list ->
   release_failures:Failure.t list ->
   Run.result list ->
   string
-(** [annotations ~release_failures results] is the {!annotation} of every
-    failure of every counted failed result of [results] ([r.counted]), in order,
-    then that of each of [release_failures], at the path
+(** [annotations ~release_failures results] is the annotation of every failure
+    of every counted failed result of [results] ([r.counted]), in order, then
+    that of each of [release_failures], at the path
     [[Report_sections.release_title]], concatenated. It is [""] when there is
-    none. *)
+    none.
+
+    The annotation of [f], a failure of the test at [path], is an [::error]
+    command. Its [file] and [line] are those of the location of [f], when it has
+    one, and its title is [Test failure: <path>]. The message is the lines of
+    {!Report_sections.unstyled_entry} for [f], with [path] as their filter. An
+    annotation is read alone, away from the transcript, so its [accept:] and its
+    [replay:] name the test. [invocation] and [armed] are those of
+    {!Report_sections.hints}, and [invocation] defaults to [`Mirrors]. *)
 
 (** {1:mutation Mutation lines}
 
@@ -335,25 +352,16 @@ val mutation_killed : t -> unit
 (** [mutation_killed t] prints the verdict of an armed run in which the mutant
     made a test fail, tests marked xfail aside. *)
 
-val mutation_survived :
-  ?failed_before:bool -> t -> hits:int -> xfail_failed:bool -> unit
+val mutation_survived : t -> hits:int -> xfail_failed:bool -> unit
 (** [mutation_survived t ~hits ~xfail_failed] prints the verdict of an armed run
-    in which a process evaluated the armed site and no test failed after an
-    evaluation, tests marked xfail aside. The line states [hits], the number of
-    evaluations in this process. When [hits] is [0], only a process that a test
-    forked evaluated the site, and the line says that instead. Then the line
-    tells which tests failed:
-    - When [failed_before] is [true] (default [false]), tests failed before the
-      first evaluation.
-    - When [xfail_failed] is [true], a test marked xfail passed, which fails it.
-    - When the two are [true], the line names the two types of tests.
-    - When the two are [false], the line says that no test failed. *)
+    in which no test failed although the armed site was evaluated, tests marked
+    xfail aside. The line states [hits], the number of evaluations. When
+    [xfail_failed] is [true], a test marked xfail passed, which fails it, and
+    the line says that only such tests failed. *)
 
-val mutation_not_evaluated : ?failed:bool -> t -> unit
+val mutation_not_evaluated : t -> unit
 (** [mutation_not_evaluated t] prints the verdict of an armed run in which no
-    selected test evaluated the armed site. When [failed] is [true] (default
-    [false]), a test or a fixture release failed, and the line says that the
-    mutant did not cause the failure. *)
+    selected test evaluated the armed site. *)
 
 val mutation_not_reached : t -> unit
 (** [mutation_not_reached t] prints the verdict of an armed run in which only
@@ -361,97 +369,63 @@ val mutation_not_reached : t -> unit
 
 (** {2:loop The report of a loop}
 
-    A client must call {!mutation_testing} when the set of running children
-    changes, {!mutation_survivor} for each survivor in catalogue order, and
-    {!mutation_finish} once, last. {!mutation_refused} and
-    {!mutation_interrupted} are the two other ways in which a report ends. *)
+    A client must call {!mutation_testing} before each child,
+    {!mutation_survivor} when a child ends on a survivor, and {!mutation_finish}
+    once, last. {!mutation_refused} and {!mutation_interrupted} are the two
+    other ways in which a report ends. *)
 
-val mutation_testing :
-  t -> completed:int -> total:int -> running:string list -> unit
-(** [mutation_testing t ~completed ~total ~running] draws the live line for the
-    mutants whose children run: [completed], the count of children that ended,
-    [total], and the identifier of the first of [running], followed by the count
-    of the others. It draws nothing when [running] is empty. The line shows only
-    while the live line is on (see {!create}). *)
+val mutation_testing : t -> index:int -> total:int -> id:string -> unit
+(** [mutation_testing t ~index ~total ~id] draws the live line for the mutant
+    that the loop is trying: [index], counted from [1], [total], and [id]. The
+    line shows only while the live line is on (see {!create}). *)
 
 val mutation_survivor : t -> Report_sections.survivor -> unit
 (** [mutation_survivor t s] commits the {!Report_sections.survivor_block} of
     [s], flushed. The first call precedes the block by the rule that opens the
     survivors. A block has no column of executables. *)
 
-val mutation_finish :
-  ?note:string -> ?lines:string list -> t -> Report_sections.mutation -> unit
-(** [mutation_finish ?note ?lines t m] ends the report of a loop with
+val mutation_finish : ?note:string -> t -> Report_sections.mutation -> unit
+(** [mutation_finish ?note t m] ends the report of a loop with
     {!Report_sections.mutation_closing} of [m] under the configuration of [t],
     flushed. [m.survivors] must be the survivors that {!mutation_survivor} was
     given, in order. The closing rule prints iff that list is not empty,
     whatever [t] committed, and [reproduce:] arms its first. [note] is said on
     standard error ({!Os.say}) after [out] is flushed and before the outcome
-    line, so the outcome line is the last line of the two streams. [lines] tell
-    how the loop ran: the mode of its children and the mutants that it skipped.
-    They print on [out], in order, above the outcome line and its [reproduce:]
-    line, and before [note]. *)
+    line, so the outcome line is the last line of the two streams. *)
 
 val mutation_refused : t -> string -> unit
 (** [mutation_refused t message] erases the live line, flushes [out] and says
     [message] on standard error ({!Os.say}). *)
 
-(** What a signal stopped. *)
-type stopped =
-  | Startup
-      (** The child that measures the start of a new process, in exec mode. *)
-  | Probe  (** The determinism probe. *)
-  | Testing of string list
-      (** The children of these mutants, one or more, in catalogue order. *)
-  | Before of string
-      (** No child ran. The loop stopped before the child of this mutant. *)
-
 val mutation_interrupted :
-  ?lines:string list -> t -> stopped -> Report_sections.mutation -> unit
-(** [mutation_interrupted ?lines t stopped m] ends the report of a loop that a
-    signal is stopping. It says on standard error what [stopped] is, then calls
-    {!mutation_finish} over [m]. [lines] print as {!mutation_finish} prints
-    them. *)
-
-(** {1:projections Failure projections}
-
-    The failure projection of {!Report_sections}, under the names of this
-    module. *)
-
-val headline : Failure.t -> string
-(** [headline] is {!Report_sections.headline}. *)
-
-val is_subtest_failure : Failure.t -> bool
-(** [is_subtest_failure] is {!Report_sections.is_subtest_failure}. *)
-
-val labeled_msg : Failure.t -> string option
-(** [labeled_msg] is {!Report_sections.labeled_msg}. *)
-
-val pp_failure :
-  ansi:bool ->
-  ?terminal:bool ->
-  ?excerpt:bool ->
-  ?hints:bool ->
-  ?filter:string ->
-  ?invocation:Run.invocation ->
-  ?armed:string ->
-  ?workers:bool ->
-  Format.formatter ->
-  Failure.t ->
-  unit
-(** [pp_failure] is {!Report_sections.pp_failure}. *)
+  t -> testing:string option -> Report_sections.mutation -> unit
+(** [mutation_interrupted t ~testing m] ends the report of a loop that a signal
+    is stopping. It says on standard error what was interrupted: the child of
+    the mutant [testing], or the determinism probe when [testing] is [None]. It
+    then calls {!mutation_finish} over [m]. *)
 
 (** {1:running Running} *)
 
-val run :
+type executor =
   ?on_event:(Run.event -> unit) ->
-  ?stop_after:(Run.result -> bool) ->
+  Run.config ->
+  suite:string ->
+  Test_tree.t list ->
+  (Run.outcome, Run.startup_error) result
+(** The type for the functions that execute a run: [Supervisor.execute], with or
+    without its [on_reach], and {!Run.execute}. *)
+
+val run :
+  ?execute:executor ->
+  ?on_event:(Run.event -> unit) ->
   suite:string ->
   Run.config ->
   Test_tree.t list ->
   (Run.outcome, Run.startup_error) result
-(** [run ~suite config tests] is [Run.execute config ~suite tests] with the
-    whole report of the run written. It proceeds in this order:
+(** [run ~suite config tests] is [execute config ~suite tests] with the whole
+    report of the run written. [execute] defaults to [Supervisor.execute]; the
+    mutation loop's dry run and an [--arm] run pass it an [on_reach] that counts
+    the mutants each test evaluates. It proceeds in this order:
     + It builds [terminal config] and, when [config.github] is set, opens the
       envelope with [group_start suite].
     + It executes the run with {!observe} as its observer, over [config.seed]
@@ -462,32 +436,28 @@ val run :
       The [before_summary] closes the envelope and then writes the
       {!val:annotations}.
     + It writes the JUnit file with {!Report_junit.write} when [config.junit] is
-      set.
+      set, then the JSON file with {!Report_json.write}, over the tests that
+      {!header} announced, when [config.json] is.
     + It flushes both standard formatters and returns [Ok] of the executor's
       outcome.
 
     [Error error] is a refused startup. [run] then closes the envelope and says
     [Run.startup_message error] on standard error, in place of a transcript. The
-    exit code ({!Run.startup_exit_code}) is the caller's to apply.
+    exit code ({!Run.exit_code}) is the caller's to apply.
 
     An interrupted run does not return. On [Interrupted], [run] ends the
     transcript with {!interrupted}, whose [before_summary] is the close of the
     envelope and the annotations, and calls [on_event]. The process then dies by
-    the signal, with no refusal said and no JUnit file written.
+    the signal, with no refusal said and no JUnit or JSON file written.
 
     [on_event] is a second observer of the run, called after the transcript's
     for every event. It must not raise (see {!Run.execute}) and defaults to
     doing nothing.
 
-    [stop_after] is the [stop_after] of {!Run.execute}. When the caller gives
-    it, [run] executes [{ config with bail = false }]. Thus [config.bail] does
-    not stop the run, but [stop_after] and {!Run.stop} can stop it. The report
-    keeps [config.bail] for its hints.
-
     The whole report goes through [Format.std_formatter] and the standard
     descriptors. A caller that forks must therefore first flush both standard
     formatters and both descriptors, or the child prints the buffered bytes
     again. Beyond what {!Run.execute} does, [run] reads the environment
-    ({!terminal}) and writes standard output, standard error and the JUnit file.
-    Each block also reads the source file of a located failure and
-    {!Os.project_root}. *)
+    ({!terminal}) and writes standard output, standard error, the JUnit file and
+    the JSON file. Each block also reads the source file of a located failure
+    and {!Os.project_root}. *)

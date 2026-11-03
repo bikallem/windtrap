@@ -27,14 +27,9 @@ let rewrites =
     "fsub";
     "and";
     "or";
-    "drop";
-    "skip";
-    "inc";
-    "one";
-    "zero";
-    "flip";
-    "none";
-    "tail";
+    "del";
+    "int";
+    "bool";
   ]
 
 let is_rewrite r = List.exists (String.equal r) rewrites
@@ -53,33 +48,32 @@ let compare_id a b =
 
 (* Sites and the catalogue *)
 
-type dismissal = Off of string | Filtered of string
-
 type site = {
   line : int;
   col : int;
+  end_line : int;
+  end_col : int;
   rewrite : string;
   before : string;
   after : string;
-  dismissed : dismissal option;
+  dismissed : string option;
 }
 
 type mutant = {
   id : id;
+  end_line : int;
+  end_col : int;
   before : string;
   after : string;
-  dismissed : dismissal option;
+  dismissed : string option;
 }
 
 let compare_mutant a b = compare_id a.id b.id
 
 (* One registration of a file's table. Each evaluation of site [i] counts in
-   [reach.(i)]. The first evaluation in an epoch marks the site, unless the
-   site has a mark already. The mark is [base.(i)], the count before that
-   evaluation, until [drain] takes it. A guard writes only the slots of its
-   own site. Thus two domains that mark different sites at the same time lose
-   no mark. Two domains that mark one site at the same time can each write a
-   mark, and the site keeps the later mark. *)
+   [reach.(i)]; the first one in an epoch marks the site unless it is marked
+   already, and [base.(i)] holds the count before it until [drain] takes the
+   mark. *)
 type entry = {
   file : string;
   sites : site array;
@@ -95,20 +89,13 @@ type entry = {
 type state = {
   mutable registry : entry list; (* newest first *)
   mutable epoch : int;
+  mutable marked : (entry * int) list; (* newest first *)
   mutable armed : entry list; (* the registrations of the armed file *)
   mutable budget : int;
-  mutable on_evaluation : unit -> unit;
-      (* at each evaluation of the armed site *)
 }
 
 let state =
-  {
-    registry = [];
-    epoch = 1;
-    armed = [];
-    budget = max_int;
-    on_evaluation = ignore;
-  }
+  { registry = []; epoch = 1; marked = []; armed = []; budget = max_int }
 
 exception Runaway of { id : id; hits : int; budget : int }
 
@@ -116,6 +103,8 @@ let site_mutant entry i =
   let s = entry.sites.(i) in
   {
     id = { file = entry.file; line = s.line; col = s.col; rewrite = s.rewrite };
+    end_line = s.end_line;
+    end_col = s.end_col;
     before = s.before;
     after = s.after;
     dismissed = s.dismissed;
@@ -132,22 +121,24 @@ let validate ~file sites =
     (fun i s ->
       if s.line < 1 then err_site ~file i "line %d is not 1-based" s.line;
       if s.col < 0 then err_site ~file i "negative column %d" s.col;
+      if
+        s.end_col < 0 || s.end_line < s.line
+        || (s.end_line = s.line && s.end_col < s.col)
+      then
+        err_site ~file i "end %d:%d before start %d:%d" s.end_line s.end_col
+          s.line s.col;
       if not (is_rewrite s.rewrite) then
         err_site ~file i "unknown rewrite %S" s.rewrite)
     sites
 
-let dismissal_equal a b =
-  match (a, b) with
-  | Off a, Off b | Filtered a, Filtered b -> String.equal a b
-  | (Off _ | Filtered _), _ -> false
-
 let sites_equal a b =
   let site_equal a b =
-    a.line = b.line && a.col = b.col
+    a.line = b.line && a.col = b.col && a.end_line = b.end_line
+    && a.end_col = b.end_col
     && String.equal a.rewrite b.rewrite
     && String.equal a.before b.before
     && String.equal a.after b.after
-    && Option.equal dismissal_equal a.dismissed b.dismissed
+    && Option.equal String.equal a.dismissed b.dismissed
   in
   Array.length a = Array.length b && Array.for_all2 site_equal a b
 
@@ -180,17 +171,17 @@ let register ~file ~sites =
         entry.reach.(i) <- hits;
         if entry.seen.(i) <> state.epoch then begin
           entry.seen.(i) <- state.epoch;
-          if entry.base.(i) < 0 then entry.base.(i) <- hits - 1
+          if entry.base.(i) < 0 then begin
+            entry.base.(i) <- hits - 1;
+            state.marked <- (entry, i) :: state.marked
+          end
         end;
         if i <> entry.armed_index then false
-        else begin
-          state.on_evaluation ();
-          if hits <= state.budget then true
-          else
-            raise
-              (Runaway
-                 { id = (site_mutant entry i).id; hits; budget = state.budget })
-        end
+        else if hits <= state.budget then true
+        else
+          raise
+            (Runaway
+               { id = (site_mutant entry i).id; hits; budget = state.budget })
 
 let catalogue () =
   let mutants entry =
@@ -275,10 +266,9 @@ let id_of_string spec =
 let disarm () =
   List.iter (fun entry -> entry.armed_index <- -1) state.armed;
   state.armed <- [];
-  state.budget <- max_int;
-  state.on_evaluation <- ignore
+  state.budget <- max_int
 
-let arm ?(budget = max_int) ?(on_evaluation = ignore) (id : id) =
+let arm ?(budget = max_int) (id : id) =
   if budget <= 0 then
     invalid_arg "Windtrap_runtime.Mutate.arm: budget must be positive";
   (* A refused arming must not leave the previous mutant live, or the next
@@ -305,7 +295,6 @@ let arm ?(budget = max_int) ?(on_evaluation = ignore) (id : id) =
           List.iter (fun entry -> entry.armed_index <- i) entries;
           state.armed <- entries;
           state.budget <- budget;
-          state.on_evaluation <- on_evaluation;
           Ok (site_mutant first i)
       | indices ->
           (* A table arms one index, and no identifier tells these apart,
@@ -325,21 +314,14 @@ type reached = { mutant : mutant; hits : int }
 
 let next_epoch () = state.epoch <- state.epoch + 1
 
-(* [drain] examines every site. The runtime keeps no list of the marks,
-   because guards on several domains that push to one list at the same time
-   lose marks. A marked site had one evaluation or more in the window. Guards
-   on several domains can write a count out of order. Then the difference can
-   be below 1, and [max 1] gives 1 instead. *)
 let drain () =
-  let marked = ref [] in
-  let take entry i base =
-    if base >= 0 then begin
-      entry.base.(i) <- -1;
-      let hits = max 1 (entry.reach.(i) - base) in
-      marked := { mutant = site_mutant entry i; hits } :: !marked
-    end
+  let marked = state.marked in
+  state.marked <- [];
+  let reached (entry, i) =
+    let hits = entry.reach.(i) - entry.base.(i) in
+    entry.base.(i) <- -1;
+    { mutant = site_mutant entry i; hits }
   in
-  List.iter (fun entry -> Array.iteri (take entry) entry.base) state.registry;
   (* Each registration of a file marks its own copy of a mutant. *)
   let merge acc r =
     match acc with
@@ -348,7 +330,9 @@ let drain () =
     | acc -> r :: acc
   in
   let by_mutant a b = compare_mutant a.mutant b.mutant in
-  List.rev (List.fold_left merge [] (List.sort by_mutant !marked))
+  List.rev
+    (List.fold_left merge []
+       (List.sort by_mutant (List.rev_map reached marked)))
 
 let reset_reach () =
   List.iter
@@ -356,6 +340,7 @@ let reset_reach () =
       Array.fill entry.reach 0 (Array.length entry.reach) 0;
       Array.fill entry.base 0 (Array.length entry.base) (-1))
     state.registry;
+  state.marked <- [];
   next_epoch ()
 
 let () =

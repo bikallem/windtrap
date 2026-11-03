@@ -16,7 +16,16 @@ let strf = Printf.sprintf
 let id file line col rewrite = { Mutate.file; line; col; rewrite }
 
 let site ?dismissed ?(before = "b") ?(after = "a") line col rewrite =
-  { Mutate.line; col; rewrite; before; after; dismissed }
+  {
+    Mutate.line;
+    col;
+    end_line = line;
+    end_col = col + String.length before;
+    rewrite;
+    before;
+    after;
+    dismissed;
+  }
 
 let register_only ~file ~sites =
   let _guard : int -> bool = Mutate.register ~file ~sites in
@@ -28,8 +37,7 @@ let mutant_row (m : Mutate.mutant) =
   let off =
     match m.dismissed with
     | None -> ""
-    | Some (Mutate.Off reason) -> " (off: " ^ reason ^ ")"
-    | Some (Mutate.Filtered reason) -> " (filtered: " ^ reason ^ ")"
+    | Some reason -> " (off: " ^ reason ^ ")"
   in
   strf "%s %s -> %s%s" (Mutate.id_to_string m.id) m.before m.after off
 
@@ -162,7 +170,7 @@ let refused =
     "lib/calc.ml:9:12:frobnicate";
     "lib/calc.ml:9:12:plus";
     "lib/calc.ml:9:12:LT";
-    "lib/calc.ml:9:12:swap";
+    "lib/calc.ml:9:12:drop";
     ":add";
     "x:add";
     "lib/calc.ml:9:add";
@@ -192,12 +200,12 @@ let reasons () =
     "": no ':' separator
     "add": no ':' separator
     "lib/calc.ml": no ':' separator
-    "lib/calc.ml:9": unknown rewrite "9" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip, inc, one, zero, flip, none, tail)
-    "a.ml:1:": unknown rewrite "" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip, inc, one, zero, flip, none, tail)
-    "lib/calc.ml:9:12:frobnicate": unknown rewrite "frobnicate" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip, inc, one, zero, flip, none, tail)
-    "lib/calc.ml:9:12:plus": unknown rewrite "plus" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip, inc, one, zero, flip, none, tail)
-    "lib/calc.ml:9:12:LT": unknown rewrite "LT" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip, inc, one, zero, flip, none, tail)
-    "lib/calc.ml:9:12:swap": unknown rewrite "swap" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip, inc, one, zero, flip, none, tail)
+    "lib/calc.ml:9": unknown rewrite "9" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, del, int, bool)
+    "a.ml:1:": unknown rewrite "" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, del, int, bool)
+    "lib/calc.ml:9:12:frobnicate": unknown rewrite "frobnicate" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, del, int, bool)
+    "lib/calc.ml:9:12:plus": unknown rewrite "plus" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, del, int, bool)
+    "lib/calc.ml:9:12:LT": unknown rewrite "LT" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, del, int, bool)
+    "lib/calc.ml:9:12:drop": unknown rewrite "drop" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, del, int, bool)
     ":add": no position before the rewrite
     "x:add": no position before the rewrite
     "lib/calc.ml:9:add": no line number
@@ -235,17 +243,12 @@ let identifiers =
               "fsub";
               "and";
               "or";
-              "drop";
-              "skip";
-              "inc";
-              "one";
-              "zero";
-              "flip";
-              "none";
-              "tail";
+              "del";
+              "int";
+              "bool";
             ]
             Mutate.rewrites);
-      cases "id_to_string is <file>:<line>:<col>:<rewrite>" ~name:snd spellings
+      cases "id_to_string is <file>:<line>:<col>:<rewrite>" ~id:snd spellings
         (fun (i, spelling) -> equal string spelling (Mutate.id_to_string i));
       prop "compare_id orders by file, then line, column and rewrite"
         (Gen.pair small_id small_id)
@@ -254,7 +257,7 @@ let identifiers =
         ~examples:(List.map fst spellings @ [ id "f" max_int max_int "or" ])
         any_id reads_back;
       cases "id_of_string refuses a spelling as Malformed, naming it"
-        ~name:(fun spec -> if spec = "" then "the empty string" else spec)
+        ~id:(fun spec -> if spec = "" then "the empty string" else spec)
         refused
         (fun spec ->
           equal string spec
@@ -269,14 +272,16 @@ let bad_tables =
   [
     ("line 0", site 0 0 "lt");
     ("a negative column", site 1 (-2) "lt");
+    ("an end before the start", { (site 2 4 "lt") with end_col = 3 });
+    ("an end on an earlier line", { (site 2 4 "lt") with end_line = 1 });
     ("an unknown rewrite", site 1 0 "plus");
-    ("swap, which no instrumenter emits", site 1 0 "swap");
+    ("drop, which no instrumenter emits", site 1 0 "drop");
     ("an operator's name", site 1 0 "LT");
   ]
 
 let refused_table (_, bad) =
   raises_match
-    (Exn.invalid_arg ~substring:"Windtrap_runtime.Mutate: t/bad.ml: site 1:")
+    (Exn.invalid_arg ~sub:"Windtrap_runtime.Mutate: t/bad.ml: site 1:")
     (fun () ->
       register_only ~file:"t/bad.ml" ~sites:[| site 1 0 "lt"; bad; bad |])
 
@@ -291,8 +296,10 @@ let refusal_messages () =
        {|
     Windtrap_runtime.Mutate: t/bad.ml: site 1: line 0 is not 1-based
     Windtrap_runtime.Mutate: t/bad.ml: site 1: negative column -2
+    Windtrap_runtime.Mutate: t/bad.ml: site 1: end 2:3 before start 2:4
+    Windtrap_runtime.Mutate: t/bad.ml: site 1: end 1:5 before start 2:4
     Windtrap_runtime.Mutate: t/bad.ml: site 1: unknown rewrite "plus"
-    Windtrap_runtime.Mutate: t/bad.ml: site 1: unknown rewrite "swap"
+    Windtrap_runtime.Mutate: t/bad.ml: site 1: unknown rewrite "drop"
     Windtrap_runtime.Mutate: t/bad.ml: site 1: unknown rewrite "LT"
     |}
 
@@ -308,19 +315,13 @@ let empty_file_name () =
 
 let catalogue_order () =
   register_only ~file:"t/cat_b.ml"
-    ~sites:
-      [|
-        site 9 2 "or";
-        site 1 2 "and" ~dismissed:(Mutate.Off "equivalent");
-        site 5 2 "sub" ~dismissed:(Mutate.Filtered "zero operand");
-      |];
+    ~sites:[| site 9 2 "or"; site 1 2 "and" ~dismissed:"equivalent" |];
   register_only ~file:"t/cat_a.ml"
     ~sites:[| site 4 0 "sub" ~before:"a - b" ~after:"a + b" |];
   equal (list string)
     [
       "t/cat_a.ml:4:0:sub a - b -> a + b";
       "t/cat_b.ml:1:2:and b -> a (off: equivalent)";
-      "t/cat_b.ml:5:2:sub b -> a (filtered: zero operand)";
       "t/cat_b.ml:9:2:or b -> a";
     ]
     (List.map mutant_row (catalogued "t/cat_a.ml" @ catalogued "t/cat_b.ml"))
@@ -357,22 +358,10 @@ let conflict_dropped () =
     [ "t/conflict.ml:1:0:lt b -> a" ]
     (List.map mutant_row (catalogued "t/conflict.ml"))
 
-(* A filter and a dismissal with one reason are two tables. *)
-let conflict_dismissal () =
-  register_only ~file:"t/conflict_off.ml"
-    ~sites:[| site 1 0 "lt" ~dismissed:(Mutate.Off "r") |];
-  ignore (output ());
-  register_only ~file:"t/conflict_off.ml"
-    ~sites:[| site 1 0 "lt" ~dismissed:(Mutate.Filtered "r") |];
-  is_true (String.length (output ()) > 0);
-  equal (list string)
-    [ "t/conflict_off.ml:1:0:lt b -> a (off: r)" ]
-    (List.map mutant_row (catalogued "t/conflict_off.ml"))
-
 let sites_and_catalogue =
   group "Sites and the catalogue"
     [
-      cases "register raises Invalid_argument on a malformed site" ~name:fst
+      cases "register raises Invalid_argument on a malformed site" ~id:fst
         bad_tables refused_table;
       test "the message names the file and the first malformed site"
         refusal_messages;
@@ -396,10 +385,8 @@ let sites_and_catalogue =
         "the guard of a differing table answers false and counts nothing, and \
          the first table stays catalogued"
         conflict_dropped;
-      test "a table whose dismissal differs in its kind alone differs"
-        conflict_dismissal;
       cases "a guard raises Invalid_argument for an index outside its table"
-        ~name:string_of_int [ 1; -1 ] (fun i ->
+        ~id:(Testable.to_string Testable.int) [ 1; -1 ] (fun i ->
           let g =
             Mutate.register ~file:"t/bounds.ml" ~sites:[| site 1 0 "lt" |]
           in
@@ -484,31 +471,6 @@ let runaway () =
   disarm ();
   equal (list string) [ "false" ] (evaluations g 1)
 
-(* The guard calls the hook at each evaluation of the armed site, before it
-   compares the count with the budget. The next arming drops the hook. *)
-let on_evaluation () =
-  let file = "t/on_evaluation.ml" in
-  let g = Mutate.register ~file ~sites:[| site 2 0 "not"; site 3 0 "not" |] in
-  let calls = ref 0 in
-  let armed ?budget i =
-    require_ok ~pp:Mutate.pp_arm_error
-      (Mutate.arm ?budget
-         ~on_evaluation:(fun () -> incr calls)
-         (id file i 0 "not"))
-  in
-  ignore (armed ~budget:2 2);
-  Mutate.reset_reach ();
-  ignore (g 1 : bool);
-  equal int 0 !calls;
-  equal (list string)
-    [ "true"; "true"; "runaway t/on_evaluation.ml:2:0:not 3/2" ]
-    (evaluations g 3);
-  equal int 3 !calls;
-  ignore (arm_ok (id file 3 0 "not"));
-  ignore (g 0 : bool);
-  ignore (g 1 : bool);
-  equal int 3 !calls
-
 let headroom () =
   let g = Mutate.register ~file:"t/forked.ml" ~sites:[| site 1 0 "and" |] in
   ignore (evaluations g 10);
@@ -581,7 +543,7 @@ let arm_error_messages () =
        ])
   @@ __POS_OF__
        {|
-    "lib/calc.ml:9" is not a mutant identifier: unknown rewrite "9" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, drop, skip, inc, one, zero, flip, none, tail); expected <file>:<line>:<col>:<rewrite>
+    "lib/calc.ml:9" is not a mutant identifier: unknown rewrite "9" (expected one of not, lt, le, gt, ge, eq, neq, add, sub, fadd, fsub, and, or, del, int, bool); expected <file>:<line>:<col>:<rewrite>
     t/absent.ml:1:0:lt: not this executable's mutant; it catalogues no site in t/absent.ml (if you expected one, is the library under test instrumented with ppx_windtrap.mutate?)
     t/seven.ml:99:0:or: no such mutation site; t/seven.ml has these:
         t/seven.ml:1:0:or
@@ -624,7 +586,7 @@ let arming =
       cases
         "an identifier no site of a catalogued file matches is Unmatched, with \
          the file's mutants in order"
-        ~name:Mutate.id_to_string
+        ~id:Mutate.id_to_string
         [
           id "t/near.ml" 5 4 "lt";
           id "t/near.ml" 9 3 "lt";
@@ -641,7 +603,7 @@ let arming =
       test "a dismissed mutant arms"
         (disarming (fun () ->
              register_only ~file:"t/off.ml"
-               ~sites:[| site 2 1 "add" ~dismissed:(Mutate.Off "equivalent") |];
+               ~sites:[| site 2 1 "add" ~dismissed:"equivalent" |];
              equal string "armed t/off.ml:2:1:add b -> a (off: equivalent)"
                (armed (Mutate.arm (id "t/off.ml" 2 1 "add")))));
       test "arm arms the site in every registration of an equal table"
@@ -651,10 +613,6 @@ let arming =
       test "arming a second mutant drops the first's budget" (disarming rearm);
       test "the guard raises Runaway past the budget, at every later evaluation"
         (disarming runaway);
-      test
-        "the guard calls on_evaluation at each evaluation of the armed site, \
-         before the budget, until the next arming"
-        (disarming on_evaluation);
       test "reset_reach gives an armed site its whole budget again"
         (disarming headroom);
       test "the budget bounds each registration, and armed_hits adds them up"
@@ -665,7 +623,7 @@ let arming =
           disarm ();
           equal int 0 (Mutate.armed_hits ()));
       cases "a budget below 1 raises Invalid_argument and disarms nothing"
-        ~name:string_of_int [ 0; -1; min_int ] (fun budget ->
+        ~id:(Testable.to_string Testable.int) [ 0; -1; min_int ] (fun budget ->
           disarming (fun () -> refused_budget budget) ());
       test "the guard of a differing table never answers true nor raises"
         (disarming inert_armed);
@@ -687,7 +645,7 @@ let reach_rows =
       reach_sites,
       [ Eval 0; Eval 0; Eval 1; Drain ],
       [ "1:0:lt x2, 2:0:add x1" ] );
-    ( "a drain removes the marks",
+    ( "a drain empties the marks",
       reach_sites,
       [ Eval 0; Drain; Drain ],
       [ "1:0:lt x1"; "" ] );
@@ -725,7 +683,7 @@ let reach_rows =
       reach_sites,
       [ Eval 0; Drain; Eval 0; Eval 0; Drain; Next_epoch; Eval 0; Drain ],
       [ "1:0:lt x1"; ""; "1:0:lt x1" ] );
-    ( "reset_reach removes the marks and counts from zero",
+    ( "reset_reach empties the marks and counts from zero",
       reach_sites,
       [ Eval 0; Eval 0; Eval 0; Reset; Drain; Eval 0; Drain ],
       [ ""; "1:0:lt x1" ] );
@@ -763,76 +721,6 @@ let reset_keeps_armed () =
   Mutate.reset_reach ();
   equal (list string) [ "true" ] (evaluations g 1)
 
-(* Worker domains mark sites at the same time, round after round. The old
-   runtime pushed each mark to a shared list, and the guards lost some marks.
-   Each drain must report every site. The workers live for all the rounds.
-   Atomic counters order the guards of a round after its [next_epoch] and
-   before its drain, as a spawn and a join do. On 1 CPU, the tests do not find
-   the old defect, and they take about 3 s. They run in a forked child,
-   because a process that spawned a domain can never fork again. *)
-let domain_workers = 4
-let domain_rounds = 50
-let domain_sites = Array.init 4096 (fun i -> site (i + 1) 0 "not")
-
-(* Worker [d] evaluates site [i] when [mine d i]. The result is ["ok"], or
-   one line for each round that lost a mark or gave a count that [counts]
-   refuses. A child that dies before it writes gives [""], which is not a
-   pass. *)
-let marks_on_domains ~file ~mine ~counts () =
-  let guard = Mutate.register ~file ~sites:domain_sites in
-  fresh ();
-  let round = Atomic.make 0 and finished = Atomic.make 0 in
-  let crashed = Atomic.make None in
-  let worker d () =
-    try
-      for r = 1 to domain_rounds do
-        while Atomic.get round < r do
-          Domain.cpu_relax ()
-        done;
-        Array.iteri
-          (fun i _ -> if mine d i then ignore (guard i : bool))
-          domain_sites;
-        Atomic.incr finished
-      done
-    with exn ->
-      Atomic.set crashed
-        (Some (strf "worker %d: %s" d (Printexc.to_string exn)))
-  in
-  let _ : unit Domain.t list =
-    List.init domain_workers (fun d -> Domain.spawn (worker d))
-  in
-  let rows = ref [] in
-  for r = 1 to domain_rounds do
-    Mutate.next_epoch ();
-    Atomic.set round r;
-    while
-      Atomic.get finished < r * domain_workers
-      && Option.is_none (Atomic.get crashed)
-    do
-      Domain.cpu_relax ()
-    done;
-    Option.iter failwith (Atomic.get crashed);
-    let reached =
-      List.filter
-        (fun (x : Mutate.reached) -> String.equal x.mutant.id.file file)
-        (Mutate.drain ())
-    in
-    let lost = Array.length domain_sites - List.length reached in
-    let miscounted =
-      List.length
-        (List.filter (fun (x : Mutate.reached) -> not (counts x.hits)) reached)
-    in
-    if lost > 0 || miscounted > 0 then
-      rows := strf "round %d: %d lost, %d miscounted" r lost miscounted :: !rows
-  done;
-  if !rows = [] then "ok" else String.concat "\n" (List.rev !rows)
-
-(* The child leaves by [_exit], which also ends the workers. *)
-let on_domains ~file ~mine ~counts () =
-  match Child.forked (marks_on_domains ~file ~mine ~counts) with
-  | None -> skip ~reason:"POSIX only: the domains run in a forked child" ()
-  | Some text -> equal string "ok" text
-
 let child_exe =
   Filename.concat
     (Filename.dirname Windtrap_runtime.Instr.executable)
@@ -853,20 +741,8 @@ let child () =
 let reach_map =
   group "The reach map"
     [
-      cases "drains" ~name:(fun (claim, _, _, _) -> claim) reach_rows drains;
+      cases "drains" ~id:(fun (claim, _, _, _) -> claim) reach_rows drains;
       test "reset_reach does not disarm" (disarming reset_keeps_armed);
-      test
-        "guards on several domains that mark different sites at the same time \
-         lose no mark, and count each evaluation"
-        (on_domains ~file:"t/reach/domains.ml"
-           ~mine:(fun d i -> i mod domain_workers = d)
-           ~counts:(Int.equal 1));
-      test
-        "guards on several domains that mark one site at the same time lose no \
-         mark, and count 1 to 4 evaluations"
-        (on_domains ~file:"t/reach/one_site.ml"
-           ~mine:(fun _ _ -> true)
-           ~counts:(fun hits -> hits >= 1 && hits <= domain_workers));
       test
         "in a fresh process, the first drain is module initialization's, and \
          the first window counts its own evaluations" (fun () ->

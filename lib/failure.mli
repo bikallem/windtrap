@@ -7,12 +7,14 @@
     exception.
 
     A failure site builds one {!t} with a {{!section-constructors}constructor}
-    and raises it in a {!Check_failure}, or records it when the site is the
-    runner's. A renderer reads it and changes nothing.
+    and raises it with {!refuse}, or records it when the site is the runner's. A
+    renderer reads it and changes nothing.
 
     A failure holds no styling and no command. What a failure holds is the text
     that cannot be made again after the failure site: printed values, messages
-    and a backtrace, each a bounded {!type-text}. *)
+    and a backtrace, each a bounded {!type-text}.
+
+    @canonical Windtrap.Private.Failure *)
 
 (** {1:texts Texts} *)
 
@@ -96,6 +98,9 @@ type withheld =
   | Conflict
       (** An earlier check of the same baseline in the run recorded a correction
           to a different text. *)
+  | In_law
+      (** The check ran in the law of a property, which claims it for every
+          value, so no one text can be its correction. *)
 
 type message_diff = {
   constructor : string;
@@ -123,14 +128,35 @@ type containment_demand =
           occurrence anywhere, so [None] says that the needle is not in the
           string, and [Some _] that it is there before [resumed_at]. *)
 
+type multiset = {
+  missing : text;
+      (** The elements of the expected side that the actual one lacks, printed
+          as a list. *)
+  missing_count : int;  (** Their number. *)
+  extra : text;
+      (** The elements of the actual side that the expected one lacks, printed
+          as a list. *)
+  extra_count : int;  (** Their number. *)
+}
+(** The type for the difference of two lists compared as multisets (see
+    {!Multiset.difference}). *)
+
 (** The type for failure payloads. *)
 type kind =
-  | Equality of { expected : text; actual : text; not_ : bool; diffable : bool }
+  | Equality of {
+      expected : text;
+      actual : text;
+      not_ : bool;
+      diffable : bool;
+      multiset : multiset option;
+    }
       (** Two sides that had to match did not. [expected] and [actual] are
           printed values, or descriptions of a constructor such as [Some _].
           Under [not_], a negated assertion, both must hold one rendering.
           [diffable] is [false] when [expected] is a claim in words
-          ({!predicate}). *)
+          ({!predicate}). [multiset] is the difference of two lists that the
+          witness compared as multisets, which a renderer shows in place of the
+          two sides. *)
   | Containment of {
       needle : text;
       found_at : int option;
@@ -182,7 +208,8 @@ type kind =
               columns. [line] then says in one line what the table holds. *)
       case_index : int;
           (** The zero-based index of the failing case: the position of an
-              example among the examples, or for a generated case the index that
+              explicit example among the examples, [0] for a replayed case or a
+              case from bytes, or for a generated case the index that
               {!Seed.derive} took, which counts the discarded cases too. *)
       shrink_steps : int;
           (** The accepted shrink steps that led to [rendered]. *)
@@ -194,8 +221,8 @@ type kind =
           (** The case count when the configuration of the run gave it, and
               [None] when the declaration or the default of the engine did. *)
       examples : bool;
-          (** [true] iff the case is one of the explicit examples, which are
-              never seeded or shrunk. *)
+          (** [true] iff the case was neither seeded nor shrunk: an explicit
+              example, a replayed case or a case from bytes. *)
       rendering : rendering;
       inner : t option;
           (** The failure of the law on the reported counterexample, as
@@ -207,6 +234,24 @@ type kind =
               counterexample, drawn again, after the search. [None] when it did
               not run again or the test's limit cut that run (see
               {!Property.run}). *)
+      token : string option;
+          (** The replay token of the counterexample, which [--replay] checks
+              alone (see {!Choice.token}). [None] for an explicit example and
+              for a generator that raised before producing a value. *)
+      domain : int option;
+          (** [Some n] when the property's domain was checked whole, its [n]
+              values: [case_index] is then the position of the value among them,
+              and nothing is shrunk. *)
+      also : t list;
+          (** The other values that a domain checked whole refuted, in order,
+              each a {!constructor-Property} failure of its own, and [[]]
+              otherwise. *)
+      table : bool;
+          (** [true] iff the value is a row of a table: [case_index] is then its
+              position among the table's rows, and [domain] their number. *)
+      label : text option;
+          (** The display label of a table's row, when the table gives one. It
+              identifies nothing. *)
     }  (** A property failed. *)
   | Law of {
       law : string;
@@ -231,6 +276,13 @@ type kind =
   | Message of text
       (** A direct failure: the text of a [fail], or a failure that the library
           words itself, as it does an intercepted [exit]. *)
+  | Vacuous of text
+      (** The test refuted nothing, and checked less than it claims: every case
+          of a property was discarded, a table has no row, no case and no
+          example ran, a {!Property.cover} demand is unmet, or a stateful
+          command was never called. The text says which, in one line. A renderer
+          reports a test whose every failure is [Vacuous] as vacuous, and never
+          as refuted. *)
 
 (** The type for a term of a {!constructor-Law} failure. [name] spells the term
     as the equation does, as ["f x"]. *)
@@ -249,7 +301,9 @@ and timed_case = {
   case_index : int;
       (** The index of the case, as the [case_index] of a
           {!constructor-Property} failure. *)
-  examples : bool;  (** [true] iff the case is one of the explicit examples. *)
+  examples : bool;
+      (** [true] iff the case was neither seeded nor shrunk, as the [examples]
+          of a {!constructor-Property} failure. *)
   passed : int;  (** The cases that had passed, the examples included. *)
   root : Seed.seed;
   count : int option;
@@ -265,15 +319,15 @@ and shrink_end =
   | Budget_spent
       (** The search ran the law as many times as its budget allows, and a
           candidate was left. *)
-  | Candidate_raised of text
-      (** Forcing a candidate raised the exception printed here, and the
-          siblings behind it were unreachable. *)
   | Timed_out of float
       (** The test's limit, in seconds, expired while shrinking, and the test
           did not time out. *)
 
 (** The type for what the [rendered] of a {!constructor-Property} failure is. *)
 and rendering =
+  | Ocaml
+      (** The counterexample as an OCaml value, printed by [Gen]'s own printers
+          alone, which a test can paste into its [~examples]. *)
   | Value
       (** The text of the counterexample itself: a value through the printer of
           its generator, a failing example, or a placeholder that says why no
@@ -305,6 +359,10 @@ and t = {
   output_tail : tail option;
       (** The captured output of the attempt. [None] until {!with_output_tail}.
       *)
+  caught : bool;
+      (** [true] iff the failure was recorded when it was raised and the
+          exception never reached the site that holds it now: code under test
+          caught it (see {!recording}). A renderer says so. *)
 }
 (** The type for failures. The record is concrete, and two clients write fields
     past the constructors. {!Run} writes [loc] and [subtest], and {!Stateful}
@@ -350,7 +408,23 @@ exception Control of control
     [Sys.Break] and [Out_of_memory] never reach a site, since an interrupt or an
     exhausted memory must stop the run and not fail one test. A [Stack_overflow]
     is an exception as any other. A handler of the user's that catches every
-    exception still swallows a control. *)
+    exception still swallows a control.
+
+    {b Recording.} A failure is recorded before it is raised, so a handler of
+    the user's that catches every exception cannot swallow it. Every site of the
+    library that raises a failure the user's code may catch raises it with
+    {!refuse}. {!recording} opens a scope, and a failure is recorded in the
+    innermost scope of the domain that raises it. A domain starts in the scope
+    that was innermost where it was spawned, so a failure raised on a domain
+    that a test spawned is recorded in the test's scope, whether or not the
+    exception reaches the test. A failure recorded after its scope closed, by a
+    domain that outlives it, is recorded nowhere.
+
+    Every site that catches the user's code through {!catch} or {!recording}
+    owns what was recorded inside, and nothing outside sees it: the runner's
+    attempt, a subtest, a case of a property, a term of a law, a call of a
+    stateful test. Outside a scope, as at module top level, nothing is recorded.
+*)
 
 type fault = [ `Assertion of t | `Exception of exn * Printexc.raw_backtrace ]
 (** The type for what the user's code raised about itself: a {!Check_failure},
@@ -359,16 +433,34 @@ type fault = [ `Assertion of t | `Exception of exn * Printexc.raw_backtrace ]
 type caught = [ fault | control ]
 (** The type for what {!catch} returns of a raise. *)
 
+val refuse : t -> 'a
+(** [refuse t] records [t] in the innermost scope of the calling domain, then
+    raises [Check_failure t]. A failure is recorded once, so [t] recorded
+    already in that scope is not recorded again. *)
+
+val recording : (unit -> 'a) -> ('a, caught) result * t list
+(** [recording f] runs [f ()] in a scope of its own and is the outcome of [f ()]
+    as {!catch} classifies a raise, with the failures recorded in the scope that
+    were caught there, oldest first, each with [caught] set. A failure that [f]
+    raises is the outcome and not in the list. The scope that was innermost
+    before is innermost again when [f] ends, however it ends. *)
+
 val catch : (unit -> 'a) -> ('a, caught) result
 (** [catch f] is [Ok (f ())], or [Error c] where [c] classifies what [f ()]
     raised. It raises [Sys.Break] and [Out_of_memory] again with their backtrace
     and never returns them. A [Fun.Finally_raised] that carries a {!Control} or
     one of those two is unwrapped first, so a finally cut by the timeout is a
-    [`Timeout]. *)
+    [`Timeout].
+
+    [f ()] runs in a scope of its own, as under {!recording}. When a failure was
+    caught there, [catch f] is [Error (`Assertion first)], [first] being the
+    oldest caught failure, whatever [f ()] returned or raised, except a
+    [`Timeout] or an [`Exit], which is returned as it is. *)
 
 val reraise : [< caught ] -> 'a
 (** [reraise c] raises again what {!catch} returned: the same exception, with
-    its backtrace for an [`Exception]. *)
+    its backtrace for an [`Exception]. An [`Assertion] is raised with {!refuse},
+    so the enclosing scope records it. *)
 
 val exn_to_string : exn -> string
 (** [exn_to_string e] is [Printexc.to_string e] with the prefix [Dune__exe__]
@@ -404,12 +496,14 @@ val equality :
   ?loc:Loc.t ->
   ?msg:string ->
   ?not_:bool ->
+  ?multiset:Multiset.explanation ->
   expected:string ->
   actual:string ->
   unit ->
   t
 (** [equality ~expected ~actual ()] is a diffable {!Equality} failure over two
-    printed values. [not_] defaults to [false]. *)
+    printed values, with the difference [multiset] when given. [not_] defaults
+    to [false]. *)
 
 val containment :
   ?loc:Loc.t ->
@@ -472,12 +566,18 @@ val property :
   examples:bool ->
   ?rendering:rendering ->
   ?failed_again:bool ->
+  ?token:string ->
+  ?domain:int ->
+  ?also:t list ->
+  ?table:bool ->
+  ?label:string ->
   unit ->
   t
 (** [property ~rendered ~case_index ~shrink_steps ~root ~examples ()] is a
     {!constructor-Property} failure with the fields given. [inner], [count],
-    [summary] and [failed_again] default to [None], [shrink_end] to {!Converged}
-    and [rendering] to {!Value}. Nothing is validated, so the invariants that
+    [summary], [failed_again], [token], [domain] and [label] default to [None],
+    [also] to [[]], [table] to [false], [shrink_end] to {!Converged} and
+    [rendering] to {!Value}. Nothing is validated, so the invariants that
     {!type-kind} states are the producer's to keep. *)
 
 val timeout : ?loc:Loc.t -> ?case:timed_case -> float -> t
@@ -499,6 +599,12 @@ val law :
 val message : ?loc:Loc.t -> string -> t
 (** [message text] is a {!Message} failure that carries [text]. *)
 
+val vacuous : ?loc:Loc.t -> string -> t
+(** [vacuous reason] is a {!Vacuous} failure that carries [reason]. *)
+
+val is_vacuous : t -> bool
+(** [is_vacuous f] is [true] iff [f] is a {!Vacuous} failure. *)
+
 val of_fault : fault -> t
 (** [of_fault f] is the failure that [f] reports: the payload of an
     [`Assertion], or for an [`Exception] a {!Raise} failure with no [expected],
@@ -517,10 +623,10 @@ val with_output_tail : tail -> t -> t
 val with_withheld : withheld -> t -> t
 (** [with_withheld why f] is [f] with its correction withheld for [why] when [f]
     is a {!constructor-Baseline} failure, in any state, and [f] otherwise. A
-    failure already marked {!Refused} or {!Conflict} keeps that mark, because it
-    holds whatever the rest of the attempt does. It does not reach a nested
-    failure: the [inner] of a {!constructor-Property} failure, or the failure of
-    a {!constructor-Law} failure's term. *)
+    failure already marked {!Refused}, {!Conflict} or {!In_law} keeps that mark,
+    because it holds whatever the rest of the attempt does. It does not reach a
+    nested failure: the [inner] of a {!constructor-Property} failure, or the
+    failure of a {!constructor-Law} failure's term. *)
 
 (** {1:tails Captured-output tails} *)
 
@@ -543,7 +649,7 @@ val tail_bytes : int
 (** {1:outcomes Per-test outcomes} *)
 
 (** The type for the outcome of a test, and of the release of a fixture. It does
-    not say whether the test counts as failed, which {!Run.result} does. *)
+    not say whether the test counts as failed, which {!Run.type-result} does. *)
 type outcome =
   | Pass
   | Fail of t list

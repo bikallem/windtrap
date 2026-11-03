@@ -35,11 +35,16 @@ let message_diff = function
    a containment and the text of a backtrace. *)
 let payload (f : Failure.t) =
   match f.kind with
-  | Equality { expected; actual; not_; diffable } ->
-      strf "%s%s, expected %s, actual %s"
+  | Equality { expected; actual; not_; diffable; multiset } ->
+      strf "%s%s, expected %s, actual %s%s"
         (if not_ then "not " else "")
         (if diffable then "equality" else "predicate")
         expected.kept actual.kept
+        (match multiset with
+        | None -> ""
+        | Some m ->
+            strf ", %d missing %s, %d extra %s" m.missing_count m.missing.kept
+              m.extra_count m.extra.kept)
   | Containment { needle; found_at; haystack_length; demand = d; _ } ->
       strf "%s %S, %s in %d bytes" (demand d) needle.kept
         (match found_at with Some i -> strf "at %d" i | None -> "nowhere")
@@ -50,6 +55,7 @@ let payload (f : Failure.t) =
         (kept expected) (kept actual) (message_diff d)
         (if Option.is_some backtrace then ", with a backtrace" else "")
   | Message t -> strf "message %S" t.kept
+  | Vacuous t -> strf "vacuous %S" t.kept
   | Baseline _ -> "baseline"
   | Property _ -> "property"
   | Law _ -> "law"
@@ -62,26 +68,30 @@ let control = function
   | `Exit -> "exit"
   | `Discard -> "discard"
 
+(* Through windtrap's own catch, which owns the failure a verb records. *)
 let outcome verb =
-  match verb () with
-  | () -> "returned"
-  | exception Failure.Check_failure f -> payload f
-  | exception Failure.Control c -> control c
-  | exception e -> "raised " ^ Failure.exn_to_string e
+  match Failure.catch verb with
+  | Ok () -> "returned"
+  | Error (`Assertion f) -> payload f
+  | Error (#Failure.control as c) -> control c
+  | Error (`Exception (e, _)) | (exception e) ->
+      "raised " ^ Failure.exn_to_string e
 
 let outcomes claim rows =
-  cases claim rows
-    ~name:(fun (name, _, _) -> name)
+  cases claim
+    ~id:(fun (name, _, _) -> name)
+    rows
     (fun (_, verb, row) -> equal string row (outcome verb))
 
 let annotation verb =
-  match verb () with
-  | () -> "returned"
-  | exception Failure.Check_failure f ->
+  match Failure.catch verb with
+  | Ok () -> "returned"
+  | Error (`Assertion f) ->
       strf "%s at %s" (kept f.msg)
         (match f.loc with
         | Some l -> strf "%s:%d:%d" l.file l.line l.column
         | None -> "nowhere")
+  | Error c -> Failure.reraise c
 
 let printer_calls use =
   let calls = ref 0 in
@@ -92,12 +102,15 @@ let printer_calls use =
   let w =
     Testable.make ~pp ~equal:Int.equal |> Testable.with_compare Int.compare
   in
-  (match use w pp with () -> () | exception Failure.Check_failure _ -> ());
+  (match Failure.catch (fun () -> use w pp) with
+  | Ok () | Error (`Assertion _) -> ()
+  | Error c -> Failure.reraise c);
   !calls
 
 let count_calls claim rows =
-  cases claim rows
-    ~name:(fun (name, _, _) -> name)
+  cases claim
+    ~id:(fun (name, _, _) -> name)
+    rows
     (fun (_, use, calls) -> equal int calls (printer_calls use))
 
 (* Every verb *)
@@ -115,7 +128,7 @@ let raising_pp _ _ = raise Bug
 let every_verb =
   group "Every verb"
     [
-      cases "?msg and ?__POS__ are the failure's msg and site" ~name:fst
+      cases "?msg and ?__POS__ are the failure's msg and site" ~id:fst
         [
           ("equal", fun () -> Check.equal ~__POS__:pos ~msg:"why" int 1 2);
           ( "not_equal",
@@ -157,10 +170,10 @@ let every_verb =
             fun () -> Check.not_contains ~__POS__:pos ~msg:"why" ~sub:"a" "abc"
           );
           ( "starts_with",
-            fun () -> Check.starts_with ~__POS__:pos ~msg:"why" ~affix:"z" "abc"
-          );
+            fun () ->
+              Check.starts_with ~__POS__:pos ~msg:"why" ~prefix:"z" "abc" );
           ( "ends_with",
-            fun () -> Check.ends_with ~__POS__:pos ~msg:"why" ~affix:"z" "abc"
+            fun () -> Check.ends_with ~__POS__:pos ~msg:"why" ~suffix:"z" "abc"
           );
           ( "in_order",
             fun () ->
@@ -174,21 +187,20 @@ let every_verb =
           );
         ]
         (fun (_, verb) -> equal string site (annotation verb));
-      cases "fail and failf take ?__POS__ and leave msg empty" ~name:fst
+      cases "fail and failf take ?__POS__ and leave msg empty" ~id:fst
         [
           ("fail", fun () -> Check.fail ~__POS__:pos "x");
           ("failf", fun () -> Check.failf ~__POS__:pos "x %d" 1);
         ]
         (fun (_, verb) ->
           equal string "nothing at fake.ml:42:3" (annotation verb));
-      cases "without ?__POS__ a failure is located in the caller's file"
-        ~name:fst
+      cases "without ?__POS__ a failure is located in the caller's file" ~id:fst
         [
           ("equal", fun () -> Check.equal int 1 2);
           ("failf, through Format", fun () -> Check.failf "boom %d" 1);
         ]
         (fun (_, verb) ->
-          starts_with ~affix:"nothing at test/unit/test_check.ml:"
+          starts_with ~prefix:"nothing at test/unit/test_check.ml:"
             (annotation verb));
       count_calls "a passing verb calls no printer"
         [
@@ -293,6 +305,15 @@ let equalities =
           ( "equal, through the witness's printer",
             (fun () -> Check.equal string "a" "b"),
             {|equality, expected "a", actual "b"|} );
+          ( "equal under slist, with what is missing and what is extra",
+            (fun () ->
+              Check.equal (slist int Int.compare) [ 3; 1; 2; 2 ] [ 4; 2; 1 ]),
+            "equality, expected [1; 2; 2; 3], actual [1; 2; 4], 2 missing [2; \
+             3], 1 extra [4]" );
+          ( "equal over a list of slists, with no difference of its own",
+            (fun () ->
+              Check.equal (list (slist int Int.compare)) [ [ 1 ] ] [ [ 2 ] ]),
+            "equality, expected [[1]], actual [[2]]" );
           ( "not_equal, the first value on both sides",
             (fun () -> Check.not_equal int 3 3),
             "not equality, expected 3, actual 3" );
@@ -439,8 +460,8 @@ let close = float 0.5
 let ordered_explosive = Testable.with_compare Int.compare explosive
 
 let refuses_unordered verb e =
-  Exn.invalid_arg ~substring:("Windtrap." ^ verb ^ ":") e
-  && Exn.invalid_arg ~substring:"Testable.with_compare" e
+  Exn.invalid_arg ~sub:("Windtrap." ^ verb ^ ":") e
+  && Exn.invalid_arg ~sub:"Testable.with_compare" e
 
 let orders =
   group "Orders"
@@ -502,7 +523,7 @@ let orders =
         ];
       cases
         "an ordering verb refuses a witness without an order, holding or not"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         [
           ("less, holding", "less", fun () -> Check.less unordered ~than:3 2);
           ( "at_most, failing",
@@ -546,19 +567,19 @@ let containment =
             (fun () -> Check.not_contains ~sub:"zz" "hello"),
             "returned" );
           ( "starts_with",
-            (fun () -> Check.starts_with ~affix:"sessions/" path),
+            (fun () -> Check.starts_with ~prefix:"sessions/" path),
             "returned" );
-          ( "starts_with, the empty affix",
-            (fun () -> Check.starts_with ~affix:"" path),
+          ( "starts_with, the empty prefix",
+            (fun () -> Check.starts_with ~prefix:"" path),
             "returned" );
           ( "starts_with, the whole haystack",
-            (fun () -> Check.starts_with ~affix:path path),
+            (fun () -> Check.starts_with ~prefix:path path),
             "returned" );
           ( "ends_with",
-            (fun () -> Check.ends_with ~affix:".json" path),
+            (fun () -> Check.ends_with ~suffix:".json" path),
             "returned" );
-          ( "ends_with, the empty affix",
-            (fun () -> Check.ends_with ~affix:"" path),
+          ( "ends_with, the empty suffix",
+            (fun () -> Check.ends_with ~suffix:"" path),
             "returned" );
           ( "in_order",
             (fun () -> Check.in_order ~subs:[ "start"; "send"; "stop" ] log),
@@ -599,17 +620,17 @@ let containment =
             (fun () ->
               Check.not_contains ~sub:"NEEDLE" (filler ^ "NEEDLE" ^ filler)),
             {|anywhere "NEEDLE", at 24000 in 48006 bytes|} );
-          ( "starts_with, an absent affix",
-            (fun () -> Check.starts_with ~affix:"users/" path),
+          ( "starts_with, an absent prefix",
+            (fun () -> Check.starts_with ~prefix:"users/" path),
             {|prefix "users/", nowhere in 27 bytes|} );
-          ( "starts_with, an affix elsewhere",
-            (fun () -> Check.starts_with ~affix:"ghost" path),
+          ( "starts_with, a prefix elsewhere",
+            (fun () -> Check.starts_with ~prefix:"ghost" path),
             {|prefix "ghost", at 9 in 27 bytes|} );
           ( "ends_with, the leftmost occurrence",
-            (fun () -> Check.ends_with ~affix:"session" path),
+            (fun () -> Check.ends_with ~suffix:"session" path),
             {|suffix "session", at 0 in 27 bytes|} );
-          ( "ends_with, an affix longer than the haystack",
-            (fun () -> Check.ends_with ~affix:"xxxxxxxxxx" "ab"),
+          ( "ends_with, a suffix longer than the haystack",
+            (fun () -> Check.ends_with ~suffix:"xxxxxxxxxx" "ab"),
             {|suffix "xxxxxxxxxx", nowhere in 2 bytes|} );
           ( "in_order, an element that is nowhere",
             (fun () -> Check.in_order ~subs:[ "start"; "abort" ] log),
@@ -626,7 +647,7 @@ let containment =
                 (filler ^ "OPEN" ^ filler)),
             {|ordered 1 from 24004 "MIDDLE", nowhere in 48004 bytes|} );
         ];
-      cases "in_order refuses an empty chain, whatever the haystack" ~name:fst
+      cases "in_order refuses an empty chain, whatever the haystack" ~id:fst
         [ ("the empty haystack", ""); ("a haystack", "abc") ]
         (fun (_, s) ->
           raises_match Exn.invalid_arg (fun () -> Check.in_order ~subs:[] s));
@@ -635,10 +656,11 @@ let containment =
 (* Exceptions *)
 
 let backtrace_of verb =
-  match verb () with
-  | () -> None
-  | exception Failure.Check_failure { kind = Raise { backtrace; _ }; _ } ->
+  match Failure.catch verb with
+  | Ok () -> None
+  | Error (`Assertion { kind = Raise { backtrace; _ }; _ }) ->
       Option.map (fun (t : Failure.text) -> t.kept) backtrace
+  | Error c -> Failure.reraise c
 
 (* The same raise, handled by the same [catch] that [raises] calls. *)
 let trimmed_backtrace () =
@@ -717,9 +739,8 @@ let exceptions =
             "returned" );
           ( "raises_match with an Exn predicate",
             (fun () ->
-              Check.raises_match
-                (Check.Exn.invalid_arg ~substring:"unhandled op") (fun () ->
-                  invalid_arg "step: unhandled op HALT")),
+              Check.raises_match (Check.Exn.invalid_arg ~sub:"unhandled op")
+                (fun () -> invalid_arg "step: unhandled op HALT")),
             "returned" );
         ];
       outcomes
@@ -787,15 +808,15 @@ let exceptions =
           );
           ( "raises_match, an Exn predicate's substring",
             (fun () ->
-              Check.raises_match (Check.Exn.failure ~substring:"underflow")
-                (fun () -> failwith "overflow")),
+              Check.raises_match (Check.Exn.failure ~sub:"underflow") (fun () ->
+                  failwith "overflow")),
             {|raise predicate, expected nothing, raised Failure("overflow"), with a backtrace|}
           );
         ];
       cases
         "an exception verb raises a failure, a control or a fatal exception \
          again"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         passed_through
         (fun (_, e, verb) ->
           equal string
@@ -810,49 +831,87 @@ let exceptions =
         backtrace_as_failure_gives_it;
       test "raises holds no backtrace when none was recorded"
         no_backtrace_unrecorded;
-      (* Each predicate runs inside its test, where a mutant of it is armed. *)
       cases
         "an Exn predicate accepts its constructor, with the substring when \
          given"
-        ~name:(fun (name, _, _) -> name)
+        ~id:(fun (name, _, _) -> name)
         [
-          ( "invalid_arg",
-            (fun () -> Check.Exn.invalid_arg (Invalid_argument "x")),
-            true );
+          ("invalid_arg", Check.Exn.invalid_arg (Invalid_argument "x"), true);
           ( "invalid_arg, a Failure",
-            (fun () -> Check.Exn.invalid_arg (Stdlib.Failure "x")),
+            Check.Exn.invalid_arg (Stdlib.Failure "x"),
             false );
-          ( "invalid_arg, Not_found",
-            (fun () -> Check.Exn.invalid_arg Not_found),
-            false );
+          ("invalid_arg, Not_found", Check.Exn.invalid_arg Not_found, false);
           ( "invalid_arg, the substring",
-            (fun () ->
-              Check.Exn.invalid_arg ~substring:"unhandled op"
-                (Invalid_argument "step: unhandled op HALT")),
+            Check.Exn.invalid_arg ~sub:"unhandled op"
+              (Invalid_argument "step: unhandled op HALT"),
             true );
           ( "invalid_arg, a missing substring",
-            (fun () ->
-              Check.Exn.invalid_arg ~substring:"overflow" (Invalid_argument "x")),
+            Check.Exn.invalid_arg ~sub:"overflow" (Invalid_argument "x"),
             false );
           ( "invalid_arg, the empty substring",
-            (fun () ->
-              Check.Exn.invalid_arg ~substring:"" (Invalid_argument "")),
+            Check.Exn.invalid_arg ~sub:"" (Invalid_argument ""),
             true );
-          ("failure", (fun () -> Check.Exn.failure (Stdlib.Failure "x")), true);
+          ("failure", Check.Exn.failure (Stdlib.Failure "x"), true);
           ( "failure, an Invalid_argument",
-            (fun () -> Check.Exn.failure (Invalid_argument "x")),
+            Check.Exn.failure (Invalid_argument "x"),
             false );
-          ("sys_error", (fun () -> Check.Exn.sys_error (Sys_error "x")), true);
+          ("sys_error", Check.Exn.sys_error (Sys_error "x"), true);
           ( "sys_error, a Failure",
-            (fun () -> Check.Exn.sys_error (Stdlib.Failure "x")),
+            Check.Exn.sys_error (Stdlib.Failure "x"),
             false );
           ( "sys_error, the substring",
-            (fun () ->
-              Check.Exn.sys_error ~substring:"No such file"
-                (Sys_error "nope.txt: No such file or directory")),
+            Check.Exn.sys_error ~sub:"No such file"
+              (Sys_error "nope.txt: No such file or directory"),
             true );
         ]
-        (fun (_, accepted, expected) -> equal bool expected (accepted ()));
+        (fun (_, accepted, expected) -> equal bool expected accepted);
+    ]
+
+(* Polling *)
+
+(* A function that fails its first [n] calls, and the calls it took. *)
+let failing_until n =
+  let calls = ref 0 in
+  let f () =
+    incr calls;
+    if !calls <= n then Check.fail (strf "call %d" !calls);
+    !calls
+  in
+  (f, calls)
+
+let polling =
+  group "Polling"
+    [
+      test "eventually is the value of the first call that returns" (fun () ->
+          let f, calls = failing_until 2 in
+          equal int 3 (Check.eventually ~within:10. f);
+          equal int 3 !calls);
+      test "eventually fails with its last call's failure, which it records"
+        (fun () ->
+          let f, calls = failing_until max_int in
+          let _, caught =
+            Failure.recording (fun () ->
+                try ignore (Check.eventually ~within:0.015 f) with _ -> ())
+          in
+          greater int ~than:1 !calls;
+          equal (list string)
+            [ strf {|message "call %d"|} !calls ]
+            (List.map payload caught));
+      test "eventually raises again a control at once" (fun () ->
+          let calls = ref 0 in
+          equal string "skip"
+            (outcome (fun () ->
+                 Check.eventually ~within:10. (fun () ->
+                     incr calls;
+                     Check.skip ())));
+          equal int 1 !calls);
+      test "eventually refuses a bound that is not finite and positive"
+        (fun () ->
+          List.iter
+            (fun within ->
+              raises_match Exn.invalid_arg (fun () ->
+                  Check.eventually ~within (fun () -> fail "called")))
+            [ 0.; -1.; Float.nan; Float.infinity ]);
     ]
 
 (* Escape hatches *)
@@ -873,10 +932,71 @@ let escape_hatches =
         ];
     ]
 
+(* Tolerances *)
+
+module Loc = Windtrap.Private.Loc
+
+let row (t : Check.tolerance) =
+  strf "%s: %d, %g of %g"
+    (match t.site with
+    | Some l -> strf "line %d" l.Loc.line
+    | None -> "no site")
+    t.comparisons t.error t.tolerance
+
+let a = ("t.ml", 10, 0, 1)
+and b = ("t.ml", 20, 0, 1)
+
+let recorded ?at fn =
+  Check.reset_tolerances ();
+  ignore (Failure.catch fn);
+  List.map row (Check.tolerances ?at ())
+
+let at = { Loc.file = "t.ml"; line = 5; column = 0 }
+
+let tolerance_rows =
+  let close = Windtrap.float 1. in
+  [
+    ( "each site keeps its comparison closest to its bound, and counts its calls",
+      ( (fun () ->
+          Check.equal ~__POS__:a close 0. 0.25;
+          Check.equal ~__POS__:a close 0. 0.75;
+          Check.equal ~__POS__:a close 0. 0.5;
+          Check.equal ~__POS__:b close 0. 0.),
+        [ "line 10: 3, 0.75 of 1"; "line 20: 1, 0 of 1" ] ) );
+    ( "a failing comparison is recorded before the verb raises",
+      ((fun () -> Check.equal ~__POS__:a close 0. 3.), [ "line 10: 1, 3 of 1" ])
+    );
+    ( "a witness without a tolerance records nothing",
+      ((fun () -> Check.equal ~__POS__:a float_exact 0. 0.), []) );
+    ( "not_equal and mem record nothing",
+      ( (fun () ->
+          Check.not_equal ~__POS__:a close 0. 3.;
+          Check.mem ~__POS__:a close 0. [ 0.5 ]),
+        [] ) );
+  ]
+
+let unlocated () =
+  equal (list string) [ "line 5: 2, 0.5 of 1" ]
+    (recorded ~at (fun () ->
+         Check.equal ~__POS__:("t.ml", 5, 0, 1) (Windtrap.float 1.) 0. 0.25;
+         (* Under a delimiter, as in tail position in a test's body, the
+            call has no site. *)
+         Loc.delimit (fun () -> Check.equal (Windtrap.float 1.) 0. 0.5)))
+
+let tolerances_group =
+  group "Tolerances"
+    [
+      cases "equal records, by site, the largest error against its tolerance"
+        ~id:fst tolerance_rows (fun (_, (fn, rows)) ->
+          equal (list string) rows (recorded fn));
+      test "a call with no site is recorded at the declaration given" unlocated;
+    ]
+
 let () =
   exit
     (run "check"
        [
+         tolerances_group;
          every_verb;
          equalities;
          unwrapping;
@@ -884,5 +1004,6 @@ let () =
          orders;
          containment;
          exceptions;
+         polling;
          escape_hatches;
        ])

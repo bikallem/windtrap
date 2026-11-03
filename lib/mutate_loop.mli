@@ -6,391 +6,156 @@
 (** The mutation loop: the parent process of a mutation run.
 
     {!execute_and_report} is the one call through which a run becomes a mutation
-    run, and the entry point of a suite makes it in place of {!Report.run}.
+    run, and the entry point of a suite makes it in place of {!Report.run}. The
+    process that makes it runs no test, a mutant's least of all: the dry run,
+    the probe, the mutants and [--arm] run in worker processes ([Supervisor]).
 
     The module decides which mutants survived, in which order and with which
     reaching tests. What a run tests or arms arrives on [config.mutation]
-    ({!Run.type-mutation}), which {!Cli} resolves. *)
+    ({!Run.type-mutation}), which {!Cli} resolves.
+
+    @canonical Windtrap.Private.Mutate_loop *)
 
 (** {1:running Running} *)
 
-(** The type for what {!execute_and_report} did with the run. *)
-type run =
-  | Ran of (Run.outcome, Run.startup_error) result
-      (** The result of {!Report.run}, which was called once. The caller
-          finishes its work on it as it does after {!Report.run}. *)
-  | Reported of int
-      (** The module has printed everything, and the process must exit with this
-          code, which is [0] or [1]. The caller must do none of the work that
-          follows a run. *)
-
-val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
+val execute_and_report :
+  suite:string ->
+  Run.config ->
+  Test_tree.t list ->
+  (Run.outcome, Run.startup_error) result
 (** [execute_and_report ~suite config tests] is {!Report.run} over the same
-    arguments, in the mode that [config.mutation] names.
-    - Under {!Run.No_mutation} it is [Ran (Report.run ~suite config tests)] and
+    arguments, in the mode that [config.mutation] names, and the caller finishes
+    its work on the result as it does after {!Report.run}.
+    - Under {!Run.No_mutation} it is [Report.run ~suite config tests] and
       nothing else, in an instrumented build as in any other.
     - Under {!Run.Armed} it is the {{!section-armed}armed run}.
-    - Under {!Run.Loop} it is the {{!section-loop}loop}, and the result is
-      [Reported], but for a [WINDTRAP_MUTATE] that finds nothing to test.
+    - Under {!Run.Loop} it is the {{!section-loop}loop}.
 
-    [Reported 0] is a loop that ran whole, whatever it found. Only
+    A loop that ran whole is [Ok] of its dry run, whatever it found: only
     [windtrap mutants], which merges the verdict files of every executable,
-    gates on survivors. [Reported 1] is a loop that refused to start or could
-    not go on, or an [--arm] identifier that is refused. Each says its reason on
-    standard error, and none falls back to a default and runs on. *)
+    gates on survivors. A loop that refused to start or could not go on, and an
+    [--arm] identifier that is refused, are
+    [Error (Run.Mutation_refused reason)], whose exit code is [1]. Each says its
+    reason on standard error, and none falls back to a default and runs on. *)
 
 (** {1:loop The loop}
 
     The loop proceeds in this order.
     + It fixes the population, which is the catalogue of the executable
       ({!val:Windtrap_runtime.Mutate.catalogue}) narrowed to the scope, without
-      the mutants that [[@mutate off]] dismisses and those that the rewriter
-      filtered. The scope is the list of source-path prefixes that [--mutate]
-      gave, and the revision of [--mutate-since], if any. A mutant is in scope
-      when the list is empty, or when one prefix is a prefix of its recorded
-      file ([String.starts_with]). Under [--mutate-since], its line must also be
-      one of the changed lines ({!Changed_lines.of_git}), which git gives once,
-      under {!Os.project_root}, before the dry run. The line of a mutant is that
-      of the first byte of its expression, or of the pattern of a dropped case,
-      so a change to a later line of an expression on more than one line does
-      not put the mutant in scope. Git does not run for a catalogue with no
-      mutant. A mutant out of scope is neither forked nor recorded.
-    + It runs the dry run, which is {!Report.run} over [config] with [junit]
-      cleared. Every other field is that of [config], [baseline] included, so
-      the dry run of a [--mutate -u] run accepts what a [-u] run accepts. A site
-      that no test reached and that the dry run evaluated outside every test, at
+      the mutants that [[@mutate off]] dismisses. The scope ({!Run.scope}) is
+      the list of source-path prefixes that [--mutate] gave, and the lines of
+      [--lines] or [--diff]. A mutant is in scope when the list is empty, or
+      when one prefix is a prefix of its recorded file ([String.starts_with]),
+      and when it lies on those lines, if any. A mutant out of scope is neither
+      tested nor recorded.
+    + It runs the dry run, which is {!Report.run} with [Supervisor.execute] over
+      [config] with [junit] cleared, its workers telling it which tests evaluate
+      each mutant. Every other field is that of [config], [baseline] included,
+      so the dry run of a [--mutate -u] run accepts what a [-u] run accepts. A
+      site that no test reached and that was evaluated outside every test, at
       module initialization or in a fixture release, is evaluated outside tests
       ({!Windtrap_runtime.Verdicts.Outside_tests}). A site that only tests
       marked xfail evaluated is unreached.
-    + Under [skip_killed], it reads the other verdict files and skips each
-      reached mutant that one of them killed ({b Killed elsewhere} below). A
-      skipped mutant gets no child, and the other reached mutants are the tested
-      mutants.
-    + In exec mode ({b Exec mode} below), it runs one child that runs no test.
-      Its time is the time that a new process takes before its first test.
-    + It runs the determinism probe, which is one unarmed child over the tests
-      that the dry run executed. The probe agrees iff it executed as many tests,
-      skipped as many and counted no failure.
-    + It runs the unarmed children of {b History} and, in exec mode, of
-      {b Exec mode}.
-    + It starts one child per reached mutant that it does not skip, in the order
-      of the catalogue. It never starts one for a mutant that is unreached or
-      evaluated outside tests. A mutant with a history can have a first child
-      ({b History} below), and a survivor can have more full children (the next
-      step). The children at once use at most the [jobs] CPUs of {!Run.Loop}. A
-      child uses the most CPUs that one of its tests used at once in the dry
-      run. The loop rounds this value to the nearest integer. The value is at
-      least 1 and at most the CPUs of the host. Tests that took less than 10 ms
-      in all count as 1. These CPUs are the CPU time of the process in the test
-      over the time of the test. On Linux, the loop also counts the waits of its
-      threads for a CPU ([child_cpus]). Thus a child of a test on several
-      domains counts as several jobs, also when other load held the CPUs in the
-      dry run. The loop does not get the wait of a domain that a test spawns and
-      joins. The workers of a stateful test are an exception. Thus other load
-      can make the count smaller for a test whose thread sleeps while such
-      domains work. A child that uses more than [jobs] CPUs runs alone. A child
-      that does not fit waits for other children to end, and no child after it
-      starts before it. The verdict of a mutant is kept until each mutant before
-      it in the catalogue has a verdict. Then it is committed, and the block of
-      a survivor printed ({!Report.mutation_survivor}). Thus the report and the
-      verdict file are the same for every value of [jobs].
-    + When the full child of a mutant gives
-      {!Windtrap_runtime.Verdicts.verdict.Survived}, the loop starts the same
-      child again, up to [retry] more times ([--mutate-retry], {!Run.Loop}). The
-      first verdict that is not [Survived] is the verdict, and else the verdict
-      is [Survived] with the number of runs. [retry] is [2] when the process
-      spawned a domain ({!domain_spawned}), and [0] if not, when no layer gives
-      it.
-    + When the process spawned a domain ({!domain_spawned}), a kill that names a
-      test gets a check before it is the verdict ({b Flaky kills} below).
-    + When the last child has ended it writes the verdict file.
+    + It runs the jobs ([Supervisor.fresh]), each in a worker of its own, which
+      ran no test before it: the determinism probe, which is the tests that the
+      dry run executed, unarmed, and then one job per reached mutant, in the
+      order of the catalogue, with the mutant armed and its reaching tests up to
+      the first failure. Up to [config.jobs] run at once, and they are given in
+      that order. The probe agrees iff it executed as many tests, skipped as
+      many and counted no failure.
+    + Once the last job is given it writes the verdict file.
 
-    {b Children.} A child runs {!Run.execute} over {!Run.for_subset} of
-    [config], with the reaching tests of its mutant as the allowlist, or with
-    the one test of its history for a first child. In exec mode, a full child
-    can also get the tests that the dry run executed up to the last reaching
-    test ({b Exec mode}). It checks baselines read-only, records no correction
-    and writes no last-failed store ({!Run.config.store}). The loop removes the
-    log directory of the child, and on a busy file system a write of the store
-    can take seconds, which count toward the deadline of the child. But a child
-    writes the capture log of each test, because a test can read its captured
-    output ({!Capture.val-output}). The time of these writes also counts toward
-    the deadline, and a stall of the file system there can expire it. Nothing
-    that a child prints is visible, because both of its standard descriptors are
-    [/dev/null]. No [at_exit] function runs in a child. Each child has a log
-    directory of its own in the scratch directory of the loop, so children that
-    run at once share no file of the loop. Their tests can share a file or a
-    port of their own, which is why [jobs] is [1] unless a run sets it.
+    A job starts from module initialization, so what the dry run left, a table
+    it filled or a lazy value it forced, is not there: the mutant is judged on
+    what its tests do. Nothing that a job prints is visible, its baselines are
+    checked read-only and no correction is recorded.
 
-    {b Exec mode.} The [children] of {!Run.Loop} tells how the loop starts a
-    child. {!Run.Fork} forks each child from the state after the dry run.
-    {!Run.Exec} starts each child as a new process of the executable:
-    [/proc/self/exe] for native code on Linux, and
-    {!Windtrap_runtime.Instr.executable} if not. The child gets the [argv] of
-    the loop. {!Run.Auto}, the default, is exec mode when the process spawned a
-    domain ({!domain_spawned}), before or in the dry run, and fork mode if not.
-    A new process reads its request from a file ({!write_request},
-    {!serve_child}). It starts from the state after module initialization, not
-    from the state after the dry run. Its environment is that of the loop, with
-    [TMPDIR] set to a directory of its own in the scratch directory. The names
-    of these directories have one length. A suite that a deep [TMPDIR] breaks,
-    for example with the path of a Unix socket, gets a longer path in a new
-    process than in the dry run.
+    The root seed is {!Cli.mutation_seed} unless [--seed] gives one
+    ({!Cli.settings}), so a property draws the same cases in the dry run, the
+    probe and every job, and on every run of one binary.
 
-    In exec mode, a full child also starts from a new process. A reaching test
-    that needs the state that an earlier test sets then fails with no mutant.
-    Thus, before the child of any mutant, each different list of reaching tests
-    runs one time in a new process with no mutant armed, with the children of
-    {b History}. A list that does not pass gives its full children the tests
-    that the dry run executed, in its order, up to the last reaching test of the
-    mutant. This list is a prefix of the probe, which passed. A test after the
-    first reaching test can find the state that the mutant changed, and its
-    failure kills the mutant. Such a child runs every test of its list and does
-    not stop at its first failure, because the mutant can make a test marked
-    xfail pass, and that pass kills nothing. After a test kills the mutant, the
-    child continues. A later test that hangs or crashes then gives a verdict
-    that names no test, and the history of the mutant gets no killer. The cost
-    is one more child for each different list of reaching tests, and all of the
-    tests of a prefix for each of its children.
-
-    {b History.} Before the first child, the loop reads the verdict file of its
-    suite ({!Windtrap_runtime.Verdicts.output_file}), which an earlier build can
-    have written. A mutant that it records as killed by a test, with the digest
-    of the source file that the loop reads now, can get a first child. The test
-    must reach the mutant, must not be the first test that does, and must pass
-    alone. Before the child of any mutant, each such test runs alone in a child
-    with no mutant armed, up to [jobs] at once. The first child runs that test
-    alone. When the first child kills the mutant, that is the verdict.
-    Otherwise, a full child runs every reaching test, before any mutant after it
-    starts. It gives the verdict, or starts again as the step of [retry] tells.
-    A child runs each test that decides a verdict, so the history gives no
-    verdict without a run. A file that is not a regular file, or that does not
-    load, gives no history. A file that records another suite gives no history.
-
-    A first child does not run the tests before its test. When the tests of a
-    suite depend on their order, a first child can kill a mutant that a full
-    child lets survive: the test passes alone, but fails alone with the mutant,
-    and an earlier test changes the state so that it passes with the mutant. A
-    test that fails alone with no mutant gets no first child. A [Flaky] record
-    gives no first child.
-
-    {b Verdicts.} A child of a mutant knows if one of its processes evaluated
-    the armed site: {!Windtrap_runtime.Mutate.armed_hits} counts the evaluations
-    of the child. A process that a test forks writes one byte of memory that it
-    shares with the child. Before the first evaluation, the child runs the code
-    of the unmutated program. Thus the mutant cannot cause a failure that comes
-    before the first evaluation. A failure counts when it comes in a test that
-    evaluated the site, or in a test after such a test. Unless it runs every
-    test of a list ({b Exec mode}), the child stops at the first failure that
-    counts. It does not stop at a failure that does not count. If the byte is
-    not available, each failure counts.
-
-    A mutant is {!Windtrap_runtime.Verdicts.verdict.Killed} when its child had a
-    failure that counts, that of a fixture release included. The verdict names
-    the first test that failed in this way, if a test failed. This test reaches
-    the mutant, except in exec mode, where it can be a test before the last
-    reaching test ({b Exec mode}). It is also killed when its child evaluated
-    the site and recorded no test. It is also killed when its child passed its
-    deadline, did not exit with [0], or left no complete line. Such a child
-    gives no count of evaluations.
-
-    A mutant is {!Windtrap_runtime.Verdicts.verdict.Not_evaluated} when no
-    process of its child evaluated the armed site. A test or a fixture release
-    that failed in such a child has a cause of its own. Examples are a schedule
-    of domains, the clock or the tests before it. The report names that failure
-    under the mutant. An exception that escapes the run before the first
-    evaluation also gives [Not_evaluated], and the report names no failure. A
-    fork starts from the state that the dry run left. Thus a child can find the
-    result that the dry run cached for a site, in a table or a forced lazy
-    value. Then the child does not evaluate the site. The report lists such a
-    mutant with the [--arm] command that tests it in a new process, and names it
-    no survivor. In exec mode, a new process has no such cache, and its tests
-    evaluate the site. When its child evaluated the site and had no failure that
-    counts, the mutant is {!Windtrap_runtime.Verdicts.verdict.Survived}.
-
-    {b Flaky kills.} When the process spawned a domain, the loop does a check of
-    each {!Windtrap_runtime.Verdicts.verdict.Killed} verdict that names a test.
-    The loop is then in exec mode. The verdict can come from a first child, a
-    full child or a retry. The check runs the tests of the child, up to and with
-    that test. It runs them in a new process with no mutant armed
-    ({!kind.Check_kill}), up to 3 times, one run after the other. The first run
-    in which that test has a failure that counts gives
-    {!Windtrap_runtime.Verdicts.verdict.Flaky}, and no other run starts. When no
-    run gives such a failure, the verdict stays [Killed]. A run that passes its
-    deadline, crashes or gives no line gives no failure. A run that gives an
-    [error] line is a refusal, as for a child of a mutant. The loop keeps the
-    result of each list of tests for the rest of the run. Thus a list has at
-    most 3 runs, also when it killed more than one mutant. A run of a check uses
-    job slots and has a deadline, as a child of a mutant with the same tests. It
-    starts before the children of later mutants. A mutant gets its verdict, and
-    the live line counts it, when its check ends. A kill that names no test gets
-    no check.
-
-    {b Killed elsewhere.} Under the [skip_killed] of {!Run.Loop}
-    ([--mutate-skip-killed]), the loop reads the regular files with the
-    extension [.mutants] in the directory of
-    {!Windtrap_runtime.Verdicts.output_file}, except the file of its suite. The
-    files of the other suites of this executable count, as the files of other
-    executables do, and a record from such a file names this executable. It does
-    not use a file that does not load, a file that names no executable, a file
-    whose executable no longer exists ({!Windtrap_runtime.Instr.exe_location}),
-    or a file whose executable is not a regular file (for example a FIFO). It
-    names each such file in a warning on standard error. It also does not use a
-    file whose {!Windtrap_runtime.Instr.val-freshness} is [Stale], and gives no
-    warning for it. A reached mutant gets no child when a used file gives it
-    {!Windtrap_runtime.Verdicts.verdict.Killed}. This applies only when the
-    source digest of that record is the digest of the source file that the loop
-    reads now. A {!Windtrap_runtime.Verdicts.Killed_elsewhere} or a
-    {!Windtrap_runtime.Verdicts.Flaky} record does not skip a mutant. The mutant
-    gets a [Killed_elsewhere] record that names the executable of that file, the
-    smaller one when several files kill it. The report counts the mutant as not
-    tested. A line above the outcome line gives the number of skipped mutants
-    and the executable of each used file. The loop uses the files as they are on
-    disk after the dry run.
+    {b Verdicts.} A mutant is {!Windtrap_runtime.Verdicts.Killed} when its job
+    counted a failure, that of a fixture release included. It is
+    {!Windtrap_runtime.Verdicts.Unknown} when its job ended before its tests
+    did: its worker was killed by a signal or exited, code under test calling
+    [exit] included, or it passed its deadline. Otherwise it is
+    {!Windtrap_runtime.Verdicts.Not_evaluated} when its job did not evaluate the
+    armed site ({!Windtrap_runtime.Mutate.armed_hits} is [0]), as when the dry
+    run reached the site in a test only because of what an earlier test had
+    done, and survived when it did. The report lists a not-evaluated and an
+    unknown mutant with the [--arm] command that runs it again, and names it no
+    survivor.
 
     {b Tests marked xfail.} A test marked xfail ({!Test_tree.val-xfail}) reaches
-    no mutant and kills none. The dry run and the probe run it, no child runs
-    it, and no survivor names it.
+    no mutant and kills none. The dry run and the probe run it, no mutant's job
+    runs it, and no survivor names it.
 
-    {b Limits.} Nothing bounds a whole run. A child that passes its deadline has
-    its process group killed, and the loop goes on. The loop reads the deadline
-    on the monotonic clock ({!Os.val-counter}). The formula is {!val-deadline}.
-    The startup child has a deadline of 60 seconds plus ten times the time that
-    the dry run took. The loop reads each pipe that is ready before it looks at
-    a deadline. Thus a child that exited keeps its verdict, also when a write of
-    the report held the loop for longer than the deadline of the child. The loop
-    reads a pipe at most 17 times ([drain_rounds]) before it looks at the
-    deadlines and the signal, and keeps the first 64 KiB ([output_limit]) of
-    what a child writes. Thus a child that writes and never stops cannot keep
-    the loop past its deadline, or fill the memory of the loop. When the CPUs
-    that the children use at once outnumber the CPUs of the host
-    ([Domain.recommended_domain_count]), each deadline is multiplied by that
-    ratio. The CPUs at once are [jobs], but at most the sum of the CPUs of the
-    tested mutants. A mutant counts the most CPUs of one of its reaching tests.
-    In exec mode, it counts the most CPUs of one of the tests up to its last
-    reaching test. The probe runs alone, before the children of the mutants, and
-    its deadline is not multiplied. On Linux, the time that a child or the probe
-    waited for a CPU does not count toward its deadline ([waited_for_cpu]). This
-    time is the sum of the waits of the threads of the processes in the group of
-    the child, which include the processes that its tests start
-    ([read_threads]). Thus other processes that hold the CPUs, for example the
-    children of the other suites of a parallel [dune runtest], do not kill a
-    mutant by its deadline. The sum is at most the time since the start of the
-    child less [share] times a part of the CPU time of these threads. This part
-    is the CPU time divided by the CPUs of the child ([child_cpus]). [share] is
-    the factor of the deadline of the child, and [1.] for the probe. The CPUs of
-    the child are the average of all of its tests in the dry run. They are not
-    rounded, and are at most the CPUs of the host. Thus the deadline comes at
-    the latest when each CPU of the child used the CPU time of the deadline of
-    one job. This is also true when its threads wait at the same time, or wait
-    for the other children. The threads of a child on several domains use more
-    than one CPU at a time, and their wait moves the deadline too. The loop
-    reads these times only when a child is past its deadline, and then at least
-    every 0.1 seconds ([reread]). The wait of a process that ended before the
-    first read counts toward the deadline. So does the wait of a process after
-    its last read. While nothing else holds the loop, this wait is at most 0.1
-    seconds for each thread of the process. Other systems do not give these
-    times.
+    {b Limits.} Nothing bounds a whole run. A job that passes its deadline has
+    its process group killed, and the loop goes on. The deadline is the time
+    that the dry run took, read on the monotonic clock ({!Os.val-counter}), plus
+    a share for the tests of the job. The share is ten times
+    ([deadline_multiplier]) what the dry run measured for those tests, and at
+    least one second. The probe's tests are every executed test.
 
-    The runaway budget of a child ({!Windtrap_runtime.Mutate.arm}) is
+    The runaway budget of a job ({!Windtrap_runtime.Mutate.arm}) is
     [(hits * 8) + 1000] ([budget_of]) for a site that the dry run evaluated
     [hits] times.
 
     {b The verdict file.} The file holds one record per reached mutant, one
     [Outside_tests] record per mutant of the population evaluated outside tests,
-    one [Unreached] record per unreached one, and one [Filtered] record per
-    mutant of the scope that the rewriter filtered, with the reason of the
-    filter. No child starts for a filtered mutant. The report counts the
-    filtered mutants by reason. A skipped mutant has a [Killed_elsewhere]
-    record. Each record has the digest of the source file of its mutant, when
-    the loop can read the file. Each record also has the previous verdict of its
-    mutant ({b Unstable verdicts}). The file is written to
-    {!Windtrap_runtime.Verdicts.output_file} of the executable and the suite, by
-    {!Windtrap_runtime.Verdicts.save}. Under a scope, the records of the mutants
-    outside it, under another prefix or on a line that did not change, stay when
-    the file there was written by this build and this suite
-    ({!Windtrap_runtime.Verdicts.writer_identity}), and are dropped otherwise. A
-    file that cannot be written ([Sys_error]) is one sentence on standard error
-    above the outcome line, and the result is still [Reported 0].
+    and one [Unreached] record per unreached one. It is written to
+    {!Windtrap_runtime.Verdicts.output_file} of the executable, by
+    {!Windtrap_runtime.Verdicts.save}. Under a scope, the records of the files
+    outside it stay when the file there was written by this build
+    ({!Windtrap_runtime.Verdicts.writer_identity}) for a tested suite, and are
+    dropped otherwise. A file that cannot be written ([Sys_error]) is one
+    sentence on standard error above the outcome line.
 
-    Only a loop that ran whole, over the whole suite, writes it. The one
-    exception is the empty population of a revision under [WINDTRAP_MUTATE] (see
-    {b What the environment asks}). A run whose selection narrows the suite
-    writes none and says so on standard error above the outcome line. [filter],
-    [exclude], [tags], [exclude_tags], [failed_only], [shard] and an active
-    focus narrow the suite. The scope of [--mutate] does not.
+    Only a loop that ran whole, over the whole suite, writes its verdicts. A run
+    whose selection narrows the suite says so on standard error above the
+    outcome line. It leaves a file that this build wrote, and otherwise writes a
+    refused file, as below, so the merge names the suite. [filter], [exclude],
+    [tags], [exclude_tags], [failed_only], [shard] and an active focus narrow
+    the suite. The scope of [--mutate] does not.
 
-    {b Unstable verdicts.} Each record of the file that the loop writes, a kept
-    record too, gets the verdict of its mutant in the file that it replaces,
-    when the two records have the same source digest
-    ({!Windtrap_runtime.Verdicts.with_previous}). The loop reads that file when
-    it saves, in the read that gives the kept records. A file of any build
-    counts, as for the history, but only a file that the same [suite] wrote.
-    When the loop writes its file, the report lists each mutant whose verdict
-    changed its class ({!Windtrap_runtime.Verdicts.changed}), in catalogue
-    order, in the section [unstable] ({!Report_sections.type-unstable}). A run
-    that writes no file lists none: a narrowed run, a run that a signal stopped
-    before its last verdict, and a run whose file cannot be written. The list
-    does not change the score or the result.
+    {b What the environment asks.} The facade's [WINDTRAP_MUTATE] rule holds
+    when [config.broadcast.mutate] does: an empty population and a selection
+    that keeps no test ({!Run.list_selection}) are no refusal, and the result is
+    that of the ordinary run under {!Run.No_mutation}, before which an empty
+    population says why on standard error. Every other refusal stands.
 
-    {b What the environment asks.} [WINDTRAP_MUTATE] reaches every test
-    executable of a project, so an executable that cannot honour it is not in
-    error. When [config.broadcast.mutate] holds, an empty population and a
-    selection that keeps no test ({!Run.list_selection}) are no refusal. The
-    result is then [Ran] of the ordinary run under {!Run.No_mutation}, before
-    which an empty population says why on standard error. Every other refusal
-    stands. Under [--mutate-since], when the catalogue has mutants and the
-    population is empty, the verdict file is also written before the ordinary
-    run. In the scope, the file holds only the [Filtered] records, and it keeps
-    the other records as a loop does. Thus [windtrap mutants --since] finds a
-    file of the executable when no mutant to test is on a changed line.
-
-    {b Refusals.} Each of these is [Reported 1] with one sentence on standard
-    error ({!Os.say}). The first nine are tried in this order, and the last has
-    no one place in it:
-    - The platform is Windows, which has no process groups.
-    - Under [--mutate-since], the changed lines cannot be read: the revision
-      names no commit, the project root is in no git work tree, or git cannot
-      run. This refusal stands under [config.broadcast.mutate] too.
-    - The dry run is refused at startup. {!Report.run} has said why, and the
-      code is [1] whatever {!Run.startup_exit_code} is.
-    - The exit code of the dry run is not [0], because no test ran ([2]) or
-      because the run is red.
-    - The population is empty.
-    - Under {!Run.Fork}, the process spawned a domain, in the dry run or before
-      it. The sentence names [--mutate-children=auto] and [exec].
-    - In exec mode, the startup child passes its deadline, gives an [error]
-      line, or ends with no [ready] line or with an exit code that is not [0].
+    {b Refusals.} Each of these is [Error (Run.Mutation_refused reason)] with
+    one sentence on standard error ({!Os.say}), and but the first and the empty
+    population each writes the verdict file as refused, with the reason
+    ({!Windtrap_runtime.Verdicts.save}): its records hold the population as
+    unknown, or, past a whole green dry run, the reached mutants as unknown and
+    the others as that dry run found them. They are tried in this order:
+    - The platform is Windows, where windtrap starts no worker process.
+    - This process cannot start the jobs' workers ([Supervisor.can_spawn]): it
+      spawned a domain, so it cannot fork, and a new start of the executable
+      would not reach this run.
+    - The dry run is refused at startup. {!Report.run} has said why.
+    - No test ran in the dry run, or it is red.
+    - The population is empty, unless the scope's lines name no line, or hold no
+      site of a file of the catalogue that they name. The loop then says so on
+      standard error and is [Ok] of its dry run, with no verdict file.
     - The probe disagrees with the dry run, and the sentence names the tests
-      that failed in it, or it passes its deadline, is refused at startup, or
-      reports nothing readable.
-    - A child cannot arm its mutant, or a child or a run of a check is refused
-      at startup. The refusal comes when the verdict of the mutant would be
-      committed, and the children that run then are killed.
-    - The supervision fails. The scratch directory cannot be created, which is
-      tried before the probe, or [pipe], [fork], [create_process_env], [select]
-      or [waitpid] fails for the probe or for a child, or the request file of a
-      new process cannot be written. If [fork] fails because a thread spawned a
-      domain after the loop selected the mode, the sentence says so and names
-      [--mutate-children=exec]. *)
+      that failed in it, or its worker ended early or passed its deadline. *)
 
 (** {1:armed The armed run}
 
     Under {!Run.Armed} the identifier is read by
     {!Windtrap_runtime.Mutate.id_of_string} and armed by
-    {!Windtrap_runtime.Mutate.arm} in this process, which forks nothing.
+    {!Windtrap_runtime.Mutate.arm}, here and in each worker of an ordinary
+    [Supervisor.execute] run.
     - An identifier that is malformed, ambiguous, or
       {!Windtrap_runtime.Mutate.Unmatched} within a file that this executable
-      catalogues is [Reported 1], with the sentence of
+      catalogues is [Error (Run.Mutation_refused _)], with the sentence of
       {!Windtrap_runtime.Mutate.pp_arm_error} on standard error, before anything
       runs.
-    - A mutant that {!Windtrap_runtime.Mutate.arm} arms but that is dismissed
-      ([dismissed] is [Some _]) is [Reported 1] before anything runs. Its site
-      has no guard, so an armed run of it is the unarmed run. The sentence on
-      standard error gives the reason. For a {!Windtrap_runtime.Mutate.Filtered}
-      mutant, it tells the user to give [-no-filter] to the rewriter.
     - {!Windtrap_runtime.Mutate.Uncatalogued} is no refusal. The same sentence
-      goes to standard error before the transcript, and the result is [Ran] of
+      goes to standard error before the transcript, and the result is that of
       the ordinary run under {!Run.No_mutation}.
     - With the mutant armed, it runs {!Report.run} with [baseline] set to
       {!Baseline.Check}, so it records no correction.
@@ -398,232 +163,33 @@ val execute_and_report : suite:string -> Run.config -> Test_tree.t list -> run
       unexpected pass of such a test fails the run and kills no mutant, and a
       site that only such tests evaluated is not reached
       ({!Report.mutation_not_reached}).
-    - As in a child, a failure counts when a process evaluated the site in its
-      test or before it. A run with no failure that counts and no evaluation is
-      {!Report.mutation_not_evaluated}, with [~failed:true] when a test or a
-      fixture release failed. A run with an evaluation and no failure that
-      counts is {!Report.mutation_survived}, with [~failed_before:true] when a
-      test failed before the first evaluation.
 
-    The result of an armed run is [Ran], so its exit code is that of the
-    ordinary run, [2] included, and it writes its JUnit file. *)
+    The result of an armed run is that of {!Report.run}, so its exit code is
+    that of the ordinary run, [2] included, and it writes its JUnit file. *)
 
 (** {1:signals Signals}
 
-    From before its scratch directory exists until its verdict file is written,
-    the loop handles [SIGINT], [SIGTERM] and [SIGHUP] as {!Run.execute} does
-    during a run (see its {{!Run.section-signals}signals}).
+    From the end of the dry run until its verdict file is written, the loop
+    handles [SIGINT], [SIGTERM] and [SIGHUP]. One that arrives while a job runs
+    ends every job, with its process group, and the mutants not yet given get no
+    verdict. The loop then reports what it found, writes no verdict file, and
+    dies by the same signal last, so its parent sees a death by signal and no
+    [at_exit] function runs.
 
-    A child is a session of its own ([setsid]), which a terminal's signal does
-    not reach. The handler therefore kills the process group of each running
-    child, and the mutants of those children get no verdict, whatever the
-    children reported. A signal sent to the whole process tree also reaches each
-    child, and a child that it killed gets no verdict too. The report names
-    these mutants in catalogue order. A signal that stops a run of a check
-    leaves each mutant that waits for that check with no verdict, and the report
-    names these mutants. A kill that waits for its check gets no verdict. A
-    survivor that waits for a retry gets no verdict too. This holds also when
-    its child exited before the signal. The other children that exited before
-    the signal keep their verdicts, also when the loop did not reap them yet,
-    and the report commits them in catalogue order. The loop starts no child
-    after the signal. When no child runs and mutants remain, the report names
-    the first mutant with no verdict. The loop then removes its scratch
-    directory and writes no verdict file. It dies by the same signal last, so
-    its parent sees a death by signal and no [at_exit] function runs.
-
-    A signal that arrives once the last child has ended stops nothing. The
-    verdict file is written, a second signal excepted, and the report ends as
-    usual. The loop then dies by that signal, and says nothing more.
+    A signal that arrives once the last job was given stops nothing. The verdict
+    file is written, a second signal excepted, and the report ends as usual. The
+    loop then dies by that signal, and says nothing more.
 
     [SIGPIPE] is handled over the same span. When the reader of standard output
     has gone away, the write that finds it gone fails. The loop then stops as it
     does for the other signals, except that it says nothing and tries no closing
     report, and it dies by [SIGPIPE]. When the process was started with
     [SIGPIPE] ignored, the [Sys_error] of the failed write escapes
-    {!execute_and_report} instead, after the scratch directory is removed. *)
-
-(** {1:domains Domains} *)
-
-val domain_spawned : unit -> bool
-(** [domain_spawned ()] is [true] if the process spawned a domain at any time
-    before the call, also if that domain ended. OCaml refuses [Unix.fork] in
-    such a process. The process can spawn the domain at module initialization or
-    in a test. The module registers one hook with [Domain.before_first_spawn] at
-    its initialization, and [domain_spawned] reads what the hook recorded.
-
-    The function is in this interface for the unit suite. A fixture calls it in
-    a process of its own, because after a spawn the process cannot fork. *)
-
-(** {1:requests Requests}
-
-    A child that is a new process of the suite executable gets a request in
-    place of the state of the parent. *)
-
-(** The type for what a child does with the tests of its request. *)
-type kind =
-  | Probe
-      (** The child runs the tests with no mutant armed. It gives the counts of
-          the run: [probe <executed> <skipped> <failed> <indices>...]. *)
-  | Alone
-      (** The child runs the tests with no mutant armed. It gives [passes] or
-          [fails]. *)
-  | Mutant of { id : Windtrap_runtime.Mutate.id; budget : int }
-      (** The child arms the mutant [id] with the runaway [budget] and runs the
-          tests. It gives the verdict: [survived], [not_evaluated],
-          [killed <index>] or [killed]. When a test or a fixture release failed
-          without an evaluation of the site, it gives [not_evaluated <index>] or
-          [not_evaluated release]. If the mutant does not arm, it gives
-          [error <diagnostic>]. *)
-  | Startup
-      (** The child runs no test and gives [ready]. The loop measures the time
-          that a new process takes before its first test. *)
-  | Check_kill
-      (** The child runs the tests with no mutant armed, and does not stop at a
-          failure. It gives [flaky <headline>] when the last test of [paths] has
-          a failure that counts, where [<headline>] is
-          {!Report_sections.headline} of its first failure. It gives [steady] if
-          not. *)
-
-type request = {
-  suite : string;  (** The name of the suite of the dry run. *)
-  config : Run.config;
-      (** The configuration of the child, from {!Run.for_subset}. *)
-  paths : string list list;
-      (** The tests of the child, in the order of the dry run. *)
-  kind : kind;
-}
-(** The type for the request of a child. It holds only data. *)
-
-val write_request : string -> request -> unit
-(** [write_request path request] writes [request] to the file [path]. The file
-    has a header line, the identity of the executable file, the fingerprint of
-    the catalogue of mutants and the request in [Marshal] format. The module
-    reads the identity one time, at its initialization. For native code on
-    Linux, it is the identity of [/proc/self/exe]. If not, it is the identity of
-    {!Windtrap_runtime.Instr.executable}.
-
-    The function is in this interface for the unit suite. *)
-
-val serving : unit -> bool
-(** [serving ()] is [true] in a child that is a new process of the loop: the
-    environment variable [WINDTRAP_MUTATE_CHILD] was set and not empty at the
-    initialization of this module.
-
-    The function is in this interface for the unit suite. *)
-
-val serve_child : suite:string -> Test_tree.t list -> bool
-(** [serve_child ~suite tests] is [false] if the process is not a child of the
-    loop ({!serving} is [false]). It is [true] if the request is for another
-    suite: the caller must run nothing and return, because a later call of
-    {!Windtrap.run} in the same main is for that suite. If not, [serve_child]
-    does these steps and does not return:
-    - It runs the request. These requests give the line [error <diagnostic>]: a
-      request file that it cannot read, a request file that is not complete, a
-      request from another executable or another catalogue, and a request with a
-      test that [tests] does not have.
-    - It writes one line to the pipe and calls [Unix._exit 0], as a forked child
-      does.
-
-    The environment variable [WINDTRAP_MUTATE_CHILD] gives the path of the
-    request file. At the initialization of this module, before the modules of
-    the suite initialize, a child does these steps:
-    - It removes the variable from the environment, so that a process that the
-      suite starts does not serve the request again.
-    - It calls [setsid].
-    - It moves its standard input, the write end of the verdict pipe, to a new
-      descriptor with close-on-exec. Then its standard input is [/dev/null]. If
-      it cannot move the pipe, it calls [Unix._exit 2] and writes no line.
-
-    {!Windtrap.run} calls [serve_child] before it parses the command line. If a
-    main has no call of {!Windtrap.run} for the suite of the request, the
-    process ends with no line, and the loop counts that as a failure of the
-    child. *)
-
-(** {1:pipes The pipes of the children} *)
-
-val drain : (Unix.file_descr * Buffer.t) list -> Unix.file_descr list
-(** [drain pipes] reads each descriptor of [pipes] that is ready, with no wait,
-    and adds what it reads to the buffer of that descriptor. It does this again
-    until no descriptor is ready, but it reads a descriptor at most 17 times
-    ([drain_rounds]). A buffer keeps at most the first 64 KiB ([output_limit])
-    of what its descriptor gives. The result is the descriptors that got to
-    their end.
-
-    The loop calls [drain] with the pipes of its children before it looks at the
-    deadlines and the signal ({{!section-loop}Limits}). Thus a child that ended
-    and that left a full pipe of 64 KiB gets to its end in one call. A pipe that
-    a writer keeps full does not keep the loop from its next look.
-
-    The function is in this interface for the unit suite. A test gives it a
-    descriptor that never empties, as [/dev/zero]. A child cannot keep a pipe
-    full with certainty, because the loop can read faster than the child writes.
-    When [select] fails with an error other than [EINTR], [drain] raises the
-    exception that the loop reports as a failure of the supervision
-    ({{!section-loop}Refusals}). When [read] fails with such an error, it raises
-    [Unix.Unix_error]. *)
-
-(** {1:deadlines The deadline of a child} *)
-
-val deadline :
-  share:float -> fixed:float -> startup:float -> scheduled:float -> float
-(** [deadline ~share ~fixed ~startup ~scheduled] is the seconds from the start
-    of a child to its deadline:
-    [share *. (fixed +. (10. *. startup) +. Float.max 1. (10. *. scheduled))].
-    [fixed] is the time of the child outside its tests: 0.5 seconds plus the
-    fixture time of the dry run, and in exec mode plus the time of the dry run
-    up to the last test of the child. For the probe, it is the time of the dry
-    run. [startup] is the time that the startup child measured, and [0.] for a
-    fork. [scheduled] is the sum of the times that the dry run measured for the
-    tests of the child. [share] is the CPUs of the children for each CPU of the
-    host, and [1.] for the probe ({{!section-loop}Limits}). It is here for the
-    unit suite. *)
-
-(** {1:looks The looks at a child} *)
-
-val next_look : left:float -> waited:(unit -> float) -> float * float
-(** [next_look ~left ~waited] is the seconds until the deadline of a child, and
-    the most seconds until the loop looks at the child again. [left] is the
-    seconds from the clock to the deadline that the dry run gives the child.
-
-    If [left] is more than [0.], the two numbers are [left], and [next_look]
-    does not call [waited]. If not, the child is past this deadline. Then
-    [waited ()] is the seconds that the group of the child waited for a CPU,
-    which move the deadline later. The first number is [left +. waited ()], and
-    the second number is at most 0.1 seconds ([reread]). Thus the loop reads the
-    wait again at least every 0.1 seconds ({{!section-loop}Limits}). The loop
-    kills the child when the first number is [0.] or less.
-
-    The function is in this interface for the unit suite. A test of the loop
-    cannot make sure that a process of a child ends between two looks. *)
+    {!execute_and_report} instead. *)
 
 (** {1:effects Effects}
 
-    Beyond the effects of {!Report.run}, the loop calls [fork], [waitpid],
-    [pipe] and [select], and each child calls [setsid] and closes the pipes of
-    the other children. In exec mode ({!Run.children}), the loop calls
-    [create_process_env] in place of [fork]. The pipes are close-on-exec, so a
-    new process gets no pipe of another child. For each child, the loop writes a
-    request file and makes a temporary directory in its scratch directory. It
-    gives the directory to the child in [TMPDIR], and it removes the file and
-    the directory when it reaps the child. In exec mode, the report that no
-    signal stopped has a line that tells that the children are new processes,
-    and why. The line comes above the outcome line ({!Report.mutation_finish}).
-    Under [--mutate-since] it runs [git] four times, before the dry run
-    ({!Changed_lines.of_git}). The loop calls [kill] on the process group of a
-    child that expired or was interrupted. It creates one scratch directory per
-    run under [Filename.get_temp_dir_name ()], and removes it however the loop
-    ends, a second signal excepted. For the source line of a survivor and the
-    digest of each record it reads the recorded file of the mutant, under
-    {!Os.project_root} first and then as given. It reads the verdict file of its
-    suite before the first child. Under [skip_killed], it lists the directory of
-    its verdict file after the dry run. It reads the other regular files with
-    the extension [.mutants] in it. For its digest, it reads the executable that
-    each file names, one time for each executable, and only when that executable
-    is a regular file.
-
-    At module initialization, the module reads the status of its executable file
-    ([stat]) and the environment variable [WINDTRAP_MUTATE_CHILD]. If the
-    variable is set and not empty, the module removes it and calls [setsid]. It
-    copies the standard input to a new descriptor and opens [/dev/null] as the
-    standard input. Then {!serve_child} reads the request file and exits the
-    process with [Unix._exit]. *)
+    Beyond the effects of {!Report.run} and [Supervisor.fresh], the loop reads
+    the verdict file of its executable and writes it. For the source line of a
+    survivor it reads the recorded file of the mutant, under {!Os.project_root}
+    first and then as given. *)

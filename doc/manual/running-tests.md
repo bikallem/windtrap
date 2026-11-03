@@ -18,8 +18,8 @@ suite with nothing to report prints one line:
 
 ```
 $ dune runtest
-storage: 12 passed, 2 skipped, 1 expected failure in 2.8ms.
-keys/keys.ml: 3 passed in 0.8ms.
+storage: 10 passed, 2 skipped, 1 expected failure in 3.3ms.
+keys/keys.ml: 3 passed in 1.4ms.
 ```
 
 Dune runs a stanza again only when something it depends on changed.
@@ -38,10 +38,10 @@ per test:
 ```
 $ dune exec examples/06-resources-and-structure/test_storage.exe -- -v -f 'process state'
 storage: 3 tests
-  PASS  process state › a config is written to a fresh directory  0.6ms
+  PASS  process state › a config is written to a fresh directory  0.3ms
   PASS  process state › the token is read from the environment  0.1ms
-  PASS  process state › a build writes in the working directory  0.5ms
-3 passed in 1.4ms.
+  PASS  process state › a build writes in the working directory  0.1ms
+3 passed in 1.9ms.
 ```
 
 ## Selecting tests by name
@@ -61,8 +61,8 @@ server › reindexing keeps it running
 ## Selecting tests by tag
 
 `--tag TAG` keeps the tests that carry every named tag, and
-`--exclude-tag TAG` drops those that carry any. A test declared with
-`slow` carries the tag `slow`:
+`--exclude-tag TAG` drops those that carry any. `tag "net" @@ t` tags
+a test or a group, and `slow @@ t` carries the tag `slow`:
 
 ```
 $ dune exec examples/06-resources-and-structure/test_storage.exe -- -l --tag slow
@@ -72,13 +72,13 @@ server › reindexing keeps it running
 ## Reading a selection that matches nothing
 
 A selection given on the command line that keeps no test runs nothing,
-says why, and exits `2`. The last line is the command that lists the
-suite's tests:
+says why, and exits `2`. The line above that is the command that lists
+the suite's tests:
 
 ```
 $ dune exec examples/06-resources-and-structure/test_storage.exe -- -f servr
-storage: no tests ran: filter "servr" matched none of 15 tests.
 list: dune exec examples/06-resources-and-structure/test_storage.exe -- -l
+storage: no tests ran: filter "servr" matched none of 13 tests.
 ```
 
 ## Passing flags to dune runtest
@@ -93,7 +93,7 @@ library's tests do here:
 
 ```
 $ WINDTRAP_FILTER=gpu dune runtest --force
-storage: 2 skipped in 0.4ms.
+storage: 2 skipped in 1.4ms.
 keys/keys.ml: no tests ran: filter "gpu" matched none of 3 tests.
 ```
 
@@ -112,10 +112,10 @@ its test ends, and closes on the counts:
 
 ```
 $ dune runtest
-File "examples/06-resources-and-structure/dune", line 2, characters 7-19:
-2 |  (name test_storage)
+File "examples/06-resources-and-structure/dune", line 3, characters 7-19:
+3 |  (name test_storage)
            ^^^^^^^^^^^^
-storage: 15 tests
+storage: 13 tests
 ──────────────────────── failures ────────────────────────
   FAIL  server › it answers a ping
     examples/06-resources-and-structure/server_tests.ml:9
@@ -125,8 +125,7 @@ storage: 15 tests
     actual    false
 ──────────────────────────────────────────────────────────
 
-11 passed, 2 skipped, 1 expected failure, 1 failed in 2.3ms.
-keys/keys.ml: 3 passed in 0.5ms.
+9 passed, 2 skipped, 1 expected failure, 1 failed in 2.8ms.
 ```
 
 `-x` stops the run after the first failure.
@@ -140,7 +139,7 @@ two commands below pass `-o` to keep this page's record apart:
 
 ```
 $ dune exec examples/06-resources-and-structure/test_storage.exe -- -o _build/rerun
-storage: 15 tests
+storage: 13 tests
 ──────────────────────── failures ────────────────────────
   FAIL  server › it answers a ping
     examples/06-resources-and-structure/server_tests.ml:9
@@ -150,7 +149,7 @@ storage: 15 tests
     actual    false
 ──────────────────────────────────────────────────────────
 
-11 passed, 2 skipped, 1 expected failure, 1 failed in 1.9ms.
+9 passed, 2 skipped, 1 expected failure, 1 failed in 3.4ms.
 $ dune exec examples/06-resources-and-structure/test_storage.exe -- -o _build/rerun --failed
 storage: 1 test
 ──────────────────────── failures ────────────────────────
@@ -162,11 +161,13 @@ storage: 1 test
     actual    false
 ──────────────────────────────────────────────────────────
 
-1 failed in 0.6ms.
+1 failed in 1.3ms.
 ```
 
 `-l --failed` lists the tests `--failed` would run, and `--failed` with
-nothing recorded runs nothing and exits `2` (see the command-line
+nothing recorded runs nothing, says why, as
+`--failed has nothing to rerun: the last run passed, so no failure is recorded`,
+and exits `2` (see the command-line
 section of `lib/windtrap.mli` for how a run updates the record). A run
 never fails because it cannot read or write the record, and a record it
 cannot read counts as empty.
@@ -186,13 +187,13 @@ fails.
 ## Focusing on one test
 
 `focus` on a test or a group runs only the focused tests. With the
-server's first test wrapped as `focus (test "it answers a ping" …)`, one
+server's first test wrapped as `focus @@ test "it answers a ping" …`, one
 test runs, and the run warns on standard error:
 
 ```
 $ dune exec examples/06-resources-and-structure/test_storage.exe
-storage: 1 passed in 1.0ms.
-windtrap: warning: focus is active: 1 of 15 tests ran; remove the focus before committing
+storage: 1 passed in 1.2ms.
+windtrap: warning: focus is active: 1 of 13 tests ran; remove the focus before committing
 ```
 
 ## Running under CI
@@ -206,14 +207,15 @@ $ CI=true dune exec examples/06-resources-and-structure/test_storage.exe
 windtrap: focused tests committed (focus at examples/06-resources-and-structure/server_tests.ml:10); remove focus to run under CI
 ```
 
-`-u` is refused under CI too. With `GITHUB_ACTIONS` set as well, the
+`-u` is refused under CI too, and a stale baseline fails the run even
+under `--corrected` (see [Baselines](baselines.md)). With `GITHUB_ACTIONS` set as well, the
 report is folded in a group, and each failure adds an annotation to the
 workflow run:
 
 ```
 $ CI=true GITHUB_ACTIONS=true dune exec examples/06-resources-and-structure/test_storage.exe
 ::group::storage
-storage: 15 tests
+storage: 13 tests
 ──────────────────────── failures ────────────────────────
   FAIL  server › it answers a ping
     examples/06-resources-and-structure/server_tests.ml:9
@@ -225,8 +227,17 @@ storage: 15 tests
 ::endgroup::
 ::error file=examples/06-resources-and-structure/server_tests.ml,line=9,title=Test failure%3A server › it answers a ping::    examples/06-resources-and-structure/server_tests.ml:9%0A    expected  true%0A    actual    false
 
-11 passed, 2 skipped, 1 expected failure, 1 failed in 20ms.
+9 passed, 2 skipped, 1 expected failure, 1 failed in 2.6ms.
 ```
+
+`--json PATH` writes the results as one JSON document, a test per
+line, each with its verdict and its scope, which states what the test
+ran: a property's cases, examples, discards, labels and `cover`
+demands, a table's rows. A vacuous test carries its reason. The
+document closes on the counts of the summary line. A `PATH` that ends
+in `.json` is the file, and any other a directory that gets
+`<suite>.json`; its mirror is `WINDTRAP_JSON`. The document's fields
+are in `lib/report_json.mli`.
 
 `--junit PATH` also writes the report as a JUnit file. A `PATH` that
 ends in `.xml` is the file, and any other is a directory that gets
@@ -238,8 +249,6 @@ the same on every machine, so `N` jobs run each test once:
 ```
 $ dune exec examples/06-resources-and-structure/test_storage.exe -- -l --shard 1/2
 database › an insert adds one row
-database › a name is stored › alice
-database › a name is stored › bob
 database › every inserted row is found
 server › reindexing keeps it running
 process state › a build writes in the working directory
@@ -249,8 +258,78 @@ process state › a build writes in the working directory
 
 `run` returns `0`, `1` or `2`, and the suite's last line hands the code
 to `exit`. The exit codes section of `Windtrap.run` says which runs
-return which. Code under test that calls `exit` does not end the run;
+return which. A vacuous test, one that checked less than it claims,
+returns `1` as a failure does: the summary and the report tell the two
+apart, and a gate needs no other code to go red. Code under test that calls `exit` does not end the run;
 the call fails its test.
+
+## Bounding a test in time
+
+Every attempt of a test has a limit. A test that declares no `~timeout`,
+in a run given no `--timeout`, gets ten minutes, so a test that hangs
+fails by name, `timed out after 600s`, instead of holding the run until
+something outside it kills the build with no name. `--timeout SECONDS`
+(`WINDTRAP_TIMEOUT`) sets the limit of every test that declares none,
+and a test's own `~timeout`, or its group's, wins over both (see
+[Resources and structure](resources-and-structure.md)). The limit is an
+alarm, so a teardown still runs after a body that timed out; a test
+still running three limits after it started, in C code the alarm cannot
+reach, is killed with its worker and times out too.
+
+`--in-process` has no default limit, since a debugger may hold a test as
+long as it likes; a limit that `~timeout` or `--timeout` gives still
+holds there. On Windows the tests run in the calling process with no
+alarm, and no limit is enforced, the default included: a test that
+hangs there hangs the run.
+
+## Running tests in worker processes
+
+The process that calls `run` runs no test. It starts a worker process,
+which runs the tests one at a time, and reads each verdict from what the
+worker reports, how it ends and how long it takes. A test that calls
+`exit` or `Unix._exit`, crashes, raises `Out_of_memory` or outlives its
+limit in C code fails, saying which, and the run goes on in a new
+worker. A test that spawns a domain retires its worker after it, so the
+domain cannot run into the next test. A test that timed out retires its
+worker too, since the timeout stopped its code wherever it stood: a
+mutex it held then stays locked in that worker, not in the next test's.
+
+A worker is the test executable started again, with the same command
+line. Its module initialisation runs again, so a test sees what a fresh
+start of the program builds, as under `--in-process`: a device, a
+connection or a pool opened at declaration is the worker's own. Each
+worker pays for that initialisation once, a worker that replaces a
+retired one included, so expensive work at declaration belongs in a
+`lazy` value or a `fixture`. What the initialisation prints appears
+once, from the process that called `run`. A worker that ends before its
+first test fails that test with how it ended and what it printed.
+
+A suite must declare the same tests each time the program starts. Names
+taken from the clock, a random generator or a directory listing that
+changes give a worker another suite than its parent, and the tests it
+was to run fail, saying so.
+
+Only a program's first `run` starts the program again. A later `run`,
+and a `run` in a process forked from the program, forks its workers
+from the calling process before any test runs.
+
+`-j N` runs the tests in `N` workers at once, each one test at a time.
+The default is one: tests in two workers share no fixture, and they race
+on the environment, the working directory and the files they write.
+Under `-s` the tests run one at a time whatever `-j` says, so their
+output reaches the terminal in order. The report, its order, the exit
+code and the corrections are those of `-j 1`.
+
+To step through one test in a debugger, run it in the process you
+started, with `--in-process` and a filter that selects it alone:
+
+```
+$ dune exec examples/06-resources-and-structure/test_storage.exe -- --in-process -f 'a config is written'
+storage: 1 passed in 0.2ms.
+```
+
+A selection of more than one test is refused, since the flag is a
+gesture at one test, not a way to run a suite.
 
 ## Listing the flags
 
@@ -292,7 +371,8 @@ OPTIONS:
       Stop after the first failure.
 
   --timeout=SECONDS (env WINDTRAP_TIMEOUT)
-      Default per-test timeout in seconds.
+      Limit each attempt of a test that declares no timeout to SECONDS (default
+      600; none under --in-process).
 
   --slow-threshold=SECONDS (env WINDTRAP_SLOW_THRESHOLD)
       Warn when an untagged test runs longer than SECONDS (0 disables).
@@ -301,7 +381,13 @@ OPTIONS:
       Root seed for property tests (s1:<16 hex>).
 
   --prop-count=N (env WINDTRAP_PROP_COUNT)
-      Generated cases per property.
+      Raise every property's generated cases to at least N.
+
+  --replay=TOKEN (env WINDTRAP_REPLAY)
+      Check each selected property on the one case of TOKEN alone.
+
+  --case=PATH
+      Check the one selected property on the one case of the bytes of PATH.
 
   -u, --update
       Accept baseline changes in place (refused under CI).
@@ -312,12 +398,22 @@ OPTIONS:
   -s, --stream (env WINDTRAP_STREAM)
       Stream test output instead of capturing it.
 
+  -j N, --jobs=N (env WINDTRAP_JOBS)
+      Run the tests in N worker processes at once (default 1).
+
+  --in-process
+      Run the one selected test in this process, for a debugger.
+
   -v, --verbose (env WINDTRAP_VERBOSE)
       One status line per test.
 
   --junit=PATH (env WINDTRAP_JUNIT)
       Also write a JUnit XML report to PATH, or to PATH/<suite>.xml when PATH
       does not end in .xml.
+
+  --json=PATH (env WINDTRAP_JSON)
+      Also write a JSON report of the results and their scope to PATH, or to
+      PATH/<suite>.json when PATH does not end in .json.
 
   --color=MODE (env WINDTRAP_COLOR)
       Color output: always, never or auto.
@@ -328,24 +424,12 @@ OPTIONS:
   --mutate[=PREFIX,...] (env WINDTRAP_MUTATE)
       Test this executable's mutants, all or those under PREFIX.
 
-  --mutate-jobs=N (env WINDTRAP_MUTATE_JOBS)
-      Test mutants at once on up to N CPUs, or on each CPU for auto (default 1).
+  --lines=FILE:A-B,... (env WINDTRAP_LINES)
+      Test only the mutants on these lines of these files (with --mutate).
 
-  --mutate-retry=N (env WINDTRAP_MUTATE_RETRY)
-      Run the child of a survivor up to N more times (default 0, or 2 when the
-      suite spawned a domain).
-
-  --mutate-since=REV (env WINDTRAP_MUTATE_SINCE)
-      Test only the mutants on lines changed since git revision REV.
-
-  --mutate-skip-killed (env WINDTRAP_MUTATE_SKIP_KILLED)
-      Skip the mutants that the verdict file of another suite killed.
-
-  --mutate-children=MODE (env WINDTRAP_MUTATE_CHILDREN)
-      Test each mutant in a fork, a new process (exec), or auto (default).
-
-  --mutate-workers (env WINDTRAP_MUTATE_WORKERS)
-      Spawn the worker domains of stateful tests under mutation testing.
+  --diff=FILE (env WINDTRAP_DIFF)
+      Test only the mutants on the lines that FILE, the output of git diff -U0,
+      adds or changes (with --mutate).
 
   --arm=ID (env WINDTRAP_MUTATE_ARM)
       Run once with mutant ID armed.

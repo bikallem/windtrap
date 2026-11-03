@@ -45,6 +45,7 @@ let withheld = function
   | Some Failure.Skipped -> ", withheld: skipped"
   | Some (Failure.Refused _) -> ", withheld: refused"
   | Some Failure.Conflict -> ", withheld: conflict"
+  | Some Failure.In_law -> ", withheld: in a law"
 
 (* A failure as the runner's claims read it: its phase, the kind of failure
    the runner made of it, and its subtest label. The words of a message are
@@ -53,6 +54,7 @@ let line (f : Failure.t) =
   let kind =
     match f.kind with
     | Failure.Message _ -> "message"
+    | Failure.Vacuous _ -> "vacuous"
     | Failure.Timeout { limit; case = None } -> strf "timeout %gs" limit
     | Failure.Timeout { limit; case = Some _ } ->
         strf "timeout %gs in a case" limit
@@ -72,7 +74,7 @@ let line (f : Failure.t) =
   let label =
     match f.subtest with [] -> "" | label -> " in " ^ String.concat "/" label
   in
-  phase f.phase ^ " " ^ kind ^ label
+  phase f.phase ^ " " ^ kind ^ label ^ if f.caught then ", caught" else ""
 
 let lines r path = List.map line (Recorded.failures r path)
 let loc (f : Failure.t) = Option.map Loc.to_string f.loc
@@ -82,7 +84,9 @@ let failure r path = require_match only (Recorded.failures r path)
 
 let message =
   require_match (fun (f : Failure.t) ->
-      match f.kind with Failure.Message m -> Some m.kept | _ -> None)
+      match f.kind with
+      | Failure.Message m | Failure.Vacuous m -> Some m.kept
+      | _ -> None)
 
 let rows_of r = Run.results (Recorded.outcome r).run
 
@@ -132,6 +136,8 @@ let spin seconds =
   done
 
 let gen = Gen.int_range 0 100
+let case_of_choices choices = { Run.file = "case"; choices }
+let empty_case = case_of_choices [||]
 
 (* Configuration *)
 
@@ -147,15 +153,7 @@ let color_name = function
 
 let mutation_name = function
   | Run.No_mutation -> "none"
-  | Run.Loop { scope; jobs; since; children; skip_killed; retry } ->
-      strf "loop %s jobs %d%s children %s%s%s" (String.concat "," scope) jobs
-        (Option.fold ~none:"" ~some:(strf " since %s") since)
-        (match children with
-        | Run.Auto -> "auto"
-        | Run.Fork -> "fork"
-        | Run.Exec -> "exec")
-        (if skip_killed then " skip_killed" else "")
-        (Option.fold ~none:"" ~some:(strf " retry %d") retry)
+  | Run.Loop { prefixes; _ } -> "loop " ^ String.concat "," prefixes
   | Run.Armed id -> "armed " ^ id
 
 let broadcast_name (b : Run.broadcast) =
@@ -181,22 +179,19 @@ let fields (c : Run.config) =
     ("stream", string_of_bool c.stream);
     ("baseline", mode_name c.baseline);
     ("timeout", opt string_of_float c.timeout);
+    ("default_timeout", string_of_float c.default_timeout);
     ("prop_count", opt string_of_int c.prop_count);
     ("log_dir", c.log_dir);
-    ("store", string_of_bool c.store);
-    ("allow_focus", string_of_bool c.allow_focus);
     ("color", color_name c.color);
     ("slow_threshold", string_of_float c.slow_threshold);
     ("verbose", string_of_bool c.verbose);
     ("junit", opt Fun.id c.junit);
     ("mutation", mutation_name c.mutation);
-    ("mutate_workers", string_of_bool c.mutate_workers);
     ("github", string_of_bool c.github);
     ( "invocation",
       match c.invocation with `Exe cmd -> "exe " ^ cmd | `Mirrors -> "mirrors"
     );
     ("broadcast", broadcast_name c.broadcast);
-    ("unused_since", opt Fun.id c.unused_since);
   ]
 
 let project names c =
@@ -216,102 +211,16 @@ let given_no_flag =
     ("stream", "false");
     ("baseline", "check");
     ("timeout", "none");
+    ("default_timeout", "600.");
     ("prop_count", "none");
-    ("store", "true");
-    ("allow_focus", "false");
     ("color", "auto");
     ("slow_threshold", "1.");
     ("verbose", "false");
     ("junit", "none");
     ("mutation", "none");
-    ("mutate_workers", "false");
     ("github", "false");
     ("invocation", "mirrors");
     ("broadcast", "none");
-    ("unused_since", "none");
-  ]
-
-let parent : Run.config =
-  {
-    seed = 0x5eedL;
-    filter = [ "f" ];
-    exclude = [ "e" ];
-    tags = [ "t" ];
-    exclude_tags = [ "x" ];
-    shard = Some (1, 2);
-    failed_only = true;
-    bail = false;
-    stream = true;
-    baseline = Baseline.Update;
-    timeout = Some 3.;
-    prop_count = Some 7;
-    log_dir = "parent";
-    store = true;
-    allow_focus = false;
-    color = Os.Never;
-    slow_threshold = 2.;
-    verbose = true;
-    junit = Some "out.xml";
-    mutation =
-      Run.Loop
-        {
-          scope = [ "lib/" ];
-          jobs = 4;
-          since = None;
-          children = Run.Exec;
-          skip_killed = false;
-          retry = None;
-        };
-    mutate_workers = true;
-    github = true;
-    invocation = `Exe "suite.exe";
-    broadcast = { selection = true; mutate = true };
-    unused_since = None;
-  }
-
-let subset = Run.for_subset parent ~log_dir:"child" ~bail:true
-
-let subset_rules =
-  [
-    ( "clears the selection",
-      [
-        ("filter", "[]");
-        ("exclude", "[]");
-        ("shard", "none");
-        ("failed_only", "false");
-      ] );
-    ( "keeps the tags and the seed",
-      [
-        ("seed", Seed.to_string parent.seed);
-        ("tags", "[t]");
-        ("exclude_tags", "[x]");
-      ] );
-    ( "checks, allows focus and neither reports nor broadcasts",
-      [
-        ("baseline", "check");
-        ("allow_focus", "true");
-        ("junit", "none");
-        ("broadcast", "none");
-      ] );
-    ( "keeps the mutation and mutate_workers, which its tests can read",
-      [
-        ("mutation", "loop lib/ jobs 4 children exec");
-        ("mutate_workers", "true");
-      ] );
-    ( "captures into the log directory it is given",
-      [ ("stream", "false"); ("log_dir", "child") ] );
-    ("writes no last-failed store, which no run reads", [ ("store", "false") ]);
-    ( "bails as told and keeps every other field",
-      [
-        ("bail", "true");
-        ("timeout", "3.");
-        ("prop_count", "7");
-        ("color", "never");
-        ("slow_threshold", "2.");
-        ("verbose", "true");
-        ("github", "true");
-        ("invocation", "exe suite.exe");
-      ] );
   ]
 
 let is_the_configuration_of_no_flag () =
@@ -329,8 +238,6 @@ let configuration =
       test "every default_config draws its own seed" (fun () ->
           let seed () = Seed.to_string (Run.default_config ()).seed in
           not_equal string (seed ()) (seed ()));
-      cases "for_subset" ~name:fst subset_rules (fun (_, expected) ->
-          equal settings expected (project (List.map fst expected) subset));
     ]
 
 (* Run records and the ambient slot *)
@@ -418,7 +325,7 @@ let a_nested_run_fails_its_caller () =
 let ambient_slot =
   group "The ambient slot"
     [
-      cases "raises Invalid_argument outside a test" ~name:fst outside_a_run
+      cases "raises Invalid_argument outside a test" ~id:fst outside_a_run
         (fun (_, raised) ->
           raises_match Exn.invalid_arg (fun () -> replay raised));
       test "an observer runs in the active run, with no frame current"
@@ -513,10 +420,12 @@ let an_unmet_demand_fails () =
     [ ("reached", false) ]
     (snd (labels_counted stateful_labels [ "unreachable" ]))
 
+(* The four programs of [open] are checked whole, and the empty one labels
+   nothing. *)
 let every_place_labels_its_case () =
   equal
     (list (pair string int))
-    [ ("invariant", 10); ("pre", 10); ("release", 10); ("system", 10) ]
+    [ ("invariant", 3); ("pre", 3); ("release", 3); ("system", 3) ]
     (fst (labels_counted stateful_places [ "places" ]))
 
 let frames =
@@ -574,14 +483,16 @@ let refused_operations =
 
 let swallowing () = try reads () with Failure.Check_failure _ -> ()
 
-(* The site of the refusal that another domain gets. *)
+(* The site of the refusal that another domain gets, caught by windtrap's
+   own catch, which owns what it records. *)
 let refusal_site () =
   let refused () =
-    match reads () with
-    | () -> None
-    | exception Failure.Check_failure f -> Option.map Loc.to_string f.loc
+    match Failure.catch reads with
+    | Ok () -> None
+    | Error (`Assertion f) -> Option.map Loc.to_string f.loc
+    | Error c -> Failure.reraise c
   in
-  starts_with ~affix:"test/unit/test_run.ml:"
+  starts_with ~prefix:"test/unit/test_run.ml:"
     (require_some (Domain.join (Domain.spawn refused)))
 
 let spawning =
@@ -592,6 +503,15 @@ let spawning =
   @ [
       ("swallowed", fun () -> Domain.join (Domain.spawn swallowing));
       ("located", refusal_site);
+      ("a verb", fun () -> Domain.join (Domain.spawn (fun () -> equal int 1 2)));
+      ( "a verb the domain catches",
+        fun () ->
+          Domain.join
+            (Domain.spawn (fun () -> try equal int 1 2 with _ -> ())) );
+      ( "a verb whose join is caught",
+        fun () ->
+          try Domain.join (Domain.spawn (fun () -> equal int 1 2))
+          with _ -> () );
       ( "untouched",
         fun () ->
           ignore (Domain.join (Domain.spawn (fun () -> Sys.opaque_identity 1)))
@@ -639,12 +559,29 @@ let refused_callers =
       cases
         "an operation from another domain raises there, and fails the test \
          when the join raises it again"
-        ~name:fst refused_operations (fun (name, _) ->
+        ~id:fst refused_operations (fun (name, _) ->
           equal string (name ^ " -> " ^ refused_by_domain) (from_domain name));
       test "the refusal is located at the call" (fun () ->
           equal string "located -> pass" (from_domain "located"));
-      test "a domain that swallows its refusal leaves its test passing"
-        (fun () -> equal string "swallowed -> pass" (from_domain "swallowed"));
+      test "a domain that swallows its refusal fails its test, caught"
+        (fun () ->
+          equal string
+            ("swallowed -> fail body; body message, caught: "
+           ^ other_domain_error)
+            (from_domain "swallowed"));
+      test "a verb that fails on another domain fails the test once" (fun () ->
+          equal string "a verb -> fail body; body equality"
+            (from_domain "a verb"));
+      test "a verb that the other domain catches fails the test, caught"
+        (fun () ->
+          equal string
+            "a verb the domain catches -> fail body; body equality, caught"
+            (from_domain "a verb the domain catches"));
+      test "a verb whose join the test catches fails the test, caught"
+        (fun () ->
+          equal string
+            "a verb whose join is caught -> fail body; body equality, caught"
+            (from_domain "a verb whose join is caught"));
       test "a domain that reads nothing leaves its test passing" (fun () ->
           equal string "untouched -> pass" (from_domain "untouched"));
       test "an operation on the run's domain is not refused" (fun () ->
@@ -880,7 +817,7 @@ let check_baseline_labels_in_a_subtest () =
 let the_running_test =
   group "The running test"
     [
-      cases "raises Invalid_argument outside a test" ~name:fst
+      cases "raises Invalid_argument outside a test" ~id:fst
         body_operations_outside_a_test (fun (_, raised) ->
           raises_match Exn.invalid_arg (fun () -> replay raised));
       test "current_test is the path of the running test" (fun () ->
@@ -938,7 +875,7 @@ let the_running_test =
           equal (list string) [ "body timeout 0.02s" ]
             (lines subtests [ "times out" ]));
       test "an assume in a subtest in a law discards the case" (fun () ->
-          equal (list string) [ "body message" ] (lines subtests [ "discards" ]);
+          equal (list string) [ "body vacuous" ] (lines subtests [ "discards" ]);
           contains ~sub:"property gave up"
             (message (failure subtests [ "discards" ])));
       test "a subtest failure stays in the body, in a setup and a teardown"
@@ -1121,7 +1058,7 @@ let ignores_an_error_on_the_way () =
 
 let the_empty_suffix_adds_nothing () =
   let name = scratch_name "file" in
-  starts_with ~affix:"file-" name;
+  starts_with ~prefix:"file-" name;
   is_some (int_of_string_opt (String.sub name 5 (String.length name - 5)))
 
 let every_path_is_in_one_directory () =
@@ -1171,16 +1108,16 @@ let temporary_paths =
       test "temp_dir makes a new directory at every call" (fun () ->
           not_equal string (scratch_name "dir") (scratch_name "repo"));
       test "temp_dir's prefix starts the directory's name" (fun () ->
-          starts_with ~affix:"repo" (scratch_name "repo"));
+          starts_with ~prefix:"repo" (scratch_name "repo"));
       test "temp_file's suffix ends the file's name" (fun () ->
-          ends_with ~affix:".json" (scratch_name "json"));
+          ends_with ~suffix:".json" (scratch_name "json"));
       test "temp_file's empty suffix adds nothing to the name"
         the_empty_suffix_adds_nothing;
       test "an attempt's paths share one directory, hostile names included"
         every_path_is_in_one_directory;
       test "the directory of an attempt has mode 0o700" (fun () ->
           if Sys.win32 then skip ~reason:"POSIX only" ();
-          starts_with ~affix:"directory 700" (scratch_made ()).root);
+          starts_with ~prefix:"directory 700" (scratch_made ()).root);
       test "temp_dir raises Unix_error when no directory can be made" (fun () ->
           raises_match
             (function Unix.Unix_error _ -> true | _ -> false)
@@ -1390,13 +1327,13 @@ let process_state =
       test "setenv binds for the rest of the test"
         setenv_binds_for_the_rest_of_the_test;
       cases "the attempt's end restores a variable"
-        ~name:(fun (shape, _, _) -> shape)
+        ~id:(fun (shape, _, _) -> shape)
         restorations
         (fun (_, var, expected) ->
           equal (option string) expected (after_test "binds" var));
       test "a name that setenv rejects raises and records nothing"
         a_rejected_name_records_nothing;
-      cases "a binding is restored after a test that" ~name:Fun.id
+      cases "a binding is restored after a test that" ~id:Fun.id
         [ "fails"; "skips"; "times out" ] (fun name ->
           if name = "times out" then needs_timeouts ();
           equal (option string) (Some "before") (after_test name bound_var));
@@ -1498,30 +1435,6 @@ let cut_acquisition, cut_acquisitions =
   in
   (r, !acquisitions)
 
-(* The seconds of the fixtures of a run: the acquisition one time, also an
-   acquisition that raises, and the release at the end. Four tests use the
-   timed fixture. Thus a run that counted the acquisition for each test
-   gives 0.5 seconds, not 0.2 seconds. *)
-let fixture_time_of tests =
-  Run.fixture_seconds (Recorded.outcome (Recorded.execute tests)).run
-
-let timed_seconds, plain_seconds, raised_seconds =
-  let timed =
-    Run.fixture
-      ~teardown:(fun () -> Unix.sleepf 0.1)
-      (fun () -> Unix.sleepf 0.1)
-  in
-  let raising =
-    Run.fixture (fun () ->
-        Unix.sleepf 0.1;
-        raise No_db)
-  in
-  let use accessor () = try accessor () with No_db -> () in
-  ( fixture_time_of
-      (List.map (fun name -> test name (use timed)) [ "a"; "b"; "c"; "d" ]),
-    fixture_time_of [ test "first" ignore; test "second" ignore ],
-    fixture_time_of [ test "raises" (use raising) ] )
-
 let fixture_names, fixture_line =
   let accessor, line = (Run.fixture ~teardown:ignore ignore, __LINE__) in
   let names = ref [] in
@@ -1583,12 +1496,6 @@ let fixtures =
           needs_timeouts ();
           equal (pair string int) ("pass", 2)
             (Recorded.row cut_acquisition [ "acquires again" ], cut_acquisitions));
-      test "a run counts the seconds of its fixture acquisitions and releases"
-        (fun () ->
-          at_least float_exact ~than:0.2 timed_seconds;
-          less float_exact ~than:0.4 timed_seconds;
-          less float_exact ~than:0.05 plain_seconds;
-          at_least float_exact ~than:0.1 raised_seconds);
       test "a fixture is named after the site where fixture was applied"
         (fun () ->
           equal (list string)
@@ -1602,8 +1509,8 @@ let row_facts =
   let attempts = ref 0 in
   Recorded.execute
     [
-      slow "own" ignore;
-      group ~tags:[ Test_tree.Tag.slow ] "g" [ test "inherited" ignore ];
+      slow @@ test "own" ignore;
+      slow @@ group "g" [ test "inherited" ignore ];
       test "plain" ignore;
       test ~retries:2 "twice failed" (fun () ->
           incr attempts;
@@ -1617,24 +1524,24 @@ let row_facts =
 let xpass_pos = ("test/xfail_decl.ml", 12, 2, 30)
 
 let known_bug =
-  xfail ~reason:"issue #42" (test "known bug" (fun () -> fail "still broken"))
+  xfail ~reason:"issue #42" @@ test "known bug" (fun () -> fail "still broken")
 
-let fixed = xfail ~reason:"issue #42" (test ~__POS__:xpass_pos "fixed" ignore)
-let undecided = xfail (test "undecided" (fun () -> skip ()))
+let fixed = xfail ~reason:"issue #42" @@ test ~__POS__:xpass_pos "fixed" ignore
+let undecided = xfail @@ test "undecided" (fun () -> skip ())
 
 let known_bad_law =
-  xfail (prop "known bad law" Gen.int (fun n -> equal int n (n + 1)))
+  xfail @@ prop "known bad law" Gen.int (fun n -> equal int n (n + 1))
 
 let leaky =
   xfail ~reason:"leaky teardown"
-    (bracket "leaky" ~setup:ignore ~teardown:(fun () -> fail "leak") ignore)
+  @@ bracket "leaky" ~setup:ignore ~teardown:(fun () -> fail "leak") ignore
 
-let clean = xfail (bracket "clean" ~setup:ignore ~teardown:ignore ignore)
+let clean = xfail @@ bracket "clean" ~setup:ignore ~teardown:ignore ignore
 
 let keeps_failing =
-  xfail (test ~retries:2 "keeps failing" (fun () -> fail "expected"))
+  xfail @@ test ~retries:2 "keeps failing" (fun () -> fail "expected")
 
-let keeps_passing = xfail (test ~retries:2 "keeps passing" ignore)
+let keeps_passing = xfail @@ test ~retries:2 "keeps passing" ignore
 
 let xfails =
   Recorded.execute
@@ -1734,7 +1641,7 @@ let results =
           expect (message (failure xfails [ "fixed" ]))
           @@ __POS_OF__ {| expected to fail (issue #42), but the test passed |});
       cases "the rows of expected failures"
-        ~name:(fun (claim, _, _) -> claim)
+        ~id:(fun (claim, _, _) -> claim)
         xfail_rows
         (fun (_, path, row) -> equal string row (Recorded.row xfails [ path ]));
       test "only the unexpected passes count as failed" (fun () ->
@@ -1774,15 +1681,25 @@ let props =
         (Gen.constant 0) fails_in_tail_position;
     ]
 
+let counted_props =
+  [
+    Run.prop "counted" Gen.int ignore;
+    Run.prop ~count:2 "declared" Gen.int ignore;
+    Run.prop ~count:300 "declared more" Gen.int ignore;
+    Run.prop ~count:0 "examples only" ~examples:[ 1 ] Gen.int ignore;
+    Run.prop "counted fails" Gen.int (fun _ -> fail "no");
+    Run.prop ~count:300 "declared more fails" Gen.int (fun _ -> fail "no");
+  ]
+
 let prop_counted =
   Recorded.execute
+    ~config:(fun c -> { c with prop_count = Some 200 })
+    counted_props
+
+let prop_counted_fewer =
+  Recorded.execute
     ~config:(fun c -> { c with prop_count = Some 5 })
-    [
-      Run.prop "counted" Gen.int ignore;
-      Run.prop ~count:2 "declared" Gen.int ignore;
-      Run.prop "counted fails" Gen.int (fun _ -> fail "no");
-      Run.prop ~count:2 "declared fails" Gen.int (fun _ -> fail "no");
-    ]
+    counted_props
 
 let printing =
   Recorded.execute
@@ -1922,8 +1839,6 @@ let shrink_end r path =
           Some "converged"
       | Failure.Property { shrink_end = Failure.Budget_spent; _ } ->
           Some "budget spent"
-      | Failure.Property { shrink_end = Failure.Candidate_raised _; _ } ->
-          Some "candidate raised"
       | _ -> None)
     (failure r path)
 
@@ -1960,6 +1875,28 @@ let a_failing_law_adds_the_engine_failure () =
     (seed_and_count props [ "never holds" ]);
   is_some (cases_run props [ "never holds" ])
 
+(* Each property's law demands a label it never meets, then stops the run
+   on a case or discards it. *)
+let stopped_early =
+  Recorded.execute
+    [
+      Run.prop "fails on a case" gen (fun _ ->
+          cover "never" false;
+          fail "no");
+      Run.prop "gives up" gen (fun _ ->
+          cover "never" false;
+          assume false);
+    ]
+
+let a_stopped_property_judges_no_coverage () =
+  equal
+    (list (list (pair string bool)))
+    [ []; [] ]
+    [
+      snd (labels_counted stopped_early [ "fails on a case" ]);
+      snd (labels_counted stopped_early [ "gives up" ]);
+    ]
+
 let gave_up_and_missed_at_the_declaration () =
   equal
     (list (list (option string)))
@@ -1980,6 +1917,86 @@ let run_prop_adds_no_tag () =
   in
   is_false (Test_tree.Tag.mem Test_tree.Tag.prop case.tags)
 
+(* Under [--case] the one selected test checks the case of its choices
+   alone; [seen] is what each law ran on, in order. *)
+let under_case ?(config = Fun.id) choices tests =
+  Recorded.execute
+    ~config:(fun c ->
+      config { c with case_file = Some (case_of_choices choices) })
+    tests
+
+let case_runs =
+  let seen = ref [] in
+  let law n =
+    seen := n :: !seen;
+    less int ~than:10 n
+  in
+  let prop name = Run.prop ~examples:[ 50 ] ~count:1000 name gen law in
+  let refuted = under_case [| 42L |] [ prop "refuted" ] in
+  let holds = under_case [| 3L |] [ prop "holds" ] in
+  let short = under_case [||] [ prop "short" ] in
+  let seen_once = List.rev !seen in
+  let discarded =
+    under_case [| 3L |] [ Run.prop "discards" gen (fun n -> assume (n > 50)) ]
+  in
+  let filtered =
+    under_case [| 3L |]
+      [ Run.prop "filters" (Gen.such_that (fun n -> n > 50) gen) ignore ]
+  in
+  let plain = under_case [| 3L |] [ test "plain" ignore ] in
+  let table choices =
+    under_case choices
+      [
+        cases "rows" ~id:Fun.id [ "a"; "b"; "c" ] (fun row ->
+            if row = "b" then fail "row b");
+      ]
+  in
+  let token =
+    match (failure refuted [ "refuted" ]).kind with
+    | Failure.Property { token; _ } -> token
+    | _ -> None
+  in
+  seen := [];
+  let replayed =
+    Recorded.execute
+      ~config:(fun c -> { c with replay = token })
+      [ prop "refuted" ]
+  in
+  ( (refuted, holds, short, seen_once),
+    (discarded, filtered, plain, table [| 0L |], table [| 1L |]),
+    (token, replayed, List.rev !seen) )
+
+let a_case_refuted_by_its_law () =
+  let (refuted, _, _, seen), _, _ = case_runs in
+  equal string "fail body" (Recorded.row refuted [ "refuted" ]);
+  equal (list int) [ 42; 3; 0 ] seen;
+  match (failure refuted [ "refuted" ]).kind with
+  | Failure.Property { rendered; case_index; examples; shrink_steps; _ } ->
+      equal (triple string int bool) ("42", 0, true)
+        (rendered.kept, case_index, examples);
+      equal int 0 shrink_steps
+  | _ -> fail "not a property failure"
+
+let a_case_that_holds () =
+  let (_, holds, short, _), _, _ = case_runs in
+  equal (pair string string) ("pass", "pass")
+    (Recorded.row holds [ "holds" ], Recorded.row short [ "short" ]);
+  equal (option int) (Some 1) (cases_run holds [ "holds" ])
+
+let a_discarded_case_skips () =
+  let _, (discarded, filtered, _, _, _), _ = case_runs in
+  let reason =
+    "skip --case case: the case was discarded, so nothing was checked"
+  in
+  equal (pair string string) (reason, reason)
+    (Recorded.row discarded [ "discards" ], Recorded.row filtered [ "filters" ])
+
+let a_case_token_replays () =
+  let _, _, (token, replayed, seen) = case_runs in
+  is_some token;
+  equal string "fail body" (Recorded.row replayed [ "refuted" ]);
+  equal (list int) [ 42 ] seen
+
 let a_holding_law_runs_the_default_count () =
   equal
     (pair string (option int))
@@ -1989,10 +2006,10 @@ let a_holding_law_runs_the_default_count () =
 let the_engine_knows_where_its_count_came_from () =
   equal
     (list (option int))
-    [ Some 5; None ]
+    [ Some 200; None ]
     [
       snd (seed_and_count prop_counted [ "counted fails" ]);
-      snd (seed_and_count prop_counted [ "declared fails" ]);
+      snd (seed_and_count prop_counted [ "declared more fails" ]);
     ]
 
 let a_property_failure_is_at_the_declaration () =
@@ -2073,12 +2090,45 @@ let properties =
     [
       test "a law that holds passes over the engine's default count"
         a_holding_law_runs_the_default_count;
+      test "--case checks its case alone, and a failure there is reported"
+        a_case_refuted_by_its_law;
+      test "--case passes on a case the law holds of, an empty file's included"
+        a_case_that_holds;
+      test "--case skips a case that the law or the generator discards"
+        a_discarded_case_skips;
+      test "the token of a case that failed under --case replays it"
+        a_case_token_replays;
+      test "--case fails a test that checks no property" (fun () ->
+          let _, (_, _, plain, _, _), _ = case_runs in
+          equal (list string) [ "body message" ] (lines plain [ "plain" ]);
+          expect (message (failure plain [ "plain" ]))
+          @@ __POS_OF__
+               {| --case: this test checks no property, so it checked no case |});
+      test "--case checks one row of a table" (fun () ->
+          let _, (_, _, _, first, second), _ = case_runs in
+          equal (pair string string) ("pass", "fail body")
+            (Recorded.row first [ "rows" ], Recorded.row second [ "rows" ]));
       test "a declared count is the number of cases" (fun () ->
           equal (option int) (Some 3) (cases_run props [ "declares a count" ]));
-      test "the configuration's count applies when none is declared" (fun () ->
-          equal (option int) (Some 5) (cases_run prop_counted [ "counted" ]));
-      test "a declared count wins over the configuration's" (fun () ->
-          equal (option int) (Some 2) (cases_run prop_counted [ "declared" ]));
+      test "the configuration's count raises a smaller count, declared or not"
+        (fun () ->
+          equal
+            (list (option int))
+            [ Some 200; Some 200; Some 300 ]
+            (List.map (cases_run prop_counted)
+               [ [ "counted" ]; [ "declared" ]; [ "declared more" ] ]));
+      test "the configuration's count lowers no count, the default included"
+        (fun () ->
+          equal
+            (list (option int))
+            [ Some 100; Some 5; Some 300 ]
+            (List.map
+               (cases_run prop_counted_fewer)
+               [ [ "counted" ]; [ "declared" ]; [ "declared more" ] ]));
+      test "a count of 0 runs the examples alone, whatever the configuration"
+        (fun () ->
+          equal (option int) (Some 1)
+            (cases_run prop_counted [ "examples only" ]));
       test "the engine is told whether its count came from the configuration"
         the_engine_knows_where_its_count_came_from;
       test "a failing law adds the engine's failure, drawn from the run's seed"
@@ -2094,10 +2144,14 @@ let properties =
         a_summary_rides_the_failure;
       test "a property that gave up or missed a label fails at its declaration"
         gave_up_and_missed_at_the_declaration;
+      test
+        "a property that failed on a case or gave up reports no coverage, \
+         which only a full run judges"
+        a_stopped_property_judges_no_coverage;
       test "a property that gave up says how many cases it discarded" (fun () ->
           expect (message (failure props [ "gives up" ]))
           @@ __POS_OF__
-               {| property gave up: 201 discards exhausted the generation budget (0 cases passed) |});
+               {| property gave up: 1001 discards exhausted the generation budget (0 cases passed) |});
       test "a property that missed a label names it" (fun () ->
           expect (message (failure props [ "misses a label" ]))
           @@ __POS_OF__ {| never covered: "never" (over 100 passing cases) |});
@@ -2126,12 +2180,130 @@ let properties =
       test "Run.prop adds no tag" run_prop_adds_no_tag;
     ]
 
+(* Tables *)
+
+(* The rows each table ran, by name, in order. *)
+let rows_ran = Hashtbl.create 8
+
+let ran name =
+  List.rev (Option.value ~default:[] (Hashtbl.find_opt rows_ran name))
+
+(* The table [name] over [rows]: a row in [skips] skips, with a reason that
+   names it, and every other row holds when [holds] does. *)
+let skipping ?(skips = []) name rows holds =
+  cases name ~id:(Testable.to_string int) rows (fun r ->
+      Hashtbl.replace rows_ran name (r :: List.rev (ran name));
+      if List.mem r skips then skip ~reason:(strf "row %d skips" r) ();
+      is_true (holds r))
+
+let row_skips =
+  Recorded.execute
+    [
+      skipping ~skips:[ 2 ] "skip in the middle" [ 1; 2; 3 ] (fun r ->
+          r mod 3 = 0);
+      skipping ~skips:[ 2 ] "skip first, failure later" [ 2; 4 ] (fun r ->
+          r = 0);
+      skipping ~skips:[ 2 ] "failure first, skip later" [ 4; 2 ] (fun r ->
+          r = 0);
+      skipping ~skips:[ 1; 2 ] "every row skips" [ 1; 2 ] (fun _ -> true);
+      skipping ~skips:[ 2; 3 ] "the other rows hold" [ 1; 2; 3; 4 ] (fun _ ->
+          true);
+      cases "a row fails, then skips" ~id:(Testable.to_string int) [ 1; 2 ]
+        (fun r ->
+          if r = 1 then begin
+            (try equal int 0 r with _ -> ());
+            skip ~reason:"row 1 skips" ()
+          end);
+      cases "a subtest of a row skips" ~id:(Testable.to_string int) [ 1; 2 ]
+        (fun r ->
+          subtest "inner" (fun () -> if r = 1 then skip ~reason:"inner" ()));
+    ]
+
+let skip_shapes =
+  [
+    ("skip in the middle", "fail body", [ 1; 2; 3 ], [ "1" ]);
+    ("skip first, failure later", "fail body", [ 2; 4 ], [ "4" ]);
+    ("failure first, skip later", "fail body", [ 4; 2 ], [ "4" ]);
+    ("every row skips", "skip row 1 skips", [ 1; 2 ], []);
+    ("the other rows hold", "pass", [ 1; 2; 3; 4 ], []);
+  ]
+
+let refuted_rows r path =
+  List.map
+    (function Run.Row id -> "row " ^ id | Run.Replay t -> "replay " ^ t)
+    (row_at r path).refuted
+
+let skipped_rows r path =
+  Option.map
+    (fun (s : Run.skipped_rows) -> (s.count, s.reason))
+    (row_at r path).skipped_rows
+
+let whole_stats r path =
+  Option.map (fun (s : Property.stats) -> (s.cases, s.whole)) (stats r path)
+
+let skip_shape (name, row, rows, refuted) =
+  equal string row (Recorded.row row_skips [ name ]);
+  equal (list int) rows (ran name);
+  equal (list string)
+    (List.map (fun id -> "row " ^ id) refuted)
+    (refuted_rows row_skips [ name ])
+
+let tables =
+  group "Tables"
+    [
+      cases "a row's skip skips that row, and the table goes on"
+        ~id:(fun (name, _, _, _) -> name)
+        skip_shapes skip_shape;
+      test "a failing table reports the rows that failed, beside a skip"
+        (fun () ->
+          equal (list string) [ "body property" ]
+            (lines row_skips [ "skip in the middle" ]);
+          match (failure row_skips [ "skip in the middle" ]).kind with
+          | Failure.Property { case_index; also; table; _ } ->
+              equal (triple int int bool) (0, 0, true)
+                (case_index, List.length also, table)
+          | _ -> fail "not a property failure");
+      test "a table counts the rows that skipped, and the first one's reason"
+        (fun () ->
+          equal
+            (list (option (pair int (option string))))
+            [ Some (1, Some "row 2 skips"); Some (2, Some "row 2 skips"); None ]
+            [
+              skipped_rows row_skips [ "skip in the middle" ];
+              skipped_rows row_skips [ "the other rows hold" ];
+              skipped_rows row_skips [ "a row fails, then skips" ];
+            ]);
+      test "a row that skipped is no row that passed" (fun () ->
+          equal
+            (list (option (pair int (option int))))
+            [ Some (1, Some 3); Some (2, Some 4) ]
+            [
+              whole_stats row_skips [ "skip in the middle" ];
+              whole_stats row_skips [ "the other rows hold" ];
+            ]);
+      test "a table whose every row skipped has no statistics, as a skip"
+        (fun () ->
+          equal (option int) None (cases_run row_skips [ "every row skips" ]));
+      test "a row that recorded a failure before its skip fails" (fun () ->
+          equal string "fail body"
+            (Recorded.row row_skips [ "a row fails, then skips" ]);
+          equal (list string) [ "row 1" ]
+            (refuted_rows row_skips [ "a row fails, then skips" ]));
+      test "a skip in a subtest of a row skips the row" (fun () ->
+          equal string "pass"
+            (Recorded.row row_skips [ "a subtest of a row skips" ]);
+          equal
+            (option (pair int (option string)))
+            (Some (1, Some "inner"))
+            (skipped_rows row_skips [ "a subtest of a row skips" ]));
+    ]
+
 (* Events *)
 
 let event_line = function
-  | Run.Run_started { suite; total; selected; properties } ->
+  | Run.Run_started { suite; total; selected; seeded } ->
       strf "run started: %s, %d of %d%s" suite selected total
-        (if properties then ", properties" else "")
+        (if seeded then ", seeded" else "")
   | Run.Test_started { path } -> "started " ^ path_string path
   | Run.Shrinking { path; steps } ->
       strf "shrinking %s, %d steps" (path_string path) steps
@@ -2161,22 +2333,30 @@ let event_log, release_order =
 
 let property_flags =
   let suite =
-    [ test "plain" ignore; test ~tags:[ Test_tree.Tag.prop ] "law" ignore ]
+    [ test "plain" ignore; tag Test_tree.Tag.prop @@ test "law" ignore ]
   in
-  let started filter =
+  let started (filter, replay) =
     let seen = ref "not started" in
     let on_event = function
-      | Run.Run_started { properties; selected; _ } ->
-          seen := strf "%d selected, properties: %b" selected properties
+      | Run.Run_started { seeded; selected; _ } ->
+          seen := strf "%d selected, seeded: %b" selected seeded
       | Run.Test_started _ | Run.Shrinking _ | Run.Shrunk _
       | Run.Test_finished _ | Run.Fixture_release _ | Run.Interrupted _ ->
           ()
     in
     ignore
-      (Recorded.execute ~on_event ~config:(fun c -> { c with filter }) suite);
+      (Recorded.execute ~on_event
+         ~config:(fun c -> { c with filter; replay })
+         suite);
     !seen
   in
-  List.map started [ []; [ "law" ]; [ "plain" ] ]
+  List.map started
+    [
+      ([], None);
+      ([ "law" ], None);
+      ([ "plain" ], None);
+      ([ "law" ], Some "r1:AA:00000000");
+    ]
 
 let observer_exit, observer_called =
   let called = ref false in
@@ -2324,7 +2504,10 @@ let raising_observer =
     [ Run.prop "fails" (Gen.int_range 0 1000) (fun x -> is_true (x < 10)) ]
 
 (* The observer sleeps past the limit on the search's first event. Were the
-   limit not held, it would cut the observer, and the search would run on. *)
+   limit not held, it would cut the observer, and the search would run on.
+   The seed is fixed so that the first case is not already the minimum,
+   [10]: a search that starts there converges without running the law
+   again, and the limit has nothing to cut. *)
 let held_limit =
   let slept = ref false in
   let on_event = function
@@ -2337,17 +2520,40 @@ let held_limit =
   in
   let r =
     Recorded.execute ~on_event
-      ~config:(fun c -> { c with timeout = Some 0.2 })
+      ~config:(fun c ->
+        let seed = Result.get_ok (Seed.of_string "s1:0000000000000001") in
+        { c with timeout = Some 0.2; seed })
       [ Run.prop "fails" (Gen.int_range 10 1000) (fun x -> is_true (x < 10)) ]
   in
   (r, !slept)
 
+(* The same observer, which also disarms the alarm before it sleeps, as a
+   system that leaves the held alarm pending would: the attempt times out
+   from the clock as the observer returns. *)
+let lost_alarm =
+  let on_event = function
+    | Run.Shrinking _ ->
+        ignore
+          (Unix.setitimer Unix.ITIMER_REAL
+             { Unix.it_value = 0.; it_interval = 0. });
+        Unix.sleepf 0.3
+    | Run.Run_started _ | Run.Test_started _ | Run.Shrunk _
+    | Run.Test_finished _ | Run.Fixture_release _ | Run.Interrupted _ ->
+        ()
+  in
+  Recorded.execute ~on_event
+    ~config:(fun c ->
+      let seed = Result.get_ok (Seed.of_string "s1:0000000000000001") in
+      { c with timeout = Some 0.2; seed })
+    [ Run.prop "fails" (Gen.int_range 10 1000) (fun x -> is_true (x < 10)) ]
+
 let run_started_says_whether_properties_run () =
   equal (list string)
     [
-      "2 selected, properties: true";
-      "1 selected, properties: true";
-      "1 selected, properties: false";
+      "2 selected, seeded: true";
+      "1 selected, seeded: true";
+      "1 selected, seeded: false";
+      "1 selected, seeded: false";
     ]
     property_flags
 
@@ -2356,7 +2562,9 @@ let events =
     [
       test "events come in the order of execution, releases after the last"
         events_come_in_order;
-      test "Run_started says whether a selected test is a property"
+      test
+        "Run_started says whether a selected property draws from the seed, \
+         which a replay does not"
         run_started_says_whether_properties_run;
       test "an exit in an observer is that observer's exception" (fun () ->
           is_true observer_called;
@@ -2384,6 +2592,12 @@ let events =
           let r, slept = held_limit in
           is_true slept;
           equal string "timed out after 0.2s" (shrink_end r [ "fails" ]));
+      test
+        "a limit that passed while the observer ran times the attempt out when \
+         the alarm never comes" (fun () ->
+          needs_timeouts ();
+          equal string "timed out after 0.2s"
+            (shrink_end lost_alarm [ "fails" ]));
     ]
 
 (* Startup errors *)
@@ -2394,7 +2608,17 @@ let refusal = function
       let site = function Some l -> Loc.to_string l | None -> "unknown" in
       "focused in CI: " ^ String.concat ", " (List.map site sites)
   | Run.Update_refused_in_ci -> "update refused in CI"
-  | Run.No_recorded_failures -> "no recorded failures"
+  | Run.No_recorded_failures why -> (
+      "no recorded failures, "
+      ^
+      match why with
+      | Run.Never_recorded -> "never recorded"
+      | Run.Last_run_passed -> "the last run passed"
+      | Run.Unreadable_record -> "unreadable"
+      | Run.Undeclared_tests -> "undeclared")
+  | Run.In_process_selects n -> strf "%d selected in-process" n
+  | Run.Case_selects n -> strf "%d selected under --case" n
+  | Run.Mutation_refused reason -> "mutation refused: " ^ reason
 
 let refused r = refusal (require_error (Recorded.returned r))
 let in_ci = [ ("CI", "true") ]
@@ -2403,15 +2627,15 @@ let focus_pos line = ("test/focus_decl.ml", line, 0, 0)
 let focused_suite =
   [
     focus
-      (group ~__POS__:(focus_pos 1) "g"
-         [ focus (test ~__POS__:(focus_pos 2) "x" ignore) ]);
+    @@ group ~__POS__:(focus_pos 1) "g"
+         [ focus @@ test ~__POS__:(focus_pos 2) "x" ignore ];
     test "y" ignore;
-    focus (test ~__POS__:(focus_pos 3) "z" ignore);
+    focus @@ test ~__POS__:(focus_pos 3) "z" ignore;
   ]
 
 let refusals =
   let update c = { c with Run.baseline = Baseline.Update } in
-  let focused = focus (test ~__POS__:(focus_pos 4) "f" ignore) in
+  let focused = focus @@ test ~__POS__:(focus_pos 4) "f" ignore in
   [
     ( "two tests of one path, and names each path once, sorted",
       "duplicate paths: a, g › same",
@@ -2443,18 +2667,39 @@ let refusals =
       Recorded.execute ~env:in_ci
         ~config:(fun c -> { (update c) with failed_only = true })
         [ test "t" ignore ] );
+    ( "--in-process over a selection of more than one test",
+      "2 selected in-process",
+      Recorded.execute
+        ~config:(fun c -> { c with in_process = true; exclude = [ "c" ] })
+        [ test "a" ignore; test "b" ignore; test "c" ignore ] );
+    ( "--case over a selection of more than one test",
+      "2 selected under --case",
+      Recorded.execute
+        ~config:(fun c -> { c with case_file = Some empty_case })
+        [ Run.prop "a" gen ignore; Run.prop "b" gen ignore ] );
+    ( "--case over an empty selection",
+      "0 selected under --case",
+      Recorded.execute
+        ~config:(fun c ->
+          { c with case_file = Some empty_case; filter = [ "none" ] })
+        [ Run.prop "a" gen ignore ] );
   ]
 
 let lifted =
   [
-    ( "a focus under CI, with allow_focus",
-      Recorded.execute ~env:in_ci
-        ~config:(fun c -> { c with allow_focus = true })
-        focused_suite );
     ( "--corrected under CI",
       Recorded.execute ~env:in_ci
         ~config:(fun c -> { c with baseline = Baseline.Corrected })
         [ test "ok" ignore ] );
+    ( "--in-process over a selection of one test",
+      Recorded.execute
+        ~config:(fun c -> { c with in_process = true; filter = [ "b" ] })
+        [ test "a" ignore; test "b" ignore ] );
+    ( "--case over a selection of one test",
+      Recorded.execute
+        ~config:(fun c ->
+          { c with case_file = Some empty_case; filter = [ "b" ] })
+        [ Run.prop "a" gen ignore; Run.prop "b" gen ignore ] );
   ]
 
 let exit_codes_of_refusals =
@@ -2462,7 +2707,9 @@ let exit_codes_of_refusals =
     ("duplicates", Run.Duplicate_paths [ "a" ], 1);
     ("a focus under CI", Run.Focused_in_ci [], 1);
     ("-u under CI", Run.Update_refused_in_ci, 1);
-    ("an empty store", Run.No_recorded_failures, 2);
+    ("an empty store", Run.No_recorded_failures Run.Last_run_passed, 2);
+    ("--in-process over two tests", Run.In_process_selects 2, 2);
+    ("--case over two tests", Run.Case_selects 2, 2);
   ]
 
 let the_message_of_duplicates () =
@@ -2486,15 +2733,15 @@ let startup_errors =
   group "Startup errors"
     [
       cases "refuses"
-        ~name:(fun (claim, _, _) -> claim)
+        ~id:(fun (claim, _, _) -> claim)
         refusals
         (fun (_, expected, r) -> equal string expected (refused r));
-      cases "runs" ~name:fst lifted (fun (_, r) ->
+      cases "runs" ~id:fst lifted (fun (_, r) ->
           equal int 0 (Recorded.exit_code r));
       cases "the exit code of a refusal of"
-        ~name:(fun (n, _, _) -> n)
+        ~id:(fun (n, _, _) -> n)
         exit_codes_of_refusals
-        (fun (_, error, code) -> equal int code (Run.startup_exit_code error));
+        (fun (_, error, code) -> equal int code (Run.exit_code (Error error)));
       test "the message of duplicates lists a path per line, then the rule"
         the_message_of_duplicates;
       test "the message of a focus under CI names each site and the remedy"
@@ -2504,9 +2751,32 @@ let startup_errors =
           expect (Run.startup_message Run.Update_refused_in_ci)
           @@ __POS_OF__
                {| baseline update refused: CI is set. -u rewrites baselines in place, which is a developer's edit; under CI run with --corrected and accept with dune promote. |});
-      test "the message of an empty store" (fun () ->
-          expect (Run.startup_message Run.No_recorded_failures)
-          @@ __POS_OF__ {| no recorded failures match the current suite |});
+      cases "the message of --failed with nothing to rerun says why" ~id:fst
+        [
+          ( "no store",
+            ( Run.Never_recorded,
+              "--failed has nothing to rerun: no run has recorded its failures \
+               here yet" ) );
+          ( "an empty store",
+            ( Run.Last_run_passed,
+              "--failed has nothing to rerun: the last run passed, so no \
+               failure is recorded" ) );
+          ( "a store that cannot be read",
+            ( Run.Unreadable_record,
+              "--failed has nothing to rerun: the record of the last run \
+               cannot be read" ) );
+          ( "a store of tests the suite no longer has",
+            ( Run.Undeclared_tests,
+              "--failed has nothing to rerun: the recorded failures name no \
+               test of this suite" ) );
+        ]
+        (fun (_, (why, message)) ->
+          equal string message
+            (Run.startup_message (Run.No_recorded_failures why)));
+      test "the message of --case over two tests" (fun () ->
+          expect (Run.startup_message (Run.Case_selects 2))
+          @@ __POS_OF__
+               {| --case checks one case of one property, and the selection holds 2 tests; narrow it with -f to the property to check |});
     ]
 
 (* Selection *)
@@ -2551,8 +2821,8 @@ let filtered =
 let tagged_suite =
   [
     test "plain" ignore;
-    test ~tags:[ "db" ] "tagged" ignore;
-    slow "molasses" ignore;
+    tag "db" @@ test "tagged" ignore;
+    slow @@ test "molasses" ignore;
   ]
 
 let tag_selected =
@@ -2573,14 +2843,8 @@ let tag_selected =
         [ "plain"; "tagged" ] );
     ]
 
-let allowed =
-  Recorded.execute
-    ~allowlist:[ "math › add"; "text › trim" ]
-    ~config:(fun c -> { c with filter = [ "math" ] })
-    math_and_text
-
 let focused =
-  Recorded.execute [ test "unfocused" ignore; focus (test "starred" ignore) ]
+  Recorded.execute [ test "unfocused" ignore; focus @@ test "starred" ignore ]
 
 let shard_names = [ "t-one"; "t-two"; "t-three"; "t-four"; "t-five" ]
 let shard_suite = List.map (fun name -> test name ignore) shard_names
@@ -2610,7 +2874,7 @@ let focused_buckets =
   let suite =
     [
       test "plain one" ignore;
-      focus (test "starred" ignore);
+      focus @@ test "starred" ignore;
       test "plain two" ignore;
     ]
   in
@@ -2668,20 +2932,17 @@ let selection =
   group "Selection"
     [
       cases "filters"
-        ~name:(fun (claim, _, _) -> claim)
+        ~id:(fun (claim, _, _) -> claim)
         filtered
         (fun (_, expected, r) ->
           equal (list string) expected (Recorded.executed r));
       test "the outcome counts the selection and the declared tests"
         the_selection_and_the_suite_are_counted;
       cases "tags"
-        ~name:(fun (claim, _, _) -> claim)
+        ~id:(fun (claim, _, _) -> claim)
         tag_selected
         (fun (_, expected, r) ->
           equal (list string) expected (Recorded.executed r));
-      test "an allowlist narrows the selection within the other layers"
-        (fun () ->
-          equal (list string) [ "math › add" ] (Recorded.executed allowed));
       test "a focus narrows the selection to the focused tests"
         a_focus_narrows_the_selection;
       test "1/1 keeps every test" (fun () ->
@@ -2773,8 +3034,8 @@ let limits, limit_log =
         bracket ~timeout:0.02 "setup" ~setup:busy_forever
           ~teardown:(note "teardown after a setup timeout")
           (note "body after a setup timeout");
-        cases ~timeout:0.05 "table" ~name:Fun.id [ "slow"; "fast" ]
-          (fun input -> if input = "slow" then busy_forever ());
+        cases ~timeout:0.05 "table" ~id:Fun.id [ "slow"; "fast" ] (fun input ->
+            if input = "slow" then busy_forever ());
       ]
   in
   (r, List.rev !log)
@@ -2783,6 +3044,52 @@ let configured_limit =
   Recorded.execute
     ~config:(fun c -> { c with timeout = Some 0.02 })
     [ test "slowpoke" busy_forever ]
+
+(* A twentieth of a second stands in for the default's ten minutes: it
+   bounds a test that declares no limit under no [--timeout], gives way to
+   either, and is no limit at all under [--in-process]. *)
+let defaulted ?(config = Fun.id) tests =
+  Recorded.execute
+    ~config:(fun c -> config { c with default_timeout = 0.05 })
+    tests
+
+let default_limits =
+  defaulted
+    [
+      test "declares none" (fun () -> spin 0.5);
+      test ~timeout:2. "declares a longer one" (fun () -> spin 0.2);
+      Run.prop "a property" Gen.int (fun _ -> spin 0.5);
+    ]
+
+let default_under_timeout =
+  defaulted
+    ~config:(fun c -> { c with timeout = Some 0.1 })
+    [ test "declares none" (fun () -> spin 0.5) ]
+
+let default_in_process =
+  defaulted
+    ~config:(fun c -> { c with in_process = true })
+    [ test "declares none" (fun () -> spin 0.2) ]
+
+let case_of ?timeout name =
+  match Test_tree.flatten [ Test_tree.test ?timeout name ignore ] with
+  | [ case ] -> case
+  | _ -> assert false
+
+let resolved_limits () =
+  let c = Run.default_config () in
+  let limit ?timeout config = Run.limit config (case_of ?timeout "t") in
+  equal
+    (list (option float_exact))
+    [ Some 600.; Some 3.; Some 7.; None; Some 3.; Some 7. ]
+    [
+      limit c;
+      limit ~timeout:3. c;
+      limit { c with timeout = Some 7. };
+      limit { c with in_process = true };
+      limit ~timeout:3. { c with in_process = true; timeout = Some 7. };
+      limit { c with in_process = true; timeout = Some 7. };
+    ]
 
 let both_phases_spin =
   Recorded.execute
@@ -2918,9 +3225,9 @@ let each_phase_fails_on_its_own_limit () =
 
 let each_test_has_its_own_limit () =
   needs_timeouts ();
-  equal (list string) [ "body timeout 0.05s" ]
-    (lines limits [ "table"; "slow" ]);
-  equal string "pass" (Recorded.row limits [ "table"; "fast" ])
+  equal (list string)
+    [ "body timeout 0.05s in a case" ]
+    (lines limits [ "table" ])
 
 let a_body_timeout_bounds_the_teardown_too () =
   needs_timeouts ();
@@ -2951,7 +3258,7 @@ let where_failures_are_located =
 
 let a_failure_away_from_tail_position_is_at_its_line () =
   let at = require_some (loc (failure located [ "captured" ])) in
-  starts_with ~affix:"test/unit/test_run.ml:" at
+  starts_with ~prefix:"test/unit/test_run.ml:" at
 
 let teardowns_follow_returned_setups () =
   equal (list string)
@@ -2983,7 +3290,7 @@ let no_tail_without_unread_output () =
   not_contains ~sub:"system-out" (require_some (contents junit))
 
 let an_uncapturable_test_fails_alone () =
-  starts_with ~affix:"body raise" (line (failure uncapturable [ "first" ]));
+  starts_with ~prefix:"body raise" (line (failure uncapturable [ "first" ]));
   equal (list string) [ "first"; "second" ] (Recorded.executed uncapturable)
 
 let a_stack_overflow_fails_its_test () =
@@ -2995,9 +3302,8 @@ let a_stack_overflow_fails_its_test () =
 let attempts =
   group "Attempts"
     [
-      cases "a test ends with the phases of its failures" ~name:fst
-        boundary_rows (fun (name, row) ->
-          equal string row (Recorded.row boundary [ name ]));
+      cases "a test ends with the phases of its failures" ~id:fst boundary_rows
+        (fun (name, row) -> equal string row (Recorded.row boundary [ name ]));
       test "a teardown runs after every setup that returned, and only then"
         teardowns_follow_returned_setups;
       test "an uncaught exception is a raise failure that names it" (fun () ->
@@ -3016,6 +3322,28 @@ let attempts =
           needs_timeouts ();
           equal (list string) [ "body timeout 0.02s" ]
             (lines configured_limit [ "slowpoke" ]));
+      test
+        "a test's limit is its own, else --timeout, else none in-process, else \
+         the default"
+        resolved_limits;
+      test "the default limit bounds a test that declares none" (fun () ->
+          needs_timeouts ();
+          equal (list string) [ "body timeout 0.05s" ]
+            (lines default_limits [ "declares none" ]);
+          equal (list string)
+            [ "body timeout 0.05s in a case" ]
+            (lines default_limits [ "a property" ]));
+      test "a declared limit and --timeout each replace the default" (fun () ->
+          needs_timeouts ();
+          equal (list string) []
+            (lines default_limits [ "declares a longer one" ]);
+          equal (list string) [ "body timeout 0.1s" ]
+            (lines default_under_timeout [ "declares none" ]));
+      test "--in-process has no default limit" (fun () ->
+          needs_timeouts ();
+          equal (list string) [] (lines default_in_process [ "declares none" ]);
+          equal (list string) [ "declares none" ]
+            (Recorded.executed default_in_process));
       test "the Random state of a test is a function of its path"
         the_random_state_is_a_function_of_the_path;
       test "the Random state is restored after the run" (fun () ->
@@ -3032,7 +3360,7 @@ let attempts =
       test "a capture that cannot be set up fails the body, and the run goes on"
         an_uncapturable_test_fails_alone;
       cases "a failure without a location is located"
-        ~name:(fun (claim, _, _) -> claim)
+        ~id:(fun (claim, _, _) -> claim)
         where_failures_are_located
         (fun (_, path, expected) ->
           if path = "times out" then needs_timeouts ();
@@ -3158,7 +3486,7 @@ let the_limit_is_armed_again () =
 let scoped_tests =
   group "Scoped tests"
     [
-      cases "the phase of a failure is how far the callback got" ~name:fst
+      cases "the phase of a failure is how far the callback got" ~id:fst
         scope_rows (fun (name, row) ->
           if name = "a finally cut by the limit" then needs_timeouts ();
           equal string row (Recorded.row scopes [ name ]));
@@ -3214,7 +3542,7 @@ let retried, skip_calls =
         test ~retries:2 "skips" (fun () ->
             incr skips;
             skip ());
-        cases ~retries:2 ~name:Fun.id "flaky table" [ "row" ]
+        cases ~retries:2 "flaky table" ~id:Fun.id [ "row" ]
           (let calls = ref 0 in
            fun _ ->
              incr calls;
@@ -3228,7 +3556,7 @@ let retry_rows =
     ("a test that passes on a retry", retried, [ "flaky" ], "pass", 3);
     ("a test that never passes", retried, [ "hopeless" ], "fail body", 2);
     ("a test that skips", retried, [ "skips" ], "skip", 1);
-    ("a child of cases", retried, [ "flaky table"; "row" ], "pass", 3);
+    ("a table", retried, [ "flaky table" ], "pass", 3);
     ("an expected failure", xfails, [ "keeps failing" ], "xfail body", 1);
     ("an unexpected pass", xfails, [ "keeps passing" ], "fail body", 3);
   ]
@@ -3237,7 +3565,7 @@ let retries =
   group "Retries"
     [
       cases "the row and the attempts of"
-        ~name:(fun (claim, _, _, _, _) -> claim)
+        ~id:(fun (claim, _, _, _, _) -> claim)
         retry_rows
         (fun (_, r, path, row, used) ->
           equal (pair string int) (row, used)
@@ -3289,7 +3617,7 @@ let help_runs =
   let file = Filename.concat root "src/help.expected" in
   let suite =
     [
-      test "t1" (fun () -> expect_file "hello\n" "src/help.expected");
+      test "t1" (fun () -> expect_file ~file:"src/help.expected" "hello\n");
       test "t2" ignore;
     ]
   in
@@ -3367,21 +3695,23 @@ let gated =
       [
         test "dirty" (fun () ->
             Run.subtest "expectation" (fun () ->
-                expect_file "x\n" "src/a.expected");
+                expect_file ~file:"src/a.expected" "x\n");
             fail "boom");
       ]
   in
   let dirty = summary dirty [ "src/a.expected.corrected" ] in
   let escaping =
     correcting ~root Baseline.Corrected
-      [ test "escapes" (fun () -> expect_file "x\n" "../outside.expected") ]
+      [
+        test "escapes" (fun () -> expect_file ~file:"../outside.expected" "x\n");
+      ]
   in
   let escaping = summary escaping [] in
   let divergent =
     correcting ~root Baseline.Corrected
       [
-        test "a" (fun () -> expect_file "one\n" "src/d.expected");
-        test "b" (fun () -> expect_file "two\n" "src/d.expected");
+        test "a" (fun () -> expect_file ~file:"src/d.expected" "one\n");
+        test "b" (fun () -> expect_file ~file:"src/d.expected" "two\n");
       ]
   in
   let divergent = summary divergent [ "src/d.expected.corrected" ] in
@@ -3504,11 +3834,11 @@ let excused =
   in
   let known =
     xfail ~reason:"issue #42"
-      (test "known" (fun () -> expect_file "buggy\n" "src/known.expected"))
+    @@ test "known" (fun () -> expect_file ~file:"src/known.expected" "buggy\n")
   in
   let undecided =
     test "undecided" (fun () ->
-        expect_file "partial\n" "src/undecided.expected";
+        expect_file ~file:"src/undecided.expected" "partial\n";
         skip ~reason:"not here" ())
   in
   let summary r =
@@ -3534,7 +3864,8 @@ let release_beside_a_correction =
   let r =
     correcting ~root Baseline.Corrected
       [
-        test "corrects" (fun () -> expect_file "hello\n" "src/help.expected");
+        test "corrects" (fun () ->
+            expect_file ~file:"src/help.expected" "hello\n");
         test "acquires" fx;
       ]
   in
@@ -3650,17 +3981,17 @@ let corrections =
   group "Corrections"
     [
       cases "a stale file"
-        ~name:(fun (claim, _, _) -> claim)
+        ~id:(fun (claim, _, _) -> claim)
         (List.map2
            (fun (claim, expected) actual -> (claim, expected, actual))
            help_rows help_runs)
         (fun (_, expected, actual) -> equal (list string) expected (actual ()));
       cases "gating"
-        ~name:(fun (claim, _, _) -> claim)
+        ~id:(fun (claim, _, _) -> claim)
         gated
         (fun (_, expected, actual) -> equal (list string) expected (actual ()));
       cases "a stale literal"
-        ~name:(fun (claim, _, _) -> claim)
+        ~id:(fun (claim, _, _) -> claim)
         (List.map2
            (fun (claim, expected) actual -> (claim, expected, actual))
            stale_rows stale_runs)
@@ -3680,7 +4011,7 @@ let corrections =
           let r, accepted = ci_read_once in
           equal
             (pair int (option string))
-            (0, Some "v\n")
+            (0, Some "v")
             (Recorded.exit_code r, accepted));
     ]
 
@@ -3742,28 +4073,6 @@ let bailed, bail_released =
       ]
   in
   (r, !released)
-
-(* [stop_after] stops the run after the test "second". Each test gives its
-   [Test_finished] before [stop_after] gets its result. *)
-let stopped_after, stop_order, stop_released =
-  let released = ref false and order = ref [] in
-  let fx = Run.fixture ~teardown:(fun () -> released := true) ignore in
-  let name (r : Run.result) = String.concat "/" r.path in
-  let r =
-    Recorded.execute
-      ~on_event:(function
-        | Run.Test_finished r -> order := ("event " ^ name r) :: !order
-        | _ -> ())
-      ~stop_after:(fun r ->
-        order := ("stop_after " ^ name r) :: !order;
-        name r = "second")
-      [
-        test "first" (fun () -> fx ());
-        test "second" ignore;
-        test "never runs" ignore;
-      ]
-  in
-  (r, List.rev !order, !released)
 
 let release_failed =
   let fx = Run.fixture ~teardown:(fun () -> raise Boom) ignore in
@@ -3845,10 +4154,18 @@ let release =
 
 (* The last-failed store *)
 
+(* The record of a suite under [dir], one per executable: this one's. *)
+let store_file dir suite =
+  let exe = Windtrap_runtime.Instr.(exe_identity ~exe:executable) in
+  Filename.concat
+    (Filename.concat dir (Os.sanitize_component suite))
+    (".last-failed-" ^ Digest.to_hex (Digest.string exe))
+
 let ran r =
   match Recorded.returned r with
   | Ok (outcome : Run.outcome) ->
-      strf "exit %d: %s" outcome.exit_code
+      strf "exit %d: %s"
+        (Run.exit_code (Ok outcome))
         (String.concat ", " (Recorded.executed r))
   | Error error -> "refused: " ^ refusal error
 
@@ -3901,7 +4218,7 @@ let expected_in_store =
   let dir = Scratch.dir "windtrap-xfail-store-" in
   let suite =
     [
-      xfail (test "xf" (fun () -> fail "known"));
+      xfail @@ test "xf" (fun () -> fail "known");
       test "real" (fun () -> fail "boom");
     ]
   in
@@ -3910,7 +4227,7 @@ let expected_in_store =
 
 let unexpected_in_store =
   let dir = Scratch.dir "windtrap-xpass-store-" in
-  let suite = [ xfail (test "xp" ignore) ] in
+  let suite = [ xfail @@ test "xp" ignore ] in
   let first = with_store dir suite in
   [ first; with_store dir ~failed_only:true suite ]
 
@@ -3920,34 +4237,27 @@ let no_store =
     ~failed_only:true
     [ test "any" ignore ]
 
-(* The first run records "t". The second, under [store = false], passes
-   "t" and does not clear its entry, so --failed runs "t" again. *)
-let unstored =
-  let dir = Scratch.dir "windtrap-unstored-" in
-  let suite = [ test "t" (fun () -> fail "x") ] in
-  let first = with_store dir suite in
-  let second =
-    Recorded.execute
-      ~config:(fun c -> { c with log_dir = dir; store = false })
-      [ test "t" ignore ]
-  in
-  let rerun = with_store dir ~failed_only:true suite in
-  [ first; second; rerun ]
-
 let sanitized_store =
   Recorded.execute ~suite:"lib/a.ml" [ test "t" (fun () -> fail "x") ]
 
 let the_store_is_under_the_sanitized_suite () =
-  let suite_dir =
-    Filename.concat
-      (Recorded.log_dir sanitized_store)
-      (Os.sanitize_component "lib/a.ml")
-  in
-  is_some (contents (Filename.concat suite_dir ".last-failed"))
+  is_some (contents (store_file (Recorded.log_dir sanitized_store) "lib/a.ml"))
+
+(* 0.2.0's record, keyed by the suite alone, may be another executable's. *)
+let legacy_store =
+  let dir = Scratch.dir "windtrap-legacy-" in
+  let legacy = Filename.concat dir "suite/.last-failed" in
+  Os.mkdir_p (Filename.dirname legacy);
+  Out_channel.with_open_bin legacy (fun oc ->
+      output_string oc "windtrap-last-failed 1\nt\n");
+  let suite = [ test "t" ignore; test "u" ignore ] in
+  let rerun = with_store dir ~failed_only:true suite in
+  let whole = with_store dir suite in
+  ([ rerun; whole ], contents legacy)
 
 let unrecognised_store =
   let dir = Scratch.dir "windtrap-unrecognised-" in
-  let store = Filename.concat dir "suite/.last-failed" in
+  let store = store_file dir "suite" in
   Os.mkdir_p (Filename.dirname store);
   Out_channel.with_open_bin store (fun oc -> output_string oc "t\n");
   let suite = [ test "t" (fun () -> fail "x") ] in
@@ -3958,7 +4268,7 @@ let unrecognised_store =
 
 let unreadable_store =
   let dir = Scratch.dir "windtrap-unreadable-store-" in
-  Os.mkdir_p (Filename.concat dir "suite/.last-failed");
+  Os.mkdir_p (store_file dir "suite");
   let suite = [ test "a" ignore; test "b" ignore ] in
   [
     with_store dir ~filter:[ "a" ] suite; with_store dir ~failed_only:true suite;
@@ -3967,7 +4277,7 @@ let unreadable_store =
 let a_store_that_cannot_be_read_reads_as_empty () =
   if Sys.win32 then skip ~reason:"a directory does not open as a file here" ();
   equal (list string)
-    [ "exit 0: a"; "refused: no recorded failures" ]
+    [ "exit 0: a"; "refused: no recorded failures, unreadable" ]
     (List.map ran unreadable_store)
 
 let failed_runs_the_recorded_failures () =
@@ -3976,7 +4286,7 @@ let failed_runs_the_recorded_failures () =
       "exit 1: steady, shaky";
       "exit 1: shaky";
       "exit 0: shaky";
-      "refused: no recorded failures";
+      "refused: no recorded failures, the last run passed";
     ]
     (List.map ran round_trip)
 
@@ -3992,7 +4302,11 @@ let store =
       test "a run of the whole suite drops the paths that no longer exist"
         (fun () ->
           equal (list string)
-            [ "exit 1: old"; "exit 0: new"; "refused: no recorded failures" ]
+            [
+              "exit 1: old";
+              "exit 0: new";
+              "refused: no recorded failures, the last run passed";
+            ]
             (List.map ran dead_entries));
       test "an expected failure is never recorded" (fun () ->
           equal (list string)
@@ -4003,18 +4317,21 @@ let store =
             [ "exit 1: xp"; "exit 1: xp" ]
             (List.map ran unexpected_in_store));
       test "--failed without a store is refused" (fun () ->
-          equal string "refused: no recorded failures" (ran no_store));
-      test "a run under store = false leaves the store as it was" (fun () ->
-          equal (list string)
-            [ "exit 1: t"; "exit 0: t"; "exit 1: t" ]
-            (List.map ran unstored));
-      test "the store is <log_dir>/<sanitized suite>/.last-failed"
+          equal string "refused: no recorded failures, never recorded"
+            (ran no_store));
+      test "the store is <log_dir>/<sanitized suite>/.last-failed-<exe>"
         the_store_is_under_the_sanitized_suite;
+      test "0.2.0's record of the suite is neither read nor written" (fun () ->
+          let runs, legacy = legacy_store in
+          equal (list string)
+            [ "refused: no recorded failures, never recorded"; "exit 0: t, u" ]
+            (List.map ran runs);
+          equal (option string) (Some "windtrap-last-failed 1\nt\n") legacy);
       test
         "a store that is not recognised reads as empty, one not written is \
          ignored" (fun () ->
           equal (list string)
-            [ "refused: no recorded failures"; "exit 1: t" ]
+            [ "refused: no recorded failures, unreadable"; "exit 1: t" ]
             (List.map ran unrecognised_store));
       test "a store that cannot be read reads as empty"
         a_store_that_cannot_be_read_reads_as_empty;
@@ -4039,7 +4356,7 @@ let exited, sibling_ran, after_ran =
           ignore;
         test ~retries:2 "exits on every attempt" (fun () -> exit 0);
         prop "law exits" (Gen.int_range 0 1000) (fun n -> if n > 10 then exit 0);
-        xfail ~reason:"known" (test "expected to exit" (fun () -> exit 0));
+        xfail ~reason:"known" @@ test "expected to exit" (fun () -> exit 0);
         test "subtest exits" (fun () ->
             Run.subtest "exits" (fun () -> exit 0);
             Run.subtest "sibling" (fun () -> sibling := true));
@@ -4143,7 +4460,7 @@ let exits =
       test "an exit in a test is intercepted, and the run goes on"
         an_exit_is_intercepted_and_the_run_goes_on;
       cases "an exit is a failure of the phase that called it, in"
-        ~name:(fun (claim, _, _) -> claim)
+        ~id:(fun (claim, _, _) -> claim)
         exit_phases
         (fun (_, path, row) -> equal string row (Recorded.row exited [ path ]));
       test "the interception says what the test did" (fun () ->
@@ -4203,8 +4520,8 @@ let undecided_by_the_report =
       test "passes" ignore;
       test "fails" (fun () -> fail "x");
       test "skips" (fun () -> skip ());
-      xfail (test "expected" (fun () -> fail "y"));
-      slow "slow" ignore;
+      xfail @@ test "expected" (fun () -> fail "y");
+      slow @@ test "slow" ignore;
     ]
   in
   let dressed (c : Run.config) =
@@ -4269,7 +4586,7 @@ let ended_by_exception ~on_event ~tests =
       (tests fx)
   in
   aftermath ~raised:(Recorded.escaped r) ~released:!released
-    ~store:(Filename.concat (Recorded.log_dir r) "suite/.last-failed")
+    ~store:(store_file (Recorded.log_dir r) "suite")
     ~correction:(Filename.concat root "c.expected.corrected")
 
 let corrects fx =
@@ -4343,7 +4660,7 @@ let bail_past_xfail =
   Recorded.execute
     ~config:(fun c -> { c with bail = true })
     [
-      xfail (test "excused" (fun () -> fail "known"));
+      xfail @@ test "excused" (fun () -> fail "known");
       test "ok" ignore;
       test "boom" (fun () -> fail "real");
       test "after" ignore;
@@ -4358,13 +4675,13 @@ let listed, listed_ran =
   in
   (listed, !ran)
 
-let stored = "windtrap-last-failed 1\none\n"
+let stored = "windtrap-last-failed 2\none\n"
 
 (* The store is written before the call, so the log directory is not the
    recorded one, which does not exist until the call. *)
 let listed_from_store =
   let dir = Scratch.dir "windtrap-listing-" in
-  let store = Filename.concat dir "suite/.last-failed" in
+  let store = store_file dir "suite" in
   Os.mkdir_p (Filename.dirname store);
   Out_channel.with_open_bin store (fun oc -> output_string oc stored);
   let r =
@@ -4416,14 +4733,14 @@ let executing =
            let plain, dressed = undecided_by_the_report in
            equal (list string) (decisions plain) (decisions dressed));
        cases "the exit code is"
-         ~name:(fun (claim, _, _) -> claim)
+         ~id:(fun (claim, _, _) -> claim)
          exit_code_runs
          (fun (_, code, r) -> equal int code (Recorded.exit_code r));
        test "an empty selection records no row" (fun () ->
            let _, _, r = List.nth exit_code_runs 2 in
            equal (list string) [] (Recorded.executed r));
        cases "an exception leaves execute:"
-         ~name:(fun (claim, _, _) -> claim)
+         ~id:(fun (claim, _, _) -> claim)
          the_exceptions_that_leave_execute
          (fun (_, raised, expected) -> equal (option exn) expected raised);
        test "an observer's exception releases the fixtures first"
@@ -4445,23 +4762,6 @@ let executing =
            equal (list string) [ "stops" ] (Recorded.executed stopped_run);
            equal (option (list string)) (Some [ "stops" ]) (stopped stopped_run);
            equal (option (list string)) None (stopped bailed));
-       test
-         "stop_after ends the run after the test that it takes, and the \
-          fixtures are released" (fun () ->
-           equal (list string) [ "first"; "second" ]
-             (Recorded.executed stopped_after);
-           is_true stop_released;
-           equal int 0 (Recorded.outcome stopped_after).exit_code);
-       test "stop_after gets each result after its Test_finished event"
-         (fun () ->
-           equal (list string)
-             [
-               "event first";
-               "stop_after first";
-               "event second";
-               "stop_after second";
-             ]
-             stop_order);
        test "an expected failure does not stop a run under bail" (fun () ->
            equal (list string)
              [ "excused"; "ok"; "boom" ]
@@ -4507,6 +4807,7 @@ let () =
          fixtures;
          results;
          properties;
+         tables;
          events;
          startup_errors;
          executing;

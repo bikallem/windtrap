@@ -80,8 +80,9 @@ type row = {
 let row name source ~site patch result = { name; source; site; patch; result }
 
 let applies claim rows =
-  cases claim rows
-    ~name:(fun r -> r.name)
+  cases claim
+    ~id:(fun r -> r.name)
+    rows
     (fun r ->
       let site = r.site r.source in
       equal applied (r.result site)
@@ -106,8 +107,9 @@ let drifts name spelled value =
 (* Flexible text *)
 
 let normalized claim rows =
-  cases claim rows
-    ~name:(fun (s, _) -> strf "%S" s)
+  cases claim
+    ~id:(fun (s, _) -> strf "%S" s)
+    rows
     (fun (s, form) -> equal string form (Source_patch.normalize s))
 
 let flexible_text =
@@ -243,7 +245,7 @@ let refusals =
             drifted;
         ];
       cases "error_message is one sentence that names neither file nor line"
-        ~name:fst
+        ~id:fst
         [
           ( "No_literal",
             ( Source_patch.No_literal ("test/t.ml", 4, 2, 0),

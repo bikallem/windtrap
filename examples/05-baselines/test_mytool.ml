@@ -12,8 +12,9 @@ let messages =
     [
       test "the report counts the rows" report_counts_the_rows;
       test "the help lists the commands" (fun () ->
-          expect_file (Mytool.help ()) "examples/05-baselines/help.expected");
-      cases "the greeting names the user" ~name:fst
+          expect_file ~file:"examples/05-baselines/help.expected"
+            (Mytool.help ()));
+      cases "the greeting names the user" ~id:fst
         [
           ("Ada", __POS_OF__ {| Hello, Ada! |});
           ("Grace", __POS_OF__ {| Hello, Grace! |});

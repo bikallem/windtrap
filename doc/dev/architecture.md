@@ -41,7 +41,7 @@ than a rewrite.
 | --- | --- | --- |
 | `windtrap` | stdlib, unix, its own C stubs, `windtrap.runtime` | the library: one wrapped library, `windtrap.mli` the whole contract, the mutation loop; the runtime is linked for the loop alone, and no run reads the coverage registry |
 | `windtrap.runtime` | stdlib | the one runtime every instrumented closure links, through both backends' `ppx_runtime_libraries`: `Windtrap_runtime.Coverage` (registration, the `.coverage` dump, report data), `Windtrap_runtime.Mutate` (the catalogue, the arming guard, the reach map), `Windtrap_runtime.Verdicts` (the verdict lattice and the `.mutants` format) and `Windtrap_runtime.Instr` (the versioned, executable-identified file plumbing both formats share). It reads no environment variable but `WINDTRAP_COVERAGE_FILE`; which mutants a run tests and which one it arms are the core's to resolve (`--mutate`, `--arm`) and hand down |
-| `windtrap` (binary) | `windtrap`, `windtrap.runtime` | `coverage [--min N] [--expect PATH] [--json] [--lcov] [-u] [PATH…]` and `mutants [--min-score PCT] [--since REV] [--json] [PATH…]`: merge data files and render, never run a test or drive a build (`--since` runs git, which reads the repository and changes nothing); every remedy they print says what to do in words rather than spelling a build tool's command |
+| `windtrap` (binary) | `windtrap`, `windtrap.runtime` | `coverage [--min N] [--expect PATH] [--json] [--lcov] [-u] [PATH…]` and `mutants [PATH…]`: merge data files and render, never run a test or drive a build; every remedy they print says what to do in words rather than spelling a build tool's command |
 | `ppx_windtrap` | ppxlib | the expect and inline-test rewriter, a desugaring into `test`, `group`, `tags`, `expect`, `expect_exact` and `output`; `ppx_runtime_libraries windtrap ppx_windtrap.runtime ppx_windtrap.config`; the `inline_tests.backend` whose generated main calls `run --corrected` |
 | `ppx_windtrap.runtime` | `windtrap` (public API only), unix | the module-load registry, the runner main (dune's `inline-test-runner <lib> -partition <file>` protocol), the undriven-registration guard |
 | `ppx_windtrap.config` | nothing | the one-module library whose module is the top-level `Expect_test_config` (`run` and `sanitize`) generated code names unqualified |
@@ -72,12 +72,13 @@ report and the aggregate cannot drift apart.
 | --- | --- |
 | `Windtrap` | the contract and the flat re-exports; the ambient-reading wrappers |
 | `Test_tree` (with `Test_tree.Tag`) | the tree, tags, focus, xfail, flatten, paths |
-| `Testable`, `Check`, `Failure`, `Diff` | witnesses; the verbs, pure, with no run-state dependency; failure data (typed kinds, phase, location, output tail, the `Check_failure` and `Control` exceptions); diff data (Myers hunks and character-refinement spans, no styling) |
-| `Gen` (with `Gen.Engine.Shrink_tree`), `Property`, `Stateful`, `Workers` | generators; the case loop (examples first, per-case seeds, the discard budget, the shrink search, label tables); commands and programs, compiled into properties, and the judge of a program on several domains; the worker domains that run its branches |
+| `Testable`, `Tolerance`, `Check`, `Failure`, `Diff` | witnesses; the errors a comparison under a tolerance measures, which `Check.equal` records for the report; the verbs, pure, with no run-state dependency; failure data (typed kinds, phase, location, output tail, the `Check_failure` and `Control` exceptions); diff data (Myers hunks and character-refinement spans, no styling) |
+| `Choice`, `Shrink`, `Gen`, `Property`, `Stateful`, `Workers` | choice sequences (the source a generator parses, spans, dependents, replay tokens); the reducer of a failing sequence; generators; the case loop (examples first, per-case seeds, the discard budget, the shrink search, replay, label tables); commands and programs, compiled into properties, and the judge of a program on several domains; the worker domains that run its branches |
 | `Baseline`, `Source_patch`, `Capture` | the correction registry keyed by site or path, read-only checking, corrections gated per test and written once as `.corrected` files or in place; literal rewriting inside a source file; fd-level capture into per-test log files |
-| `Cli`, `Run`, `Report`, `Report_sections`, `Report_junit` | one declarative item table (flags and flagless settings) resolved once into the one `Run.config`, each mirror declared beside its flag and read through the flag's parser; the run record and the ambient slot, the sequential executor (startup checks, selection, the per-test boundary, SIGALRM timeouts, retries, fixture release, the last-failed store, the exit guard, the exit codes), which prints nothing and emits typed events; the transcript, the GitHub envelope and `Report.run`, execute reported; the failure projection every transport shares and the section vocabulary the coverage and mutation reports project into; the JUnit document and its file |
-| `Mutate_loop`, `Changed_lines` | the dry run and its reach map, the scope applied to the population it forks over (prefixes, and the lines that changed since a git revision, which `Changed_lines` reads from `git diff` for the loop and for `windtrap mutants --since`), the determinism probe, the loop of children (one child per reached mutant, each running only the tests that reach it, the test that killed it last time alone first, the full child of a survivor again up to `--mutate-retry` more times, in a process that spawned a domain, a check of each kill that names a test by up to 3 runs of its tests with no mutant, their verdicts committed in catalogue order, and children at once on up to `--mutate-jobs` CPUs, where a child counts the most CPUs that one of its tests used at once in the dry run; a child is a fork, or a new process of the executable when the suite spawned a domain or under `--mutate-children=exec`, and that new process reads a request file and serves it from `Windtrap.run`), the verdict file of each suite with the previous verdict of each mutant and the unstable section, the kills of the verdict files of the other suites under `--mutate-skip-killed`, the per-executable report. It wraps `Report.run` rather than sitting beside it, because a mutation run must announce an armed mutant before any other output and start its children after the dry run |
-| `Os`, `Pp`, `Text`, `Loc`, `Seed` | the clock, environment reading and its value vocabularies, atomic files, the project root and build-copy resolution; style-aware `Format` helpers; newline, UTF-8 and substring utilities, and the JSON string literal of the machine formats; `pos` and backtrace-derived attribution; SplitMix64, `s1:` tokens and the `(root, path, index)` derivation |
+| `Cli`, `Run`, `Report`, `Report_sections`, `Report_junit` | one declarative item table (flags and flagless settings) resolved once into the one `Run.config`, each mirror declared beside its flag and read through the flag's parser; the run record and the ambient slot, the sequential executor (startup checks, selection, the per-test boundary, SIGALRM timeouts, retries, fixture release, the last-failed store, the exit guard, the one exit-code function), which prints nothing and emits typed events, and the worker's loop that serves a supervisor; the transcript, the GitHub envelope and `Report.run`, execute reported; the failure projection every transport shares and the section vocabulary the coverage and mutation reports project into; the JUnit document and its file |
+| `Supervisor` | the process boundary: the parent that starts workers (the executable started again for the first `run`, forks for any other), hands each a case, gives the events in the order of the selection, judges a correcting mode's checks in its one registry, fails a case whose worker died or outlived its kill, retires a worker after a domain, forwards signals and merges the workers' coverage |
+| `Mutate_loop` | the dry run and its reach map, the scope applied to the population it tests, the determinism probe, the mutant loop (one fresh worker per reached mutant, each running only the tests that reach it), the verdict file, the per-executable report. It wraps `Report.run` rather than sitting beside it, because a mutation run must announce an armed mutant before any other output and start its mutants' workers after the dry run |
+| `Os`, `Pp`, `Text`, `Loc`, `Seed` | the clock, environment reading and its value vocabularies, atomic files, the project root and build-copy resolution; style-aware `Format` helpers; newline, UTF-8 and substring utilities; `pos` and backtrace-derived attribution; SplitMix64, `s1:` tokens and the `(root, path, index)` derivation |
 
 The rows group by role, not by layer: `Os`, `Pp`, `Text`, `Loc` and
 `Seed` depend on nothing else in `lib/`; `Windtrap` is the only module
@@ -99,9 +100,10 @@ hints spell), calls `Mutate_loop.execute_and_report` (which in every
 uninstrumented build, every `--list` run, and every instrumented build
 the configuration asked nothing of *is* `Report.run`, same transcript,
 same bytes) and adds only what is its own: the `--list` listing, the
-focus warning, the note on a `--mutate-since` that no loop reads, and
-the exit code. `Report.run` is `Run.execute` observed
-by the transcript, inside the GitHub envelope when the configuration
+focus warning and `Run.exit_code`. `Report.run` is `Supervisor.execute`
+(or, for the mutation loop's dry run and an `--arm` run, which count a
+site's hits in their own process, `Run.execute`) observed by the
+transcript, inside the GitHub envelope when the configuration
 says so, followed by the blocks, the baseline report, the annotations
 and the JUnit file. A `--corrected` run, a stanza's action or the
 inline runner, spells its hints as the mirrors and its acceptance as
@@ -116,6 +118,45 @@ protocol, and hands the partition to `Windtrap.run`. It and
 Design notes the contracts no longer carry, for whoever changes the
 module.
 
+**Supervisor.**
+
+- The workers of the first `Windtrap.run` call of the process the
+  executable started as are the executable started again, from
+  `/proc/self/exe` on Linux (`ocamlrun` under bytecode, given the
+  bytecode file first), so a test sees a fresh start's values and
+  not what `fork` left of the parent's (see
+  `_autoresearch/audits/spike-exec-workers.md`); the parent never runs
+  user code itself. Every other run forks, before any test runs: a later
+  call, whose worker would skip the earlier ones; a call in a fork, which
+  a new start never reaches; and a run not entered through
+  `Windtrap.run` (`Report.run` alone), whose new start would spawn its
+  own worker again. A process that spawned a domain cannot fork: a later
+  call starts the program again, `WINDTRAP_WORKER` carrying the codes of
+  the earlier calls, and any other runs in the process.
+- A worker started again sends nothing until it has checked a digest of
+  its suite (name and case paths) against its parent's, taken back the
+  parent's descriptors from the log it wrote until then, and said
+  `Serving`. The parent shows that log only for a worker that ended
+  first, and counts a case's kill from `Serving`, so module
+  initialisation is no part of a test's limit. A fork of the worker
+  keeps the parsed `WINDTRAP_WORKER` but not the worker's pid, so it
+  never serves in the worker's place.
+- A worker never runs the `at_exit` functions its parent registered: the
+  worker's own, registered first, ends the process, and so runs after
+  every function a test registers. A test's `exit` therefore stops there
+  too, which is how the worker says that code under test exited. A
+  marker registered after each test names the test whose functions run
+  next.
+- Under a correcting mode a worker checks only to prove the path and
+  read the file, and the parent makes every check in its one
+  `Baseline.t`, in the order of the selection (see
+  `_autoresearch/audits/gap-baseline.md`): two workers' registries
+  would each accept a site's first content, and a replaced worker's
+  would forget it.
+- The mutation loop still runs its dry run, its children and `--arm` in
+  one process, through `Run.execute`, and so still needs the exit
+  guard; moving them onto the boundary is the guard's last removal.
+
 **Run.**
 
 - `Run.for_subset`, which a mutation child runs under, clears the
@@ -125,10 +166,10 @@ module.
   tag, and per-case seeds derive from root, path and index. A new
   selection knob `for_subset` does not clear gives a child a selection
   its parent's tree already applied, which is how a deterministic suite
-  comes to look non-deterministic. It keeps `mutation` and
-  `mutate_workers`: a stateful test on several domains reads them, and a
-  mutation child must run it as the dry run did. Without
-  `--mutate-workers`, the dry run spawned nothing, so the loop can fork.
+  comes to look non-deterministic. It keeps `mutation`: a stateful test
+  on several domains reads it to run each program on the test's domain,
+  and a mutation child must run it as the dry run did, which spawned
+  nothing.
 - The ambient slot is an `Atomic.t`, and `Run.t` records the domain
   that called `execute`, so a read from another domain is defined and
   refused instead of racing. The refusal is raised in the calling domain
@@ -161,6 +202,116 @@ module.
   is a test. Renderers classify a failing row from `counted` and `xfail`
   alone (an uncounted `Fail` is an excused expected failure), never by
   reconstructing executor decisions from messages.
+
+**Gen and Shrink: the choice encoding.** A generator parses a
+sequence of choices. A choice is an unsigned 64-bit integer at most a
+bound that the parse states when it reads it, and `0` is every choice's
+target, so the value that a generator parses from zeros is its shrink
+target. A replayed choice above its bound reads as the bound, and a
+choice read past the end of a replayed sequence reads `0`, so every
+sequence parses. A choice whose bound is `0` is recorded too, so a
+deletion that brings a bound to `0` leaves the choices after it in
+place (the key-value benchmark goes from 45% to 100% at the minimum).
+
+- **Drawing.** A primitive draws its value with its sampler and
+  records the choices that encode it; it never draws a choice by
+  itself. `Seed.split` is drawn at `bind`, `one_of`, `such_that` and a
+  sized `list`, as 0.2 drew it. The samplers are 0.2's but for the whole
+  integer types (`int`, `int32`, `int64`, `nativeint`, or a range over a
+  type's `min_int` to `max_int`): a range is uniform as in 0.2, and a
+  whole type draws its distance to the origin by scale, a bit length
+  uniform over 0..8 or over the type's, one draw in four an edge of the
+  scale, so that small values and powers of two come first (the small
+  scope hypothesis; Hypothesis draws integers within 256 uniformly too).
+  A range states the domain its values come from, so it keeps 0.2's
+  draw.
+- **Repetition.** A generating call of a generator called before in
+  the case copies, with probability 1/8, the choices of one of those
+  calls and parses the same value again, as a span of its own, so that
+  collections hold duplicates and pairs collide (Hypothesis copies a
+  span over another of its label after a run; here the copy happens
+  while drawing). The pools of a case are kept by the source, by the
+  generator's key: an integer generator's type and range, which every
+  generator of that range shares, or a key of its own. A copy replaces
+  the choices; the samplers still run, and a replay copies nothing, so
+  a token replays under any distribution. The tests "every generator
+  draws the distribution of its row" and "a case draws small integers
+  and repeats values" (`test_gen.ml`) pin each constructor's moments,
+  histogram and a digest of its printings, and the shares inside a
+  case, on fixed states: the tolerance is zero, since nothing
+  approximates.
+- **Integers.** A value of a range with origin `o` (the point closest
+  to `0`) is its distance to `o`, after a side choice (`0` above) when
+  the range extends on both sides of `o`, as the prototype of
+  `_autoresearch/audits/shrinking.md` reads one. Both sides count from
+  `o`, so `o` has two spellings. One choice of rank by distance,
+  alternating sides, was specified first and measured worse: a leaf of
+  the calculator benchmark is then two choices, an operator and its
+  first leaf three, which no run deletes, and the calculator fell from
+  100% to 65% at the minimum. A whole type is the range of its extremes,
+  so `int64`'s distances fill the 64 bits.
+- **Floats.** A float is a sign choice (`0` is positive), absent where
+  the range admits one sign only, then a magnitude choice in the
+  lexicographic encoding of Hypothesis (MacIver and Donaldson, ECOOP
+  2020): an integral magnitude below 2^56 is that integer, so `1.` is
+  below `0.5`; any other is the tag bit 2^63, then the exponent
+  reordered (exponents `0`, `1`, … first, then `-1`, `-2`, …, then the
+  non-finite one last), then the mantissa with its fraction bits
+  reversed, so a fraction with fewer bits is simpler. The bound of the
+  magnitude is the last finite float of that order. A float therefore
+  shrinks toward `0.`, an integer before a fraction, and `-0.` toward
+  `0.` by its sign. `any_float` reads a class choice first (`0` finite,
+  then `infinity`, `neg_infinity`, `nan`), so a non-finite value
+  shrinks toward a finite one. `float_range low high` parses a float
+  the same way and clamps it into \[`low`;`high`\] in the order where
+  `-0.` is below `0.`, so its zeros parse to its origin: `low` when
+  `low` is positive, `high` when `high` is negative or `-0.`, `0.`
+  otherwise, and `-0.` belongs to the range only when `low` is negative
+  or `-0.`. A sampled float is encoded exactly, so the clamp only moves
+  values that a shrink step proposed.
+- **The rest.** `bool`, `option` (`None`), `result` (`Ok`), `either`
+  (`Left`), `of_list` and `one_of` (the first) read one choice each;
+  `frequency` reads the weighted point it drew, so a branch of weight
+  `0` is never parsed and the first branch of positive weight is the
+  target; `char` and `uchar` rank by distance to `'a'` among their
+  values, surrogates excluded; `list` reads a "one more" choice before
+  each element, the two one span, and with `~size` the length is the
+  size generator's value and only the elements follow; `subsequence`
+  reads a keep choice per value; `permutation` reads its Lehmer code,
+  whose zeros are the given order; `such_that` reads attempts, each one
+  span, until one satisfies its predicate, at most 100, and discards
+  after.
+- **Finite domains.** `Property.run` counts a domain by parsing its
+  sequences in lexicographic order, each prefix reading zeros past its
+  end, the next raising the last choice below its bound. A sequence
+  that discards or that a parse marks `respelled` (the origin's second
+  spelling, a `frequency` point past its branch's first, a `such_that`
+  value after a refused draw) is no value. Counting stops when the
+  values exceed the count, when the parses have read 16 choices per
+  value allowed, when one reads more than 64, as a list's do, and when a
+  bound alone exceeds that budget, as an `int`'s does, so an endless
+  domain costs a few parses.
+- **Spans and dependents.** A parse marks a span over the choices that
+  one generator call read. A parse can also say that a choice counts
+  past some earlier positions (a reference to the k-th newest value
+  counts past the k makers newer than it): a deletion that removes such
+  positions lowers that choice by as many, in the same candidate.
+- **The reducer** (`Shrink`) keeps a candidate when the case still
+  fails in the class of the first failure and the choices it read are
+  shortlex smaller. It runs three passes to a fixed point: delete each
+  span; delete runs of 8, 4, 2 and 1 choices; minimise each choice, to
+  `0` and else by binary search. Every run of the law counts against
+  the fixed budget of 10,000 at the law's cost, a discard at 1, and a
+  candidate already tried, or one whose parse reads no smaller
+  sequence, runs no law. `test_shrink.ml` pins the eight benchmarks of
+  `shrinking.md` through `Property.run`.
+- **Permutations** are drawn as 0.2 drew them, a Lehmer code, and read
+  as their inversion table, so lowering one entry moves one element
+  and leaves the others in order; lowering a Lehmer digit reorders
+  everything after it, which the reducer cannot undo.
+- **Stateful** parses its programs as any generator does, through
+  `Gen.Engine.make`: a call is a span, and a value reference records
+  the makers it counts past, so a deletion lowers it with them.
 
 **Stateful.** A call runs its system, then its reference judges the
 outcome, one order for every result form. A value is made when its
@@ -222,20 +373,15 @@ a lossy `%g` spelling is asked for at the call site.
 
 **Mutate_loop.**
 
-- Child hygiene. A forked child never reaches `Stdlib`'s exit
-  machinery: every exception, fatal included, is caught, reduced to a
-  verdict line and followed by `Unix._exit`. Without this, if
-  `Out_of_memory` stops a child, the child runs the coverage at-exit
-  dump. The dump uses a path from before the fork and overwrites the
-  parent's `.coverage`.
-  When the child can map its byte, an exception before the first
-  evaluation of the site gives `not_evaluated`. Any other exception
-  gives `crashed`, and the parent counts the mutant as killed. For
+- Child hygiene. A mutant's worker never reaches `Stdlib`'s exit
+  machinery once it serves: every exception, fatal included, is caught,
+  reduced to a verdict line and followed by `Unix._exit`; otherwise a
+  child dying of `Out_of_memory` would run the coverage at-exit dump
+  against the parent's path and overwrite the parent's `.coverage`. For
   the same reason the parent removes each child's log directory
   (`Run.remove_tree`): a child killed at its deadline never runs its own
   cleanup, and an orphaned capture tree would be a trace of the mutant.
-- No errored verdict. Under the child's rule to stop at its first
-  failure that counts, a
+- No errored verdict. Under the child's bail-on-first-failure rule a
   killed child always runs fewer tests than were selected, so any verdict
   keyed on "ran fewer than expected" would fire on every kill; three
   verdicts suffice, and a failure of the parent's own supervision (a
@@ -248,78 +394,6 @@ a lossy `%g` spelling is asked for at the call site.
   links; an identifier-only record would give a project report strictly
   worse than the per-executable one, and renderings let a report outlive
   the executable that produced it.
-- One verdict file for each suite. The name of the file has the hash of
-  the executable identity and the hash of the suite name. Thus the
-  calls of `Windtrap.run` with different suite names in one main, and
-  the partitions of an inline-test runner, which dune runs at the same
-  time, never write one file. Two calls with one suite name share one
-  file. The data directory stays flat, so the skip rule and the merge
-  read each file of the directory as before. The loop reads only the
-  file of its suite for the history, the previous verdicts and the kept
-  records, and the suite that the file records is a guard. No loop
-  deletes the file of another suite: the loop does not know the other
-  suites, and a partition could delete the file of another partition
-  before that partition reads its previous verdicts.
-- The history orders children and gives no verdict without a run. A
-  record keeps the test that killed its mutant and the digest of its
-  source file, and the next loop runs that test alone first when the
-  digest is the same. The loop reads the file of any build for this,
-  because a child runs the test: a verdict that the loop copied from the
-  file without a run would be incorrect as soon as a test changed. When
-  the first child kills nothing, a second child runs every reaching test,
-  and gives the verdict. A first child does not run the tests before its
-  test, so a first child that kills is not always the verdict of a full
-  child. A test that needs the state of an earlier test can fail alone
-  with no mutant. Thus each such test first runs alone with no mutant
-  armed, and a test that fails there gets no first child. In a suite whose
-  tests depend on their order, a kill of a first child can still differ
-  from the verdict of a full child: the test fails alone only with the
-  mutant, but an earlier test can change the state so that it passes. The
-  killing test of a merge is the smaller one, which keeps
-  `Verdicts.merge` commutative.
-- Unstable verdicts. A record keeps the previous verdict of its mutant,
-  for the same source digest. The loop takes the previous verdicts from
-  the read of the file at the save, the read that also gives the kept
-  records. A file of any build counts, as for the history: almost each
-  test change rebuilds the executable, and the digest makes sure that
-  the mutant is the same code. Only the file of the same suite counts,
-  because two suites can give one mutant two verdicts. The file keeps
-  the field, because `windtrap mutants` reads only the files of the
-  current build and has no earlier run to compare with. The section
-  changes no score, so a verdict that depends on the order of the
-  domains does not fail a build two times.
-- Survivor runs. The parent counts the runs of a survivor, so the child
-  protocol does not change. A retry is a full child that starts again
-  from `pool.again`, so it keeps the order of the commits, the job
-  slots and the signal rules. The merge adds the runs, so
-  `Verdicts.merge` is commutative and associative but not idempotent.
-  `Data_files.discover` removes a duplicate path only by its text, so
-  one file under two spellings adds its runs two times. A retry never
-  gives an unstable row, because a record keeps one verdict.
-- Flaky kills. In a process that spawned a domain, a kill that names a
-  test gets a check. The check runs the tests of its child, up to and
-  with that test, up to 3 times with no mutant. A failure of that test
-  in one run gives `Flaky`, which the score does not count. The parent
-  keeps the result by the list of tests for one loop. A run of a check
-  is an attempt in `pool.again`, so it keeps the order of the commits,
-  the job slots and the signal rules. In `Verdicts.merge`, `Flaky`
-  ranks below the two kills and above `Not_evaluated`. The reason is
-  that a flaky record comes from a child in which the mutant can cause
-  the failure. `Flaky` is not a class of the unstable section. Only a
-  direct `Killed` feeds the history and the skips.
-- Killed elsewhere. Under `--mutate-skip-killed`, a reached mutant that
-  another verdict file killed, of another executable or of another suite
-  of this executable, for the same source digest, gets no child. Its
-  record is `Killed_elsewhere` and names the executable of that file,
-  not `Killed`. Thus the merge can tell a skip from a kill, and it can
-  tell when no file of the merge has the kill. Only a direct kill skips
-  a mutant, so a skip never comes from another skip. The loop uses a
-  file only when `Instr.freshness` gives `Fresh`, the test by which the
-  merge keeps a file. No run replaces the file of a suite that no longer
-  runs. Thus a kill from a stale file would give a note that no run
-  removes. A stale file gives no warning, because each build makes the
-  files of the suites that did not run again stale, and the merge names
-  it.
 
 **The runtime (`Windtrap_runtime.Mutate`, `.Coverage`).**
 
@@ -389,7 +463,7 @@ Changing one is a design decision, recorded here first.
   lies below no build directory writes under `_windtrap/` in its working
   directory. A mutant catalogue is a literal in the binary.
 - **A mutant changes meaning only when armed, only in a build that
-  asked, and only in the process that armed it**: a forked child of
+  asked, and only in the process that armed it**: a mutant's worker of
   the `--mutate` loop, or the run itself under `--arm`; an armed
   process announces it before any output and concludes with one
   verdict line; armed checking is read-only; the aggregate is the one

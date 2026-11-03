@@ -20,11 +20,12 @@ module Testable = Testable
 
 let test = Test_tree.test
 let group = Test_tree.group
-let slow = Test_tree.slow
-let cases = Test_tree.cases
+let cases = Table.cases
 let bracket = Test_tree.bracket
 let scoped = Test_tree.scoped
 let fixture = Run.fixture
+let tag = Test_tree.tag
+let slow = Test_tree.slow
 let focus = Test_tree.focus
 let xfail = Test_tree.xfail
 
@@ -41,7 +42,7 @@ module Law = Law
 let () =
   Printexc.register_printer (function
     | Failure.Check_failure failure ->
-        Some ("windtrap assertion failure: " ^ Report.headline failure)
+        Some ("windtrap assertion failure: " ^ Report_sections.headline failure)
     | _ -> None)
 
 (* Witnesses *)
@@ -76,9 +77,9 @@ let pass = Testable.pass
 module Gen_engine = Gen.Engine
 module Gen = Gen
 
-let prop ?__POS__ ?tags ?timeout ?count ?max_discard ?examples name gen law =
-  let tags = Test_tree.Tag.prop :: Option.value ~default:[] tags in
-  Run.prop ?__POS__ ~tags ?timeout ?count ?max_discard ?examples name gen law
+let prop ?__POS__ ?timeout ?count ?max_discard ?examples name gen law =
+  Test_tree.tag Test_tree.Tag.prop
+    (Run.prop ?__POS__ ?timeout ?count ?max_discard ?examples name gen law)
 
 let assume = Property.assume
 let reject = Property.reject
@@ -96,7 +97,9 @@ let prop_context op =
 
 let collect label = Property.collect (prop_context "collect") label
 let classify label cond = Property.classify (prop_context "classify") label cond
-let cover label cond = Property.cover (prop_context "cover") label cond
+
+let cover ?share label cond =
+  Property.cover ?share (prop_context "cover") label cond
 
 (* Stateful tests *)
 
@@ -128,8 +131,8 @@ let check_literal ~exact actual (pos, value) =
 let expect actual literal = check_literal ~exact:false actual literal
 let expect_exact actual literal = check_literal ~exact:true actual literal
 
-let expect_file ?__POS__ actual path =
-  Run.check_baseline ?loc:(Loc.resolve ?__POS__ ()) (Baseline.File path) actual
+let expect_file ?__POS__ ~file actual =
+  Run.check_baseline ?loc:(Loc.resolve ?__POS__ ()) (Baseline.File file) actual
 
 (* Captured output *)
 
@@ -177,7 +180,7 @@ let list_selection ~suite config tests =
   match Run.list_selection config ~suite tests with
   | Error error ->
       Os.say (Run.startup_message error);
-      Run.startup_exit_code error
+      Run.exit_code (Error error)
   | Ok [] ->
       (* The [list:] hint of an empty run leads here, so an empty listing says
          why it is empty. *)
@@ -192,12 +195,20 @@ let list_selection ~suite config tests =
       List.iter (fun path -> print_endline (Text.escape_controls path)) paths;
       0
 
-let execute ~suite (config : Run.config) tests =
+(* A mutation loop prints neither warning: its dry run is no run of the
+   suite to commit, and its corrections are those of a [-u] or a
+   [--corrected] run. *)
+let execute ~suite ~exe (config : Run.config) tests =
+  let loop =
+    match config.mutation with
+    | Run.Loop _ -> true
+    | Run.No_mutation | Run.Armed _ -> false
+  in
   match Mutate_loop.execute_and_report ~suite config tests with
-  | Mutate_loop.Reported code -> code
-  (* [Report.run] said why. *)
-  | Ran (Error error) -> Run.startup_exit_code error
-  | Ran (Ok outcome) ->
+  (* [Report.run], or the loop, said why. *)
+  | Error _ as refused -> Run.exit_code refused
+  | Ok _ as ran when loop -> Run.exit_code ran
+  | Ok outcome as ran ->
       if outcome.focus_active && not (Os.in_ci ()) then
         Os.warn
           (Pp.str
@@ -211,95 +222,115 @@ let execute ~suite (config : Run.config) tests =
           (Baseline.writes (Run.baselines outcome.run))
       in
       (* dune registers a [.corrected] file only after an action that exits 0,
-         and the blocks' [accept:] lines were printed before the code was. *)
-      if
-        config.baseline = Baseline.Corrected
-        && written <> [] && outcome.exit_code = 1
+         so the report offers no [dune promote] here; this says what works. *)
+      let exit_code = Run.exit_code ran in
+      let plural = if List.length written = 1 then "" else "s" in
+      if config.baseline = Baseline.Corrected && written <> [] && exit_code = 1
       then
-        Os.warn
-          (Pp.str
-             "dune registers a correction for promotion only when the run that \
-              wrote it exits 0, so the failures above withhold the \
-              correction%s written here. Fix the failures, rerun, then 'dune \
-              promote'."
-             (if List.length written = 1 then "" else "s"));
-      (* The mirrors reach every stanza of a project, and a stanza whose tests
-         their selection leaves out holds no mistyped filter. *)
-      if
-        outcome.exit_code = 2 && outcome.total > 0 && config.broadcast.selection
-      then 0
-      else outcome.exit_code
+        if outcome.failed_in_ci && not outcome.uncorrected then
+          Os.warn
+            (Pp.str
+               "CI is set, so a baseline mismatch fails the run: no one \
+                promotes the correction%s written here under CI. To accept %s, \
+                rerun outside CI, then 'dune promote'."
+               plural
+               (if plural = "" then "it" else "them"))
+        else begin
+          (* [-u] writes the kept corrections in place, whatever else
+             fails, from a run outside dune's sandbox. *)
+          let now =
+            let failures =
+              List.concat_map
+                (fun (r : Run.result) ->
+                  match r.outcome with
+                  | Failure.Fail failures when r.counted -> failures
+                  | Failure.Fail _ | Failure.Pass | Failure.Skip _ -> [])
+                (Run.results outcome.run)
+            in
+            match
+              Report_sections.accept_command ~invocation:exe
+                ~tests:(`Run config) failures
+            with
+            | Some command ->
+                Pp.str " To accept %s now: %s"
+                  (if plural = "" then "it" else "them")
+                  command
+            | None -> ""
+          in
+          Os.warn
+            (Pp.str
+               "dune registers a correction for promotion only when the run \
+                that wrote it exits 0, so the failures above withhold the \
+                correction%s written here. Fix the failures, rerun, then 'dune \
+                promote'.%s"
+               plural now)
+        end;
+      exit_code
+
+let run_parent ~argv suite tests =
+  let argv0 = if Array.length argv > 0 then argv.(0) else "" in
+  let prog = if argv0 = "" then suite else argv0 in
+  let usage_error error =
+    Os.say (Cli.error_message error);
+    prerr_endline (Cli.usage ~prog);
+    2
+  in
+  (* The pages are flushed, for a caller that does not [exit]. *)
+  match Cli.parse argv with
+  | Error error -> usage_error error
+  | Ok { Cli.help = true; _ } ->
+      Printf.printf "%s%!" (Cli.help ~prog);
+      0
+  | Ok { Cli.version = true; _ } ->
+      Printf.printf "windtrap %s\n%!" version;
+      0
+  | Ok parsed -> (
+      match Cli.settings parsed with
+      | Error error -> usage_error error
+      (* [-l] has no mirror, so the command line alone resolves it. *)
+      | Ok config when parsed.list_only -> list_selection ~suite config tests
+      | Ok config ->
+          let corrected = config.baseline = Baseline.Corrected in
+          execute ~suite
+            ~exe:(invocation ~corrected:false argv0)
+            { config with invocation = invocation ~corrected argv0 }
+            tests)
 
 let run ?(argv = Sys.argv) suite tests =
   (* [--help], [--version] and a usage error return before [Run.execute]
      would refuse a nested run. *)
   if Run.active () then invalid_arg Run.active_run_error;
-  (* A mutation child that is a new process runs its request and exits. A
-     request for another suite is for a later call. *)
-  if Mutate_loop.serve_child ~suite tests then 0
-  else
-    let argv0 = if Array.length argv > 0 then argv.(0) else "" in
-    let prog = if argv0 = "" then suite else argv0 in
-    let usage_error error =
-      Os.say (Cli.error_message error);
-      prerr_endline (Cli.usage ~prog);
-      2
-    in
-    (* The pages are flushed, for a caller that does not [exit]. *)
-    match Cli.parse argv with
-    | Error error -> usage_error error
-    | Ok { Cli.help = true; _ } ->
-        Printf.printf "%s%!" (Cli.help ~prog);
-        0
-    | Ok { Cli.version = true; _ } ->
-        Printf.printf "windtrap %s\n%!" version;
-        0
-    | Ok parsed -> (
-        match Cli.settings parsed with
-        | Error error -> usage_error error
-        (* [-l] has no mirror, so the command line alone resolves it. *)
-        | Ok config when parsed.list_only = Some true ->
-            list_selection ~suite config tests
-        | Ok config ->
-            (* A gate on a run that tests no mutant passes, so the run says
-             that it ignores the revision. *)
-            Option.iter
-              (fun source ->
-                Os.say
-                  (Pp.str
-                     "%s gives a revision, but neither --mutate nor \
-                      WINDTRAP_MUTATE is given, so the suite runs without \
-                      mutation"
-                     source))
-              config.unused_since;
-            let corrected = config.baseline = Baseline.Corrected in
-            let invocation = invocation ~corrected argv0 in
-            execute ~suite { config with invocation } tests)
+  Supervisor.enter ~suite tests (fun () -> run_parent ~argv suite tests)
 
 (* Private *)
 
 module Private = struct
   module Baseline = Baseline
   module Capture = Capture
-  module Changed_lines = Changed_lines
   module Check = Check
+  module Choice = Choice
   module Cli = Cli
   module Diff = Diff
   module Failure = Failure
   module Gen_engine = Gen_engine
+  module Lines = Lines
   module Loc = Loc
+  module Multiset = Multiset
   module Mutate_loop = Mutate_loop
   module Os = Os
   module Pp = Pp
   module Property = Property
   module Report = Report
   module Report_junit = Report_junit
+  module Report_json = Report_json
   module Report_sections = Report_sections
   module Run = Run
   module Seed = Seed
+  module Shrink = Shrink
   module Source_patch = Source_patch
   module Stateful = Stateful
   module Test_tree = Test_tree
   module Text = Text
+  module Tolerance = Tolerance
   module Workers = Workers
 end

@@ -220,44 +220,6 @@ let neg_while limit =
 
 let neg_guard a = match a with _ when note "g" a -> "t" | _ -> "f"
 
-(* {1 [arm] and [call]: a guard adds no evaluation}
-
-   [arm] gives a case the guard [if armed then false else true], or puts the
-   armed flag before the guard that the case has, so the scrutinee and the
-   guard of a case run as often as before. [call] puts an [if] around a
-   statement and around the expression of [let () = e], which each run
-   once. *)
-
-let arm_match n =
-  match note "s" n with
-  | 0 -> "zero"
-  | n when note "g" (n > 9) -> "big"
-  | _ -> "small"
-
-let arm_try tag = try string_of_int (boom tag) with Boom tag -> tag
-
-let call_statements () =
-  let r = ref 0 in
-  incr (note "a" r);
-  let () = incr (note "b" r) in
-  string_of_int !r
-
-(* {1 [lit] and [ret]: a guard adds no evaluation}
-
-   This library is built with [-lit]. [lit] puts an [if] around a literal,
-   whose branches are two literals. [ret] gives [None] in place of
-   [Some e], and a copy of [t] in place of [h :: t], each in the other
-   branch of an [if] that holds the original, so [e], [h] and [t] run once
-   each and in the order of the twin. The compiler evaluates [h :: t] right
-   to left, as it does an application. *)
-
-let lit_values () =
-  Printf.sprintf "%d %d %ld %Ld %nd %.1f %.1f %b" 0 41 7l 9L 3n 0. 2.5 true
-
-let ret_some a = match Some (note "e" a) with Some v -> v | None -> "none"
-let ret_cons a b = String.concat "," (note "h" a :: note "t" [ b ])
-let ret_list a b = String.concat "," [ note "h" a; note "t" b ]
-
 (* {1 Laziness}
 
    [lazy_thunk]'s body carries two [ari] sites, so it is not a trivial
@@ -304,31 +266,22 @@ let lazy_witness () =
 
 (* {1 Generalization}
 
-   No guard of an operator sits on a value spine, the spine a binding
-   generalizes over: every site of the four operators is an application
-   or a conditional, which is never a syntactic value, so a binding that
-   generalizes uninstrumented still generalizes instrumented. The guards
-   of [lit] and [ret] do sit on the spine. Each is an [if] whose branches
-   are syntactic values, and the type-checker reads the branches of an
-   [if] and not its condition, so the binding still generalizes. This
-   binding is where that would break first: [true] carries a [flip]
-   guard, [Some []] a [none] guard and [[ [] ]] a [tail] guard, and a
-   guard that is no syntactic value weakens it to
-   [bool * '_weak1 list * ...]. Nothing here reads it at run time;
-   the check is the module coercion in test_mutate_semantics.ml, which compares
-   this copy's inferred signature against the twin's and fails to
-   compile the day the two disagree. *)
-let generalizes = (true, [], Some [], [ [] ])
-
-(* An [arm] guard is an [if], which is a syntactic value when its branches
-   are, so a match of functions still generalizes to ['a -> 'a]. A guard
-   that applies [Stdlib.not] would weaken it to ['_weak1 -> '_weak1]. The
-   case that module initialization takes is dismissed, so that no site is
-   evaluated at load, and the other case keeps its guard. *)
-let generalizes_by_case =
-  match generalizes with
-  | ((true, _, _, _) [@mutate off "evaluated at module load"]) -> fun x -> x
-  | false, _, _, _ -> fun x -> x
+   No guard weakens a value spine, the spine a binding generalizes over:
+   every site of the four operators is an application or a conditional,
+   which is never a syntactic value, and the guard that [bool] puts on
+   this [true] is an [if] whose two arms are constants, which the
+   type-checker counts as one. This binding is where that would break
+   first: a guard on its spine that is no syntactic value leaves the
+   ['a] of [bool * ('a -> 'a)], which no relaxation generalizes, weak.
+   The binding sits in a functor, whose body runs when it is applied, so
+   [bool] mutates it; at the top level it would run at load and carry no
+   site. Nothing here applies it; the check is the module coercion in
+   test_mutate_semantics.ml, which compares this copy's inferred
+   signature against the twin's and fails to compile the day the two
+   disagree. *)
+module Generalizes (_ : sig end) = struct
+  let pair = (true, fun x -> x)
+end
 
 (* {1 Tail position, measured}
 
@@ -485,15 +438,4 @@ let witnesses : (string * (unit -> string)) list =
     ("neg in an if condition, false", fun () -> show (neg_if false));
     ("neg in a while condition", fun () -> show (neg_while 3));
     ("neg in a when guard", fun () -> show (neg_guard true));
-    ("arm on the first case", fun () -> show (arm_match 0));
-    ("arm on a guarded case", fun () -> show (arm_match 10));
-    ("arm on the last case", fun () -> show (arm_match 5));
-    ("arm on a handler", fun () -> show (arm_try "h"));
-    ( "call on a statement and a unit binding",
-      fun () -> show (call_statements ()) );
-    ("lit on each type of literal", fun () -> show (lit_values ()));
-    ("ret on Some", fun () -> show (ret_some "a"));
-    ("ret on ::", fun () -> show (ret_cons "a" "b"));
-    ("ret on a list literal", fun () -> show (ret_list "a" "b"));
   ]
-[@@mutate off "evaluated at module load"]

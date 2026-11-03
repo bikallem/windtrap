@@ -10,20 +10,21 @@ spelling this page does not list is unchanged. The entries of
 - `let () = run "mylib" tests` → `let () = exit (run "mylib" tests)`
 - `run ~quick ~filter ~seed …` and `run`'s other optional arguments →
   the command-line flags or their `WINDTRAP_*` mirrors, or `run ~argv`
-- `ftest "x" fn`, `fgroup "g" ts` → `focus (test "x" fn)`,
-  `focus (group "g" ts)`
-- `~tags:(Tag.labels [ "net" ])` → `~tags:[ "net" ]`
-- `Tag.speed Slow` → `slow name fn`, or `~tags:[ "slow" ]`
-- `Tag.empty`, `Tag.add_label`, `Tag.merge`, `Tag.has_label` → a
-  `string list` and the functions of `List`
+- `ftest "x" fn`, `fgroup "g" ts` → `focus @@ test "x" fn`,
+  `focus @@ group "g" ts`
+- `~tags:(Tag.labels [ "net" ])` → `tag "net" @@ …`
+- `Tag.speed Slow` → `slow @@ test name fn`
+- `Tag.empty`, `Tag.add_label`, `Tag.merge`, `Tag.has_label` → one
+  `tag name @@ …` per tag
 - `~tags:(Tag.labels [ "disabled" ])` → `skip ()` in the body, or
   `--exclude-tag` on the command line
 - `group ~before_each ~after_each` → `bracket ~setup ~teardown` on each
   test
 - `group ~setup ~teardown` → `fixture ?teardown create`
 - `~timeout` on every test of a group → `group ~timeout:3. "g" [ … ]`
-- `cases ty inputs name fn` → `cases ~name:to_string name inputs fn`,
-  whose children are named `to_string input` under the group `name`
+- `cases ty inputs name fn` →
+  `cases name ~id:(Testable.to_string ty) inputs fn`, one test whose
+  rows are identified by how `ty` prints them
 - `?here:[%here]`, `?pos:__POS__` → `~__POS__`, or nothing
 - `let helper ?pos x = equal ?pos …` →
   `let helper ?__POS__ x = equal ?__POS__ …`
@@ -58,10 +59,10 @@ spelling this page does not list is unchanged. The entries of
 - `raises_invalid_arg "m" fn` → `raises (Invalid_argument "m") fn`
 - `raises_failure "m" fn` → `raises (Failure "m") fn`
 - a predicate of your own on the message → `raises_match Exn.invalid_arg
-  fn`, `raises_match (Exn.failure ~substring:"…") fn`, and `Exn.sys_error`
+  fn`, `raises_match (Exn.failure ~sub:"…") fn`, and `Exn.sys_error`
 - `is_true (a < b)` → `less int ~than:b a`, and `at_most`, `greater`,
   `at_least`
-- `is_true (String.starts_with ~prefix s)` → `starts_with ~affix:prefix s`
+- `is_true (String.starts_with ~prefix s)` → `starts_with ~prefix s`
 - `is_true (List.mem x xs)` → `mem int x xs`
 - `'a Pp.t` and the `Pp` combinators → `'a printer` and `Format`
 
@@ -105,14 +106,14 @@ spelling this page does not list is unchanged. The entries of
 - `snapshot_pp pp v` →
   `expect (Format.asprintf "%a" pp v) @@ __POS_OF__ {|…|}`
 - a `__snapshots__/<file>/<key>.snap` file → an `.expected` file that a
-  call names, `expect_file s "test/name.expected"`
+  call names, `expect_file ~file:"test/name.expected" s`
 - `expect s`, `capture fn s` → `expect (output ()) @@ __POS_OF__ {|…|}`,
   or a `let%expect_test`
 - `expect_exact s`, `capture_exact fn s` →
   `expect_exact (output ()) @@ __POS_OF__ {|…|}`
 - `WINDTRAP_UPDATE=1 dune runtest` → a `(test)` stanza whose action runs
-  `%{test} --corrected` and `diff?`s each corrected file, then
-  `dune promote`; outside dune, `-u`
+  `%{test} --corrected` and `diff?`s each corrected file inside
+  `concurrent`, then `dune promote`; outside dune, `-u`
 - `run ~update ~snapshot_dir` → `-u` on the command line; a baseline's
   path is its call's
 - `WINDTRAP_SNAPSHOT_DIR`, `WINDTRAP_SNAPSHOT_DIFF_CONTEXT`,

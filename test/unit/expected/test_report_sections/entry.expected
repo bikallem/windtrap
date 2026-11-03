@@ -10,12 +10,11 @@
 
 === a located file baseline
     test/test_users.ml:88
-    expect_file "test/help.expected": no baseline
+    expect_file ~file:"test/help.expected": no baseline
     proposed (3 lines):
       + Usage: mytool [OPTIONS] COMMAND
       + Commands:
       +   run
-    accept: touch 'test/help.expected' && dune runtest; dune promote test/help.expected
 
 === a located literal
     test/test_users.ml:88
@@ -25,7 +24,6 @@
     - line two
     + line 2
       line three
-    accept: dune promote test/test_users.ml
 
 === a located message
     test/test_users.ml:88
@@ -167,6 +165,16 @@
     actual    [1; 3]
                   ~
 
+=== a failure that code caught says so before its message
+    test/test_users.ml:88
+    failed, then caught
+    boom
+
+=== and under colour in yellow
+    «d|test/test_users.ml:88»
+    «y|failed, then caught»
+    boom
+
 === a ?msg keeps its lines, control bytes escaped
     first
     second\x07
@@ -184,37 +192,6 @@
 
 === and in an armed run
     b
-
-=== an armed property's replay keeps --mutate-workers
-    test/test_geo.ml:17
-    counterexample (case 12, shrunk 4 steps): Rect (2, 0)
-    which failed at:
-      test/test_geo.ml:18
-      expected  true
-      actual    false
-    replay: ./t.exe --arm lib/calc.ml:9:12:add --seed s1:7be1d2c904aa31f5 -f 'math › adds' --mutate-workers
-
-=== and under a build action, as its mirror
-    test/test_geo.ml:17
-    counterexample (case 12, shrunk 4 steps): Rect (2, 0)
-    which failed at:
-      test/test_geo.ml:18
-      expected  true
-      actual    false
-    replay: WINDTRAP_MUTATE_ARM=lib/calc.ml:9:12:add WINDTRAP_SEED=s1:7be1d2c904aa31f5 WINDTRAP_FILTER='math › adds' WINDTRAP_MUTATE_WORKERS=1 dune runtest --instrument-with ppx_windtrap.mutate
-
-=== a replay outside an armed run leaves out --mutate-workers
-    test/test_geo.ml:17
-    counterexample (case 12, shrunk 4 steps): Rect (2, 0)
-    which failed at:
-      test/test_geo.ml:18
-      expected  true
-      actual    false
-    replay: ./t.exe --seed s1:7be1d2c904aa31f5 -f 'math › adds'
-
-=== a replay of a run's tests keeps --mutate-workers only under mutation
-replay: ./t.exe --seed s1:7be1d2c904aa31f5
-replay: ./t.exe --arm lib/calc.ml:9:12:add --seed s1:7be1d2c904aa31f5 --mutate-workers
 
 === a message's escape prints as text
     \x1b[31mred\x1b[0m boom

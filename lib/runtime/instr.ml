@@ -62,18 +62,27 @@ let components path =
   | [] -> assert false
 
 (* The rule of [Os.build_dir_of_path], restated because the runtime links no
-   core: the build directory and the components below it. *)
-let split_build components =
+   core: the build directory and the components below it, searched for below
+   [DUNE_SOURCEROOT] when [comps] lie under it. *)
+let split_build comps =
   let rec split above = function
     | [] -> None
     | name :: below when String.starts_with ~prefix:"_build" name ->
         Some (join (List.rev (name :: above)), below)
     | name :: below -> split (name :: above) below
   in
-  split [] components
+  let rec below_root above root rest =
+    match (root, rest) with
+    | [], _ -> split above rest
+    | r :: root, name :: rest when String.equal r name ->
+        below_root (name :: above) root rest
+    | _ -> split [] comps
+  in
+  match Sys.getenv_opt "DUNE_SOURCEROOT" with
+  | Some "" | None -> split [] comps
+  | Some root -> below_root [] (components root) comps
 
 let build_dir ~path = Option.map fst (split_build (components path))
-let build_root ~path = Option.map Filename.dirname (build_dir ~path)
 
 (* The build directory [exe] lies in, if any, and its identity. Only a
    directory above [exe] can be its build directory, and the
@@ -88,43 +97,6 @@ let locate exe =
   | Some (_, []) | None -> (None, join components)
 
 let exe_identity ~exe = snd (locate exe)
-
-(* A relative identity lies below the build directory of the file, so a file
-   that the merge discovers and a file that it names find one executable. *)
-let exe_location ~path exe =
-  if not (Filename.is_relative exe) then Some (exe, exe)
-  else
-    Option.map
-      (fun build_dir ->
-        ( Filename.concat build_dir exe,
-          strf "%s/%s" (Filename.basename build_dir) exe ))
-      (build_dir ~path)
-
-type freshness = Fresh | Orphan of string | Stale of string
-
-(* The comparison is by content digest because a modification time proves
-   nothing here: dune's shared cache restores a rebuilt artifact with its
-   original timestamp. *)
-let freshness ~digests ~path identity =
-  match identity with
-  | None -> Fresh
-  | Some { exe; digest } -> (
-      match exe_location ~path exe with
-      | None -> Fresh
-      | Some (exe_path, spelled) -> (
-          if not (Sys.file_exists exe_path) then Orphan spelled
-          else
-            let actual =
-              match Hashtbl.find_opt digests exe_path with
-              | Some actual -> actual
-              | None ->
-                  let actual = file_digest exe_path in
-                  Hashtbl.replace digests exe_path actual;
-                  actual
-            in
-            match actual with
-            | Some actual when actual <> digest -> Stale spelled
-            | Some _ | None -> Fresh))
 
 (* The files of a format sit beside the contexts of a build directory, the
    underscore marking them as no context. A tree without one must never grow

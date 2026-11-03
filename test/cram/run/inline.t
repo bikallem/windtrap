@@ -7,10 +7,13 @@ session pins what only a process shows: the exit status, the stream,
 the files a run leaves, the tests a runner runs and the line that the
 call stack gives a failure.
 
-A run's environment is stated, and its logs stay in this directory:
+A run's environment is stated, and its logs stay in this directory. It
+keeps the source root that dune exports to the runners it starts, which
+places a correction when the tree lies inside another's _build:
 
   $ run() {
   >   env -i PATH="$PATH" TMPDIR="${TMPDIR:-/tmp}" WINDTRAP_COLOR=never WINDTRAP_SLOW_THRESHOLD=0 \
+  >       ${DUNE_SOURCEROOT:+"DUNE_SOURCEROOT=$DUNE_SOURCEROOT"} \
   >       WINDTRAP_OUTPUT="$PWD/_logs" "$@" > out 2> err
   > }
   $ partition() {
@@ -150,7 +153,7 @@ withholds the correction:
     FAIL  Trailing › Nested › a nested test's node is indented under its head
     FAIL  Trailing › a body that raises checks nothing after it
   $ cat err
-  windtrap: warning: dune registers a correction for promotion only when the run that wrote it exits 0, so the failures above withhold the correction written here. Fix the failures, rerun, then 'dune promote'.
+  windtrap: warning: dune registers a correction for promotion only when the run that wrote it exits 0, so the failures above withhold the correction written here. Fix the failures, rerun, then 'dune promote'. To accept it now: ./inline/runner.exe -u
   $ diff -U0 inline/trailing.ml inline/trailing.ml.corrected | grep '^[-+] '
   -  print_string "goodbye\n"
   +  print_string "goodbye\n";

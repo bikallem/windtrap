@@ -13,9 +13,10 @@ the coverage and mutation backends, pinned to `windtrap` with
 - [ ] `dune runtest`: green, which includes the examples (the manual's
       runnable mirror, one per chapter), the PPX expansion pins, and the
       conformance corpus.
-- [ ] The migration page (`doc/manual/migrating-from-0.1.md`) compiles
-      against the tree by hand. Nothing compiles it, so every
-      replacement spelling is checked by reading, or not at all.
+- [ ] The migration pages (`doc/manual/migrating-from-0.1.md` and
+      `doc/manual/migrating-from-0.2.md`) compile against the tree by
+      hand. Nothing compiles them, so every replacement spelling is
+      checked by reading, or not at all.
 - [ ] `dune fmt`: clean.
 - [ ] Conformance bar (`test/conformance/RESULTS.md`): every pass-set
       file passes unchanged and every unsupported construct is refused,
@@ -28,7 +29,11 @@ the coverage and mutation backends, pinned to `windtrap` with
 - [ ] Instrumented smoke run:
       `dune runtest --force --instrument-with ppx_windtrap.coverage` still
       green with no change in outcomes, counts or exit codes, then
-      `dune exec windtrap -- coverage` reports the tree.
+      `dune exec windtrap -- coverage` reports the tree. Dune 3.24
+      reports a dependency cycle for a session that depends on
+      `(package windtrap)` under the backend (`test/cram/run/dune`), so
+      on that dune the run sets `SKIP_PACKAGE_SESSIONS=true`, as CI's
+      coverage job does.
 - [ ] Docs current: `doc/manual/` pages against `lib/windtrap.mli`
       (the `.mli` is the truth), the migration page against the surface,
       the README against reality.

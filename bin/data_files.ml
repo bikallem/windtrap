@@ -124,7 +124,7 @@ let identity (format : Instr.format) path =
           | exception Instr.Parse_error reason ->
               Error (Instr.Corrupt { path; reason })))
 
-type freshness = Instr.freshness = Fresh | Orphan of string | Stale of string
+type freshness = Fresh | Orphan of string | Stale of string
 
 (* One digest per executable, however many dumps it wrote: every run of
    a cram-driven binary leaves a file naming the same executable, and
@@ -132,7 +132,43 @@ type freshness = Instr.freshness = Fresh | Orphan of string | Stale of string
    with invocations rather than with executables. The command runs once
    per process, so the memo is never stale. *)
 let digests : (string, string option) Hashtbl.t = Hashtbl.create 64
-let freshness ~path identity = Instr.freshness ~digests ~path identity
+
+let exe_digest exe_path =
+  match Hashtbl.find_opt digests exe_path with
+  | Some digest -> digest
+  | None ->
+      let digest = Instr.file_digest exe_path in
+      Hashtbl.replace digests exe_path digest;
+      digest
+
+(* The comparison is by content digest because a modification time proves
+   nothing here: dune's shared cache restores a rebuilt artifact with its
+   original timestamp. *)
+let freshness ~path identity =
+  match (identity : Instr.identity option) with
+  | None -> Fresh
+  | Some { exe; digest } -> (
+      (* The executable's path, and its spelling from the project root. *)
+      let located =
+        if not (Filename.is_relative exe) then Some (exe, exe)
+        else
+          (* A relative identity is a path below a build directory; the
+             file's own locates it, the same directory whether the file
+             was discovered or named on the command line. *)
+          Option.map
+            (fun build_dir ->
+              ( Filename.concat build_dir exe,
+                spf "%s/%s" (Filename.basename build_dir) exe ))
+            (Instr.build_dir ~path)
+      in
+      match located with
+      | None -> Fresh
+      | Some (exe_path, spelled) -> (
+          if not (Sys.file_exists exe_path) then Orphan spelled
+          else
+            match exe_digest exe_path with
+            | Some actual when actual <> digest -> Stale spelled
+            | Some _ | None -> Fresh))
 
 let describe ~path = function
   | Fresh -> assert false

@@ -20,12 +20,12 @@ let database =
       with_db "an insert adds one row" (fun db ->
           Db.insert db "alice";
           equal int 1 (Db.count db));
-      cases ~name:Fun.id "a name is stored" [ "alice"; "bob"; "carol" ]
-        (fun name ->
+      cases "a name is stored" ~id:(Printf.sprintf "%S")
+        [ "alice"; "bob"; "carol" ] (fun name ->
           let db = Db.connect () in
           Db.insert db name;
           is_true (Db.mem db name));
       with_db "every inserted row is found" every_row_is_found;
       xfail ~reason:"issue #42"
-        (with_db "a duplicate row counts once" a_duplicate_counts_once);
+      @@ with_db "a duplicate row counts once" a_duplicate_counts_once;
     ]

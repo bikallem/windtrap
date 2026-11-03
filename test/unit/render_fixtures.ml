@@ -43,6 +43,10 @@ let result ?(attempts = 1) ?(duration = 0.0002) ?prop_stats
     duration;
     attempts;
     prop_stats;
+    table = false;
+    skipped_rows = None;
+    tolerances = [];
+    refuted = [];
   }
 
 let tail =

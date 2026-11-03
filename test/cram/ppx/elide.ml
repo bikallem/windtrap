@@ -43,10 +43,8 @@ let point = function
 
 let dismissal = function
   | [%expr None] -> Some ""
-  | [%expr Some (Windtrap_runtime.Mutate.Off [%e? reason])] ->
+  | [%expr Some [%e? reason]] ->
       Option.map (strf ", dismissed %s") (string reason)
-  | [%expr Some (Windtrap_runtime.Mutate.Filtered [%e? reason])] ->
-      Option.map (strf ", filtered %s") (string reason)
   | _ -> None
 
 let site = function
@@ -54,27 +52,30 @@ let site = function
       {
         line = [%e? line];
         col = [%e? col];
+        end_line = [%e? end_line];
+        end_col = [%e? end_col];
         rewrite = [%e? rewrite];
         before = [%e? before];
         after = [%e? after];
         dismissed = [%e? dismissed];
       }] -> (
       match
-        ( integer line,
-          integer col,
+        ( (integer line, integer col),
+          (integer end_line, integer end_col),
           string rewrite,
           string before,
           string after,
           dismissal dismissed )
       with
-      | ( Some line,
-          Some col,
+      | ( (Some line, Some col),
+          (Some end_line, Some end_col),
           Some rewrite,
           Some before,
           Some after,
           Some dismissed ) ->
           Some
-            (strf "%s:%s %s %s -> %s%s" line col rewrite before after dismissed)
+            (strf "%s:%s-%s:%s %s %s -> %s%s" line col end_line end_col rewrite
+               before after dismissed)
       | _ -> None)
   | _ -> None
 
@@ -122,10 +123,12 @@ let mutation ~name = function
       type site = Windtrap_runtime.Mutate.site = {
         line : int;
         col : int;
+        end_line : int;
+        end_col : int;
         rewrite : string;
         before : string;
         after : string;
-        dismissed : Windtrap_runtime.Mutate.dismissal option;
+        dismissed : string option;
       }]
     :: rest -> (
       let helper, rest =

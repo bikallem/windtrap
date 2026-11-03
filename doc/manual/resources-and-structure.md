@@ -59,9 +59,7 @@ tests that do, and runs nothing:
 ```
 $ dune exec examples/06-resources-and-structure/test_storage.exe -- -l
 database › an insert adds one row
-database › a name is stored › alice
-database › a name is stored › bob
-database › a name is stored › carol
+database › a name is stored
 database › every inserted row is found
 database › a duplicate row counts once
 server › it answers a ping
@@ -136,8 +134,8 @@ file:
 
 ```
 $ dune runtest
-storage: 12 passed, 2 skipped, 1 expected failure in 3.5ms.
-keys/keys.ml: 3 passed in 0.8ms.
+storage: 10 passed, 2 skipped, 1 expected failure in 1.8ms.
+keys/keys.ml: 3 passed in 1.0ms.
 ```
 
 ## Giving each test its own resource
@@ -174,14 +172,14 @@ let database =
       with_db "an insert adds one row" (fun db ->
           Db.insert db "alice";
           equal int 1 (Db.count db));
-      cases ~name:Fun.id "a name is stored" [ "alice"; "bob"; "carol" ]
-        (fun name ->
+      cases "a name is stored" ~id:(Printf.sprintf "%S")
+        [ "alice"; "bob"; "carol" ] (fun name ->
           let db = Db.connect () in
           Db.insert db name;
           is_true (Db.mem db name));
       with_db "every inserted row is found" every_row_is_found;
       xfail ~reason:"issue #42"
-        (with_db "a duplicate row counts once" a_duplicate_counts_once);
+      @@ with_db "a duplicate row counts once" a_duplicate_counts_once;
     ]
 ```
 
@@ -189,23 +187,44 @@ A failure in `setup` or `teardown` prints `[setup]` or `[teardown]`
 before its location, and a teardown failure is reported beside the
 body's.
 
-## Running one test per input
+## Checking a table of inputs
 
-`cases ~name base inputs fn` is a group of one test per input, named by
-`name input`, as `a name is stored` above. Each input is a test of its
-own, so one that fails does not stop the others, and `-f` selects one:
+`cases name ~id rows fn` is a table: one test that runs `fn` on every row
+of `rows`, in order, as `a name is stored` above. It is a property whose
+domain is the rows, so it is checked whole: a row that fails does not
+stop the others, the report gives every row that failed, each as it was
+written, and `-v` says how many rows held:
 
 ```
-$ dune exec examples/06-resources-and-structure/test_storage.exe -- -v -f 'a name is stored › bob'
+$ dune exec examples/06-resources-and-structure/test_storage.exe -- -v -f 'a name is stored'
 storage: 1 test
-  PASS  database › a name is stored › bob          0.1ms
-1 passed in 0.5ms.
+  PASS  database › a name is stored                0.2ms (holds on all 3 rows)
+1 passed in 1.3ms.
 ```
 
-The inputs and their names are computed when the suite is declared,
-outside any test (see `Windtrap.cases`). An input can carry its test's
-expected text as a `__POS_OF__` literal, which `expect` checks and a
-correction rewrites for that input alone (see
+`~id` is the row's identity: `id row`, here `Printf.sprintf "%S"`'s
+`"bob"`, quoted so that an empty or blank row still shows. A failure
+names the row by its position and that id, as in `row 2 of 3: "bob"`,
+cut to one line when it is long. Two rows with one id are refused,
+since nothing could tell them apart. The id can be a key of the row
+instead of all of it: `~id:fst` identifies `("bob", 3)` as `bob`, and
+`~id:(Testable.to_string w)` prints a whole row as the witness `w` does.
+`~label` gives a row a text shown beside its position, `row 2 of 3, the
+second`, which identifies nothing.
+
+A `skip` in a row skips that row alone, and the table goes on with the
+next. The table fails if a row failed, passes if no row failed and one
+passed, and is skipped only when every row skipped, with the first
+row's reason. `-v` says how many rows of a passing table skipped, and
+why the first did, as `holds on 2 of 3 rows, 1 skipped: no GPU`, so a
+table whose rows skip on this machine shows it. A row that recorded a
+failure before its skip fails.
+
+`--failed` reruns the rows of a table that failed last, and no other
+(see [Rerunning failures](running-tests.md)). The rows are evaluated
+when the suite is declared; the witness and the label print them in
+the test. A row can carry its expected text as a `__POS_OF__` literal,
+which `expect` checks and a correction rewrites for that row alone (see
 [Giving each row of a table its own literal](baselines.md#giving-each-row-of-a-table-its-own-literal)).
 
 ## Naming the parts of one test
@@ -220,7 +239,11 @@ cannot select one (see `Windtrap.subtest`).
 
 `fixture create` is an accessor: the first test that calls it acquires
 the resource with `create ()`, and later calls return the same value.
-The runner releases the acquired fixtures after the last test. `scoped`
+The runner releases the acquired fixtures after the last test. A
+fixture belongs to the worker process that runs the tests, so under
+`-j N` each worker acquires its own, and a worker that a test crashed
+releases nothing: its process group is killed, which ends a server it
+started, and its temporary directory is removed. `scoped`
 makes a test from a function that hands a resource to a callback, such
 as a session that exists only inside `Server.with_session`.
 
@@ -239,7 +262,8 @@ let server =
           is_true (Server.ping (shared_server ())));
       with_session "a first session gets id 1" (fun session ->
           equal int 1 (Server.session_id session));
-      slow ~timeout:60. "reindexing keeps it running" (fun () ->
+      slow
+      @@ test ~timeout:60. "reindexing keeps it running" (fun () ->
           is_true (Server.reindex (shared_server ())));
       test ~retries:2 "a backup completes" (fun () ->
           is_true (Server.backup (shared_server ())));
@@ -258,11 +282,11 @@ where `fixture` was applied:
 $ dune exec examples/06-resources-and-structure/test_storage.exe -- -v -f server
 storage: 4 tests
   PASS  server › it answers a ping                 0.1ms
-  PASS  server › a first session gets id 1         0.0ms
-  PASS  server › reindexing keeps it running       0.0ms
-  PASS  server › a backup completes                0.0ms
+  PASS  server › a first session gets id 1         0.1ms
+  PASS  server › reindexing keeps it running       0.1ms
+  PASS  server › a backup completes                0.1ms
 releasing fixture (examples/06-resources-and-structure/server_tests.ml:3)
-4 passed in 0.5ms.
+4 passed in 1.8ms.
 ```
 
 ## Bounding a test in time and retrying it
@@ -271,17 +295,19 @@ releasing fixture (examples/06-resources-and-structure/server_tests.ml:3)
 under it that sets none, as the server's five seconds do. `~retries`
 gives a failing test more attempts, and a test that passes on a later
 attempt is listed under `flaky tests`. `--timeout` sets the limit of the
-tests that have none (see the declaring-tests section of
+tests that have none, and without it they get ten minutes (see
+[Running tests](running-tests.md) and the declaring-tests section of
 `lib/windtrap.mli`).
 
 ## Marking a slow test
 
-`slow` declares a test tagged `slow`, as `reindexing keeps it running`
+`slow @@ test …` tags a test `slow`, as `reindexing keeps it running`
 is, and `--exclude-tag slow` leaves the tagged tests out of a run (see
-[Running tests](running-tests.md)). `~tags` puts any tag on a test or on
-every test of a group. An untagged test that runs longer than
-`--slow-threshold` seconds, one by default, is listed under `slow tests`
-in the report.
+[Running tests](running-tests.md)). `tag "gpu" @@ …` puts any tag on a
+test, a property, a table or a stateful test, or on every test of a
+group, and `slow` is `tag "slow"`. A test without the tag that runs
+longer than `--slow-threshold` seconds, one by default, is listed under
+`slow tests` in the report.
 
 ## Skipping when the machine lacks a resource
 
@@ -316,7 +342,7 @@ $ dune exec examples/06-resources-and-structure/test_storage.exe -- -v -f gpu
 storage: 2 tests
   SKIP  gpu › the device has a name (GPU_DEVICE is not set)
   SKIP  gpu › the device is not the CPU (GPU_DEVICE is not set)
-2 skipped in 0.5ms.
+2 skipped in 1.2ms.
 ```
 
 ## Using files, variables and a working directory
@@ -401,12 +427,12 @@ under its `XFAIL` line:
 ```
 $ dune exec examples/06-resources-and-structure/test_storage.exe -- -v -f duplicate
 storage: 1 test
-  XFAIL  database › a duplicate row counts once    0.1ms (expected failure: issue #42)
+  XFAIL  database › a duplicate row counts once    0.2ms (expected failure: issue #42)
     examples/06-resources-and-structure/db_tests.ml:30
-      30 │ (with_db "a duplicate row counts once" a_duplicate_counts_once);
+      30 │ @@ with_db "a duplicate row counts once" a_duplicate_counts_once;
 
     expected  1
     actual    2
 
-1 expected failure in 0.6ms.
+1 expected failure in 1.6ms.
 ```

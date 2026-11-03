@@ -3,8 +3,6 @@
    SPDX-License-Identifier: ISC
   ---------------------------------------------------------------------------*)
 
-module Shrink_tree = Gen.Engine.Shrink_tree
-
 let one_line text =
   String.concat " " (Text.split_lines (Text.normalize_newlines text))
 
@@ -259,21 +257,12 @@ let check ~steps ~domains commands =
 
 (* Programs *)
 
-(* An element's place in the list that its value lists, of [n] candidates.
-   A drawn place is a position [k] below [2^position_bits], which takes the
-   candidate at [k * n / 2^position_bits], so a shrink that deletes an
-   earlier call, which changes [n], keeps its relative place. [Below (place,
-   slot)] takes an index below the one [place] takes in the same run: the
-   [slot]th of the first eight candidates that the index shrinks through and
-   the index before it, each once. It takes none past them, and none when
-   [place] takes index [0], so no two candidates of a place take the same
-   index, and none takes the place's own. *)
-type place = Drawn of int | Below of place * int
-
-(* A drawn call's signature with every argument filled: a sample, the
-   choice of a value of an abstract type as the step of the drawn call that
-   makes it, or an element's place. The call names the value while it makes
-   one, so deleting other calls does not move the choice. *)
+(* A parsed call's signature with every argument filled: a sample, the step
+   of the call that makes the value it takes, [-1] when its type has no
+   maker, or an element's place. A place is a position [k] below
+   [2^position_bits], which takes the candidate at [k * n / 2^position_bits]
+   of the [n] its value lists, so a deletion of an earlier call, which
+   changes [n], keeps its relative place. *)
 type ('r, 's, 'p) args =
   | Last : ('r, 's) form -> ('r, 's, bool) args
   | Sample :
@@ -283,12 +272,12 @@ type ('r, 's, 'p) args =
       ('ra, 'sa) values * int * ('r, 's, 'p) args
       -> ('ra -> 'r, 'sa -> 's, 'ra -> 'p) args
   | Element :
-      'a among * place * ('r, 's, 'p) args
+      'a among * int * ('r, 's, 'p) args
       -> ('a -> 'r, 'a -> 's, 'a -> 'p) args
 
 type call =
   | Call : {
-      step : int; (* the call's position in the drawn program *)
+      step : int; (* the call's position in the parse *)
       command : int; (* the command's first position in the list *)
       name : string;
       loc : Loc.t option;
@@ -319,8 +308,10 @@ type program = {
   branches : call list array;
   suffix : call list;
   held : bool array; (* the case's subset, by position *)
-  mutable record : row list option; (* the rows of the last run, in order *)
 }
+
+(* The rows of a run, in order. *)
+type record = row list
 
 (* Printing *)
 
@@ -378,7 +369,8 @@ let columns ~parallel ~judging rows =
 
 (* Hard newlines and padding only: the engine renders through
    [Format.asprintf] at its default margin, which would re-wrap break
-   hints. *)
+   hints. The table is the report's, laid out unstyled and its trailing
+   spaces stripped as a report strips a table's. *)
 let record_text = function
   (* A reachable counterexample: an empty text would print a bare colon. *)
   | [] -> "(no calls)"
@@ -395,55 +387,49 @@ let record_text = function
             [ Pp.str "\u{2026} (%s omitted)" (call_count omitted) ],
             List.filteri (fun i _ -> i >= total - context_calls) numbered )
       in
-      let shown = List.map snd (head @ tail) in
       let columns =
         columns
           ~parallel:(List.exists is_parallel rows)
           ~judging:(List.exists (fun row -> row.judging) rows)
-          shown
+          (List.map snd (head @ tail))
       in
-      let widths =
+      let line number cells =
+        List.map Report_sections.plain (number :: cells)
+      in
+      let lines =
         List.map
-          (fun (header, cell) ->
-            List.fold_left
-              (fun width row -> max width (Text.length_utf8 (cell row)))
-              (String.length header) shown)
-          columns
+          (fun spans ->
+            let text = Report_sections.render ~ansi:false spans in
+            let rec stop i =
+              if i > 0 && text.[i - 1] = ' ' then stop (i - 1) else i
+            in
+            String.sub text 0 (stop (String.length text)))
+          (Report_sections.table ~margin:""
+             ~columns:
+               ({ Report_sections.gap = ""; align = `Right; width = Some 2 }
+               :: List.map
+                    (fun _ ->
+                      {
+                        Report_sections.gap = "  ";
+                        align = `Left;
+                        width = None;
+                      })
+                    columns)
+             (line "#" (List.map fst columns)
+             :: List.map
+                  (fun (number, row) ->
+                    line number (List.map (fun (_, cell) -> cell row) columns))
+                  (head @ tail)))
       in
-      let number_width = max 2 (String.length (string_of_int total)) in
-      (* Every cell but a line's last is padded, and the blank cells that
-         end a line are dropped, so no line ends on a blank. *)
-      let rec cells = function
-        | [] -> ""
-        | (width, cell) :: rest ->
-            if List.for_all (fun (_, cell) -> cell = "") rest then "  " ^ cell
-            else
-              "  " ^ cell
-              ^ String.make (width - Text.length_utf8 cell) ' '
-              ^ cells rest
-      in
-      let line number texts =
-        String.make (number_width - String.length number) ' '
-        ^ number
-        ^ cells (List.combine widths texts)
-      in
-      let row (number, row) =
-        line number (List.map (fun (_, cell) -> cell row) columns)
-      in
-      String.concat "\n"
-        ((line "#" (List.map fst columns) :: List.map row head)
-        @ omission @ List.map row tail)
+      let above = List.filteri (fun i _ -> i <= List.length head) lines in
+      let below = List.filteri (fun i _ -> i > List.length head) lines in
+      String.concat "\n" (above @ omission @ below)
 
-let pp_program ppf program =
-  Pp.string ppf
-    (match program.record with
-    | None -> "(not run)"
-    | Some rows -> record_text rows)
+let pp_record ppf record = Pp.string ppf (record_text record)
 
-let summary program =
-  match program.record with
-  | None | Some [] -> None
-  | Some rows -> (
+let summary = function
+  | [] -> None
+  | rows -> (
       let total = call_count (List.length rows) in
       match List.length (List.filter is_parallel rows) with
       | 0 ->
@@ -451,112 +437,131 @@ let summary program =
           Some (Pp.str "%s, last: %s" total last.name)
       | parallel -> Some (Pp.str "%s, %d in parallel" total parallel))
 
+(* A program prints as it was drawn, one call a line, a parallel call after
+   its branch: what a replay token's digest is of. A value is named as its
+   maker would name it if every call ran. *)
+let pp_program ppf program =
+  let names = Hashtbl.create 8 and counts = Hashtbl.create 8 in
+  let name ~step prefix =
+    let count = 1 + Option.value ~default:0 (Hashtbl.find_opt counts prefix) in
+    Hashtbl.replace counts prefix count;
+    let name = prefix ^ string_of_int count in
+    Hashtbl.replace names step name;
+    name
+  in
+  let rec words : type r s p. (r, s, p) args -> string list = function
+    | Last _ -> []
+    | Sample (sample, args) -> argument_text sample :: words args
+    | Index (_, maker, args) ->
+        Option.value ~default:"_" (Hashtbl.find_opt names maker) :: words args
+    | Element (_, place, args) -> Pp.str "(at %d)" place :: words args
+  in
+  let rec made : type r s p. (r, s, p) args -> string option = function
+    | Last (Makes (Values t)) -> Some t.prefix
+    | Last (Makes (Among _) | Returns _ | Judges _) -> None
+    | Sample (_, args) -> made args
+    | Index (_, _, args) -> made args
+    | Element (_, _, args) -> made args
+  in
+  let line ?domain (Call c) =
+    let call = String.concat " " (c.name :: words c.args) in
+    let call =
+      match made c.args with
+      | None -> call
+      | Some prefix -> Pp.str "let %s = %s" (name ~step:c.step prefix) call
+    in
+    match domain with None -> call | Some i -> Pp.str "%d: %s" i call
+  in
+  let lines =
+    List.map line program.prefix
+    @ List.concat
+        (List.mapi
+           (fun i calls -> List.map (line ~domain:(i + 1)) calls)
+           (Array.to_list program.branches))
+    @ List.map line program.suffix
+  in
+  Pp.string ppf
+    (match lines with [] -> "(no calls)" | _ -> String.concat "\n" lines)
+
 (* Drawing *)
 
-(* An index shrinks toward [0], the newest maker, as [Gen]'s integers do:
-   [0] first, then candidates that each close half the gap to [k]. *)
-let index_candidates k =
-  let rec candidates current () =
-    if current = k then Seq.Nil
-    else
-      let gap = (k / 2) - (current / 2) in
-      let rest = if gap = 0 then Seq.empty else candidates (current + gap) in
-      Seq.Cons (current, rest)
-  in
-  candidates 0
+(* A program parses a choice sequence (see [Choice]), which a generating
+   source draws as 0.2 drew a program, from the same stream. *)
 
-let rec index_tree k =
-  Shrink_tree.make ~root:k ~children:(Seq.map index_tree (index_candidates k))
+(* What a generating [src] draws: [v]. *)
+let drawn src v = Choice.sample src (fun state -> (v, state))
 
 (* The newest value with probability 1/2, else any of the [count]. *)
 let draw_index count state =
   let newest, state = Seed.below ~bound:2L state in
-  if Int64.equal newest 0L then (0, state)
-  else
-    let k, state = Seed.below ~bound:(Int64.of_int count) state in
-    (Int64.to_int k, state)
+  if Int64.equal newest 0L then (0L, state)
+  else Seed.below ~bound:(Int64.of_int count) state
 
 let position_bits = 30
 
-(* A place's candidates are the places below it, one per slot, which take
-   every candidate of an index up to [256]. *)
-let below_slots = 9
-
-let rec place_tree place =
-  Shrink_tree.make ~root:place
-    ~children:
-      (Seq.map
-         (fun slot -> place_tree (Below (place, slot)))
-         (Seq.init below_slots Fun.id))
-
-let draw_place state =
-  let k, state = Seed.below ~bound:(Int64.shift_left 1L position_bits) state in
-  (Drawn (Int64.to_int k), state)
-
-(* The indices that the slots below index [i] take: its first eight
-   candidates, then [i - 1] unless they end with it. *)
-let below_indices i =
-  let firsts = List.of_seq (Seq.take (below_slots - 1) (index_candidates i)) in
-  if List.mem (i - 1) firsts then firsts else firsts @ [ i - 1 ]
-
-(* [place_index place n] is the index that [place] takes among [n]
-   candidates, and [None] when it takes none. *)
-let rec place_index place n =
-  match place with
-  | Drawn k -> Some ((k * n) lsr position_bits)
-  | Below (above, slot) -> (
-      match place_index above n with
-      | None | Some 0 -> None
-      | Some i -> List.nth_opt (below_indices i) slot)
-
-(* Arguments are counted from one, abstract ones included. *)
-let rec draw_args : type r s p.
+(* Arguments are counted from one, abstract ones included. A value is the
+   [k]th newest of the makers of its type, [makers] holding the step and the
+   mark of each, newest first: the choice counts past the marks of the [k]
+   newer makers, so a deletion of some of them lowers it with them, and it
+   keeps its value. An element is one position. *)
+let rec parse_args : type r s p.
     name:string ->
-    makers:(int -> int list) ->
+    makers:(int -> (int * int) list) ->
     int ->
     (r, s, p) fn ->
-    Seed.state ->
-    (r, s, p) args Shrink_tree.t * Seed.state =
- fun ~name ~makers position fn state ->
+    Choice.t ->
+    (r, s, p) args =
+ fun ~name ~makers position fn src ->
   match fn with
-  | Result form -> (Shrink_tree.leaf (Last form), state)
+  | Result form -> Last form
   | Drawn (gen, fn) ->
-      let sample, state = Gen.Engine.draw gen state in
-      if not (Gen.Engine.prints (Shrink_tree.root sample)) then
+      let sample = Gen.Engine.parse gen src in
+      if not (Gen.Engine.prints sample) then
         invalid_arg
           (Pp.str "%s: argument %d has no printer; attach one with Gen.with_pp"
              name position);
-      let args, state = draw_args ~name ~makers (position + 1) fn state in
-      let tree = Shrink_tree.pair sample args in
-      (Shrink_tree.map (fun (sample, args) -> Sample (sample, args)) tree, state)
+      Sample (sample, parse_args ~name ~makers (position + 1) fn src)
   | Chosen (Values t, fn) ->
-      let steps = makers t.id in
-      let k, state = draw_index (List.length steps) state in
-      let args, state = draw_args ~name ~makers (position + 1) fn state in
-      let maker k = List.nth steps k in
-      let tree = Shrink_tree.pair (Shrink_tree.map maker (index_tree k)) args in
-      (Shrink_tree.map (fun (maker, args) -> Index (t, maker, args)) tree, state)
+      let made = makers t.id in
+      let count = List.length made in
+      let at = Choice.position src in
+      let bound = Int64.of_int (Int.max 0 (count - 1)) in
+      let k =
+        Int64.to_int
+          (Choice.choice src ~bound (Choice.sample src (draw_index count)))
+      in
+      Choice.counts_past src ~at
+        (List.filteri (fun i _ -> i < k) (List.map snd made));
+      let maker =
+        match List.nth_opt made k with Some (s, _) -> s | None -> -1
+      in
+      Index (t, maker, parse_args ~name ~makers (position + 1) fn src)
   | Chosen (Among l, fn) ->
-      let place, state = draw_place state in
-      let args, state = draw_args ~name ~makers (position + 1) fn state in
-      let tree = Shrink_tree.pair (place_tree place) args in
-      ( Shrink_tree.map (fun (place, args) -> Element (l, place, args)) tree,
-        state )
+      let places = Int64.shift_left 1L position_bits in
+      let place =
+        Int64.to_int
+          (Choice.choice src ~bound:(Int64.pred places)
+             (Choice.sample src (Seed.below ~bound:places)))
+      in
+      Element (l, place, parse_args ~name ~makers (position + 1) fn src)
 
 (* Each command joins the subset with probability 3/4, every command when
    none does, and a command in the subset brings the makers of the types it
-   takes. *)
-let draw_subset firsts shapes state =
+   takes. The subset only steers drawing, so it is drawn unrecorded: a replay
+   holds every command, and a command appended to the list moves no
+   choice. *)
+let draw_subset firsts shapes src =
   let n = Array.length firsts in
-  let joins = Array.make n false in
-  let state = ref state in
-  for i = 0 to n - 1 do
-    if firsts.(i) = i then begin
-      let quarter, next = Seed.below ~bound:4L !state in
-      joins.(i) <- not (Int64.equal quarter 0L);
-      state := next
-    end
-  done;
+  let joins =
+    Array.mapi
+      (fun i first ->
+        first = i
+        &&
+        match Choice.sample src (Seed.below ~bound:4L) with
+        | Some quarter -> not (Int64.equal quarter 0L)
+        | None -> true)
+      firsts
+  in
   if not (Array.exists Fun.id joins) then Array.fill joins 0 n true;
   let held = Array.make n false in
   let is_maker t shape = Option.map type_id shape.makes = Some (type_id t) in
@@ -572,150 +577,145 @@ let draw_subset firsts shapes state =
   in
   Array.iteri (fun i joined -> if joined then hold i) joins;
   Array.iteri (fun i first -> held.(i) <- held.(first)) firsts;
-  (held, !state)
-
-(* Where a call of a program on several domains runs. *)
-type slot = Prefix | Branch of int | Suffix
+  held
 
 (* The calls of each branch: the most, at most ten in all, whose orders stay
    within 7! = 5040, and never fewer than one. Two domains take five calls
    each (252 orders), three take three (1680), four take two (2520), five to
    seven take one; from eight domains one call each gives n! orders. *)
 let branch_calls = function 2 -> 5 | 3 -> 3 | 4 -> 2 | _ -> 1
-
-(* A parallel call's first candidates move it to the end of the prefix,
-   then to the start of the suffix, where it runs alone. A moved call has no
-   such candidate, so the tree stays finite in depth. *)
-let rec slotted slot tree =
-  let moved slot = Shrink_tree.map (fun call -> (slot, call)) tree in
-  match slot with
-  | Prefix | Suffix -> moved slot
-  | Branch _ ->
-      let rec argument_moves children () =
-        match children () with
-        | Seq.Nil -> Seq.Nil
-        | Seq.Cons (child, rest) ->
-            Seq.Cons (slotted slot child, argument_moves rest)
-      in
-      let moves () =
-        Seq.Cons
-          ( moved Prefix,
-            fun () ->
-              Seq.Cons (moved Suffix, argument_moves (Shrink_tree.children tree))
-          )
-      in
-      Shrink_tree.make ~root:(slot, Shrink_tree.root tree) ~children:moves
-
-(* The calls in program order: the prefix, each branch, the suffix, each in
-   the order the list holds it, so a call moved to the prefix ends it and one
-   moved to the suffix starts it. *)
-let parallel_program ~domains held calls =
-  let in_slot slot =
-    List.filter_map
-      (fun (s, call) -> if s = slot then Some call else None)
-      calls
-  in
-  {
-    prefix = in_slot Prefix;
-    branches = Array.init domains (fun i -> in_slot (Branch i));
-    suffix = in_slot Suffix;
-    held;
-    record = None;
-  }
+let discard () = raise (Failure.Control `Discard)
 
 (* No reference runs here: a command is drawn when every type it takes has a
-   value that an earlier call makes, if both of its sides return. Nothing
-   repairs a candidate; [execute] skips what does not resolve. [makers]
-   holds, per type, the steps of the calls that make it, newest first. After
-   the prefix only a command that [runs_anywhere] is drawn, so a branch and
-   the suffix choose among the prefix's values. *)
+   value that an earlier call makes. Nothing repairs a parse; [execute] skips
+   what does not resolve.
+
+   Each call is a span of a continue bit, the command's position in the list
+   and its arguments, so deleting the span deletes the call, and lowering the
+   position turns the command into an earlier one. A maker's mark is its
+   position's choice. On several domains a call after the prefix reads its
+   segment first: [0] ends the prefix, [1] starts the suffix and [i + 2] is
+   branch [i], so moving a call out of its branch lowers a choice. A command
+   that cannot run after the prefix, or one more call than its branch holds,
+   discards the parse. *)
 let program ?(steps = 20) ?(domains = 1) commands =
   let commands = Array.of_list commands in
   let firsts = first_positions commands in
   let shapes = Array.map command_shape commands in
   let anywhere = Array.map runs_anywhere commands in
-  let draw state =
+  let positions = List.init (Array.length commands) Fun.id in
+  let last = Int64.of_int (Array.length commands - 1) in
+  let parse src =
     check ~steps ~domains commands;
-    let held, state = draw_subset firsts shapes state in
+    let held = draw_subset firsts shapes src in
     let made = Hashtbl.create 8 in
     let makers t = Option.value ~default:[] (Hashtbl.find_opt made t) in
-    let drawable ~prefix i =
-      held.(i)
-      && (prefix || anywhere.(i))
-      && List.for_all (fun t -> makers (type_id t) <> []) shapes.(i).takes
+    let drawable ~prefix =
+      List.filter
+        (fun i ->
+          held.(i)
+          && (prefix || anywhere.(i))
+          && List.for_all (fun t -> makers (type_id t) <> []) shapes.(i).takes)
+        positions
     in
-    let draw_call step i state =
+    let pick drawable state =
+      let k, state =
+        Seed.below ~bound:(Int64.of_int (List.length drawable)) state
+      in
+      (Int64.of_int (List.nth drawable (Int64.to_int k)), state)
+    in
+    let next_step = ref 0 in
+    let parse_call ~prefix =
+      let i =
+        Int64.to_int
+          (Choice.choice src ~bound:last
+             (Choice.sample src (pick (drawable ~prefix))))
+      in
+      let mark = Choice.position src - 1 in
       match commands.(i) with
       | Command { name; loc; fn; pre; reference; system } ->
-          let args, state = draw_args ~name ~makers 1 fn state in
-          let call args =
-            Call
-              {
-                step;
-                command = firsts.(i);
-                name;
-                loc;
-                args;
-                pre;
-                reference;
-                system;
-              }
-          in
-          (Shrink_tree.map call args, state)
-    in
-    let positions = List.init (Array.length commands) Fun.id in
-    let next_step = ref 0 in
-    let rec draw_calls ~prefix n trees state =
-      match if n = 0 then [] else List.filter (drawable ~prefix) positions with
-      | [] -> (List.rev trees, state)
-      | drawable ->
-          let bound = Int64.of_int (List.length drawable) in
-          let pick, state = Seed.below ~bound state in
-          let i = List.nth drawable (Int64.to_int pick) in
+          let args = parse_args ~name ~makers 1 fn src in
           let step = !next_step in
           incr next_step;
-          let tree, state = draw_call step i state in
           let make t =
-            Hashtbl.replace made (type_id t) (step :: makers (type_id t))
+            Hashtbl.replace made (type_id t) ((step, mark) :: makers (type_id t))
           in
           Option.iter make shapes.(i).makes;
-          draw_calls ~prefix (n - 1) (tree :: trees) state
+          let command = firsts.(i) in
+          (i, Call { step; command; name; loc; args; pre; reference; system })
     in
-    if domains = 1 then
-      let trees, state = draw_calls ~prefix:true steps [] state in
-      let program calls =
-        { prefix = calls; branches = [||]; suffix = []; held; record = None }
-      in
-      (Shrink_tree.map program (Shrink_tree.list trees), state)
-    else
-      let below n state =
-        let k, state = Seed.below ~bound:(Int64.of_int (n + 1)) state in
-        (Int64.to_int k, state)
-      in
-      let prefix_calls, state = below steps state in
-      let suffix_calls, state = below (steps - prefix_calls) state in
-      let prefix, state = draw_calls ~prefix:true prefix_calls [] state in
-      let rec draw_branches i trees state =
-        if i = domains then (List.concat (List.rev trees), state)
+    (* At most [cap] calls, a generating source drawing one more while
+       [wanted] holds of the count so far. *)
+    let rec calls ~cap ~wanted parse_call count acc =
+      let next =
+        if count = cap then None
         else
-          let branch, state =
-            draw_calls ~prefix:false (branch_calls domains) [] state
-          in
-          draw_branches (i + 1)
-            (List.map (slotted (Branch i)) branch :: trees)
-            state
+          Choice.span src (fun () ->
+              let more = drawn src (if wanted count then 1L else 0L) in
+              if Int64.equal (Choice.choice src ~bound:1L more) 0L then None
+              else Some (parse_call count))
       in
-      let branches, state = draw_branches 0 [] state in
-      let suffix, state = draw_calls ~prefix:false suffix_calls [] state in
-      let calls =
-        List.map (slotted Prefix) prefix
-        @ branches
-        @ List.map (slotted Suffix) suffix
+      match next with
+      | None -> List.rev acc
+      | Some call -> calls ~cap ~wanted parse_call (count + 1) (call :: acc)
+    in
+    let in_prefix _ = snd (parse_call ~prefix:true) in
+    let any ~prefix _ = drawable ~prefix <> [] in
+    if domains = 1 then
+      let prefix = calls ~cap:steps ~wanted:(any ~prefix:true) in_prefix 0 [] in
+      { prefix; branches = [||]; suffix = []; held }
+    else
+      let below n =
+        let draw state =
+          let k, state = Seed.below ~bound:(Int64.of_int (n + 1)) state in
+          (Int64.to_int k, state)
+        in
+        Option.value ~default:0 (Choice.sample src draw)
       in
-      ( Shrink_tree.map (parallel_program ~domains held) (Shrink_tree.list calls),
-        state )
+      let prefix_calls = below steps in
+      let suffix_calls = below (steps - prefix_calls) in
+      let prefix =
+        calls ~cap:steps
+          ~wanted:(fun count -> count < prefix_calls && any ~prefix:true count)
+          in_prefix 0 []
+      in
+      let per = branch_calls domains in
+      let ended = ref [] and suffix = ref [] in
+      let branches = Array.make domains [] in
+      (* A generating source fills each branch in turn, then the suffix. *)
+      let after_prefix count =
+        let drawn_segment =
+          if count < domains * per then 2 + (count / per) else 1
+        in
+        let segment =
+          Choice.choice src
+            ~bound:(Int64.of_int (domains + 1))
+            (drawn src (Int64.of_int drawn_segment))
+        in
+        let i, call = parse_call ~prefix:false in
+        if not anywhere.(i) then discard ();
+        match Int64.to_int segment with
+        | 0 -> ended := call :: !ended
+        | 1 -> suffix := call :: !suffix
+        | segment ->
+            let b = segment - 2 in
+            if List.length branches.(b) = per then discard ();
+            branches.(b) <- call :: branches.(b)
+      in
+      let wanted count =
+        count < (domains * per) + suffix_calls && any ~prefix:false count
+      in
+      ignore
+        (calls ~cap:((domains * per) + steps) ~wanted after_prefix 0 []
+          : unit list);
+      {
+        prefix = prefix @ List.rev !ended;
+        branches = Array.map List.rev branches;
+        suffix = List.rev !suffix;
+        held;
+      }
   in
-  Gen.Engine.make ~pp:pp_program draw
+  Gen.Engine.make ~pp:pp_program parse
 
 (* Running *)
 
@@ -740,8 +740,17 @@ type 'a outcome = Returned of 'a | Raised of exn * Printexc.raw_backtrace
 type never = Failed of Failure.t | Discarded
 
 (* A call on the way to a record: bound, with how its system ended once it
-   ran, an outcome or what is none. [number] is its row's number once the
-   row is recorded. *)
+   ran, an outcome or what is none, and when it began and returned. [number]
+   is its row's number once the row is recorded. *)
+(* When a call's system began or returned: the monotonic clock, read on the
+   domain that runs it, and that domain's own count of its readings. Two
+   readings of one domain are ordered by the count, which a coarse clock
+   cannot tie (macos-latest's gave two calls run one after the other the
+   same instant); readings of two domains, by the clock alone, since taking
+   anything shared would synchronise the domains under test. *)
+type reading = { clock : Os.counter; domain : int; count : int }
+type stamp = { began : reading; returned : reading }
+
 type pending =
   | Pending : {
       step : int;
@@ -752,6 +761,7 @@ type pending =
       reference : sides -> unit -> 'r;
       system : unit -> 's;
       mutable ended : ('s outcome, never) result option;
+      mutable ran : stamp option;
     }
       -> pending
 
@@ -787,8 +797,8 @@ let resolve pool (t : (_, _) values) maker =
   | None -> List.find_map of_type pool
 
 (* How a call's elements fared: every one taken, or not, since a value
-   listed no element or a place took none. *)
-type taking = Taken | Unlisted | Unplaced
+   listed no element. *)
+type taking = Taken | Unlisted
 
 (* A call whose values resolved. Its functions apply their arguments when
    called, so that no code of the user runs before [pre] holds, and they
@@ -903,10 +913,10 @@ let bind run (Call c) =
                     in
                     match l.candidates r with
                     | [] -> Error Unlisted
-                    | candidates -> (
-                        match place_index place (List.length candidates) with
-                        | Some i -> Ok (List.nth candidates i)
-                        | None -> Error Unplaced))
+                    | candidates ->
+                        let n = List.length candidates in
+                        Ok (List.nth candidates ((place * n) lsr position_bits))
+                    )
               in
               element := Some taken;
               taken
@@ -1136,6 +1146,7 @@ let pending ?before ~domain (Call c) (Ready r) =
       reference = r.reference;
       system = r.system;
       ended = None;
+      ran = None;
     }
 
 let add_row run (Pending p) =
@@ -1144,10 +1155,21 @@ let add_row run (Pending p) =
 
 let has_run (Pending p) = Option.is_some p.ended
 
-(* Runs a pending call's system and records how it ended; [false] when it
-   raised what is no outcome. Every control but a discard leaves. *)
+(* The domain's own count of the readings it took, which no other domain
+   reads or writes. *)
+let readings = Domain.DLS.new_key (fun () -> ref 0)
+
+let reading () =
+  let count = Domain.DLS.get readings in
+  incr count;
+  { clock = Os.counter (); domain = (Domain.self () :> int); count = !count }
+
+(* Runs a pending call's system and records how it ended and when; [false]
+   when it raised what is no outcome. Every control but a discard leaves. *)
 let run_system (Pending p) =
+  let began = reading () in
   let ended = side p.system in
+  p.ran <- Some { began; returned = reading () };
   p.ended <- Some ended;
   match ended with
   | Ok outcome ->
@@ -1228,9 +1250,6 @@ let run_call run (Call c as call) =
       let legal =
         match guard r.take with
         | Ok Unlisted -> Ok false
-        (* Only a shrink candidate has a place below another, and one that
-           takes no element is no candidate. *)
-        | Ok Unplaced -> raise (Failure.Control `Discard)
         | Error f -> Error ("reference of ", f)
         | Ok Taken -> (
             match r.pre with
@@ -1296,17 +1315,29 @@ type verdict =
 let completed taken numbers =
   taken @ List.filter (fun number -> not (List.mem number taken)) numbers
 
-(* Depth first over the orders that keep each branch's order, each followed
-   by the suffix. The first child of a branch point continues on the state
-   that the call before it left; every other starts from [fresh ()], replayed
-   along its path, so a state need be neither persistent nor copyable.
-   [path] is newest first. The closest order is the one whose first
-   difference comes latest, the first found winning a tie; it is completed
-   with the calls it did not reach, each branch in turn, then the suffix. *)
-let judge ~fresh ~branches ~suffix =
+(* Depth first over the orders that keep each branch's order and real time,
+   each followed by the suffix. A branch's next call waits while another
+   branch's next call [precedes] it; a later call of that branch returned
+   later still, so the heads alone decide. The first child of a branch point
+   continues on the state that the call before it left; every other starts
+   from [fresh ()], replayed along its path, so a state need be neither
+   persistent nor copyable. [path] is newest first. The closest order is the
+   one whose first difference comes latest, the first found winning a tie;
+   it is completed with the calls it did not reach, each branch in turn, then
+   the suffix. *)
+let judge ~fresh ~precedes ~branches ~suffix =
   let calls = Array.of_list (List.map Array.of_list branches) in
   let cursors = Array.make (Array.length calls) 0 in
   let exhausted i = cursors.(i) = Array.length calls.(i) in
+  let head i = fst calls.(i).(cursors.(i)) in
+  let waits i =
+    let rec on j =
+      j < Array.length calls
+      && ((j <> i && (not (exhausted j)) && precedes (head j) (head i))
+         || on (j + 1))
+    in
+    on 0
+  in
   let state = ref None in
   let at path =
     match !state with
@@ -1337,7 +1368,7 @@ let judge ~fresh ~branches ~suffix =
   let rec explore path =
     let rec from i =
       if i = Array.length calls then None
-      else if exhausted i then from (i + 1)
+      else if exhausted i || waits i then from (i + 1)
       else
         let s = at path in
         let ((_, call) as step) = calls.(i).(cursors.(i)) in
@@ -1350,11 +1381,7 @@ let judge ~fresh ~branches ~suffix =
               cursors.(i) <- cursors.(i) + 1;
               let found = explore (step :: path) in
               cursors.(i) <- cursors.(i) - 1;
-              begin[@mutate
-                     off
-                       "explore gives None after differs, which drops the state"]
-                state := None
-              end;
+              state := None;
               found
         in
         match found with Some _ -> found | None -> from (i + 1)
@@ -1419,7 +1446,7 @@ let grace = function Failure.Control (`Timeout limit) -> limit | _ -> 0.
    after the other, then the suffix's systems on this domain, then the
    judge. [stuck] is set when a call still runs after the grace, and the
    run of the suite then stops after this test (see [Run.stop]). *)
-let run_parallel ~first ~workers ~stuck run program =
+let run_parallel ~workers ~stuck run program =
   let total () = List.length run.rows in
   let bind_call ~domain call =
     Option.map (pending ~domain call) (bind run call)
@@ -1506,23 +1533,32 @@ let run_parallel ~first ~workers ~stuck run program =
         in
         (p.number, step))
   in
+  (* Real time: a call that returned before another began comes first. *)
+  let ran = Array.make (total + 1) None in
+  List.iter (fun (Pending p) -> ran.(p.number) <- p.ran) pendings;
+  let precedes a b =
+    match (ran.(a), ran.(b)) with
+    | Some { returned; _ }, Some { began; _ } ->
+        if returned.domain = began.domain then returned.count < began.count
+        else Os.earlier returned.clock began.clock
+    | _ -> false
+  in
   let verdict =
     Run.without_labels (fun () ->
-        judge ~fresh ~branches:(List.map steps branches) ~suffix:(steps suffix))
+        judge ~fresh ~precedes ~branches:(List.map steps branches)
+          ~suffix:(steps suffix))
   in
   match verdict with
   | Explained order ->
-      (* Labels count along the accepted order, once per case. *)
-      if first then begin
-        let sides, _ = Run.without_labels fresh in
-        let replay number =
-          let pending =
-            List.find (fun (Pending p) -> p.number = number) pendings
-          in
-          ignore (judge_call ~total sides pending : Failure.t option)
+      (* Labels count along the accepted order. *)
+      let sides, _ = Run.without_labels fresh in
+      let replay number =
+        let pending =
+          List.find (fun (Pending p) -> p.number = number) pendings
         in
-        List.iter replay order
-      end
+        ignore (judge_call ~total sides pending : Failure.t option)
+      in
+      List.iter replay order
   | Unexplained { order; at; failure } ->
       raise
         (Failure.Check_failure
@@ -1530,41 +1566,34 @@ let run_parallel ~first ~workers ~stuck run program =
 
 (* One run from no value: the prefix as on one domain, invariants included,
    then, on several domains, the rest. A run whose call never returned
-   releases nothing. A fatal exception leaves no record. *)
-let run_once ~first ~workers program =
-  program.record <- None;
+   releases nothing. A failing run raises its record with its failure, and a
+   fatal exception leaves no record. *)
+let execute ?workers program =
   let run = fresh_run () in
   let stuck = ref false in
   let ending =
     Failure.catch (fun () ->
         List.iter (run_call run) program.prefix;
         if Array.length program.branches > 0 then
-          run_parallel ~first ~workers ~stuck run program)
+          run_parallel ~workers ~stuck run program)
   in
-  program.record <- Some (List.rev run.rows);
+  let record = List.rev run.rows in
   match if !stuck then ending else release_all run ending with
-  | Ok () -> ()
+  | Ok () -> record
+  | Error (#Failure.fault as fault) ->
+      raise
+        (Property.Run_failure
+           { fault; record = record_text record; summary = summary record })
   | Error c -> Failure.reraise c
 
-(* A repeat costs the system's calls and a judge, so it samples schedules
-   for the price of a run. *)
+(* A run on the workers costs the system's calls and a judge, so a case runs
+   [repetitions] times, sampling schedules for the price of a run. *)
 let repetitions = 50
-
-let execute ?workers program =
-  let runs =
-    if Array.length program.branches > 0 && Option.is_some workers then
-      repetitions
-    else 1
-  in
-  for i = 1 to runs do
-    if i > 1 then Run.restart_law_output ();
-    run_once ~first:(i = 1) ~workers program
-  done
 
 (* Declaring *)
 
 let never_called ?loc ~cases ~elements names =
-  Failure.message ?loc
+  Failure.vacuous ?loc
     (Pp.str
        "never called: %s (over %d passing cases); a call runs only where its \
         arguments resolve%s and its ~pre holds"
@@ -1572,17 +1601,15 @@ let never_called ?loc ~cases ~elements names =
        cases
        (if elements then ", its value lists an element" else ""))
 
-(* Under mutation testing, a program runs once on the test's domain, so a
-   kill does not depend on a schedule. [--mutate-workers] keeps the workers,
-   and a kill can then depend on a schedule. *)
 let mutating () =
-  let config = Run.config (Run.current ()) in
-  match config.mutation with
+  match (Run.config (Run.current ())).mutation with
   | Run.No_mutation -> false
-  | Run.Loop _ | Run.Armed _ -> not config.mutate_workers
+  | Run.Loop _ | Run.Armed _ -> true
 
 (* The workers live for the attempt: spawned before the first case, outside
-   the property, and joined when the body ends, however it ends. *)
+   the property, and joined when the body ends, however it ends. Under
+   mutation testing a program runs once on the test's domain, so a kill does
+   not depend on a schedule and the process can still fork. *)
 let with_workers ?loc ~domains fn =
   if domains = 1 || mutating () then fn None
   else
@@ -1605,13 +1632,12 @@ let with_workers ?loc ~domains fn =
    passing program, and [Run.property] returns only when every case passed, so
    [held] and [called] then mark the passing programs. On several domains the
    test takes no retries, since a failure there is never undone. *)
-let stateful ?__POS__ ?tags ?timeout ?count ?(steps = 20) ?(domains = 1) name
-    commands =
+let stateful ?__POS__ ?timeout ?count ?(steps = 20) ?(domains = 1) name commands
+    =
   let loc = Loc.resolve ?__POS__ () in
   let tags =
     Test_tree.Tag.prop :: "stateful"
-    :: ((if domains > 1 then [ "parallel" ] else [])
-       @ Option.value ~default:[] tags)
+    :: (if domains > 1 then [ "parallel" ] else [])
   in
   let retries = if domains > 1 then Some 0 else None in
   let gen = program ~steps ~domains commands in
@@ -1620,26 +1646,26 @@ let stateful ?__POS__ ?tags ?timeout ?count ?(steps = 20) ?(domains = 1) name
     check ~steps ~domains commands;
     let held = Array.make (Array.length commands) false in
     let called = Array.make (Array.length commands) false in
-    let cases = ref 0 in
+    let cases = ref 0 and passed = ref 0 and replayed = ref false in
     with_workers ?loc ~domains (fun workers ->
-        let cost = if Option.is_some workers then repetitions else 1 in
         (* On the workers a failing program depends on a schedule. *)
-        let deterministic = Option.is_none workers in
-        (* A program prints the record of its run. *)
-        Run.property ?loc ?count ~summary ~prints_run:true ~cost ~deterministic
-          gen (fun program ->
-            execute ?workers program;
-            incr cases;
-            Array.iteri (fun i h -> if h then held.(i) <- true) program.held;
-            let ran (row : row) = called.(row.command) <- true in
-            List.iter ran (Option.value ~default:[] program.record)));
+        let runs = if Option.is_some workers then repetitions else 1 in
+        let stats =
+          Run.property ?loc ?count ~runs gen (fun program ->
+              let record = execute ?workers program in
+              incr passed;
+              Array.iteri (fun i h -> if h then held.(i) <- true) program.held;
+              List.iter (fun (row : row) -> called.(row.command) <- true) record)
+        in
+        (* Every case runs [runs] times, and every run passed. *)
+        cases := !passed / runs;
+        replayed := stats.replayed > 0);
     let firsts = first_positions commands in
     let never i _ = firsts.(i) = i && held.(i) && not called.(i) in
     match List.filteri never (Array.to_list commands) with
     | [] -> ()
-    | (_ [@mutate off "a held command implies a passing case"]) when !cases = 0
-      ->
-        ()
+    (* Vacuity judges a generated run, and a replayed case alone is none. *)
+    | _ when !cases = 0 || !replayed -> ()
     | never ->
         let name (Command c) = c.name in
         let elements =
@@ -1649,4 +1675,7 @@ let stateful ?__POS__ ?tags ?timeout ?count ?(steps = 20) ?(domains = 1) name
           (Failure.Check_failure
              (never_called ?loc ~cases:!cases ~elements (List.map name never)))
   in
-  Test_tree.test ?__POS__ ~tags ?timeout ?retries name body
+  List.fold_left
+    (fun t name -> Test_tree.tag name t)
+    (Test_tree.test ?__POS__ ?timeout ?retries name body)
+    tags

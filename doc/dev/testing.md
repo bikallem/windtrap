@@ -20,67 +20,43 @@ what is non-obvious.
   `test_law` record their runs as they initialise, before their own run.
   `render_fixtures.ml` is the synthetic run data the report suites
   render, and `gallery.ml` marks the escape sequences of the report
-  galleries by their role. Address one suite by running it:
+  galleries by their role. A suite that checks what a verb raises catches
+  it with `Failure.catch`, which owns the failure the verb recorded: a
+  `try … with` around a failing verb fails the test that holds it, as it
+  would a user's. Address one suite by running it:
   `dune exec test/unit/test_gen.exe -- -f shrink`. The report's
   transcripts, the help and the JUnit documents are `expect_file`
   baselines under `unit/expected/`.
+  `test_shrink` pins the reducer's benchmarks as baselines, every seed
+  fixed: the eight of `shrinking.md` and the stateful programs of the
+  choice-sequence spikes, one domain at a cost of 1, whose tokens each
+  replay alone to their counterexample. A change to the reducer or to a
+  generator's parse shows there as a changed row. Each stateful program
+  is a test of its own and the stanza runs `-j 8`, so the slowest row,
+  not their sum, sets the suite's time.
   `test_stateful_domains` holds the stateful tests on several domains,
-  in an executable of its own because a process that has spawned a
-  domain can never fork again. Its systems give results that depend on
+  in an executable of its own because each of its tests that spawns a
+  domain retires its worker. Its systems give results that depend on
   the domain a call runs on, never on a race, so every verdict is
   deterministic. Under mutation testing it spawns nothing: a stateful
   test on several domains then runs each program on the test's domain,
   and each test that spawns a pool skips. Its scenarios that leave a
   domain running forever or spawn every domain the runtime has run in
-  children forked as the module initialises, before any domain exists.
-  The test of `--mutate-workers` also runs in such a child, because it
-  spawns its workers.
+  a fresh process of the executable, which the test that reads them
+  starts: run at module initialisation, they would cost 2.3 s in each
+  of the twenty or so workers the suite starts.
   `runtime/` holds the suites over the runtime's modules:
   `test_coverage` and `test_mutate`, each with a child executable (for
   the at_exit dump and for a registration that runs before any window
   opens); `test_instr`, what the two file formats share (the header, the
-  build paths and the freshness of a file, the atomic write); and
-  `test_verdicts`, the verdict lattice and the verdict file.
-  `mutate_loop/` drives the loop of children through a real spawned
-  process (a loop that forks cannot be observed from inside its own
-  image). Only three functions of `Mutate_loop` are called in the
-  suite's own process: `drain`, which reads the pipes of the children,
-  `next_look`, which times the looks at a child, and `deadline`, which
-  holds the formula of the deadline of a child. A test gives `drain` the
-  file `/dev/zero`, which never empties, because a child cannot keep a
-  pipe full with certainty. The suite runs `plain_main.exe` as the
-  zero-mutant control that must be declined by name, `runaway/` for the
-  hit-count budget, `inline/` for an armed inline partition,
-  `partitions/` for an inline runner with two test files, run one
-  partition at a time and at the same time, and `scoped/` for a second
-  file whose one site is filtered, which a scope of the other file must
-  not record. The fixture `two_flagged` of `suite_main.exe` runs two
-  suites that kill one mutant. The suite removes every verdict file of
-  its fixture executables at exit, one for each suite, and the file at
-  the name of the earlier version.
-  The scenarios of `--mutate-skip-killed` run a copy of `suite_main.exe`
-  under a scratch build directory. The reason is that the `_mutants` of
-  the build holds the verdict files of the other fixtures, and
-  `scoped_main.exe` links `subject.ml` too. Each planted verdict file
-  gets a stand-in executable in the scratch build directory, and records
-  the digest of the stand-in, because the loop uses only a file that is
-  not an orphan and not stale.
-  The scenarios of `--mutate-retry` run the fixture `intermittent`. Its
-  test counts the runs of a changed `widen` in a file. At a run that the
-  scenario gives, the test fails, hangs, waits at a gate or skips the
-  site.
-  The scenarios of flaky kills run the fixture `flaky_kill`. Its second
-  test counts its runs in children in a file. It fails at the runs that
-  the scenario gives, with or without the mutant, or waits at a gate.
-  A new process of the fixture can also refuse its request at the start
-  that the scenario gives.
-  Thus these scenarios depend on no schedule.
-  The scenarios of unstable verdicts run the loop two times over one
-  verdict file. A fixture flag or a rewrite of the file changes the
-  verdict, so no scenario depends on the speed of the host.
-  `pty_stubs.c` opens a
-  pseudo-terminal, which `Unix` does not do: the loop draws its live
-  line only when its standard output is a terminal.
+  build paths, the atomic write); and `test_verdicts`, the verdict
+  lattice and the verdict file. `mutate_loop/` drives the mutant loop
+  through a real spawned process (a loop that starts a worker per mutant
+  cannot be observed from inside its own image), with `plain_main.exe` as the zero-mutant
+  control that must be declined by name, `runaway/` for the hit-count
+  budget and `inline/` for an armed inline partition. Its scenarios
+  share `suite_main.exe`'s one verdict file, so the stanza runs `-j 1`,
+  whatever `WINDTRAP_JOBS` the environment holds.
   Under `semantics/`, `coverage/` and `mutate/` are the
   semantics-preservation suites: a fixture library instrumented
   unconditionally through `(pps)`, run and compared with the
@@ -89,23 +65,18 @@ what is non-obvious.
   counted. The mutation twin compiles the same sources a second time with
   no rewriter (`mutate/baseline/`), so "identical" is measured against
   a real twin rather than an expectation someone could edit to match a
-  defect. Each has a link-only executable listing the fixture library
+  defect. The coverage suite's claims read one dump, its
+  `WINDTRAP_COVERAGE_FILE`, so its stanza runs `-j 1`, whatever
+  `WINDTRAP_JOBS` the environment holds. Each has a link-only executable listing the fixture library
   alone: the rewriter's `ppx_runtime_libraries` inject the runtime, and
-  nothing may pull the core in. The mutation fixtures and the
-  `integration/` libraries are built with `-lit`, so that every family
-  of the rewriter is in them. `integration/` asks whether an
+  nothing may pull the core in. `integration/` asks whether an
   instrumented build compiles and registers, one library per question:
-  generated code under fatal warnings, a shadowed `not` and `bool`, a
-  constructor `()`, `true` or `false` of the file (declared or as an
-  extension constructor), a declared `Some` and `(::)`, a `let rec`
-  value of a structure, of an expression and of a class, a site of each
-  filter (a logging call through `-log-function`), the typing-order and
-  expected-type corpora, and a registration suite that arms each mutant
-  and checks that the library then behaves as the mutant's text says,
-  and that a filtered mutant changes nothing. An instrumenter change
-  that cannot keep the semantics suites green is rejected, not
-  accommodated; grow the fixtures with every expression form the
-  instrumenter learns.
+  generated code under fatal warnings, a shadowed `not` and `bool`, the
+  typing-order and expected-type corpora, and a registration suite that
+  arms each mutant and checks that the library then behaves as the
+  mutant's text says. An instrumenter change that cannot keep the
+  semantics suites green is rejected, not accommodated; grow the fixtures
+  with every expression form the instrumenter learns.
 - `cram/`: cram sessions, one directory per subject. Cram pins stdout,
   stderr and the exit code natively, and `dune promote` is its
   acceptance.
@@ -113,14 +84,30 @@ what is non-obvious.
   `suite_main.exe`: the exit code and the stream of each way a run ends
   (`run.t`), what a report leaves outside the process (`report.t`: the
   bytes under `--stream`, the logs, the replay line run as pasted), `-u`
-  and `--corrected` (`baselines.t`) and the session without dune
-  (`nodune.t`, below). What a message says is pinned by the unit suite
+  and `--corrected` (`baselines.t`), one case read from a file
+  (`case.t`: random files of every length, and the file of a
+  counterexample, which `FACADE_FIXTURE=case_of` decodes from its
+  token) and the session without dune
+  (`nodune.t`, below), and baselines that tests share across worker
+  processes (`workers.t`, over `workers_main.exe`: every `-j`, a worker
+  retired or killed between two checks, `-x` and retries, a table whose
+  rows each settle their corrections, a property's law whose literal is
+  never corrected, each byte for byte the outcome of `-j 1`, which is
+  that of a run in one process), and what a worker starts from
+  (`process.t`, over `process_main.exe`: a value made at declaration is
+  each worker's own at every `-j`, a run reached only in a forked child
+  that spawned a domain, a second run after a domain, a declaration
+  that changes between starts, and a worker that ends before its first
+  test; `replaced.t`, on Linux, a worker of an executable renamed over
+  during the run).
+  What a message says is pinned by the unit suite
   of its module; a session shows its line beside the exit code and the
   streams that only a real process has.
   `broadcast.t` lays out two stanzas in a scratch project, as dune does,
   and runs both under the same variables: a mirror's emptied selection,
-  `WINDTRAP_MUTATE` on a suite with no mutant and a mirror's relative
-  path. Its second stanza runs `mutant_main.exe`, whose library is
+  `WINDTRAP_MUTATE` on a suite with no mutant, a mirror's narrowing of a
+  mutation run (its note on the verdict file said above its outcome, the
+  two streams merged) and a mirror's relative path. Its second stanza runs `mutant_main.exe`, whose library is
   instrumented in every build.
   `signals.t` sends INT, TERM and HUP to a waiting run through
   `send_signal.exe`, which holds the run's pid since a shell's
@@ -140,39 +127,40 @@ what is non-obvious.
   trailing output), the failures that withhold one (an unreadable
   source, an uncaught exception, a test that also failed outside its
   expectations, a raising release), and a node never reached.
+  `verdicts/` holds the verdict sessions: one block per situation that
+  could end a run with a code or a stream its contract does not promise,
+  over `verdict_main.exe`, whose suite `VERDICT_SUITE` selects and names.
+  `exits.t` is code under test that tries to end the process,
+  `outcomes.t` the outcomes of catching, skipping, expected failures,
+  vacuous properties and empty tables, `selection.t` the empty and
+  refused selections, `record.t` the last-failed record (what
+  `--failed` reruns of a table and a property, two executables of one
+  suite name, 0.2.0's record, stale entries, a duplicate row), `baselines.t` baselines under CI with each
+  stanza laid out by hand and an `expect` in a property's law, `refusals.t` the
+  refused runs, the JUnit warning and SIGINT, and `crashes.t` a write
+  at address 0 and a loop in C (`verdict_stubs.c`), under its own limit
+  and under the default one, for which `VERDICT_DEFAULT_LIMIT` puts a
+  fraction of a second in place of ten minutes. A situation the
+  code gets wrong today is a held defect, left for the change that
+  redesigns its area: its block pins today's output under a one-line
+  note that begins "Held for the redesign" and names the promise it
+  breaks, so the change that fixes it flips that block in its own
+  diff, and nothing else promotes it.
   `bin/` pins the `windtrap` command: its dispatch (`windtrap.t`), where
   the two merges find their files and which they merge (`data.t`), the
   coverage and mutants reports (`coverage.t`, `mutants.t`), what they
-  cannot read (`unreadable.t`), a standard output that refuses the
-  mutants report (`full.t`, on Linux, which alone has `/dev/full`), two
-  executables that disagree about one library (`two_executables.t`,
-  which also runs `pins_sub.exe` under `--mutate-skip-killed` after
-  `pins_add.exe`), a main with two suites (`pins_both.exe`) and an
-  inline runner with two test files (`pins_inline.exe`), whose merges
-  give the verdicts of each suite (`two_suites.t`), and the loop and the
-  merge under `--mutate-since` and `--since` in a git repository of the
-  session's own (`since.t`), also from a subdirectory, for filtered
-  mutants, for an executable outside any build directory, for verdict
-  files under one root and under two roots, for a project below the root
-  of the repository, under a configuration that changes what `git diff`
-  prints, and for a project in no repository.
-  `test_changed_lines` in `unit/` reads the diffs that it states, and
-  runs a script in place of git for the arguments and the errors of git.
-  `since.t` pins what git gives.
-  `mkdata.exe` writes the synthetic dumps and verdict files the sessions
-  merge; `pins_add.exe` and `pins_sub.exe` are instrumented suites over
-  `calc.ml`, a library under both backends in every build.
-  `pins_cases.exe` is the suite over `cases.ml`, a library under the
-  mutation backend whose only mutants are drop mutants. `since.t` uses
-  them to pin the line of a drop mutant: the line of the pattern of its
-  case, not the line of its body.
+  cannot read (`unreadable.t`), and two executables that disagree about
+  one library (`two_executables.t`). `mkdata.exe` writes the synthetic
+  dumps and verdict files the sessions merge; `pins_add.exe` and
+  `pins_sub.exe` are instrumented suites over `calc.ml`, a library under
+  both backends in every build.
   `ppx/` holds the rewriters' sessions: their expansions and refusals,
-  one main session per rewriter (`coverage.t`, `mutate.t`,
-  `expect.t`), over fixtures that are never compiled. Each block runs
-  `pp.exe`, a standalone ppxlib driver linking every rewriter, with
-  `-apply` naming the ones it applies. Under `-apply` ppxlib runs the
-  instrumenting rewriters in link order, so `coverage_first.exe` links
-  them the other way round for the one composition `pp.exe` cannot run.
+  one session per rewriter (`coverage.t`, `mutate.t`, `expect.t`), over
+  fixtures that are never compiled. Each block runs `pp.exe`, a
+  standalone ppxlib driver linking every rewriter, with `-apply` naming
+  the ones it applies. Under `-apply` ppxlib runs the instrumenting
+  rewriters in link order, so `coverage_first.exe` links them the other
+  way round for the one composition `pp.exe` cannot run.
   `elide.exe` condenses each registration module to its file and its
   table of points or sites, and each session shows one in full. The
   outputs pin generated bytes, point indexes and byte extents included,
@@ -182,23 +170,10 @@ what is non-obvious.
   installed libraries to pin the type error of a mistyped
   `Expect_test_config.run`. A golden of text the compiler decides runs
   only from the OCaml version that prints it, so such blocks have
-  sessions of their own: `coverage_functions.t` and `mutate_functions.t`
-  from 5.2 (the printer's spelling of a function), `expect_typing.t`
-  from 5.4 (a type error's wording); the conformance corpus gates
-  `escaped_strings.ml` and `hello_async.ml` the same way. A fixture in
-  a syntax that an OCaml version adds also has its own session, which
-  runs only from that version: `mutate_effects.t` from 5.3 (effect
-  cases) and `mutate_labeled_tuples.t` from 5.4 (labeled tuples). Thus
-  a contributor on an older compiler does not run these goldens.
-  ppxlib 0.37 stops on a labeled tuple with a migration error, so
-  `mutate_labeled_tuples.t` also runs only from ppxlib 0.38.
-  `mutate_effects.t` removes the suffix that ppxlib 0.38 adds to the
-  name of the effect encoding, so that its golden holds with ppxlib 0.37
-  too.
-  `mutate_scale.t` runs the mutation rewriter on an else-if chain of
-  20000 branches under a limit of processor time. The limit stops a
-  rewriter whose time increases with the square of the chain length.
-  The session does not run on Windows, whose shell has no `ulimit`.
+  sessions of their own: `coverage_functions.t` from 5.2 (the printer's
+  spelling of a function), `expect_typing.t` from 5.4 (a type error's
+  wording); the conformance corpus gates `escaped_strings.ml` and
+  `hello_async.ml` the same way.
   `coverage.t` holds the two backends' attribute grammars in parity:
   both accept every spelling of `spellings.ml`, an `off` with a reason
   included, and each coverage refusal reads as the mutation one once
@@ -221,8 +196,15 @@ error apart and gives it an empty standard input. A child started this
 way sees no `WINDTRAP_*`, `CI` or `GITHUB_ACTIONS` of the machine it
 runs on. `Child.forked fn` runs `fn` in a forked child and hands back
 the string it returns: a test that spawns a domain spawns it there,
-since a process that has spawned one can never fork again, and the
-mutation loop forks from the test's process.
+since a process that has spawned one can never fork again.
+
+`preload/` holds C libraries a suite preloads into a child with
+`LD_PRELOAD`, to change what the C library tells it: `no_proc_exe.so`
+hides `/proc/self/exe`, so the runtime takes `Sys.executable_name`
+from `argv[0]` as it does outside Linux and macOS, and
+`stepped_clock.so` sets the system clock further ahead at every
+reading while the monotonic clocks run true. They are built on
+Linux alone, and the tests that preload one skip elsewhere.
 
 `Recorded` makes a suite's `Run.execute` and `Run.list_selection` calls
 as it initialises, in a stated environment and with a scratch log
@@ -247,7 +229,7 @@ under the real `_build/_coverage` point the dump elsewhere with
 `WINDTRAP_COVERAGE_FILE` on the action, because the destination is
 resolved at the first registration, before the test's own code runs; the
 loop's scenarios pass `--mutate=test/unit/mutate_loop/` so the
-population they fork over is their own fixtures; `test_mutate` registers
+population they test is their own fixtures; `test_mutate` registers
 its synthetic sites under `t/`, a directory no instrumented source is
 in, and reads the catalogue of its own files alone; and
 a suite that reads the merge's report of a child linking the core pins
@@ -300,37 +282,24 @@ run every test family and every example first, because `.coverage` and
 declarable dependencies, so nothing else can express "after every suite
 has run"; the examples too, because the merges read every dump under
 `_build` and `examples/` carries instrumented libraries of its own; and
-`(universe)` re-runs the milliseconds-cheap merge on every build,
-without which the action caches against nothing and silently goes stale.
-The mutation command carries the variable because a verdict file exists
-only when a suite was asked to mutate (`WINDTRAP_MUTATE` is `--mutate`'s
-mirror, the spelling that reaches every stanza), and `--force` because a
-mutation run is not a cached artifact. Driven without
-`--instrument-with`, either alias rebuilds the executables
-uninstrumented: the coverage merge then reads stale dumps and the
-mutation merge refuses loudly. `WINDTRAP_MUTATE_JOBS=auto` in front of
-the mutation command lets the children of each suite use each CPU. On
-2026-10-13, on 16 CPUs that other processes also used, the command above
-under `SKIP_PACKAGE_SESSIONS=true` took 164 s with one job and 81 s to
-96 s with `auto`. Each time is the wall time of one run, after a first
-run built the instrumented executables. In each run, every suite ran,
-but the merge did not run: the probe of `test_property` refused the
-suite as not deterministic. The counts of 9 suites were not the same
-with `auto`, and two runs with one job also gave different counts in 3
-suites. The command above and the `self-mutate` rule do not set the
-variable, because the scenarios of `test_mutate_loop` share the verdict
-file of `suite_main.exe`. Thus their children can disturb each other and
-kill a mutant that no test kills. The `nodune.t` session compiles a
-scratch project against the installed core, which under the coverage
-backend is instrumented too and adds its own rows to the scratch
-project's report; the session therefore pins the scratch library's row
-alone, never the total. Its dump lands under the scratch directory's
-`_windtrap`, never under `_build/_coverage`, so it never enters the
-number. Dune 3.24, the release CI installs, reports a `(package
-windtrap)` dependency as a cycle under the coverage backend, so the
-coverage job binds `SKIP_PACKAGE_SESSIONS=true` to leave out the
-sessions that have one, `nodune.t` and `cram/ppx/expect_typing.t`; a
-dune built from main runs them under every configuration.
+`(universe)` re-runs the milliseconds-cheap merge on every build, without which the
+action caches against nothing and silently goes stale. The mutation
+command carries the variable because a verdict file exists only when a
+suite was asked to mutate (`WINDTRAP_MUTATE` is `--mutate`'s mirror, the
+spelling that reaches every stanza), and `--force` because a mutation
+run is not a cached artifact. Driven without `--instrument-with`, either
+alias rebuilds the executables uninstrumented: the coverage merge then
+reads stale dumps and the mutation merge refuses loudly.
+The `nodune.t` session compiles a scratch project against the installed
+core, which under the coverage backend is instrumented too and adds its
+own rows to the scratch project's report; the session therefore pins the
+scratch library's row alone, never the total. Its dump lands under the
+scratch directory's `_windtrap`, never under `_build/_coverage`, so it
+never enters the number. Dune 3.24, the release CI installs, reports a
+`(package windtrap)` dependency as a cycle under the coverage backend, so
+the coverage job binds `SKIP_PACKAGE_SESSIONS=true` to leave out the
+sessions that have one, `nodune.t` and `cram/ppx/expect_typing.t`; a dune
+built from main runs them under every configuration.
 
 `--min 84` is a ratchet: the measured number (86.2% on 2026-08-19, 93.0%
 on 2026-09-16) less a few points of headroom. Raise it when the margin is comfortable;
@@ -366,8 +335,8 @@ opt out with `[@@@mutate exclude_file]`: a mutant armed inside the
 judging process hangs rather than survives.
 
 While working on one file, mutate it alone from the executable that owns
-its tests; the loop forks once per mutant and the prefixes narrow the
-population it forks over:
+its tests; the loop starts a worker per mutant and the prefixes narrow
+the population it tests:
 
 ```
 dune exec --instrument-with ppx_windtrap.mutate test/unit/test_diff.exe -- --mutate=lib/diff.ml
@@ -378,23 +347,12 @@ A per-executable run exits 0 whatever it found, and a narrowed run
 the aggregate never merges a partial answer; a survivor is confirmed by
 arming it against the whole suite, with `--arm <id>` from the footer or
 `WINDTRAP_MUTATE_ARM=<id>` in front of the tree-wide command. Every
-child runs under a deadline derived from the dry run (0.5 seconds,
-plus the fixture time of the dry run, plus in exec mode the time of the
-dry run up to the last test of the child and ten times the startup
-time, plus ten times the measured timings of the tests that child runs,
-floored at one second, and longer by the ratio of the CPUs of the
-children to the CPUs of the host when `--mutate-jobs` gives more CPUs
-than the host has) and under the runtime's per-site hit-count budget; a
-child that overruns or spins is killed with its process group and scored
-killed, because a suite that hangs has noticed the change. The probe has
-the wall clock of the dry run in place of the 0.5 seconds and the
-fixture time. On Linux, the time that the threads of
-that group wait for a CPU does not count toward the deadline, up to the
-time that they do not use a CPU. For this limit, the loop divides their
-CPU time by the average CPUs of the tests of the child in the dry run.
-Of that time, the wait for the other children of the loop does not
-count, because the longer deadline already gives it. Mutation needs
-process groups and declines by name on Windows.
+mutant's worker runs under a deadline derived from the dry run (its wall
+clock, plus ten times the measured timings of the tests that child runs,
+floored at one second) and under the runtime's per-site hit-count
+budget; a child that overruns or spins is killed with its process group
+and scored killed, because a suite that hangs has noticed the change.
+Mutation needs worker processes and declines by name on Windows.
 
 ## The conformance corpus
 

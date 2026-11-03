@@ -13,6 +13,42 @@
  (applies_to baselines)
  (deps suite_main.ml))
 
+; workers.t corrects literals in a copy of its fixture's source.
+
+(executable
+ (name workers_main)
+ (modules workers_main)
+ (libraries windtrap unix))
+
+(cram
+ (applies_to workers)
+ (enabled_if
+  (<> %{os_type} Win32))
+ (deps workers_main.exe workers_main.ml))
+
+; process.t and replaced.t run process_main.exe, whose suites fork, spawn
+; domains and start the program again; replaced.t reads /proc/self/exe.
+; process.t also runs process_main.bc, which loads windtrap's stubs.
+
+(executable
+ (name process_main)
+ (modes byte exe)
+ (modules process_main)
+ (libraries windtrap unix))
+
+(cram
+ (applies_to process)
+ (package windtrap)
+ (enabled_if
+  (<> %{os_type} Win32))
+ (deps process_main.exe process_main.bc ../../../lib/dllwindtrap_stubs.so))
+
+(cram
+ (applies_to replaced)
+ (enabled_if
+  (= %{system} linux))
+ (deps process_main.exe))
+
 (executable
  (name send_signal)
  (modules send_signal)

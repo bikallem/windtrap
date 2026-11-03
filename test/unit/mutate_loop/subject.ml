@@ -3,13 +3,13 @@
    SPDX-License-Identifier: ISC
   ---------------------------------------------------------------------------*)
 
-(* The code under mutation. Exactly six sites (one per verdict the loop
-   must produce, plus one dismissed and one filtered) and nothing else the
-   instrumenter can reach: no comparison in a boolean context, no
-   connective, no toplevel arithmetic. The suite's counts are therefore
-   exact rather than approximately right, and a change to the operator set
-   that grew the population here would fail the tests loudly instead of
-   quietly shifting a number. *)
+(* The code under mutation. Exactly five sites (one per verdict the loop
+   must produce, plus one dismissed) and nothing else the instrumenter
+   can reach: no comparison in a boolean context, no connective, no
+   toplevel arithmetic. The suite's counts are therefore exact rather than
+   approximately right, and a change to the operator set that grew the
+   population here would fail the tests loudly instead of quietly
+   shifting a number. *)
 
 (* Killed: three tests pin the result. *)
 let sub a b = a - b
@@ -20,10 +20,10 @@ let widen a b = a + b
 (* Unreached: nothing calls it. *)
 let orphan a b = a + b
 
-(* Killed by a crash: the [crash] fixture's test leaves through
-   [Unix._exit] when this answer changes, so the child dies without
-   writing a verdict line and the parent has to conclude one from the
-   silence (child hygiene). *)
+(* Unknown by a crash: the [crash] fixture's test leaves through
+   [Unix._exit] when this answer changes, so the mutant's worker dies
+   before its tests end and the loop has to conclude from the silence
+   that it judged nothing. *)
 let crasher a b = a - b
 
 (* Dismissed, and reached: a test below runs it and does not pin it, so
@@ -31,8 +31,3 @@ let crasher a b = a - b
    dismissal filter and it becomes a second survivor and a fifth
    denominator, which is exactly what the reader dismissed it to stop. *)
 let dismissed a b = (a + b) [@mutate off "the boundary is unobservable"]
-
-(* Filtered, and reached: [a + 0] is [a - 0], so the rewriter records the
-   site as filtered and gives it no guard. Its verdict says so, and no
-   child tests it. *)
-let filtered a = a + 0

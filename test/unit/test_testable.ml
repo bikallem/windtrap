@@ -7,6 +7,7 @@
    give, never through a witness of their own kind. *)
 
 open Windtrap
+module Tolerance = Windtrap.Private.Tolerance
 
 type equality =
   | Equal : 'a Testable.t * 'a * 'a -> equality
@@ -16,12 +17,12 @@ type printing = Prints : 'a Testable.t * 'a * string -> printing
 type ordering = Orders : 'a Testable.t * 'a * 'a * string -> ordering
 
 let equalities claim rows =
-  cases claim ~name:fst rows (function
+  cases claim ~id:fst rows (function
     | _, Equal (w, a, b) -> equal bool true (Testable.equal w a b)
     | _, Differ (w, a, b) -> equal bool false (Testable.equal w a b))
 
 let printings claim rows =
-  cases claim ~name:fst rows (function _, Prints (w, v, s) ->
+  cases claim ~id:fst rows (function _, Prints (w, v, s) ->
       equal string s (Testable.to_string w v))
 
 let sign c = if c < 0 then "below" else if c > 0 then "above" else "same"
@@ -33,7 +34,7 @@ let order w a b =
   | Some cmp -> String.concat ", " (List.map sign [ cmp a b; cmp b a; cmp a a ])
 
 let orderings claim rows =
-  cases claim ~name:fst rows (function _, Orders (w, a, b, row) ->
+  cases claim ~id:fst rows (function _, Orders (w, a, b, row) ->
       equal string row (order w a b))
 
 let ordered = "below, above, same"
@@ -146,7 +147,7 @@ let witnesses =
       test "an equality verb applies the equality to the expected value first"
         expected_first;
       cases "an exception from the equality or the printer escapes the verb"
-        ~name:fst
+        ~id:fst
         [
           ("the equality", fun () -> equal raising_equal 1 1);
           ("the printer of a failing verb", fun () -> equal raising_pp 1 2);
@@ -398,7 +399,7 @@ let exact_is_an_equivalence () =
 let apart w (a, b) =
   not_equal string (Testable.to_string w a) (Testable.to_string w b)
 
-let refuses substring make = raises_match (Exn.invalid_arg ~substring) make
+let refuses sub make = raises_match (Exn.invalid_arg ~sub) make
 
 let floats =
   group "Floats"
@@ -407,16 +408,16 @@ let floats =
         "float_exact compares bit for bit, every nan equal to every nan"
         exact_rows;
       cases "float eps holds when a = b or |a -. b| <= eps, never on nan"
-        ~name:fst eps_rows within_eps;
+        ~id:fst eps_rows within_eps;
       cases
         "float_rel holds when a = b, within abs, or within rel of the larger \
          magnitude, never on nan"
-        ~name:fst rel_rows within_rel;
+        ~id:fst rel_rows within_rel;
       printings
         "a float witness prints the shortest decimal that round-trips, and the \
          names of the others"
         float_prints;
-      cases "float_exact prints two unequal floats apart" ~name:fst
+      cases "float_exact prints two unequal floats apart" ~id:fst
         [ ("0.3 and 0.1 +. 0.2", (0.3, 0.1 +. 0.2)); ("0. and -0.", (0., -0.)) ]
         (fun (_, pair) -> apart Testable.float_exact pair);
       prop "float_exact prints a float apart from the next one" Gen.float
@@ -438,11 +439,11 @@ let floats =
         exact_is_an_order;
       test "float_exact's equality is an equivalence over the same floats"
         exact_is_an_equivalence;
-      cases "float refuses an eps that is not strictly positive" ~name:fst
+      cases "float refuses an eps that is not strictly positive" ~id:fst
         [ ("0.", 0.); ("-0.", -0.); ("-1e-9", -1e-9); ("nan", Float.nan) ]
         (fun (_, eps) -> refuses "float_exact" (fun () -> Testable.float eps));
       cases "float_rel refuses a negative or nan bound, and two zero bounds"
-        ~name:fst
+        ~id:fst
         [
           ("a negative rel", ("~rel", -0.1, 0.1));
           ("a negative abs", ("~abs", 0.1, -0.1));
@@ -450,8 +451,8 @@ let floats =
           ("a nan abs", ("~abs", 0.1, Float.nan));
           ("two zero bounds", ("float_exact", 0., 0.));
         ]
-        (fun (_, (substring, rel, abs)) ->
-          refuses substring (fun () -> Testable.float_rel ~rel ~abs));
+        (fun (_, (sub, rel, abs)) ->
+          refuses sub (fun () -> Testable.float_rel ~rel ~abs));
     ]
 
 (* Containers *)
@@ -483,6 +484,7 @@ let container_equal =
   let open Testable in
   let loose = float 0.1 in
   let sorted = slist int Int.compare in
+  let by_key = slist (pair int string) (fun (a, _) (b, _) -> Int.compare a b) in
   let int3 = triple int int int and int4 = quad int int int int in
   [
     ("option, Some and Some", Equal (option int, Some 1, Some 1));
@@ -514,6 +516,12 @@ let container_equal =
     ( "slist, duplicates in another order",
       Equal (sorted, [ 1; 1; 2 ], [ 1; 2; 1 ]) );
     ("slist, another multiplicity", Differ (sorted, [ 1; 1; 2 ], [ 1; 2; 2 ]));
+    ( "slist, under an order coarser than the equality",
+      Equal (by_key, [ (1, "a"); (1, "b") ], [ (1, "b"); (1, "a") ]) );
+    ( "slist, two elements the coarse order ties and the equality tells apart",
+      Differ (by_key, [ (1, "a"); (1, "a") ], [ (1, "a"); (1, "b") ]) );
+    ( "slist, elements under their witness that the order puts apart",
+      Equal (slist loose Float.compare, [ 1.0; 2.0 ], [ 2.05; 0.95 ]) );
     ("pair, equal", Equal (pair int string, (1, "a"), (1, "a")));
     ("pair, first unequal", Differ (pair int string, (1, "a"), (2, "a")));
     ("pair, second unequal", Differ (pair int string, (1, "a"), (1, "b")));
@@ -552,4 +560,101 @@ let containers =
         container_orders;
     ]
 
-let () = exit (run "testable" [ witnesses; instances; floats; containers ])
+(* Multisets *)
+
+module Multiset = Windtrap.Private.Multiset
+
+let differences =
+  [
+    ("equal multisets", (([ 2; 1; 2 ], [ 2; 2; 1 ]), "[] []"));
+    ("one missing", (([ 3; 1; 2 ], [ 1; 3 ]), "[2] []"));
+    ("one extra", (([ 1 ], [ 1; 1 ]), "[] [1]"));
+    ("both, in the order", (([ 5; 1; 9 ], [ 9; 4; 0 ]), "[1; 5] [0; 4]"));
+    ("from empty", (([], [ 2; 1 ]), "[] [1; 2]"));
+  ]
+
+let difference (expected, actual) =
+  let missing, extra =
+    Multiset.difference ~equal:Int.equal ~compare:Int.compare expected actual
+  in
+  let print l = Testable.to_string (list int) l in
+  print missing ^ " " ^ print extra
+
+(* Twenty thousand elements, two of them lost and one doubled: the
+   difference is the three, found without pairing each against each. *)
+let a_large_difference () =
+  let all = List.init 20_000 Fun.id in
+  let actual = 17 :: List.filter (fun n -> n <> 2463 && n <> 9000) all in
+  equal string "[2463; 9000] [17]" (difference (all, actual))
+
+let multisets =
+  group "Multisets"
+    [
+      cases "difference is what each side lacks, in the order" ~id:fst
+        differences (fun (_, (sides, row)) ->
+          equal string row (difference sides));
+      test "difference shows a few elements among many" a_large_difference;
+    ]
+
+(* Observed errors *)
+
+let observation (w, a, b) =
+  match snd (Tolerance.observed (fun () -> Testable.equal w a b)) with
+  | None -> "none"
+  | Some { Tolerance.error; tolerance } ->
+      Printf.sprintf "%g of %g" error tolerance
+
+let observed_rows =
+  let open Testable in
+  [
+    ("an absolute tolerance", ((float 0.5, 1., 1.25), "0.25 of 0.5"));
+    ( "a relative tolerance, widened by the larger side",
+      ((float_rel ~rel:0.1 ~abs:0., 10., 10.5), "0.5 of 1.05") );
+    ( "the larger of the two bounds",
+      ((float_rel ~rel:0.1 ~abs:2., 10., 10.5), "0.5 of 2") );
+    ("a comparison that fails", ((float 0.5, 1., 3.), "2 of 0.5"));
+    ("equal sides", ((float 0.5, infinity, infinity), "0 of 0.5"));
+    ("an error not finite", ((float 0.5, 1., nan), "none"));
+    ("no tolerance", ((float_exact, 1., 1.), "none"));
+  ]
+
+let observed_in_containers () =
+  let w = Testable.list (Testable.float 1.) in
+  let _, worst =
+    Tolerance.observed (fun () ->
+        Testable.equal w [ 1.; 2.; 3. ] [ 1.5; 2.; 3.25 ])
+  in
+  equal (option string) (Some "0.5 of 1")
+    (Option.map
+       (fun { Tolerance.error; tolerance } ->
+         Printf.sprintf "%g of %g" error tolerance)
+       worst)
+
+let observed_nested () =
+  let w = Testable.float 1. in
+  let error = Option.map (fun (e : Tolerance.error) -> e.error) in
+  let (_, inner), outer =
+    Tolerance.observed (fun () ->
+        ignore (Testable.equal w 0. 0.25);
+        Tolerance.observed (fun () -> Testable.equal w 0. 0.75))
+  in
+  equal
+    (pair (option float_exact) (option float_exact))
+    (Some 0.75, Some 0.25)
+    (error inner, error outer)
+
+let observed =
+  group "Observed errors"
+    [
+      cases "a comparison under a tolerance measures its error and its bound"
+        ~id:fst observed_rows (fun (_, (c, row)) ->
+          equal string row (observation c));
+      test "a container's comparisons keep the closest to its bound"
+        observed_in_containers;
+      test "an observation within another keeps its comparisons" observed_nested;
+    ]
+
+let () =
+  exit
+    (run "testable"
+       [ witnesses; instances; floats; containers; multisets; observed ])

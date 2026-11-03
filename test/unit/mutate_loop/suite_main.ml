@@ -13,22 +13,18 @@
    [catalogue] prints the mutant identifiers instead of running: the
    driver needs them to spell --arm, and reading them from the binary is
    the only spelling that cannot go stale when a line moves in
-   subject.ml. [spawned] also prints and runs no test: the result of
-   [domain_spawned ()] before and after a domain. [request] writes the
-   request of a child and runs no test. Thus the identity of the executable
-   and the fingerprint of the catalogue in the request are those of this
-   binary. *)
+   subject.ml. *)
 
 open Windtrap
 module Subject = Mutate_loop_subject.Subject
 
-(* The child-hygiene rule's witness. Every process reaching Stdlib's exit machinery
-   appends its pid here; a mutation child must never appear, because it
-   leaves through [Unix._exit] and its whole body is wrapped so that not
-   even a fatal exception escapes to the toplevel handler, which runs
-   [at_exit] before it prints. This is the general form of "no child
-   overwrote the parent's .coverage dump": the coverage dump IS an at_exit
-   handler, and so is this. *)
+(* The child-hygiene rule's witness. Every process reaching Stdlib's exit
+   machinery appends its pid here. A forked child never appears, because the
+   function is its parent's: it leaves through [Unix._exit], and its whole
+   body is wrapped so that not even a fatal exception escapes to the
+   toplevel handler, which runs [at_exit] before it prints. A child that
+   started the executable again registered the function itself, and runs it
+   once, as it ends. *)
 let () =
   match Sys.getenv_opt "MUTATE_ATEXIT_LOG" with
   | None | Some "" -> ()
@@ -37,54 +33,6 @@ let () =
           let oc = open_out_gen [ Open_append; Open_creat ] 0o644 path in
           output_string oc (string_of_int (Unix.getpid ()) ^ "\n");
           close_out oc)
-
-(* A slow module initialization, of MUTATE_SLOW_INIT seconds. A child that
-   is a new process pays it before its first test, and the dry run does
-   not measure it. *)
-let () =
-  match Sys.getenv_opt "MUTATE_SLOW_INIT" with
-  | None | Some "" -> ()
-  | Some seconds -> Unix.sleepf (float_of_string seconds)
-
-(* A child that is a new process, and only such a child, fails as
-   MUTATE_CHILD_FAULT tells: [exit] ends the process at its module
-   initialization, [hang] sleeps there for a minute, and [rename] gives the
-   suite another name. *)
-let exec_child = Private.Mutate_loop.serving ()
-
-(* With MUTATE_DOMAIN_INIT, each process spawns a domain at module
-   initialization, so any fixture is a suite that spawned a domain, and the
-   loop starts new processes in auto mode. *)
-let () =
-  match Sys.getenv_opt "MUTATE_DOMAIN_INIT" with
-  | None | Some "" -> ()
-  | Some _ -> Domain.join (Domain.spawn ignore)
-
-(* In a new process, a subprocess that module initialization starts writes
-   its descriptors and the request variable to the file of
-   MUTATE_INIT_FDS. *)
-let () =
-  match Sys.getenv_opt "MUTATE_INIT_FDS" with
-  | Some path when exec_child ->
-      ignore
-        (Sys.command
-           (Filename.quote_command "sh"
-              [
-                "-c";
-                "ls -l /proc/$$/fd; echo \
-                 \"variable=${WINDTRAP_MUTATE_CHILD-unset}\"";
-              ]
-              ~stdout:path))
-  | Some _ | None -> ()
-
-let child_fault =
-  if exec_child then Sys.getenv_opt "MUTATE_CHILD_FAULT" else None
-
-let () =
-  match child_fault with
-  | Some "exit" -> exit 3
-  | Some "hang" -> Unix.sleep 60
-  | Some _ | None -> ()
 
 let strong =
   [
@@ -103,15 +51,13 @@ let weak =
     test "widen is not 99" (fun () -> is_true (Subject.widen 1 2 <> 99));
   ]
 
-(* Reaches the [@mutate off] site and the filtered site, and pins nothing
-   about them. Only the dismissal and the filter keep them out of the
-   survivor blocks and out of the denominator. *)
+(* Reaches the [@mutate off] site and pins nothing about it. Only the
+   dismissal keeps it out of the survivor blocks and out of the
+   denominator. *)
 let dismissed =
   [
     test "the dismissed site is run and not pinned" (fun () ->
         is_true (Subject.dismissed 1 2 <> 99));
-    test "the filtered site is run and not pinned" (fun () ->
-        is_true (Subject.filtered 1 <> 99));
   ]
 
 (* A second survivor: [orphan] is weakly reached by one test, where
@@ -129,28 +75,36 @@ let domain =
         equal int 6 (Domain.join (Domain.spawn (fun () -> Subject.sub 10 4))));
   ]
 
-(* Green in the process that measured the reach map and red in every fork
-   of it, the sharpest possible non-determinism, and the one the probe
-   exists to catch: without it the loop would score every mutant against a
-   suite that fails for reasons of its own. *)
-let dry_run_pid = Unix.getpid ()
+(* Whether this process measured the reach map. The dry run's worker is the
+   first of a loop's processes to ask, and claims the file that
+   MUTATE_MEASURED names; without it every process measured. *)
+let measured =
+  lazy
+    (match Sys.getenv_opt "MUTATE_MEASURED" with
+    | None | Some "" -> true
+    | Some path -> (
+        match Unix.openfile path [ O_WRONLY; O_CREAT; O_EXCL ] 0o600 with
+        | fd ->
+            Unix.close fd;
+            true
+        | exception Unix.Unix_error (Unix.EEXIST, _, _) -> false))
 
-(* A fork has another pid than the dry run. A new process has the pid of its
-   own module initialization, and [serving ()] tells it apart. *)
-let in_child () = exec_child || Unix.getpid () <> dry_run_pid
-
+(* Green in the process that measured the reach map and red in every other,
+   the sharpest possible non-determinism, and the one the probe exists to
+   catch: without it the loop would score every mutant against a suite that
+   fails for reasons of its own. *)
 let flaky =
   [
     test "passes where it was measured and fails where it is re-run" (fun () ->
-        is_true (not (in_child ())));
+        is_true (Lazy.force measured));
   ]
 
-(* Runs where it was measured and skips in every fork of it: the same
+(* Runs where it was measured and skips in every other process: the same
    tests execute and none fails, so only the skip count disagrees. *)
 let skippy =
   [
     test "runs where it was measured and skips where it is re-run" (fun () ->
-        if in_child () then skip ());
+        if not (Lazy.force measured) then skip ());
   ]
 
 (* Leaves through [Unix._exit], which the runner's exit guard does not
@@ -216,18 +170,9 @@ let fatal =
      where it is re-run: the dry run leaves the marker, the probe's
      unarmed re-run finds it and hangs. No mutant is armed in a probe,
      so only its own deadline can end it, and what an expiry proves is
-     non-determinism.
-   - [probe_jobs] is [probe_block] beside [stalled], so it reaches two
-     mutants, and 16 jobs on one CPU give two children for that CPU. *)
+     non-determinism. *)
 
-(* Under MUTATE_HANG_STAMP, [hang] first writes the time of the clock to that
-   file. *)
 let hang () =
-  (match Sys.getenv_opt "MUTATE_HANG_STAMP" with
-  | None | Some "" -> ()
-  | Some path ->
-      Out_channel.with_open_bin path (fun oc ->
-          output_string oc (Printf.sprintf "%.6f" (Unix.gettimeofday ()))));
   (match Sys.getenv_opt "MUTATE_GRANDCHILD_PIDFILE" with
   | None | Some "" -> ()
   | Some path ->
@@ -314,280 +259,11 @@ let pinned =
     test "crasher subtracts" (fun () -> equal int 2 (Subject.crasher 3 1));
   ]
 
-(* The fixtures of children that run at once (--mutate-jobs).
-
-   - [rendezvous] passes only where the children of [sub] and [widen] run at
-     the same time: each armed child leaves its mark in MUTATE_RENDEZVOUS
-     and waits for the mark of the other. One at a time, the first child
-     waits until its deadline kills it, and the second finds the mark.
-   - [hung] hangs the children of [sub] and of [widen], so a signal finds
-     two children running. Under MUTATE_GRANDCHILD_PIDFILE each records the
-     subprocess it starts, as [block] does.
-   - [gap] hangs the child of [sub], first in the catalogue, while the child
-     of [widen] survives and writes its pid to MUTATE_ENDED as its test
-     ends: a verdict that waits for the one before it.
-   - [stalled] holds the children of [sub] and of [widen] each at a gate
-     of its own ([wait_at]), so the harness can end them one at a time.
-     The two mutants survive.
-   - [queued] is [stalled] with a third test, which reaches [orphan]. Under
-     two jobs, the child of [orphan] starts only when a gate opens.
-   - [siblings] reaches [sub] and [widen], and pins nothing about them.
-     Under MUTATE_PIPES, each armed child writes the number of its pipes
-     ([fifos]) to the file [sub] or [widen] of that directory. Under two
-     jobs, the loop starts the child of [widen] while it holds the pipe of
-     the child of [sub].
-   - [closing] hangs the child of [sub]. Under MUTATE_CLOSED, the child of
-     [widen] closes its pipes and continues to run ([close_and_hang]). Thus
-     the loop reads the end of its pipe, and waits for it to exit. *)
-
-(* The descriptors from 3 to 255 that are pipes. A descriptor is an [int] on
-   Unix, and a child has no other name for its verdict pipe. *)
-let fifos () =
-  List.filter_map
-    (fun n ->
-      let fd : Unix.file_descr = Obj.magic n in
-      match Unix.fstat fd with
-      | { Unix.st_kind = Unix.S_FIFO; _ } -> Some fd
-      | _ -> None
-      | exception Unix.Unix_error _ -> None)
-    (List.init 253 (fun n -> n + 3))
-
-let meet ~mark ~other =
-  match Sys.getenv_opt "MUTATE_RENDEZVOUS" with
-  | None | Some "" -> ()
-  | Some dir ->
-      close_out (open_out (Filename.concat dir mark));
-      while not (Sys.file_exists (Filename.concat dir other)) do
-        Unix.sleepf 0.005
-      done
-
-let rendezvous =
-  [
-    test "sub meets widen" (fun () ->
-        if Subject.sub 10 4 <> 6 then meet ~mark:"sub" ~other:"widen";
-        is_true (Subject.sub 10 4 < 100));
-    test "widen meets sub" (fun () ->
-        if Subject.widen 3 4 <> 7 then meet ~mark:"widen" ~other:"sub";
-        is_true (Subject.widen 3 4 <> 0));
-  ]
-
-let hangs_on_sub =
-  test "hangs when sub changes" (fun () ->
-      if Subject.sub 10 4 <> 6 then hang ();
-      is_true (Subject.sub 10 4 < 100))
-
-let hung =
-  [
-    hangs_on_sub;
-    test "hangs when widen changes" (fun () ->
-        if Subject.widen 3 4 <> 7 then hang ();
-        is_true (Subject.widen 3 4 <> 0));
-  ]
-
-(* Under MUTATE_GATES, writes the pid of the child to the file [name] of
-   that directory, and waits for the file [name ^ ".open"]. *)
-let wait_at name =
-  match Sys.getenv_opt "MUTATE_GATES" with
-  | None | Some "" -> ()
-  | Some dir ->
-      let path = Filename.concat dir name in
-      Out_channel.with_open_bin (path ^ ".tmp") (fun oc ->
-          output_string oc (string_of_int (Unix.getpid ()) ^ "\n"));
-      Sys.rename (path ^ ".tmp") path;
-      while not (Sys.file_exists (path ^ ".open")) do
-        Unix.sleepf 0.005
-      done
-
-let stalled =
-  [
-    test "sub waits at its gate" (fun () ->
-        if Subject.sub 10 4 <> 6 then wait_at "sub";
-        is_true (Subject.sub 10 4 < 100));
-    test "widen waits at its gate" (fun () ->
-        if Subject.widen 3 4 <> 7 then wait_at "widen";
-        is_true (Subject.widen 3 4 <> 0));
-  ]
-
-let queued =
-  stalled
-  @ [ test "orphan is nonzero" (fun () -> is_true (Subject.orphan 3 4 <> 0)) ]
-
-(* The fixture of --mutate-retry. Only [widen] is reached, and unarmed it
-   adds, so the dry run, the probe and the children of [passing_alone] count
-   nothing in MUTATE_RUNS.
-
-   - Each run of a changed [widen] appends a line to the file of
-     MUTATE_RUNS, and the number of lines is the run.
-   - At the run MUTATE_GATE_AT it waits at the gate [widen], at
-     MUTATE_HANG_AT it hangs, and at MUTATE_KILL_AT it fails.
-   - Each child appends a line to the file of MUTATE_CHILD_RUNS when it runs
-     the first test. At the line MUTATE_SKIP_AT, the two tests do not run
-     [widen]. *)
-
-(* Appends a line to the file of [var], and gives its number of lines. It
-   gives 0 when [var] is not set. *)
-let count var =
-  match Sys.getenv_opt var with
-  | None | Some "" -> 0
-  | Some path ->
-      let fd = Unix.openfile path [ O_WRONLY; O_APPEND; O_CREAT ] 0o644 in
-      Fun.protect
-        ~finally:(fun () -> Unix.close fd)
-        (fun () ->
-          (* The offset after an appended write is atomic with the write, so
-             two processes never get the same count. *)
-          ignore (Unix.write_substring fd "run\n" 0 4);
-          Unix.lseek fd 0 SEEK_CUR / 4)
-
-let at var n = Sys.getenv_opt var = Some (string_of_int n)
-let skipped_widen = ref false
-
-let intermittent =
-  [
-    test "widen survives each run that is not the kill" (fun () ->
-        let child = if in_child () then count "MUTATE_CHILD_RUNS" else 0 in
-        skipped_widen := at "MUTATE_SKIP_AT" child;
-        if (not !skipped_widen) && Subject.widen 3 4 <> 7 then begin
-          let run = count "MUTATE_RUNS" in
-          if at "MUTATE_GATE_AT" run then wait_at "widen";
-          if at "MUTATE_HANG_AT" run then Unix.sleep 600;
-          if at "MUTATE_KILL_AT" run then fail "killed at this run"
-        end);
-    test "widen is reached again" (fun () ->
-        if not !skipped_widen then is_true (Subject.widen 1 2 <> 99));
-  ]
-
-(* [flaky_kill] reaches [widen] with two tests, and neither pins it. The
-   second test counts its runs in children in the file of
-   MUTATE_CHILD_RUNS, with a mutant or not. It fails at each run in the
-   comma-separated list MUTATE_FAIL_AT, waits at the gate [kill<run>] at
-   each run in the list MUTATE_WAIT_AT, and waits at the gate [hold] at the
-   run MUTATE_HOLD_AT. The first test counts its runs in children in the file
-   of MUTATE_FIRST_RUNS, and fails in each child under MUTATE_FIRST_FAILS.
-   Under MUTATE_FIRST_PINS, the first test pins [widen]. Under
-   MUTATE_KILL_SUB, the two tests also reach [sub], so the children of
-   [sub] and [widen] run the same tests. Under MUTATE_WAIT_ARMED, the second
-   test of a child of [sub] or [widen] waits at the gate of that name. Each
-   new process counts its starts in the file of MUTATE_EXEC_RUNS, and at the
-   start MUTATE_REFUSE_AT it has no second test, so it refuses a request for
-   that test. *)
-let among var n =
-  match Sys.getenv_opt var with
-  | None | Some "" -> false
-  | Some runs -> List.mem (string_of_int n) (String.split_on_char ',' runs)
-
-let flaky_kill =
-  let reach () =
-    if Sys.getenv_opt "MUTATE_KILL_SUB" <> None then
-      is_true (Subject.sub 10 4 < 100);
-    is_true (Subject.widen 3 4 <> 0)
-  in
-  [
-    test "reaches widen" (fun () ->
-        if in_child () then ignore (count "MUTATE_FIRST_RUNS");
-        reach ();
-        if Sys.getenv_opt "MUTATE_FIRST_PINS" <> None then
-          equal int 7 (Subject.widen 3 4);
-        if in_child () && Sys.getenv_opt "MUTATE_FIRST_FAILS" <> None then
-          fail "the first test failed");
-    test "fails at the given child runs" (fun () ->
-        let run = if in_child () then count "MUTATE_CHILD_RUNS" else 0 in
-        reach ();
-        if among "MUTATE_WAIT_AT" run then wait_at ("kill" ^ string_of_int run);
-        if at "MUTATE_HOLD_AT" run then wait_at "hold";
-        if Sys.getenv_opt "MUTATE_WAIT_ARMED" <> None then
-          if Subject.sub 10 4 <> 6 then wait_at "sub"
-          else if Subject.widen 3 4 <> 7 then wait_at "widen";
-        if among "MUTATE_FAIL_AT" run then
-          fail (Printf.sprintf "child run %d" run));
-  ]
-
-let count_pipes name =
-  match Sys.getenv_opt "MUTATE_PIPES" with
-  | None | Some "" -> ()
-  | Some dir ->
-      let count = List.length (fifos ()) in
-      Out_channel.with_open_bin (Filename.concat dir name) (fun oc ->
-          output_string oc (string_of_int count ^ "\n"))
-
-let siblings =
-  [
-    test "sub counts its pipes" (fun () ->
-        if Subject.sub 10 4 <> 6 then count_pipes "sub";
-        is_true (Subject.sub 10 4 < 100));
-    test "widen counts its pipes" (fun () ->
-        if Subject.widen 3 4 <> 7 then count_pipes "widen";
-        is_true (Subject.widen 3 4 <> 0));
-  ]
-
-(* The pipes that the process [pid] holds, from /proc/[pid]/fd: each
-   descriptor with the name of its pipe, as ["pipe:[1234]"]. *)
-let held_pipes pid =
-  let dir = Printf.sprintf "/proc/%s/fd" pid in
-  let entries = try Sys.readdir dir with Sys_error _ -> [||] in
-  List.filter_map
-    (fun entry ->
-      match
-        (int_of_string_opt entry, Unix.readlink (Filename.concat dir entry))
-      with
-      | Some fd, name when String.starts_with ~prefix:"pipe:" name ->
-          Some (fd, name)
-      | _ -> None
-      | exception Unix.Unix_error _ -> None)
-    (Array.to_list entries)
-
-(* Closes the pipes of the child from descriptor 3, its verdict pipe
-   included, and waits until the loop holds fewer of them. The loop closes
-   its end of the verdict pipe when it reaps the child, before it waits for
-   the child to exit. The child then writes its pid to MUTATE_CLOSED, and
-   hangs until a signal kills it. *)
-let close_and_hang () =
-  match Sys.getenv_opt "MUTATE_CLOSED" with
-  | None | Some "" -> ()
-  | Some path ->
-      let loop = string_of_int (Unix.getppid ()) in
-      let own = List.filter (fun (fd, _) -> fd > 2) (held_pipes "self") in
-      let shared () =
-        List.length
-          (List.filter
-             (fun (_, name) -> List.exists (fun (_, n) -> n = name) own)
-             (held_pipes loop))
-      in
-      let before = shared () in
-      List.iter (fun (fd, _) -> Unix.close (Obj.magic fd : Unix.file_descr)) own;
-      while shared () >= before do
-        Unix.sleepf 0.005
-      done;
-      Out_channel.with_open_bin path (fun oc ->
-          output_string oc (string_of_int (Unix.getpid ()) ^ "\n"));
-      hang ()
-
-let closing =
-  [
-    hangs_on_sub;
-    test "widen closes its pipes and hangs" (fun () ->
-        if Subject.widen 3 4 <> 7 then close_and_hang ();
-        is_true (Subject.widen 3 4 <> 0));
-  ]
-
-let gap =
-  [
-    hangs_on_sub;
-    test "widen is nonzero, and says when it ends" (fun () ->
-        (if Subject.widen 3 4 <> 7 then
-           match Sys.getenv_opt "MUTATE_ENDED" with
-           | None | Some "" -> ()
-           | Some path ->
-               Out_channel.with_open_bin path (fun oc ->
-                   output_string oc (string_of_int (Unix.getpid ()) ^ "\n")));
-        is_true (Subject.widen 3 4 <> 0));
-  ]
-
-(* [late] reaches one mutant, so its child is the last. Armed, the test
-   leaves a watcher behind that outlives the child. It waits until the
-   loop's scratch directory, the one entry of TMPDIR, is gone, which the
-   loop removes once its last child has ended, and sends SIGINT to the
-   loop. The harness has put a FIFO where the verdict file goes, and the
+(* [late] reaches one mutant, so its job is the last. Armed, the test
+   leaves a watcher behind that outlives the job, in a session of its own.
+   It waits until the job's temporary directory, the one entry of TMPDIR,
+   is gone, which the loop removes once the job has ended, and sends
+   SIGINT to the loop. The harness has put a FIFO where the verdict file goes, and the
    loop reads the file it replaces: its open blocks until the watcher,
    after the signal, holds the FIFO open, or until the signal interrupts
    it. So the signal lands after the last child and before the loop can
@@ -598,24 +274,28 @@ let gap =
 let signal_the_loop_after_its_last_child () =
   let tmp = Filename.get_temp_dir_name () in
   match Array.to_list (Sys.readdir tmp) with
-  | [ scratch ] ->
+  | [ scratch ] -> (
       let loop = Unix.getppid () in
-      ignore
-        (Unix.create_process "sh"
-           [|
-             "sh";
-             "-c";
-             "while [ -e \"$1\" ] && kill -0 \"$2\" 2>/dev/null; do sleep \
-              0.01; done; kill -INT \"$2\"; exec 3<>\"$3\"; while [ -p \"$3\" \
-              ] && kill -0 \"$2\" 2>/dev/null; do sleep 0.01; done";
-             "sh";
-             Filename.concat tmp scratch;
-             string_of_int loop;
-             Windtrap_runtime.Verdicts.output_file
-               ~exe:Windtrap_runtime.Instr.executable ~suite:"calc";
-           |]
-           Unix.stdin Unix.stdout Unix.stderr)
-  | _ -> failwith "TMPDIR holds one entry, the loop's scratch directory"
+      (* A session of its own, which the worker's process group is not, so
+         it outlives the worker's burial. *)
+      match Unix.fork () with
+      | 0 ->
+          ignore (Unix.setsid ());
+          Unix.execvp "sh"
+            [|
+              "sh";
+              "-c";
+              "while [ -e \"$1\" ] && kill -0 \"$2\" 2>/dev/null; do sleep \
+               0.01; done; kill -INT \"$2\"; exec 3<>\"$3\"; while [ -p \"$3\" \
+               ] && kill -0 \"$2\" 2>/dev/null; do sleep 0.01; done";
+              "sh";
+              Filename.concat tmp scratch;
+              string_of_int loop;
+              Windtrap_runtime.Verdicts.output_file
+                ~exe:Windtrap_runtime.Instr.executable;
+            |]
+      | _ -> ())
+  | _ -> failwith "TMPDIR holds one entry, the job's temporary directory"
 
 let late =
   [
@@ -629,296 +309,6 @@ let slow =
     test "sleeps briefly and pins nothing about sub" (fun () ->
         Unix.sleepf 0.05;
         is_true (Subject.sub 10 4 < 100));
-  ]
-
-(* [beside_slow] has a slow test that reaches no site, and a fast test that
-   blocks when [sub]'s answer changes. The slow test sleeps only in the
-   process that measured the reach map. Thus the dry run takes 3 seconds,
-   and the probe is fast. The child of the mutant of [sub] runs only the
-   fast test. Under MUTATE_HANG_STAMP, the fast test writes the time of the
-   clock to that file before it blocks. *)
-let beside_slow =
-  [
-    test "sleeps in the dry run and reaches no site" (fun () ->
-        if not (in_child ()) then Unix.sleepf 3.0);
-    test "blocks when sub changes" (fun () ->
-        if Subject.sub 10 4 <> 6 then hang ();
-        equal int 6 (Subject.sub 10 4));
-  ]
-
-(* [slow_release] has a fixture whose release takes 2 seconds, and a test
-   that holds it and reaches no site. A second test watches [sub] without
-   pinning it. The probe runs the two tests and releases the fixture again.
-   The child of the mutant of [sub] runs only the second test, and acquires
-   no fixture. *)
-let held_slowly = fixture ~teardown:(fun () -> Unix.sleepf 2.0) Fun.id
-
-let slow_release =
-  [
-    test "holds a fixture whose release takes 2 seconds" (fun () ->
-        held_slowly ());
-    test "watches sub without pinning it" (fun () ->
-        is_true (Subject.sub 10 4 < 100));
-  ]
-
-(* [slow_acquire] has a fixture whose acquisition and release each take 1
-   second. The first test acquires it and reaches no site. The second test
-   uses it and watches [sub] without pinning it. The dry run counts the
-   acquisition in the first test. The child of the mutant of [sub] runs only
-   the second test, so it acquires and releases the fixture outside the
-   time that the dry run measured for that test. *)
-let opened_slowly =
-  fixture ~teardown:(fun () -> Unix.sleepf 1.0) (fun () -> Unix.sleepf 1.0)
-
-let slow_acquire =
-  [
-    test "opens a slow fixture" (fun () -> opened_slowly ());
-    test "uses the fixture and watches sub" (fun () ->
-        opened_slowly ();
-        is_true (Subject.sub 10 4 < 100));
-  ]
-
-(* [warm_up] has a table that takes 2.5 seconds to fill, and two tests that
-   use it. The first test fills it and reaches no site. The second test finds
-   it full in the dry run, and watches [sub] without pinning it. In exec mode,
-   a child that runs only the second test fills the table again, in a test
-   that the dry run measured as fast. Under MUTATE_WARM_MARKER, the first test
-   adds a line to that file in each child that runs it. *)
-let table = lazy (Unix.sleepf 2.5)
-
-let warm_up =
-  [
-    test "fills the table and reaches no site" (fun () ->
-        (match Sys.getenv_opt "MUTATE_WARM_MARKER" with
-        | Some path when in_child () ->
-            Out_channel.with_open_gen [ Open_append; Open_creat; Open_wronly ]
-              0o644 path (fun oc -> output_string oc "ran\n")
-        | Some _ | None -> ());
-        Lazy.force table);
-    test "uses the table and watches sub" (fun () ->
-        Lazy.force table;
-        is_true (Subject.sub 10 4 < 100));
-  ]
-
-(* [starved] reaches [sub] and pins nothing about it. Outside the process
-   that measured the reach map, in the probe and in the child, its test
-   first uses 0.4 seconds of CPU time. The dry run does not, so the
-   deadlines do not grow with it. Under [hog], the process gets a session
-   of its own and uses the CPU until a signal kills it. Under
-   MUTATE_HOG_GATE, it first waits until that file exists. *)
-let use_cpu seconds =
-  let start = Sys.time () in
-  while Sys.time () -. start < seconds do
-    ignore (Sys.opaque_identity ())
-  done
-
-let starved =
-  [
-    test "uses the CPU where it is re-run and pins nothing about sub" (fun () ->
-        if in_child () then use_cpu 0.4;
-        is_true (Subject.sub 10 4 < 100));
-  ]
-
-(* [spawning] is [starved], but a subprocess uses the CPU ([burn]), and the
-   test waits for it. Thus the main thread of the probe and of the child
-   sleeps, and only the subprocess waits for the CPU. The subprocess uses
-   [seconds] of CPU time, which it gets as its argument. *)
-let burn ?(seconds = 0.4) () =
-  let fixture = "MUTATE_FIXTURE=" in
-  let env =
-    Unix.environment () |> Array.to_list
-    |> List.filter (fun v -> not (String.starts_with ~prefix:fixture v))
-  in
-  let pid =
-    Unix.create_process_env Sys.executable_name
-      [| Sys.executable_name; string_of_float seconds |]
-      (Array.of_list ((fixture ^ "burn") :: env))
-      Unix.stdin Unix.stdout Unix.stderr
-  in
-  match Unix.waitpid [] pid with
-  | _, Unix.WEXITED 0 -> ()
-  | _ -> fail "the subprocess that uses the CPU did not exit 0"
-
-let spawning =
-  [
-    test "waits for a process that uses the CPU and pins nothing about sub"
-      (fun () ->
-        if in_child () then burn ();
-        is_true (Subject.sub 10 4 < 100));
-  ]
-
-(* [burn_then_sleep] is [spawning] with a deadline of about 2.5 seconds: 0.5
-   seconds plus ten times the 0.2 seconds that the dry run sleeps. The probe
-   does not sleep and starts no subprocess. The armed child waits for a
-   subprocess that uses 0.7 seconds of CPU time, then sleeps 0.9 seconds. *)
-let burn_then_sleep =
-  [
-    test
-      "waits for a process that uses the CPU, then sleeps, and pins nothing \
-       about sub" (fun () ->
-        if not (in_child ()) then Unix.sleepf 0.2
-        else if Subject.sub 10 4 <> 6 then begin
-          burn ~seconds:0.7 ();
-          Unix.sleepf 0.9
-        end;
-        is_true (Subject.sub 10 4 < 100));
-  ]
-
-(* [late_burn] is [starved], but then the test waits for a subprocess that
-   uses the CPU ([burn]). The armed child first uses 0.6 seconds of CPU time.
-   Thus its subprocess starts after about 3 seconds, past the deadline of
-   about 1.5 seconds, after the first read of the group of the child, and
-   gets a new pid. The probe first uses 0.4 seconds, as in [starved], because
-   its deadline is about 1 second. *)
-let late_burn =
-  [
-    test
-      "uses the CPU, then waits for a process that uses the CPU, and pins \
-       nothing about sub" (fun () ->
-        if in_child () then begin
-          use_cpu (if Subject.sub 10 4 <> 6 then 0.6 else 0.4);
-          burn ()
-        end;
-        is_true (Subject.sub 10 4 < 100));
-  ]
-
-(* [spinners] is [hung], but the test of a changed answer uses the CPU until
-   its deadline. It evaluates no site in this time, so the hit budget does
-   not stop it. *)
-let spinners =
-  [
-    test "spins when sub changes" (fun () ->
-        if Subject.sub 10 4 <> 6 then use_cpu Float.infinity;
-        is_true (Subject.sub 10 4 < 100));
-    test "spins when widen changes" (fun () ->
-        if Subject.widen 3 4 <> 7 then use_cpu Float.infinity;
-        is_true (Subject.widen 3 4 <> 0));
-  ]
-
-(* [use_cpus seconds] uses about [seconds] of CPU time in all, on two
-   domains at once: the domain of the test and a domain that it spawns.
-   [use_cpu] reads the CPU time of the process, so each domain uses about
-   half of it. *)
-let use_cpus seconds =
-  let other = Domain.spawn (fun () -> use_cpu seconds) in
-  use_cpu seconds;
-  Domain.join other
-
-(* [wide_rendezvous] is [rendezvous], but each mutant has two reaching
-   tests. The first uses 0.3 seconds of CPU time on one domain. The second
-   uses 0.2 seconds of CPU time on two domains, then meets the other child.
-   Thus each child uses two CPUs at the end, but on average it uses about
-   1.25 CPUs. Two jobs let only one child run at a time. *)
-let wide_rendezvous =
-  [
-    test "sub on one domain" (fun () ->
-        use_cpu 0.3;
-        is_true (Subject.sub 10 4 < 100));
-    test "widen on one domain" (fun () ->
-        use_cpu 0.3;
-        is_true (Subject.widen 3 4 <> 0));
-    test "sub meets widen on two domains" (fun () ->
-        use_cpus 0.2;
-        if Subject.sub 10 4 <> 6 then meet ~mark:"sub" ~other:"widen";
-        is_true (Subject.sub 10 4 < 100));
-    test "widen meets sub on two domains" (fun () ->
-        use_cpus 0.2;
-        if Subject.widen 3 4 <> 7 then meet ~mark:"widen" ~other:"sub";
-        is_true (Subject.widen 3 4 <> 0));
-  ]
-
-(* [spin_for seconds] uses the CPU for [seconds] on the clock. *)
-let spin_for seconds =
-  let start = Unix.gettimeofday () in
-  while Unix.gettimeofday () -. start < seconds do
-    ignore (Sys.opaque_identity ())
-  done
-
-(* [a_little_more ()] uses the CPU for 0.3 seconds on the clock, and a
-   second domain uses the CPU for 0.06 seconds of that time. *)
-let a_little_more () =
-  let other = Domain.spawn (fun () -> spin_for 0.06) in
-  spin_for 0.3;
-  Domain.join other
-
-(* [narrow_rendezvous] is [rendezvous], but each test first calls
-   [a_little_more]. Thus the test uses about 1.2 CPUs, and each child counts
-   as one job. Two jobs let the two children run at once. *)
-let narrow_rendezvous =
-  [
-    test "sub meets widen on about one CPU" (fun () ->
-        a_little_more ();
-        if Subject.sub 10 4 <> 6 then meet ~mark:"sub" ~other:"widen";
-        is_true (Subject.sub 10 4 < 100));
-    test "widen meets sub on about one CPU" (fun () ->
-        a_little_more ();
-        if Subject.widen 3 4 <> 7 then meet ~mark:"widen" ~other:"sub";
-        is_true (Subject.widen 3 4 <> 0));
-  ]
-
-(* [starved_domains] is [starved] on two domains. In the dry run, each of
-   two domains of its test uses the CPU for 0.3 seconds on the clock. Thus
-   other load does not make its deadline longer. Then the test makes the
-   file MUTATE_HOG_GATE, which lets the hogs use the CPU. In the armed
-   child, the test uses 5 seconds of CPU time on two domains. *)
-let starved_domains =
-  [
-    test
-      "uses the CPU on two domains where it is armed and pins nothing about sub"
-      (fun () ->
-        if not (in_child ()) then begin
-          (let other = Domain.spawn (fun () -> spin_for 0.3) in
-           spin_for 0.3;
-           Domain.join other);
-          Option.iter
-            (fun gate -> close_out (open_out gate))
-            (Sys.getenv_opt "MUTATE_HOG_GATE")
-        end
-        else if Subject.sub 10 4 <> 6 then use_cpus 5.0;
-        is_true (Subject.sub 10 4 < 100));
-  ]
-
-(* [stateful_rendezvous] is [rendezvous] with stateful tests on two
-   domains. With [--mutate-workers], each test spawns its workers, so each
-   child uses about two CPUs. Two jobs on two CPUs let only one child run at
-   a time, and four jobs let the two children run at once. *)
-let stateful_rendezvous =
-  [
-    stateful ~count:3 ~domains:2 "sub meets widen on the workers"
-      [
-        command "sub"
-          (Gen.unit @-> returns bool)
-          (fun () -> true)
-          (fun () ->
-            if Subject.sub 10 4 <> 6 then meet ~mark:"sub" ~other:"widen";
-            Subject.sub 10 4 < 100);
-      ];
-    stateful ~count:3 ~domains:2 "widen meets sub on the workers"
-      [
-        command "widen"
-          (Gen.unit @-> returns bool)
-          (fun () -> true)
-          (fun () ->
-            if Subject.widen 3 4 <> 7 then meet ~mark:"widen" ~other:"sub";
-            Subject.widen 3 4 <> 0);
-      ];
-  ]
-
-(* [stateful_survivors] is a stateful test on two domains that reaches
-   [sub], [widen], [orphan] and [crasher], and pins nothing about them. Its
-   20 programs keep the workers busy. *)
-let stateful_survivors =
-  [
-    stateful ~count:20 ~domains:2 "four sites on two domains"
-      [
-        command "all"
-          (Gen.unit @-> returns bool)
-          (fun () -> true)
-          (fun () ->
-            Subject.sub 10 4 + Subject.widen 3 4 + Subject.orphan 3 4
-            + Subject.crasher 3 1
-            < 1000);
-      ];
   ]
 
 (* The probe says it started, beside the dry run's marker, before it
@@ -940,36 +330,6 @@ let probe_block =
             else close_out (open_out path));
   ]
 
-(* [flood] reaches [sub] and pins nothing about it. Armed, the child and 7
-   processes that it forks write to each pipe that the child holds open for
-   writing ([fifos]), its verdict pipe included, and never stop: only the
-   deadline can end the child. They do not wait for room in the pipe, so
-   the pipe stays full where they run on more CPUs than the parent does. *)
-let flood_pipes () =
-  let chunk = Bytes.make 65536 'x' in
-  let pipes = fifos () in
-  List.iter
-    (fun fd -> try Unix.set_nonblock fd with Unix.Unix_error _ -> ())
-    pipes;
-  let written fd =
-    match Unix.write fd chunk 0 (Bytes.length chunk) with
-    | _ -> true
-    | exception Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) -> true
-    | exception Unix.Unix_error _ -> false
-  in
-  let rec write pipes = write (List.filter written pipes) in
-  for _ = 1 to 7 do
-    if Unix.fork () = 0 then write pipes
-  done;
-  write pipes
-
-let flood =
-  [
-    test "floods its pipes when sub changes" (fun () ->
-        if Subject.sub 10 4 <> 6 then flood_pipes ();
-        is_true (Subject.sub 10 4 < 100));
-  ]
-
 (* What the dry run and the children do with what the suite is given.
 
    - [baseline] checks [sub]'s answer against a file under
@@ -989,13 +349,13 @@ let flood =
 let baseline =
   [
     test "sub's answer, against its file" (fun () ->
-        expect_file (string_of_int (Subject.sub 10 4)) "sub.expected");
+        expect_file ~file:"sub.expected" (string_of_int (Subject.sub 10 4)));
   ]
 
 let released =
   fixture
     ~teardown:(fun () ->
-      if in_child () then begin
+      if not (Lazy.force measured) then begin
         print_string "a child's release on stdout\n";
         prerr_string "a child's release on stderr\n";
         flush stdout;
@@ -1037,7 +397,8 @@ let flip =
 
 let focused =
   [
-    focus (test "widen is nonzero" (fun () -> is_true (Subject.widen 3 4 <> 0)));
+    focus
+    @@ test "widen is nonzero" (fun () -> is_true (Subject.widen 3 4 <> 0));
     test "widen is not 99" (fun () -> is_true (Subject.widen 1 2 <> 99));
   ]
 
@@ -1050,10 +411,10 @@ let known =
     test "watches sub without pinning it" (fun () ->
         is_true (Subject.sub 10 4 < 100));
     xfail ~reason:"sub subtracts"
-      (test "sub adds" (fun () -> equal int 7 (Subject.sub 3 4)));
+    @@ test "sub adds" (fun () -> equal int 7 (Subject.sub 3 4));
     test "widen is nonzero" (fun () -> is_true (Subject.widen 3 4 <> 0));
-    xfail (test "widen is 99" (fun () -> equal int 99 (Subject.widen 1 2)));
-    xfail (test "orphan is 99" (fun () -> equal int 99 (Subject.orphan 1 2)));
+    xfail @@ test "widen is 99" (fun () -> equal int 99 (Subject.widen 1 2));
+    xfail @@ test "orphan is 99" (fun () -> equal int 99 (Subject.orphan 1 2));
   ]
 
 (* [widen]'s answer, memoized. The dry run fills the table, and a child
@@ -1073,135 +434,25 @@ let memoized_widen a b =
 let memoized =
   [ test "memoized widen adds" (fun () -> equal int 7 (memoized_widen 3 4)) ]
 
-(* [true] in each child after the first. The first child, the probe, makes
-   the file MUTATE_MARKER. *)
-let after_probe () =
-  match Sys.getenv_opt "MUTATE_MARKER" with
-  | Some path when in_child () ->
-      Sys.file_exists path
-      ||
-      (close_out (open_out path);
-       false)
-  | Some _ | None -> false
-
-(* [memoized], but each child after the first fails the test for a reason of
-   its own. A child of [widen]'s mutant finds the answer in the table, does
-   not evaluate the armed site, and fails. *)
-let memoized_flaky =
+(* [seeded]'s one case kills [sub]'s mutant unless it draws 0, so the
+   mutant's verdict is the root seed's: a run that drew a fresh root each
+   time would flip it. *)
+let seeded =
   [
-    test "memoized widen adds, and fails in each child after the probe"
-      (fun () ->
-        equal int 7 (memoized_widen 3 4);
-        if after_probe () then fail "a failure of its own");
+    prop ~count:1 "sub takes what it draws away from 10" (Gen.int_range 0 3)
+      (fun b -> equal int (10 - b) (Subject.sub 10 b));
   ]
 
-(* [memoized], with a fixture whose release fails in each child after the
-   probe. *)
-let flaky_release =
-  let failing = ref false in
-  let held =
-    fixture
-      ~teardown:(fun () -> if !failing then failwith "a release of its own")
-      Fun.id
-  in
+(* [primed]'s second test evaluates [widen] only after the first, which
+   reaches no mutant, has run: the job of [widen]'s mutant runs the second
+   alone, which then never evaluates the site. *)
+let primed = ref false
+
+let priming =
   [
-    test "memoized widen adds, and its fixture release fails after the probe"
-      (fun () ->
-        held ();
-        failing := after_probe ();
-        equal int 7 (memoized_widen 3 4));
-  ]
-
-(* The first test fails in each child after the probe, before it evaluates
-   [widen]. The second test evaluates [widen] and kills its mutant. *)
-let fails_first =
-  [
-    test "fails after the probe before it adds" (fun () ->
-        if after_probe () then fail "a failure of its own";
-        is_true (Subject.widen 3 4 <> 0));
-    test "widen adds" (fun () -> equal int 7 (Subject.widen 3 4));
-  ]
-
-(* [widen] in a process that the test forks, which gives the answer on a
-   pipe. *)
-let widen_in_fork a b =
-  let r, w = Unix.pipe () in
-  match Unix.fork () with
-  | 0 ->
-      Unix.close r;
-      let answer = string_of_int (Subject.widen a b) in
-      ignore (Unix.write_substring w answer 0 (String.length answer));
-      Unix._exit 0
-  | pid ->
-      Unix.close w;
-      let answer = In_channel.input_all (Unix.in_channel_of_descr r) in
-      Unix.close r;
-      ignore (Unix.waitpid [] pid);
-      int_of_string answer
-
-(* Evaluates [widen] in a forked process only, and pins nothing. *)
-let fork_only =
-  [ test "widen in a fork" (fun () -> is_true (widen_in_fork 3 4 <> 0)) ]
-
-(* A stateful test on two domains that pins [sub]. Under mutation testing it
-   spawns its workers only with [--mutate-workers]. *)
-let stateful_domains =
-  [
-    stateful ~count:3 ~domains:2 "sub on two domains"
-      [
-        command "sub"
-          (Gen.unit @-> returns int)
-          (fun () -> 6)
-          (fun () -> Subject.sub 10 4);
-      ];
-  ]
-
-(* [stateful_domains], but only a call on a worker evaluates [sub]: a call on
-   the main domain answers without it. Without workers, no test reaches
-   [sub]. *)
-let on_workers =
-  [
-    stateful ~count:3 ~domains:2 "sub on the workers only"
-      [
-        command "sub"
-          (Gen.unit @-> returns int)
-          (fun () -> 6)
-          (fun () ->
-            if (Domain.self () :> int) = 0 then 6 else Subject.sub 10 4);
-      ];
-  ]
-
-(* Only a test marked xfail evaluates [widen], in a forked process. *)
-let fork_xfail =
-  [
-    xfail
-      (test "widen is 99 in a fork" (fun () -> equal int 99 (widen_in_fork 1 2)));
-  ]
-
-(* A test marked xfail evaluates [widen] in the process, and an ordinary test
-   evaluates it only in a forked process. *)
-let xfail_then_fork =
-  [
-    xfail (test "widen is 99" (fun () -> equal int 99 (Subject.widen 1 2)));
-    test "widen in a fork" (fun () -> is_true (widen_in_fork 3 4 <> 0));
-  ]
-
-(* In each child after the probe, a fatal exception leaves the run before the
-   test evaluates [widen]. *)
-let fatal_first =
-  [
-    test "raises a fatal exception after the probe before it adds" (fun () ->
-        if after_probe () then raise Out_of_memory;
-        is_true (Subject.widen 3 4 <> 0));
-  ]
-
-(* The first check evaluates [widen] in a forked process only. It fails
-   under the mutant before the test evaluates [widen] in its own process. *)
-let forked =
-  [
-    test "widen in a fork, then in the process" (fun () ->
-        equal int 7 (widen_in_fork 3 4);
-        equal int 7 (Subject.widen 3 4));
+    test "primes" (fun () -> primed := true);
+    test "widens once primed" (fun () ->
+        if !primed then is_true (Subject.widen 3 4 <> 0));
   ]
 
 let retried = ref 0
@@ -1221,347 +472,23 @@ let boundary =
     test "fifth reaches sub" (fun () -> equal int (-6) (Subject.sub (-10) (-4)));
   ]
 
-(* [ordered] reaches [sub] with three tests, and only the second pins it.
-   When [sub]'s answer changes, each test appends its word to MUTATE_RAN,
-   so the harness reads which tests a child ran, in their order. *)
-let ran word =
-  match Sys.getenv_opt "MUTATE_RAN" with
-  | None | Some "" -> ()
-  | Some path ->
-      let oc = open_out_gen [ Open_append; Open_creat ] 0o644 path in
-      output_string oc (word ^ "\n");
-      close_out oc
-
-let ordered =
-  [
-    test "watches sub without pinning it" (fun () ->
-        if Subject.sub 10 4 <> 6 then ran "watches";
-        is_true (Subject.sub 10 4 < 100));
-    test "pins sub" (fun () ->
-        if Subject.sub 10 4 <> 6 then ran "pins";
-        equal int 6 (Subject.sub 10 4));
-    test "watches sub again without pinning it" (fun () ->
-        if Subject.sub 10 4 <> 6 then ran "again";
-        is_true (Subject.sub 10 4 < 100));
-  ]
-
-(* The second and the third tests of [order] need the state that the first
-   test sets, and each reaches one mutant. A new process that runs one of
-   them alone fails with no mutant. With [domain], the first test also
-   spawns a domain, so the loop starts new processes in auto mode. *)
-let state = ref false
-
-let order ~domain =
-  [
-    test "sets the state" (fun () ->
-        if domain then Domain.join (Domain.spawn ignore);
-        state := true);
-    test "needs the state and pins sub" (fun () ->
-        is_true !state;
-        equal int 6 (Subject.sub 10 4));
-    test "needs the state and watches widen" (fun () ->
-        is_true !state;
-        is_true (Subject.widen 3 4 <> 0));
-  ]
-
-(* [slow_order]'s second test needs the state that the first test sets, and
-   watches [sub] without pinning it. The first test sleeps 3 seconds in each
-   run and reaches no site. In exec mode, the second test fails alone, so
-   the child of the mutant of [sub] runs the two tests. Its deadline must
-   have the time of the first test. *)
-let slow_order =
-  [
-    test "sets the state slowly" (fun () ->
-        Unix.sleepf 3.0;
-        state := true);
-    test "needs the state and watches sub" (fun () ->
-        is_true !state;
-        is_true (Subject.sub 10 4 < 100));
-  ]
-
-(* [order_kill]'s third test does not reach [sub]: it reads what the second
-   test stored. In exec mode, the reaching tests fail alone, so the child of
-   the mutant of [sub] runs the tests of the dry run up to the last reaching
-   test, and the third test kills the mutant. A fork runs the reaching tests
-   only, and the mutant survives. *)
-let stored = ref 0
-
-let order_kill =
-  [
-    test "sets the state" (fun () -> state := true);
-    test "needs the state and stores sub" (fun () ->
-        is_true !state;
-        stored := Subject.sub 10 4;
-        is_true (!stored < 100));
-    test "reads what sub stored" (fun () -> equal int 6 !stored);
-    test "needs the state and watches sub" (fun () ->
-        is_true !state;
-        is_true (Subject.sub 10 4 < 100));
-  ]
-
-(* [order_xfail]'s third test is marked xfail and passes only with the
-   mutant of [sub]. In exec mode, the child of that mutant runs it and does
-   not stop at its unexpected pass. Thus the fourth test runs and kills the
-   mutant. *)
-let order_xfail =
-  [
-    test "sets the state" (fun () -> state := true);
-    test "needs the state and watches sub" (fun () ->
-        is_true !state;
-        is_true (Subject.sub 10 4 < 100));
-    xfail ~reason:"sub subtracts"
-      (test "expects sub to add" (fun () -> equal int 14 (Subject.sub 10 4)));
-    test "needs the state and pins sub" (fun () ->
-        is_true !state;
-        equal int 6 (Subject.sub 10 4));
-  ]
-
-(* [primed]'s second test runs [widen] only after the first test, and only
-   once: the dry run leaves the flag down, so a child that runs the second
-   test alone does not evaluate [widen]. Only the second test pins it. *)
-let primed = ref false
-
-let priming =
-  [
-    test "primes widen" (fun () ->
-        primed := true;
-        if Subject.widen 3 4 <> 7 then ran "primes";
-        is_true (Subject.widen 3 4 <> 0));
-    test "pins widen once primed" (fun () ->
-        if !primed then begin
-          primed := false;
-          if Subject.widen 3 4 <> 7 then ran "pins";
-          equal int 7 (Subject.widen 3 4)
-        end);
-  ]
-
-(* [retried] holds the child of [sub] at its gate, the child of [widen] at
-   its gate when it runs the last test of [widen] alone, and the child of
-   [orphan] at its gate. Each mutant survives. *)
-let retried =
-  [
-    test "sub waits at its gate" (fun () ->
-        if Subject.sub 10 4 <> 6 then wait_at "sub";
-        is_true (Subject.sub 10 4 < 100));
-    test "widen is nonzero" (fun () -> is_true (Subject.widen 3 4 <> 0));
-    test "widen waits at its gate" (fun () ->
-        if Subject.widen 3 4 <> 7 then wait_at "widen";
-        is_true (Subject.widen 3 4 <> 0));
-    test "orphan waits at its gate" (fun () ->
-        if Subject.orphan 3 4 <> 7 then wait_at "orphan";
-        is_true (Subject.orphan 3 4 <> 0));
-  ]
-
-(* [flagged]'s second test needs a flag that only the first test raises, and
-   lowers it when it ends. The dry run leaves the flag down, so the second
-   test fails alone with no mutant. It pins [sub] only without
-   MUTATE_WEAK. *)
-let flag = ref false
-
-let flagged =
-  [
-    test "raises the flag" (fun () ->
-        flag := true;
-        if Subject.sub 10 4 <> 6 then ran "raises";
-        is_true (Subject.sub 10 4 < 100));
-    test "needs the flag" (fun () ->
-        Fun.protect
-          ~finally:(fun () -> flag := false)
-          (fun () ->
-            if Subject.sub 10 4 <> 6 then ran "needs";
-            is_true !flag;
-            match Sys.getenv_opt "MUTATE_WEAK" with
-            | None | Some "" -> equal int 6 (Subject.sub 10 4)
-            | Some _ -> is_true (Subject.sub 10 4 < 100)));
-  ]
-
-(* The tests of a child that is a new process. Each test writes what it
-   finds to the file of MUTATE_SEEN. *)
-let seen () = Sys.getenv "MUTATE_SEEN"
-
-let child =
-  [
-    test "reads the request variable" (fun () ->
-        Out_channel.with_open_bin (seen ()) (fun oc ->
-            output_string oc
-              (Option.value ~default:"unset"
-                 (Sys.getenv_opt "WINDTRAP_MUTATE_CHILD"))));
-    test "is the leader of its session" (fun () ->
-        (* Field 6 of /proc/self/stat, after the name in parentheses. *)
-        let stat =
-          In_channel.with_open_bin "/proc/self/stat" In_channel.input_all
-        in
-        let after = String.rindex stat ')' + 2 in
-        let fields =
-          String.split_on_char ' '
-            (String.sub stat after (String.length stat - after))
-        in
-        equal string (string_of_int (Unix.getpid ())) (List.nth fields 3));
-    test "lists the descriptors of a subprocess" (fun () ->
-        equal int 0
-          (Sys.command
-             (Filename.quote_command "sh"
-                [ "-c"; "ls -l /proc/$$/fd" ]
-                ~stdout:(seen ()))));
-  ]
-
-(* Writes the request of a child to the file of MUTATE_REQUEST, as the loop
-   will do in exec mode. MUTATE_REQUEST_KIND is probe, alone, check or the
-   identifier of a mutant. MUTATE_REQUEST_PATHS has one test on each line,
-   with "/" between the names of its path. *)
-let write_request () =
-  let env name = Option.value ~default:"" (Sys.getenv_opt name) in
-  let paths =
-    List.filter_map
-      (function "" -> None | line -> Some (String.split_on_char '/' line))
-      (String.split_on_char '\n' (env "MUTATE_REQUEST_PATHS"))
-  in
-  let kind : Private.Mutate_loop.kind =
-    match env "MUTATE_REQUEST_KIND" with
-    | "probe" -> Probe
-    | "alone" -> Alone
-    | "check" -> Check_kill
-    | id -> (
-        match Windtrap_runtime.Mutate.id_of_string id with
-        | Ok id -> Mutant { id; budget = 1_000_000 }
-        | Error _ -> failwith ("not a mutant identifier: " ^ id))
-  in
-  let config =
-    Private.Run.for_subset
-      {
-        (Private.Run.default_config ()) with
-        mutation =
-          Private.Run.Loop
-            {
-              scope = [];
-              jobs = 1;
-              since = None;
-              children = Private.Run.Auto;
-              skip_killed = false;
-              retry = None;
-            };
-      }
-      ~log_dir:(env "MUTATE_REQUEST" ^ ".log")
-      ~bail:(kind <> Probe)
-  in
-  Private.Mutate_loop.write_request (env "MUTATE_REQUEST")
-    { suite = env "MUTATE_REQUEST_SUITE"; config; paths; kind }
-
 let () =
   match Option.value ~default:"green" (Sys.getenv_opt "MUTATE_FIXTURE") with
-  | "request" -> write_request ()
-  | "tree" ->
-      (* A test name that changes in each process. *)
-      exit
-      @@ run "calc"
-           [
-             group "tree"
-               [
-                 test
-                   (Printf.sprintf "sub, in process %d" (Unix.getpid ()))
-                   (fun () -> equal int 6 (Subject.sub 10 4));
-               ];
-           ]
-  | "order" -> exit @@ run "calc" [ group "order" (order ~domain:false) ]
-  | "order_kill" -> exit @@ run "calc" [ group "order" order_kill ]
-  | "order_xfail" -> exit @@ run "calc" [ group "order" order_xfail ]
-  | "order_domain" -> exit @@ run "calc" [ group "order" (order ~domain:true) ]
-  | "two_suites" ->
-      (* A first suite that reaches no mutant, then the default suite. *)
-      ignore (run "first" [ group "first" [ test "nothing" ignore ] ]);
-      exit
-      @@ run "calc"
-           [
-             group "calc" strong;
-             group "widen" weak;
-             group "dismissed" dismissed;
-           ]
-  | "two_reach" ->
-      (* Two suites that reach [sub]: the first kills it, and the second does
-         not under MUTATE_WEAK. *)
-      ignore (run "first" [ group "calc" strong ]);
-      exit @@ run "calc" [ group "flagged" flagged ]
-  | "two_flagged" ->
-      (* Two suites with [flagged]: each kills [sub], and neither does under
-         MUTATE_WEAK. *)
-      ignore (run "first" [ group "flagged" flagged ]);
-      exit @@ run "calc" [ group "flagged" flagged ]
-  | "child" -> exit @@ run "calc" [ group "child" child ]
   | "catalogue" ->
       List.iter
         (fun (m : Windtrap_runtime.Mutate.mutant) ->
           print_endline
             (Windtrap_runtime.Mutate.id_to_string m.Windtrap_runtime.Mutate.id))
         (Windtrap_runtime.Mutate.catalogue ())
-  | "spawned" ->
-      (* Prints [domain_spawned ()] before a domain spawns and after the
-         domain ends. *)
-      let spawned () =
-        print_endline (string_of_bool (Private.Mutate_loop.domain_spawned ()))
-      in
-      spawned ();
-      Domain.join (Domain.spawn ignore);
-      spawned ()
   | "weak" -> exit @@ run "calc" [ group "widen" weak ]
-  | "intermittent" -> exit @@ run "calc" [ group "intermittent" intermittent ]
-  | "flaky_kill" ->
-      let tests =
-        if exec_child && at "MUTATE_REFUSE_AT" (count "MUTATE_EXEC_RUNS") then
-          [ List.hd flaky_kill ]
-        else flaky_kill
-      in
-      exit @@ run "calc" [ group "kill" tests ]
-  | "ordered" -> exit @@ run "calc" [ group "ordered" ordered ]
-  | "primed" -> exit @@ run "calc" [ group "primed" priming ]
-  | "flagged" -> exit @@ run "calc" [ group "flagged" flagged ]
-  | "retried" -> exit @@ run "calc" [ group "retried" retried ]
   | "block" -> exit @@ run "calc" [ group "block" block ]
   | "held" -> exit @@ run "calc" [ group "held" held ]
   | "interrupted" -> exit @@ run "calc" [ group "held" interrupted ]
-  | "rendezvous" -> exit @@ run "calc" [ group "jobs" rendezvous ]
-  | "hung" -> exit @@ run "calc" [ group "jobs" hung ]
-  | "gap" -> exit @@ run "calc" [ group "jobs" gap ]
-  | "siblings" -> exit @@ run "calc" [ group "jobs" siblings ]
-  | "closing" -> exit @@ run "calc" [ group "jobs" closing ]
-  | "stalled" -> exit @@ run "calc" [ group "jobs" stalled ]
-  | "queued" -> exit @@ run "calc" [ group "jobs" queued ]
   | "pinned" ->
       exit @@ run "calc" [ group "calc" strong; group "pinned" pinned ]
   | "slow" -> exit @@ run "calc" [ group "slow" slow ]
-  | "beside_slow" -> exit @@ run "calc" [ group "beside_slow" beside_slow ]
-  | "slow_release" -> exit @@ run "calc" [ group "slow_release" slow_release ]
-  | "slow_acquire" -> exit @@ run "calc" [ group "slow_acquire" slow_acquire ]
-  | "slow_order" -> exit @@ run "calc" [ group "order" slow_order ]
-  | "warm_up" -> exit @@ run "calc" [ group "warm_up" warm_up ]
-  | "starved" -> exit @@ run "calc" [ group "starved" starved ]
-  | "spawning" -> exit @@ run "calc" [ group "starved" spawning ]
-  | "burn_then_sleep" -> exit @@ run "calc" [ group "starved" burn_then_sleep ]
-  | "late_burn" -> exit @@ run "calc" [ group "starved" late_burn ]
-  | "spinners" -> exit @@ run "calc" [ group "jobs" spinners ]
-  | "wide_rendezvous" -> exit @@ run "calc" [ group "jobs" wide_rendezvous ]
-  | "narrow_rendezvous" -> exit @@ run "calc" [ group "jobs" narrow_rendezvous ]
-  | "starved_domains" -> exit @@ run "calc" [ group "starved" starved_domains ]
-  | "stateful_rendezvous" ->
-      exit @@ run "calc" [ group "jobs" stateful_rendezvous ]
-  | "stateful_survivors" ->
-      exit @@ run "calc" [ group "stateful" stateful_survivors ]
-  | "burn" -> use_cpu (float_of_string Sys.argv.(1))
-  | "hog" ->
-      ignore (Unix.setsid ());
-      (match Sys.getenv_opt "MUTATE_HOG_GATE" with
-      | None | Some "" -> ()
-      | Some gate ->
-          while not (Sys.file_exists gate) do
-            Unix.sleepf 0.01
-          done);
-      while true do
-        ignore (Sys.opaque_identity ())
-      done
-  | "flood" -> exit @@ run "calc" [ group "flood" flood ]
   | "late" -> exit @@ run "calc" [ group "late" late ]
   | "probe_block" -> exit @@ run "calc" [ group "probe" probe_block ]
-  | "probe_jobs" ->
-      exit @@ run "calc" [ group "probe" probe_block; group "jobs" stalled ]
   | "baseline" -> exit @@ run "calc" [ group "baseline" baseline ]
   | "release" -> exit @@ run "calc" [ group "release" release ]
   | "budget" -> exit @@ run "calc" [ group "budget" budget ]
@@ -1569,17 +496,9 @@ let () =
   | "focused" -> exit @@ run "calc" [ group "focused" focused ]
   | "known" -> exit @@ run "calc" [ group "known" known ]
   | "memo" -> exit @@ run "calc" [ group "calc" strong; group "memo" memoized ]
-  | "memo_flaky" -> exit @@ run "calc" [ group "memo" memoized_flaky ]
-  | "flaky_release" -> exit @@ run "calc" [ group "memo" flaky_release ]
-  | "fails_first" -> exit @@ run "calc" [ group "first" fails_first ]
-  | "forked" -> exit @@ run "calc" [ group "forked" forked ]
-  | "fork_only" -> exit @@ run "calc" [ group "forked" fork_only ]
-  | "stateful_domains" ->
-      exit @@ run "calc" [ group "stateful" stateful_domains ]
-  | "on_workers" -> exit @@ run "calc" [ group "stateful" on_workers ]
-  | "fork_xfail" -> exit @@ run "calc" [ group "forked" fork_xfail ]
-  | "xfail_then_fork" -> exit @@ run "calc" [ group "forked" xfail_then_fork ]
-  | "fatal_first" -> exit @@ run "calc" [ group "first" fatal_first ]
+  | "seeded" -> exit @@ run "calc" [ group "seeded" seeded ]
+  | "primed" ->
+      exit @@ run "calc" [ group "calc" strong; group "primed" priming ]
   | "crash" ->
       exit
       @@ run "calc"
@@ -1600,6 +519,10 @@ let () =
       exit @@ run "calc" [ group "calc" (strong @ red); group "widen" weak ]
   | "flaky" -> exit @@ run "calc" [ group "calc" strong; group "flaky" flaky ]
   | "domain" -> exit @@ run "calc" [ group "domain" domain ]
+  | "domain_first" ->
+      (* Before [run], in the process that runs it. *)
+      Domain.join (Domain.spawn ignore);
+      exit @@ run "calc" [ group "calc" strong ]
   | "skippy" ->
       exit @@ run "calc" [ group "calc" strong; group "skippy" skippy ]
   | "boundary" ->
@@ -1614,13 +537,12 @@ let () =
       exit
       @@ run "calc"
            [
-             group ~tags:[ "gated" ] "calc" strong;
-             group ~tags:[ "gated" ] "widen" weak;
+             tag "gated" @@ group "calc" strong;
+             tag "gated" @@ group "widen" weak;
            ]
   | _ ->
       exit
-      @@ run
-           (if child_fault = Some "rename" then "renamed" else "calc")
+      @@ run "calc"
            [
              group "calc" strong;
              group "widen" weak;
