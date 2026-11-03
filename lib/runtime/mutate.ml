@@ -30,6 +30,8 @@ let rewrites =
     "del";
     "int";
     "bool";
+    "none";
+    "tail";
   ]
 
 let is_rewrite r = List.exists (String.equal r) rewrites

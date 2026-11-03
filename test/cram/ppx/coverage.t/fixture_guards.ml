@@ -32,3 +32,9 @@ let left f g x = ignore (f x && g x)
 (* A [||] that is a site is not rewritten, and its right operand is marked
    as a branch of the guard. *)
 let either a b = a || b
+
+(* The disarmed arm of a [none] or [tail] guard keeps the location of its
+   site, and is marked as the branch of an [if]. The armed arm of a [tail]
+   guard is a copy of the tail with ghost locations, which has no point. *)
+let wrap f x = Some (f x)
+let push f g x xs = f x :: g xs

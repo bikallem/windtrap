@@ -489,6 +489,10 @@ identifier names the rewrite:
   `n` becomes `n + 1`, in the type of its suffix.
 - `bool` flips `true` or `false`, outside a condition and the operands
   of `&&` and `||`, where `not` already acts.
+- `none` replaces `Some e` with `None`, and `e` does not run.
+- `tail` replaces `h :: t` with `t`, and `h` does not run. A list
+  literal is one site, at its bracket: `[a; b; c]` becomes `[b; c]`. In
+  a chain, as `a :: b :: t`, the outermost `::` alone is a site.
 
 Some code carries no mutant, because no test should pin it or none can
 run it. `del` leaves a resource release alone: a call of `close`,
@@ -498,10 +502,12 @@ already; an argument of a function whose name ends in `create`, as the
 capacity of `Hashtbl.create 16`; the constant of a comparison in a
 condition when the nudge is the comparison's own boundary move, as the
 `0` of `x < 0`, since `x < 1` is `x <= 0`. `bool` leaves alone the
-argument of `~cloexec`. None of the three has a mutant in code that runs
-when the module is initialized, before any test, as in a top-level
-`let limit = 64` or `let () = setup (); main ()`, since no run can
-judge it.
+argument of `~cloexec`. None of these five rewrites has a mutant in code
+that runs when the module is initialized, before any test, as in a
+top-level `let limit = 64` or `let () = setup (); main ()`, since no run
+can judge it. `none` and `tail` also leave alone the right-hand side of
+a `let rec` outside its functions, as `let rec ones = 1 :: ones`, which
+the compiler accepts only as written.
 
 A comparison outside a condition, as in `let ok = a < b`, carries no
 mutant, and neither does an `assert`. In a chain of one operator, as
@@ -509,7 +515,17 @@ mutant, and neither does an `assert`. In a chain of one operator, as
 (`let%test`, `let%expect_test` and `module%test` with its helpers)
 carry no mutant, and the rest of their file is mutated. A file that
 rebinds an operator loses the rewrites of its family: the four
-arithmetic operators, the six comparisons or the two connectives.
+arithmetic operators, the six comparisons or the two connectives. A file
+that declares a constructor `Some`, `None` or `::` loses `none` and
+`tail`.
+
+The `none` mutant names `None` without a module, and the `tail` mutant
+gives `t` the type of `h :: t`. The rewriter does not see a `Some` or a
+`::` that an `open` or the expected type takes from another module, as
+in `let f x : M.t = Some x`. If `M.t` has no `None`, or its `::` does
+not join two values of one type, the mutant does not compile. The
+compiler shows the error at the expression, and `[@mutate off "reason"]`
+on the expression removes the mutant.
 
 ## Where the verdicts are
 

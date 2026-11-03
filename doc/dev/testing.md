@@ -71,8 +71,10 @@ what is non-obvious.
   alone: the rewriter's `ppx_runtime_libraries` inject the runtime, and
   nothing may pull the core in. `integration/` asks whether an
   instrumented build compiles and registers, one library per question:
-  generated code under fatal warnings, a shadowed `not` and `bool`, the
-  typing-order and expected-type corpora, and a registration suite that
+  generated code under fatal warnings, a shadowed `not` and `bool`, a
+  file that declares `Some` and `(::)`, the right-hand sides of
+  `let rec`, the typing-order and expected-type corpora, and a
+  registration suite that
   arms each mutant and checks that the library then behaves as the
   mutant's text says. An instrumenter change that cannot keep the
   semantics suites green is rejected, not accommodated; grow the fixtures

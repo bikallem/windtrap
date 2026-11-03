@@ -144,24 +144,32 @@ before and after, and the reason of a dismissed site.
   $ mut --impl ./fixture_del.ml | ../elide.exe
   mutation sites of "./fixture_del.ml" in Windtrap_mut_________fixture_del___ml:
     0: 7:2-7:18 "del" "log := (x :: (!log))" -> "()"
-    1: 11:10-11:11 "int" "1" -> "0"
-    2: 12:4-12:15 "del" "print_int i" -> "()"
-    3: 25:2-25:62 "del" "print_string \"x\"" -> "()", dismissed "the output is not checked"
-    4: 30:2-30:8 "del" "a || b" -> "()"
-    5: 30:2-30:8 "and" "a || b" -> "a && b"
-    6: 40:2-40:25 "del" "output_string oc \"done\"" -> "()"
+    1: 7:9-7:18 "tail" "x :: (!log)" -> "!log"
+    2: 11:10-11:11 "int" "1" -> "0"
+    3: 12:4-12:15 "del" "print_int i" -> "()"
+    4: 25:2-25:62 "del" "print_string \"x\"" -> "()", dismissed "the output is not checked"
+    5: 30:2-30:8 "del" "a || b" -> "()"
+    6: 30:2-30:8 "and" "a || b" -> "a && b"
+    7: 40:2-40:25 "del" "output_string oc \"done\"" -> "()"
   let log = ref []
   let push x =
     if Windtrap_mut_________fixture_del___ml.___windtrap_armed___ 0
     then ()
-    else (log := (x :: (!log)); ());
+    else
+      (log :=
+         (if
+            Stdlib.not
+              (Windtrap_mut_________fixture_del___ml.___windtrap_armed___ 1)
+          then x :: (!log)
+          else !log);
+       ());
     List.length (!log)
   let loop n =
     for i =
-      if Windtrap_mut_________fixture_del___ml.___windtrap_armed___ 1
+      if Windtrap_mut_________fixture_del___ml.___windtrap_armed___ 2
       then 0
       else 1 to n do
-      if Windtrap_mut_________fixture_del___ml.___windtrap_armed___ 2
+      if Windtrap_mut_________fixture_del___ml.___windtrap_armed___ 3
       then ()
       else (print_int i; ());
       print_newline ()
@@ -171,20 +179,20 @@ before and after, and the reason of a dismissed site.
   let quiet x =
     ((print_string "x")[@mutate off "the output is not checked"]); x
   let either a b =
-    if Windtrap_mut_________fixture_del___ml.___windtrap_armed___ 4
+    if Windtrap_mut_________fixture_del___ml.___windtrap_armed___ 5
     then ()
     else
-      ((let __windtrap_mut_5_p = a in
+      ((let __windtrap_mut_6_p = a in
         if
-          Stdlib.(=) (__windtrap_mut_5_p : Stdlib.Bool.t)
-            (Windtrap_mut_________fixture_del___ml.___windtrap_armed___ 5)
+          Stdlib.(=) (__windtrap_mut_6_p : Stdlib.Bool.t)
+            (Windtrap_mut_________fixture_del___ml.___windtrap_armed___ 6)
         then b
-        else __windtrap_mut_5_p);
+        else __windtrap_mut_6_p);
        ());
     ()
   let () = print_string "loaded"; print_newline ()
   let finish oc ic fd dir =
-    if Windtrap_mut_________fixture_del___ml.___windtrap_armed___ 6
+    if Windtrap_mut_________fixture_del___ml.___windtrap_armed___ 7
     then ()
     else (output_string oc "done"; ());
     close_out oc;
@@ -402,6 +410,141 @@ before and after, and the reason of a dismissed site.
     end
   let pipe () = Unix.pipe ~cloexec:true ()
 
+  $ mut --impl ./fixture_ret.ml | ../elide.exe
+  mutation sites of "./fixture_ret.ml" in Windtrap_mut_________fixture_ret___ml:
+    0: 5:13-5:25 "none" "Some (x + 1)" -> "None"
+    1: 5:18-5:25 "sub" "x + 1" -> "x - 1"
+    2: 6:16-6:23 "tail" "x :: xs" -> "xs"
+    3: 7:15-7:26 "tail" "[1; 2; 3]" -> "[2; 3]"
+    4: 7:17-7:18 "int" "1" -> "0"
+    5: 7:20-7:21 "int" "2" -> "3"
+    6: 7:23-7:24 "int" "3" -> "4"
+    7: 8:15-8:25 "tail" "[x; y]" -> "[y]"
+    8: 11:2-12:9 "tail" "[\"a\"; \"b\"]" -> "[\"b\"]"
+    9: 15:18-15:29 "tail" "a :: b :: t" -> "b :: t"
+    10: 21:17-21:18 "int" "1" -> "0"
+    11: 22:24-22:48 "tail" "1 :: (Lazy.force stream)" -> "Lazy.force stream"
+    12: 22:25-22:26 "int" "1" -> "0"
+    13: 23:42-23:60 "tail" "n :: (count (n - 1))" -> "count (n - 1)"
+    14: 23:53-23:60 "add" "n - 1" -> "n + 1"
+    15: 23:23-23:28 "neq" "n = 0" -> "n <> 0"
+    16: 23:27-23:28 "int" "0" -> "1"
+    17: 27:17-27:18 "int" "1" -> "0"
+    18: 33:17-33:18 "int" "1" -> "0"
+    19: 34:13-34:18 "tail" "[2]" -> "[]"
+    20: 34:15-34:16 "int" "2" -> "3"
+  let wrap x =
+    if Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 0
+    then None
+    else
+      Some
+        ((let (__windtrap_mut_1_l, __windtrap_mut_1_r) = (x, 1) in
+          if Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 1
+          then __windtrap_mut_1_l - __windtrap_mut_1_r
+          else __windtrap_mut_1_l + __windtrap_mut_1_r))
+  let push x xs =
+    if
+      Stdlib.not (Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 2)
+    then x :: xs
+    else xs
+  let three () =
+    if
+      Stdlib.not (Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 3)
+    then
+      [(if Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 4
+        then 0
+        else 1);
+      (if Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 5
+       then 3
+       else 2);
+      (if Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 6
+       then 4
+       else 3)]
+    else [2; 3]
+  let pair x y =
+    if
+      Stdlib.not (Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 7)
+    then [x; y]
+    else [y]
+  let long () =
+    if
+      Stdlib.not (Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 8)
+    then ["a"; "b"]
+    else ["b"]
+  let chain a b t =
+    if
+      Stdlib.not (Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 9)
+    then a :: b :: t
+    else b :: t
+  let local () =
+    let rec ones =
+      (if Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 10
+       then 0
+       else 1)
+      :: ones in
+    let rec stream =
+      lazy
+        (if
+           Stdlib.not
+             (Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 11)
+         then
+           ((if Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 12
+             then 0
+             else 1))
+           :: (Lazy.force stream)
+         else Lazy.force stream) in
+    let rec count n =
+      if
+        let __windtrap_mut_15_p =
+          n =
+            (if Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 16
+             then 1
+             else 0) in
+        (if Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 15
+         then Stdlib.not __windtrap_mut_15_p
+         else __windtrap_mut_15_p)
+      then []
+      else
+        if
+          Stdlib.not
+            (Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 13)
+        then n ::
+          (count
+             (let (__windtrap_mut_14_l, __windtrap_mut_14_r) = (n, 1) in
+              if Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 14
+              then __windtrap_mut_14_l + __windtrap_mut_14_r
+              else __windtrap_mut_14_l - __windtrap_mut_14_r))
+        else count (n - 1) in
+    (ones, stream, count)
+  class cycle =
+    let rec ones =
+      (if Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 17
+       then 0
+       else 1)
+      :: ones
+    in object method ones = ones end
+  module Make(X:sig  end) =
+    struct
+      let rec ones =
+        (if Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 18
+         then 0
+         else 1)
+        :: ones
+      let twos =
+        if
+          Stdlib.not
+            (Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 19)
+        then
+          [(if Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 20
+            then 3
+            else 2)]
+        else []
+    end
+  let first = Some 1
+  let rest = [1; 2]
+  let qualified x = Option.Some x
+  let empty () = (None, [])
+
   $ mut --impl ./fixture_assert.ml | ../elide.exe
   mutation sites of "./fixture_assert.ml" in Windtrap_mut_________fixture_assert___ml, with type 'a operands:
     0: 7:2-7:7 "sub" "a + b" -> "a - b"
@@ -566,12 +709,19 @@ before and after, and the reason of a dismissed site.
   $ mut --impl ./fixture_chain_off.ml | ../elide.exe
   mutation sites of "./fixture_chain_off.ml" in Windtrap_mut_________fixture_chain_off___ml:
     0: 4:19-4:50 "sub" "((a + (b - d))[@mutate off]) + c" -> "((a + (b - d))[@mutate off]) - c"
+    1: 9:17-9:50 "tail" "a :: (((b - 1) :: t)[@mutate off])" -> "(b - 1) :: t"
   let link a b c d =
     let (__windtrap_mut_0_l, __windtrap_mut_0_r) =
       (((a + (b - d))[@mutate off]), c) in
     if Windtrap_mut_________fixture_chain_off___ml.___windtrap_armed___ 0
     then __windtrap_mut_0_l - __windtrap_mut_0_r
     else __windtrap_mut_0_l + __windtrap_mut_0_r
+  let cons a b t =
+    if
+      Stdlib.not
+        (Windtrap_mut_________fixture_chain_off___ml.___windtrap_armed___ 1)
+    then a :: (((b - 1) :: t)[@mutate off])
+    else (((b - 1) :: t)[@mutate off])
 
   $ mut --impl ./fixture_cmp.ml | ../elide.exe
   mutation sites of "./fixture_cmp.ml" in Windtrap_mut_________fixture_cmp___ml, with type 'a operands:
@@ -1196,6 +1346,52 @@ before and after, and the reason of a dismissed site.
        if Windtrap_mut_________fixture_lost_con___ml.___windtrap_armed___ 9
        then __windtrap_mut_9_l + __windtrap_mut_9_r
        else __windtrap_mut_9_l - __windtrap_mut_9_r)
+
+  $ mut --impl ./fixture_lost_ret.ml | ../elide.exe
+  type found =
+    | Some of int 
+    | Missing 
+  let found n = Some n
+  let push x xs = x :: xs
+  $ mut --impl ./fixture_lost_ret_cons.ml | ../elide.exe
+  mutation sites of "./fixture_lost_ret_cons.ml" in Windtrap_mut_________fixture_lost_ret_cons___ml:
+    0: 9:14-9:19 "sub" "a + b" -> "a - b"
+  type pair =
+    | (::) of int * string 
+  let pair n s = n :: s
+  let found n = Some n
+  let sum a b =
+    let (__windtrap_mut_0_l, __windtrap_mut_0_r) = (a, b) in
+    if Windtrap_mut_________fixture_lost_ret_cons___ml.___windtrap_armed___ 0
+    then __windtrap_mut_0_l - __windtrap_mut_0_r
+    else __windtrap_mut_0_l + __windtrap_mut_0_r
+  $ mut --impl ./fixture_lost_ret_none.ml | ../elide.exe
+  mutation sites of "./fixture_lost_ret_none.ml" in Windtrap_mut_________fixture_lost_ret_none___ml:
+    0: 9:14-9:19 "sub" "a + b" -> "a - b"
+  type outcome =
+    | None 
+    | Other 
+  let found n = Some n
+  let push x xs = x :: xs
+  let sum a b =
+    let (__windtrap_mut_0_l, __windtrap_mut_0_r) = (a, b) in
+    if Windtrap_mut_________fixture_lost_ret_none___ml.___windtrap_armed___ 0
+    then __windtrap_mut_0_l - __windtrap_mut_0_r
+    else __windtrap_mut_0_l + __windtrap_mut_0_r
+  $ mut --impl ./fixture_lost_ret_extension.ml | ../elide.exe
+  mutation sites of "./fixture_lost_ret_extension.ml" in Windtrap_mut_________fixture_lost_ret_extension___ml:
+    0: 8:14-8:19 "sub" "a + b" -> "a - b"
+  type e = ..
+  type e +=  
+    | None 
+  let found n = Some n
+  let sum a b =
+    let (__windtrap_mut_0_l, __windtrap_mut_0_r) = (a, b) in
+    if
+      Windtrap_mut_________fixture_lost_ret_extension___ml.___windtrap_armed___
+        0
+    then __windtrap_mut_0_l - __windtrap_mut_0_r
+    else __windtrap_mut_0_l + __windtrap_mut_0_r
 
   $ mut --impl ./fixture_neg.ml | ../elide.exe
   mutation sites of "./fixture_neg.ml" in Windtrap_mut_________fixture_neg___ml:

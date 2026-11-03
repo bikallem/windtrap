@@ -34,6 +34,16 @@
     the other of [true] and [false], which resolves as the original does unless
     a type in scope redeclares one of the two constructors without the other.
 
+    [none] names the constructor [None] unqualified, where the type of the
+    original [Some e] is expected. The armed arm of [tail] is a copy of [t] in
+    [h :: t], and gets the type of the original. A file that declares a
+    constructor [Some], [None] or [(::)], in a type or as an extension
+    constructor, loses the two rewrites. A constructor that an [open] or
+    type-directed disambiguation takes from another module is not seen. Thus a
+    [Some e] of a type that has no constructor [None], or an [h :: t] whose [t]
+    has another type, fails to compile under instrumentation. [[@mutate off]] on
+    the expression is the way out.
+
     [ari] is the one exception, because [a + b] cannot become [a - b] without
     naming [-]. A file that rebinds an operator where the rewriter can see it
     thus loses the whole family of that operator: [ari] for [+], [-], [+.] and
@@ -77,10 +87,23 @@
       suffix other than [l], [L] or [n] are no sites.
     - [bool] flips [true] and [false], under the name [bool], outside a boolean
       context, where [neg] already acts.
+    - [none] replaces [Some e] with [None], under the name [none].
+    - [tail] replaces [h :: t] with [t], under the name [tail]. A list literal
+      [[a; b]] is one site, at its bracket, and becomes [[b]]. In a chain of
+      [(::)], as [a :: b :: t], the outermost [(::)] alone is a site, and
+      becomes [b :: t]. A qualified constructor, as [Option.Some], is no site.
 
     The guard of [int] and of [bool] is [if armed then n' else n], an [if] whose
-    two arms are constants, which the type-checker counts as a syntactic value,
-    so a binding that generalizes still does.
+    two arms are constants. The guard of [none] is
+    [if armed then None else Some e], so [e] does not run when the mutant is
+    armed. The guard of [tail] is [if Stdlib.not armed then h :: t else t'],
+    where [t'] is a copy of [t] as the source wrote it, with no guard inside it.
+    Thus [t] runs once, and [h] does not run when the mutant is armed. The
+    type-checker counts an [if] as a syntactic value when its two arms are one,
+    whatever its condition, so a binding that generalizes still does.
+
+    The guard of [tail] holds a copy of [t]. A site at each [(::)] of a chain
+    would thus make the code grow as the square of the length of the chain.
 
     A boolean context is the condition of an [if] or of a [while], the guard of
     an arm, or a direct operand of [&&] or [||] in a file that keeps the [con]
@@ -109,10 +132,14 @@
       [x <= c] and [x > c], and the mirror for a constant on the left. In
       [x < 0] the [0] is no site, since [x < 1] is [x <= 0], and in [x >= 1] the
       [1] is one.
-    - [del], [int] and [bool] skip code that runs when the module is
-      initialized, before any test, so that no run can judge its mutant: code
-      outside every function, [lazy], method, class and functor body, as in a
-      top-level [let limit = 64] or [let () = setup (); main ()].
+    - [del], [int], [bool], [none] and [tail] skip code that runs when the
+      module is initialized, before any test, so that no run can judge its
+      mutant: code outside every function, [lazy], method, class and functor
+      body, as in a top-level [let limit = 64] or [let () = setup (); main ()].
+    - [none] and [tail] skip the right-hand side of a [let rec] outside every
+      function and [lazy] in it, because that expression cannot be an [if] that
+      reads a variable of the [let rec]. This applies to a [let rec] of a
+      structure, of an expression and of a class.
     - [bool] skips the argument of a [~cloexec] or [?cloexec] label, an OS flag.
 
     These rules read the syntax alone, as [ari]'s chains do. *)
@@ -120,8 +147,9 @@
 (** {2:placement Placement}
 
     - An expression carries at most one mutant, and [neg] comes last. A
-      statement may carry [del] besides its own. A condition that is a
-      comparison carries [cmp], and one that is a connective carries [con].
+      statement may carry [del] besides its own. A literal, [Some e] and
+      [h :: t] carry no other mutant. A condition that is a comparison carries
+      [cmp], and one that is a connective carries [con].
     - No guard duplicates another site. A connective with a connective for an
       operand carries no mutant, neither [con] nor [neg], so [a && b && c]
       mutates [b && c] alone. Its operands are boolean contexts all the same.
@@ -155,7 +183,7 @@
       identifier, which must name one site.
 
     The code that runs when a module is initialized is mutated like any other,
-    but for the sites of [del], [int] and [bool], so a top-level
+    but for the sites of [del], [int], [bool], [none] and [tail], so a top-level
     [let origin = 1 + 2] carries a site. The [--mutate] loop lists a site that
     ran outside tests alone as evaluated outside tests. *)
 
@@ -215,7 +243,9 @@
     never cut out of the source. The attributes of the site are left out, and
     each run of blanks becomes one space, inside a string literal too, so a text
     is one line. The brackets are those of the printer: [a + b + c] is recorded
-    as [(a + b) + c], and its mutant as [(a + b) - c]. *)
+    as [(a + b) + c], and its mutant as [(a + b) - c]. The printer gives a list
+    as a list literal where it can, so [x :: [y]] is recorded as [[x; y]], and
+    its [tail] mutant as [[y]]. The [after] text of a [none] site is [None]. *)
 
 (** {1:generated Generated code}
 
@@ -240,7 +270,9 @@
 
     Every generated node has a ghost location, with one exception. The disarmed
     arm of an ordering or [ari] guard is the original application rebuilt over
-    the binders, and keeps its location and its attributes.
+    the binders, and keeps its location and its attributes. The copy [t'] in the
+    guard of [tail] is generated code too, and each of its locations is ghost,
+    so that no two nodes share a location.
 
     In the driver that dune builds for a stanza naming both backends this
     rewriter runs first, so its sites are those stated here and the coverage

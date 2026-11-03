@@ -161,6 +161,9 @@
       has no out-edge.
     - a [||] that is a site is not rewritten, and its right operand is marked as
       a branch of the guard.
+    - the disarmed arm of a [none] or [tail] guard keeps the location of its
+      site, and is marked as the branch of an [if]. The armed arm of a [tail]
+      guard is a copy of the tail with ghost locations, and takes no mark.
 
     The points of such a file are not those of the file under this rewriter
     alone. *)

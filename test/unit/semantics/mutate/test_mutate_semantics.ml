@@ -103,7 +103,7 @@ let family (m : Mutate.mutant) =
   | "lt" | "le" | "gt" | "ge" | "eq" | "neq" -> "cmp"
   | "and" | "or" -> "con"
   | "add" | "sub" | "fadd" | "fsub" -> "ari"
-  | ("del" | "int" | "bool") as literal -> literal
+  | ("del" | "int" | "bool" | "none" | "tail") as rewrite -> rewrite
   | other -> "unknown " ^ other
 
 let families mutants = List.sort_uniq String.compare (List.map family mutants)
@@ -141,9 +141,9 @@ let registration =
 let catalogue =
   group "The catalogue"
     [
-      test "the seven operator families are catalogued" (fun () ->
+      test "the nine families are catalogued" (fun () ->
           equal (list string)
-            [ "ari"; "bool"; "cmp"; "con"; "del"; "int"; "neg" ]
+            [ "ari"; "bool"; "cmp"; "con"; "del"; "int"; "neg"; "none"; "tail" ]
             (families (fixture_catalogue ())));
       test "an identifier names one site" (fun () ->
           let id (m : Mutate.mutant) = Mutate.id_to_string m.id in
@@ -169,6 +169,7 @@ let compiler_order =
       "r | r",
       fun () -> Twin.show (Twin.ari_exception_order ()) );
     ("a = b", "f | r,l", fun () -> Twin.show (Twin.cmp_eq 1 2));
+    ("h :: t", "a,b | t,h", fun () -> Twin.show (Twin.ret_cons "a" "b"));
   ]
 
 let as_twin (name, f) =
@@ -215,7 +216,7 @@ let observable_families () =
       (fixture_catalogue ())
   in
   equal (list string)
-    [ "ari"; "bool"; "cmp"; "con"; "del"; "int"; "neg" ]
+    [ "ari"; "bool"; "cmp"; "con"; "del"; "int"; "neg"; "none"; "tail" ]
     (families (List.filter changes mutants));
   equal ~msg:"after disarming"
     (list (pair string string))
@@ -432,7 +433,8 @@ let reach_counts =
       test "a skipped right arm adds no evaluation" (fun () ->
           equal
             (pair (pair bool (list string)) reach)
-            ((false, [ "left" ]), [ ("del", 1); ("del", 1); ("or", 1) ])
+            ( (false, [ "left" ]),
+              [ ("del", 1); ("tail", 1); ("del", 1); ("or", 1) ] )
             (reached (fun () ->
                  Mutsem_fixtures.Covsem_fixtures.and_trace false true)));
     ]
