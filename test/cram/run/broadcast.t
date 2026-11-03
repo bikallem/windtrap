@@ -51,7 +51,7 @@ standard error, while the instrumented suite tests its mutant:
   fixture: 4 passed in DURATION.
   [unit: 0]
   mutant: 1 passed in DURATION.
-  mutants: 1 reached by this suite, 1 killed
+  mutants: 1 reached by this suite, 1 killed, score 100.0%
   [mutants: 0]
 
 A filter broadcast with it narrows the instrumented suite, whose loop
@@ -64,7 +64,7 @@ outcome line, which stays the last line of the two streams as one:
   [unit: 0]
   mutant: 1 passed in DURATION.
   windtrap: verdicts not saved: this run's selection narrows the suite, and a partial run's verdicts would stand in the project merge as the whole.
-  mutants: 1 reached by the 1 selected test, 1 killed
+  mutants: 1 reached by the 1 selected test, 1 killed, score 100.0%
   [mutants: 0]
 
 A relative path in WINDTRAP_JUNIT or WINDTRAP_OUTPUT is read from the
