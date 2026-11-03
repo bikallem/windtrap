@@ -15,6 +15,7 @@ module Mutate = Windtrap_runtime.Mutate
 module Oracle = Windtrap_mutate_forced.Oracle
 module Forced = Windtrap_mutate_forced.Forced
 module No_guard = Windtrap_mutate_forced.No_guard
+module Arid = Windtrap_mutate_forced.Arid
 module Disambiguate = Windtrap_mutate_disambiguate.Disambiguate
 module Expected_type = Windtrap_mutate_disambiguate.Expected_type
 
@@ -381,6 +382,45 @@ let every_mutant =
         every_forced_mutant;
     ]
 
+(* Arid sites *)
+
+let arid_reading () =
+  Arid.logged 4;
+  strf "%d %d %b %d %d %d" (Arid.zero 4) (Arid.chain 5 3) (Arid.same true)
+    (Arid.branches false 7) (Arid.message 2)
+    (Queue.take Windtrap_mutate_forced.Logs.logged)
+
+let arid_sites () =
+  let site (m : Mutate.mutant) = strf "%s %s" m.id.rewrite m.before in
+  equal string "4 8 true 7 2 8" (arid_reading ());
+  equal (list string)
+    [ "sub a + b"; "le n < 0" ]
+    (List.map site (mutants_of "arid.ml"))
+
+(* [x + 0] is at line 11, column 13, of arid.ml. *)
+let arid_unmatched () =
+  let file =
+    match mutants_of "arid.ml" with
+    | m :: _ -> m.id.file
+    | [] -> fail "arid.ml has no catalogued mutant"
+  in
+  match Mutate.arm { Mutate.file; line = 11; col = 13; rewrite = "sub" } with
+  | Error (Mutate.Unmatched _) -> ()
+  | Ok _ | Error (Malformed _ | Uncatalogued _ | Ambiguous _) ->
+      disarm ();
+      fail "the identifier of an arid site armed a mutant"
+
+let arid =
+  group "Arid sites"
+    [
+      test "the catalogue holds no arid site" arid_sites;
+      test "the identifier of an arid site arms no mutant" arid_unmatched;
+      test "the left operand of an arid chain keeps its mutant" (fun () ->
+          equal string "2"
+            (armed ~file:"arid.ml" ~rewrite:"sub" ~before:"a + b" (fun () ->
+                 Int.to_string (Arid.chain 5 3))));
+    ]
+
 (* A file that declares the constructors of a guard *)
 
 (* The test reads [size], so that the module is linked and registers its
@@ -400,4 +440,5 @@ let lost =
 
 let () =
   exit
-    (run "mutate registration" [ disarmed; armed_mutants; every_mutant; lost ])
+    (run "mutate registration"
+       [ disarmed; armed_mutants; every_mutant; arid; lost ])

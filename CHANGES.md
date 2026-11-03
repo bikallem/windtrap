@@ -18,6 +18,18 @@
   bodies. A file that
   declares a constructor `Some`, `None` or `::` has neither
   (doc/manual/mutation.md#what-is-mutated).
+- The rewriter gives no mutant where the syntax shows the mutant
+  equivalent: `x + 0`, `x - 0`, `a && a`, `a || a` and the condition of
+  `if c then e else e`. Such a site has no identifier and no verdict,
+  and no report counts it (doc/manual/mutation.md#what-is-mutated).
+- The rewriter gives no mutant in the arguments of a `Logs` function
+  that logs a message. It gives none to an integer or boolean literal
+  in the arguments of `failwith` or `invalid_arg`. A test can kill such
+  a mutant if it reads the message, but no test should pin the text of a
+  message. A statement in
+  these arguments keeps its mutants. A file that declares a module
+  `Logs` loses the first rule. A file that binds `failwith` or
+  `invalid_arg` loses the second.
 - `--arm` refuses a mutant that `[@mutate off]` dismisses, and exits 1.
   The message names the reason. Before, the run armed no guard and ended
   on `mutant not evaluated`.
