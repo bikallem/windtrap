@@ -1,6 +1,13 @@
 (library
  (name windtrap_mutate_forced)
- (modules forced no_guard oracle shadowed)
+ (modules
+  attributes
+  forced
+  no_guard
+  oracle
+  own_constructors
+  recursive
+  shadowed)
  (flags
   (:standard -w +a-70 -warn-error +a))
  (preprocess
@@ -11,7 +18,17 @@
 
 (library
  (name windtrap_mutate_disambiguate)
- (modules disambiguate expected_type)
+ (modules codec disambiguate expected_type opened_none)
+ (preprocess
+  (pps ppx_windtrap.mutate)))
+
+; A [None] of another type in scope, under fatal warnings and -principal.
+
+(library
+ (name windtrap_mutate_principal)
+ (modules levels opened_levels)
+ (flags
+  (:standard -principal -w +a-70 -warn-error +a))
  (preprocess
   (pps ppx_windtrap.mutate)))
 
@@ -35,4 +52,5 @@
   windtrap.runtime
   windtrap_mutate_forced
   windtrap_mutate_disambiguate
+  windtrap_mutate_principal
   windtrap_mutate_both))

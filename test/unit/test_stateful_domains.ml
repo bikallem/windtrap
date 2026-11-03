@@ -544,12 +544,17 @@ let first_moves () =
   let branch_one = List.filter (fun (d, _) -> d = "1") before in
   let first = snd (List.hd branch_one) in
   let last = snd (List.nth branch_one (List.length branch_one - 1)) in
-  (* The calls before the first parallel one, and the first after the last. *)
+  (* The calls before the first parallel one, and the first after the last.
+     A move keeps every call. *)
   let rec prefix = function ("", c) :: rest -> c :: prefix rest | _ -> [] in
+  let kept after = List.length after = List.length before in
   let to_prefix after =
-    match List.rev (prefix after) with c :: _ -> c = first | [] -> false
+    kept after
+    && match List.rev (prefix after) with c :: _ -> c = first | [] -> false
   in
   let to_suffix after =
+    kept after
+    &&
     match prefix (List.rev after) with
     | [] -> false
     | suffix -> List.nth suffix (List.length suffix - 1) = last
@@ -1228,6 +1233,16 @@ let crashed_order () =
     {|oracle [reference of call 2 of 3, in the order 2 then 3: pop q1] raise actual Failure("hd")|}
     (ended (execute ~workers (value tree)))
 
+(* On the calling domain the pop runs first, so the reference crashes in the
+   order of real time, which the failure names. *)
+let crashed_sequential_order () =
+  let judge = ref strict in
+  let _, tree = pop_beside_push ~popped:0 judge in
+  judge := careless;
+  equal string
+    {|oracle [reference of call 2 of 3, in the order 2 then 3: pop q1] raise actual Failure("hd")|}
+    (ended (execute (value tree)))
+
 (* On the calling domain branch 1 runs before branch 2, and real time leaves
    that order alone: the pop that only the push's going first explains then
    fails. *)
@@ -1269,6 +1284,8 @@ let judging_calls =
         "a crash breaks the reference in an order another would explain, and \
          names that order"
         crashed_order;
+      test "on the calling domain a crash names the order of real time"
+        crashed_sequential_order;
       test "a crash names no order when no call is parallel" crashed_alone;
       test
         "on the calling domain the branches keep their order, as real time says"

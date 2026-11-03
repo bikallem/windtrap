@@ -434,7 +434,10 @@ A survivor is a request for a test, so a mutant is worth compiling only
 where its survivor would be one worth writing. Dropping a statement asks
 whether a test sees its effect, and a nudged literal whether a test pins
 the decision it encodes; a string literal is mostly message text, and a
-removed match case mostly a fast path, so neither is a rewrite. The same
+removed match case mostly a fast path, so neither is a rewrite. A `None`
+in place of `Some e` asks whether a test sees the value that a function
+found, and a list without its head asks whether a test counts or reads
+the elements, so these two are rewrites. The same
 reason leaves some code without a mutant: a resource release, whose loss
 no test observes, a capacity, which no test should pin, a nudge that
 repeats a comparison's or an arithmetic operator's own mutant, an OS

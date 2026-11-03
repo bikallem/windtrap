@@ -53,6 +53,11 @@ let int_up () = 41
 let int_down () = 1L
 let bool_flip () = Some true
 
+(* [none] gives [None] in place of [Some x], and [tail] gives [t] in place
+   of [h :: t]. *)
+let none_some x = Some x
+let tail_cons h t = h :: t
+
 (* Evaluation order, multiplicity and short-circuiting. [note] records
    that it ran and returns its argument, so a trace says exactly which
    operands were evaluated and in which order. *)
@@ -77,3 +82,9 @@ let ari_order a b = note "l" a + note "r" b
    connective in force - the original disarmed, the mutant armed - says
    it is, and never twice. *)
 let con_short a b = a && note "r" b
+
+(* An armed [none] or [tail] mutant evaluates what its [after] text holds
+   and no more: [Some e] does not evaluate [e], and [h :: t] evaluates [t]
+   alone. *)
+let none_order x = Some (note "e" x)
+let tail_order h t = note "h" h :: note "t" t

@@ -220,6 +220,18 @@ let neg_while limit =
 
 let neg_guard a = match a with _ when note "g" a -> "t" | _ -> "f"
 
+(* {1 [none] and [tail]: a guard adds no evaluation}
+
+   [none] gives [None] in place of [Some e], and [tail] a copy of [t] in
+   place of [h :: t], each in the other branch of an [if] that holds the
+   original. Disarmed, [e], [h] and [t] thus run once each and in the order
+   of the twin. The compiler evaluates [h :: t] right to left, as it does an
+   application. *)
+
+let ret_some a = match Some (note "e" a) with Some v -> v | None -> "none"
+let ret_cons a b = String.concat "," (note "h" a :: note "t" [ b ])
+let ret_list a b = String.concat "," [ note "h" a; note "t" b ]
+
 (* {1 Laziness}
 
    [lazy_thunk]'s body carries two [ari] sites, so it is not a trivial
@@ -268,19 +280,20 @@ let lazy_witness () =
 
    No guard weakens a value spine, the spine a binding generalizes over:
    every site of the four operators is an application or a conditional,
-   which is never a syntactic value, and the guard that [bool] puts on
-   this [true] is an [if] whose two arms are constants, which the
-   type-checker counts as one. This binding is where that would break
-   first: a guard on its spine that is no syntactic value leaves the
-   ['a] of [bool * ('a -> 'a)], which no relaxation generalizes, weak.
-   The binding sits in a functor, whose body runs when it is applied, so
-   [bool] mutates it; at the top level it would run at load and carry no
-   site. Nothing here applies it; the check is the module coercion in
-   test_mutate_semantics.ml, which compares this copy's inferred
-   signature against the twin's and fails to compile the day the two
-   disagree. *)
+   which is never a syntactic value. The guards that [bool] puts on this
+   [true], [none] on [Some []] and [tail] on [[ [] ]] are each an [if]
+   whose two arms are syntactic values, and the type-checker counts such
+   an [if] as one whatever its condition. This binding is where that
+   would break first: a guard on its spine that is no syntactic value
+   leaves the ['a] of [bool * ('a -> 'a) * ...], which no relaxation
+   generalizes, weak. The binding sits in a functor, whose body runs when
+   it is applied, so the three rewrites mutate it; at the top level it
+   would run at load and carry no site. Nothing here applies it; the check
+   is the module coercion in test_mutate_semantics.ml, which compares this
+   copy's inferred signature against the twin's and fails to compile the
+   day the two disagree. *)
 module Generalizes (_ : sig end) = struct
-  let pair = (true, fun x -> x)
+  let pair = (true, (fun x -> x), Some [], [ [] ])
 end
 
 (* {1 Tail position, measured}
@@ -438,4 +451,7 @@ let witnesses : (string * (unit -> string)) list =
     ("neg in an if condition, false", fun () -> show (neg_if false));
     ("neg in a while condition", fun () -> show (neg_while 3));
     ("neg in a when guard", fun () -> show (neg_guard true));
+    ("none on Some", fun () -> show (ret_some "a"));
+    ("tail on ::", fun () -> show (ret_cons "a" "b"));
+    ("tail on a list literal", fun () -> show (ret_list "a" "b"));
   ]

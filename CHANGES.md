@@ -10,6 +10,14 @@
 
 ### Mutation testing
 
+- Two rewrites join the catalogue: `none` replaces `Some e` with `None`,
+  and `tail` replaces `h :: t` with `t`. A list literal has one `tail`
+  site, at its bracket, and so does a chain of `::`. Neither rewrite has
+  a site in code that runs when the module is initialized, or in the
+  right-hand side of a `let rec` outside its functions and `lazy`
+  bodies. A file that
+  declares a constructor `Some`, `None` or `::` has neither
+  (doc/manual/mutation.md#what-is-mutated).
 - `--arm` refuses a mutant that `[@mutate off]` dismisses, and exits 1.
   The message names the reason. Before, the run armed no guard and ended
   on `mutant not evaluated`.

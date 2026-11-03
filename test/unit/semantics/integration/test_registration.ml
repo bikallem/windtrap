@@ -105,6 +105,19 @@ let originals =
       "true",
       fun () ->
         Option.fold ~none:"none" ~some:Bool.to_string (Oracle.bool_flip ()) );
+    ( "none_some 1",
+      "1",
+      fun () ->
+        Option.fold ~none:"none" ~some:Int.to_string (Oracle.none_some 1) );
+    ( "tail_cons 1 [ 2 ]",
+      "1,2",
+      fun () -> String.concat "," (ints (Oracle.tail_cons 1 [ 2 ])) );
+    ( "the operands of none_order",
+      "e",
+      fun () -> traced (fun () -> Oracle.none_order 1) );
+    ( "the operands of tail_order",
+      "t,h",
+      fun () -> traced (fun () -> Oracle.tail_order 1 [ 2 ]) );
     ( "the operands of cmp_order",
       "r,l",
       fun () -> traced (fun () -> Oracle.cmp_order 1 2) );
@@ -234,6 +247,13 @@ let armings =
       (fun () ->
         [ Option.fold ~none:"none" ~some:Bool.to_string (Oracle.bool_flip ()) ])
       [ "false" ];
+    oracle "none" "Some x"
+      (fun () ->
+        [ Option.fold ~none:"none" ~some:Int.to_string (Oracle.none_some 1) ])
+      [ "none" ];
+    oracle "tail" "h :: t"
+      (fun () -> ints (Oracle.tail_cons 1 [ 2; 3 ]))
+      [ "2"; "3" ];
     (* Armed, the two encodings that bind their operands still evaluate each
        once, right to left, and the connective runs its right operand when the
        rewrite says so. *)
@@ -250,6 +270,14 @@ let armings =
           traced (fun () -> Oracle.con_short true true);
         ])
       [ "r"; "" ];
+    (* Armed, a [none] or [tail] mutant evaluates what its [after] text holds
+       and no more. *)
+    oracle "none" "Some (note \"e\" x)"
+      (fun () -> [ traced (fun () -> Oracle.none_order 1) ])
+      [ "" ];
+    oracle "tail" "(note \"h\" h) :: (note \"t\" t)"
+      (fun () -> [ traced (fun () -> Oracle.tail_order 1 [ 2 ]) ])
+      [ "t" ];
     {
       file = "disambiguate.ml";
       rewrite = "add";
@@ -353,5 +381,23 @@ let every_mutant =
         every_forced_mutant;
     ]
 
+(* A file that declares the constructors of a guard *)
+
+(* The test reads [size], so that the module is linked and registers its
+   sites. *)
+let lost_families () =
+  let rewrite (m : Mutate.mutant) = m.id.rewrite in
+  equal int 3 Windtrap_mutate_forced.Own_constructors.size;
+  equal (list string) [ "ge"; "int" ]
+    (List.map rewrite (mutants_of "own_constructors.ml"))
+
+let lost =
+  group "Lost families"
+    [
+      test "a file that declares Some and (::) has no none and no tail mutant"
+        lost_families;
+    ]
+
 let () =
-  exit (run "mutate registration" [ disarmed; armed_mutants; every_mutant ])
+  exit
+    (run "mutate registration" [ disarmed; armed_mutants; every_mutant; lost ])
