@@ -700,6 +700,14 @@ let from_the_working_directory () =
     (Some (Filename.concat cwd "out"), Filename.concat cwd "logs")
     (c.Run.junit, c.Run.log_dir)
 
+(* [--diff] scopes [--mutate] to the lines that its file adds or changes. *)
+let diff_file () =
+  let file = Filename.concat (temp_dir ()) "change.diff" in
+  Out_channel.with_open_bin file (fun oc ->
+      output_string oc "--- lib/a.ml\n+++ lib/a.ml\n@@ -2 +3,2 @@\n");
+  equal string "mutation loop [] lines lib/a.ml:3-4"
+    (resolved [ "--mutate"; "--diff=" ^ file ])
+
 let unreadable_directory () =
   if Sys.win32 then skip ~reason:"POSIX only" ();
   let gone = Filename.concat (temp_dir ()) "gone" in
@@ -859,6 +867,7 @@ let resolution =
             [ "--mutate"; "--lines=lib/a.ml:0" ],
             "invalid --lines \"lib/a.ml:0\"" );
         ];
+      test "--diff scopes --mutate to the lines that its file changes" diff_file;
       resolve_rows "--mutate with --arm is refused, whichever layer gave each"
         [
           ([], [ "--mutate"; "--arm"; "x" ], "incompatible --mutate --arm");

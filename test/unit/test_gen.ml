@@ -1192,6 +1192,20 @@ let reaches_its_corners (Corners (_, gen, w, corners)) =
   let drawn c = List.exists (Testable.equal w c) values in
   equal (list w) corners (List.filter drawn corners)
 
+(* The seven corners of a range of every byte are its bounds, ['a'] and its
+   two neighbours, and the two bytes either side of the sign bit. Each is one
+   corner draw in seven, and one uniform draw in 256. *)
+let char_corners () =
+  let values = samples (Gen.char_range '\000' '\255') 20_000 in
+  List.iter
+    (fun c ->
+      equal
+        ~msg:(Printf.sprintf "the share of %C" c)
+        (float 0.004)
+        ((0.1 /. 7.) +. (0.9 /. 256.))
+        (share values (Char.equal c)))
+    [ '\000'; '\255'; 'a'; '`'; 'b'; '\127'; '\128' ]
+
 (* The corners of [int_range 0 255] are [0], [1] and [255]: the corner draw,
    and the uniform draws of the other nine in ten that land on one. *)
 let corner_share () =
@@ -1321,6 +1335,8 @@ let numbers =
         ~id:(fun (Corners (name, _, _, _)) -> name)
         corners reaches_its_corners;
       test "one draw in ten is a corner" corner_share;
+      test "a range of every byte draws each of its seven corners as often"
+        char_corners;
       test
         "float draws finite floats, uniformly over their bit patterns apart \
          from its corners"
@@ -2421,6 +2437,27 @@ let printers_rows =
   [
     Printer ("int", (fun () -> Gen.int), 42, "42");
     Printer ("unit", (fun () -> Gen.unit), (), "()");
+    Printer ("char_range", (fun () -> Gen.char_range 'a' 'z'), 'b', "'b'");
+    Printer
+      ( "string_of",
+        (fun () -> Gen.(string_of (char_range 'a' 'z'))),
+        "ab",
+        {|"ab"|} );
+    Printer
+      ( "bytes_of",
+        (fun () -> Gen.(bytes_of char)),
+        Bytes.of_string "ab",
+        {|Bytes.of_string "ab"|} );
+    Printer
+      ( "triple",
+        (fun () -> Gen.(triple int bool unit)),
+        (1, true, ()),
+        "(1, true, ())" );
+    Printer
+      ( "quad",
+        (fun () -> Gen.(quad int bool unit int)),
+        (1, true, (), 2),
+        "(1, true, (), 2)" );
     Printer
       ( "such_that, the underlying printer",
         (fun () -> Gen.(such_that even int)),

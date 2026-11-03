@@ -267,7 +267,12 @@ let tail_calls =
       test "the depth grows one frame per level of a non-tail call"
         non_tail_growth;
       test "an instrumented tail call leaves no frame" (fun () ->
-          constant_depths (Mutsem_fixtures.Mutsem_order.tail_depths ()));
+          let rows = Mutsem_fixtures.Mutsem_order.tail_depths () in
+          let name (name, _, _) = name in
+          equal ~msg:"the twin's rows" (list string)
+            (List.map name (Mutsem_baseline.Mutsem_order.tail_depths ()))
+            (List.map name rows);
+          constant_depths rows);
       test "a tail call of the twin leaves no frame" (fun () ->
           constant_depths (Mutsem_baseline.Mutsem_order.tail_depths ()));
       test "a tail_mod_cons map runs in constant stack" tail_mod_cons;
@@ -446,8 +451,10 @@ let () =
          registration;
          catalogue;
          operand_order;
-         arming;
+         (* [arming] ends with no mutant armed, so a group after it cannot
+            kill a mutant of an [--arm] run. *)
          tail_calls;
+         arming;
          results;
          laziness;
          reach_counts;

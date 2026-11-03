@@ -476,6 +476,17 @@ let replayable =
       prop "law kept" Gen.int ignore;
     ]
 
+(* The body of [cases], run in a test, refuses the duplicate ids before any
+   row runs. *)
+let duplicates_in_a_test () =
+  match Test_tree.flatten [ cases "d" ~id:parity [ 1; 2; 3 ] ignore ] with
+  | [ { Test_tree.body = Body body; _ } ] -> (
+      match body () with
+      | () -> fail "a table whose rows share an id ran"
+      | exception Failure.Check_failure f ->
+          contains ~sub:"rows 1 and 3 have the id odd" (message f))
+  | _ -> fail "cases is not one test"
+
 let tables_group =
   group "Tables"
     [
@@ -489,6 +500,8 @@ let tables_group =
       test "two rows with one id are duplicates, and no row runs" (fun () ->
           contains ~sub:"duplicate rows: rows 1 and 3 have the id odd"
             (message (failure tables [ "duplicates" ])));
+      test "a test that runs the body of such a table fails before any row"
+        duplicates_in_a_test;
       test "a refuted row is reported by its id" (fun () ->
           equal string "n2" (rendered (failure tables [ "keyed" ])));
     ]
