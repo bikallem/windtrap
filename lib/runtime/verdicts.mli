@@ -27,20 +27,25 @@ type reaching_test = string list
 type verdict =
   | Killed
       (** A reaching test failed, or a fixture release failed, in the run that
-          armed the mutant. *)
+          armed the mutant, after the first evaluation of the armed site or in
+          the test of that evaluation. *)
   | Unknown of string
       (** No verdict, and the string says why: the run that armed the mutant
           ended before its tests did, by a crash, an exit or its deadline, or
           the executable could not be mutation-tested, as when its dry run is
           red, its suite is not deterministic or its selection narrows it. *)
   | Survived of { first : reaching_test; others : reaching_test list }
-      (** Every reaching test passed, and the armed site was evaluated. [first]
-          and [others] are the reaching tests, sorted and without duplicates,
-          and [first] is the first. *)
+      (** The armed site was evaluated, and no reaching test and no fixture
+          release failed after its first evaluation. A test that failed before
+          the first evaluation does not count. [first] and [others] are the
+          reaching tests, sorted and without duplicates, and [first] is the
+          first. *)
   | Not_evaluated
-      (** Every reaching test passed, and the armed site was not evaluated. The
-          dry run evaluated the site and the child did not, as when the dry run
-          cached the result of the site in a table or a forced lazy value. *)
+      (** The armed site was not evaluated. The dry run evaluated the site and
+          the child did not, as when the dry run cached the result of the site
+          in a table or a forced lazy value. A test or a fixture release that
+          failed in the child did not fail because of the mutant, and does not
+          kill it. *)
   | Outside_tests
       (** No test reached the site, and the dry run evaluated it outside every
           test, at module initialization or in a fixture release. The loop

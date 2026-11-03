@@ -1907,17 +1907,36 @@ let verdict_rows =
       ( (fun r -> Report.mutation_survived r ~hits:2 ~xfail_failed:true),
         "mutant survived: the site was evaluated 2 times and only xfail tests \
          failed.\n" ) );
+    ( "survived, and a test failed before the first evaluation",
+      ( (fun r ->
+          Report.mutation_survived r ~hits:2 ~xfail_failed:false
+            ~failed_before:true),
+        "mutant survived: the armed site was evaluated 2 times, and only tests \
+         before its first evaluation failed.\n" ) );
+    ( "survived, and an xfail test passed and a test failed before",
+      ( (fun r ->
+          Report.mutation_survived r ~hits:1 ~xfail_failed:true
+            ~failed_before:true),
+        "mutant survived: the armed site was evaluated 1 time, and only xfail \
+         tests and tests before its first evaluation failed.\n" ) );
     ( "not evaluated",
       ( (fun r -> Report.mutation_not_evaluated r),
         "mutant not evaluated: no selected test ran the site.\n" ) );
+    ( "not evaluated, and a test failed",
+      ( (fun r -> Report.mutation_not_evaluated r ~failed:true),
+        "mutant not evaluated: no selected test ran the site, so the mutant \
+         did not cause the failure.\n" ) );
     ( "not reached, only xfail tests ran the site",
       ( (fun r -> Report.mutation_not_reached r),
         "mutant not reached: only xfail tests ran the site.\n" ) );
   ]
 
+(* Format hands a line longer than its margin to the buffer before a flush,
+   so the margin is wider than every line. *)
 let unflushed (_, (write, expected)) =
   let b = Buffer.create 64 in
   let ppf = Format.formatter_of_buffer b in
+  Format.pp_set_margin ppf 1000;
   write (Report.create ~out:ppf ~ansi:false (config ~armed:"x" ()));
   let before = Buffer.contents b in
   Format.pp_print_flush ppf ();

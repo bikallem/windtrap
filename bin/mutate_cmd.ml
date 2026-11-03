@@ -235,7 +235,7 @@ let merge ~source files =
       | Some f -> f.invocation
       | None -> assert false
     in
-    { mutant = mutant r; invocation }
+    { mutant = mutant r; invocation; failed = None }
   in
   (* A merge is [Unknown] only when a file is. The first executable that ran
      the mutant and could not judge it names it, with its reason; a mutant

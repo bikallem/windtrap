@@ -92,7 +92,9 @@ type job = {
   deadline : float;
       (** The seconds the job may take from its first worker's start, after
           which its process group is killed. *)
-  bail : bool;  (** Whether the job stops at its first counted failure. *)
+  bail : bool;
+      (** Whether the job stops at its first counted failure in or after the
+          test that first evaluated the armed site. *)
   armed : (Windtrap_runtime.Mutate.id * int) option;
       (** The mutant that each of its workers arms before its first case, with
           its budget ([Windtrap_runtime.Mutate.arm]). *)
@@ -112,9 +114,13 @@ type ran = {
   results : Run.result list;  (** The rows of the cases that ended, in order. *)
   release_failures : Failure.t list;
       (** The failures of its releases, and those of no case. *)
-  armed_hits : int;
-      (** The evaluations of the armed site that its workers counted
-          ([Windtrap_runtime.Mutate.armed_hits]), [0] when none is armed. *)
+  evaluated : int option;
+      (** [Some i] when a worker of the job evaluated the armed site. The first
+          evaluation came after the test of result [i - 1] and before the end of
+          the test of result [i]. [i] is [List.length results] when it came
+          after the last test, in a release. [None] when no worker evaluated the
+          site, or none is armed. The mutant did not cause a failure of a result
+          before [i]. *)
   ended : ended;  (** How it ended. *)
 }
 (** The type for what a job did. *)
@@ -141,10 +147,10 @@ val fresh :
     {!Baseline.Check}, no [stream] and no JUnit file, its capture logs under its
     temporary directory, and [/dev/null] as its standard output and error. The
     parent sends the job's cases one at a time, and [Finish] after the last, or
-    after the first counted failure under [bail]. A worker that retires leaves
-    the rest of the job to a fresh worker, which arms the mutant again. Coverage
-    counted by a worker is dropped, since a mutant changed what the program
-    does.
+    under [bail] after the first counted failure in or after the test that first
+    evaluated the armed site. A worker that retires leaves the rest of the job
+    to a fresh worker, which arms the mutant again. Coverage counted by a worker
+    is dropped, since a mutant changed what the program does.
 
     While it runs, the parent handles [SIGINT], [SIGTERM], [SIGHUP] and
     [SIGPIPE], and tells [on_signal] of each as it arrives, in the handler,

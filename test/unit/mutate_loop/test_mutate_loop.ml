@@ -851,6 +851,99 @@ let verdicts =
             (masked r.out));
     ]
 
+(* Failures before the first evaluation *)
+
+(* In [unprimed], the job of [widen]'s mutant runs its reaching tests
+   without the test that primes them, and the first fails before it
+   evaluates the site. *)
+let unprimed_rows verdict =
+  Some
+    [
+      "subject.ml:15 unreached";
+      "subject.ml:18 " ^ verdict;
+      "subject.ml:21 unreached";
+      "subject.ml:27 unreached";
+    ]
+
+let unevaluated_failure () =
+  let r = spawn ~env:[ suite "unprimed" ] [ mutate ] in
+  equal string "exited 0" r.status;
+  equal text "" r.err;
+  equal string
+    "mutants: 1 reached by this suite, 1 not evaluated, 3 never reached"
+    (outcome r.out);
+  contains
+    ~sub:
+      "    a failure that the mutant did not cause: unprimed \u{203a} fails \
+       unless primed\n"
+    r.out;
+  equal (option (list string)) (unprimed_rows "not evaluated") (rows r)
+
+let before_evaluation =
+  group "Failures before the first evaluation"
+    [
+      test
+        "a test that fails before the job evaluates the site does not kill the \
+         mutant, and the report names it"
+        unevaluated_failure;
+      test
+        "a test that fails before the first evaluation does not stop the job, \
+         and a later test decides the mutant" (fun () ->
+          let r = spawn ~env:[ suite "unprimed_late" ] [ mutate ] in
+          equal string "exited 0" r.status;
+          equal string
+            "mutants: 1 survived of 1 reached by this suite, 3 never reached"
+            (outcome r.out);
+          equal
+            (option (list string))
+            (unprimed_rows
+               "survived by unprimed \u{203a} fails unless primed, unprimed \
+                \u{203a} widen is nonzero")
+            (rows r));
+      test
+        "a fixture release that fails in a job that did not evaluate the site \
+         does not kill the mutant" (fun () ->
+          let r = spawn ~env:[ suite "unprimed_release" ] [ mutate ] in
+          equal string "exited 0" r.status;
+          equal string
+            "mutants: 1 reached by this suite, 1 not evaluated, 3 never reached"
+            (outcome r.out);
+          contains
+            ~sub:
+              "    a failure that the mutant did not cause: a fixture release\n"
+            r.out);
+      test
+        "an armed run whose tests fail without an evaluation of the site does \
+         not kill the mutant" (fun () ->
+          let r =
+            spawn
+              ~env:[ suite "unprimed" ]
+              [ "--arm"; site 18; "--filter"; "fails unless primed" ]
+          in
+          equal string "exited 1" r.status;
+          equal string
+            "mutant not evaluated: no selected test ran the site, so the \
+             mutant did not cause the failure."
+            (outcome r.out));
+      test "an armed run does not count a failure before the first evaluation"
+        (fun () ->
+          let r = spawn ~env:[ suite "red" ] [ "--arm"; site 18 ] in
+          equal string "exited 1" r.status;
+          equal string
+            "mutant survived: the armed site was evaluated 2 times, and only \
+             tests before its first evaluation failed."
+            (outcome r.out));
+      test
+        "an armed run under fail-fast stops at a failure before the first \
+         evaluation, which the mutant did not cause" (fun () ->
+          let r = spawn ~env:[ suite "red" ] [ "--arm"; site 18; "-x" ] in
+          equal string "exited 1" r.status;
+          equal string
+            "mutant not evaluated: no selected test ran the site, so the \
+             mutant did not cause the failure."
+            (outcome r.out));
+    ]
+
 (* Tests marked xfail *)
 
 (* [known] pairs [sub] and [widen] each with a test that pins nothing and a
@@ -2019,6 +2112,7 @@ let () =
          probe;
          children;
          verdicts;
+         before_evaluation;
          xfail;
          limits;
          verdict_file;

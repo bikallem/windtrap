@@ -61,9 +61,10 @@ val execute_and_report :
       ran no test before it: the determinism probe, which is the tests that the
       dry run executed, unarmed, and then one job per reached mutant, in the
       order of the catalogue, with the mutant armed and its reaching tests up to
-      the first failure. Up to [config.jobs] run at once, and they are given in
-      that order. The probe agrees iff it executed as many tests, skipped as
-      many and counted no failure.
+      the first failure in or after the test that first evaluated the armed
+      site. Up to [config.jobs] run at once, and they are given in that order.
+      The probe agrees iff it executed as many tests, skipped as many and
+      counted no failure.
     + Once the last job is given it writes the verdict file.
 
     A job starts from module initialization, so what the dry run left, a table
@@ -76,16 +77,21 @@ val execute_and_report :
     probe and every job, and on every run of one binary.
 
     {b Verdicts.} A mutant is {!Windtrap_runtime.Verdicts.Killed} when its job
-    counted a failure, that of a fixture release included. It is
+    counted a failure, that of a fixture release included, after the first
+    evaluation of the armed site or in the test of that evaluation. Until that
+    evaluation, the job runs the code of the program without the mutant. Thus a
+    failure before it has another cause, and the job does not stop there. It is
     {!Windtrap_runtime.Verdicts.Unknown} when its job ended before its tests
     did: its worker was killed by a signal or exited, code under test calling
     [exit] included, or it passed its deadline. Otherwise it is
     {!Windtrap_runtime.Verdicts.Not_evaluated} when its job did not evaluate the
-    armed site ({!Windtrap_runtime.Mutate.armed_hits} is [0]), as when the dry
-    run reached the site in a test only because of what an earlier test had
-    done, and survived when it did. The report lists a not-evaluated and an
-    unknown mutant with the [--arm] command that runs it again, and names it no
-    survivor.
+    armed site, as when the dry run reached the site in a test only because of
+    what an earlier test had done, and survived when it did. The report lists a
+    not-evaluated and an unknown mutant with the [--arm] command that runs it
+    again, and names it no survivor. Under a not-evaluated mutant, the report
+    names the first test of its job that failed, or a fixture release, as a
+    failure that the mutant did not cause. An evaluation in a process that a
+    test forks does not count.
 
     {b Tests marked xfail.} A test marked xfail ({!Test_tree.val-xfail}) reaches
     no mutant and kills none. The dry run and the probe run it, no mutant's job
@@ -164,6 +170,11 @@ val execute_and_report :
       unexpected pass of such a test fails the run and kills no mutant, and a
       site that only such tests evaluated is not reached
       ({!Report.mutation_not_reached}).
+    - A failure kills the mutant as in a job: when its test or an earlier one,
+      in the order of the selection, evaluated the armed site. A fixture release
+      that failed kills it when the run evaluated the site. Under [-x] the run
+      stops at the first counted failure, also when it comes before the first
+      evaluation.
 
     The result of an armed run is that of {!Report.run}, so its exit code is
     that of the ordinary run, [2] included, and it writes its JUnit file. *)

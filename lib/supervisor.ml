@@ -16,14 +16,12 @@ let ( let* ) = Result.bind
 
 (* What a worker sends: that a new start of the executable reached its run
    and serves, a report of [Run.serve], the mutants each test evaluated, and
-   as it ends the coverage counts it hands over and the evaluations of its
-   armed site. *)
+   as it ends the coverage counts it hands over. *)
 type to_parent =
   | Serving
   | Report of Run.report
   | Reached of { test : string list option; sites : (Mutate.id * int) list }
   | Counts of Coverage.t
-  | Hits of int
 
 (* A frame is a 4-byte length and a [Marshal]led value. Nothing that crosses
    holds a closure, which [Marshal] would refuse at once. *)
@@ -116,17 +114,26 @@ let serve (config : Run.config) ~suite tests ~temp_dir ~own_exits ~input ~output
   in
   let reached test sites = send (Reached { test; sites }) in
   let last () =
-    (if mutating config then
-       try
-         window ~send:reached None;
-         send (Hits (Mutate.armed_hits ()))
-       with _ -> ());
+    (if mutating config then try window ~send:reached None with _ -> ());
     let counts = Coverage.take () in
     if Coverage.files counts <> [] then try send (Counts counts) with _ -> ()
   in
+  (* A fatal exception ends a test without its [Test_finished], and its
+     window closes before its [Done]. *)
+  let in_test = ref false in
   let report = function
     | Run.Event event as report ->
-        if mutating config then reach_windows ~send:reached event;
+        if mutating config then begin
+          reach_windows ~send:reached event;
+          match event with
+          | Test_started _ -> in_test := true
+          | Test_finished _ -> in_test := false
+          | _ -> ()
+        end;
+        send (Report report)
+    | Run.Done { served; _ } as report when !in_test ->
+        in_test := false;
+        window ~send:reached (Some served.result.path);
         send (Report report)
     | report -> send (Report report)
   in
@@ -776,7 +783,7 @@ let supervise ?(on_event = ignore) ~on_reach (config : Run.config) ~suite tests
     | Reached { test; sites } ->
         on_reach test sites;
         drain w
-    | Hits _ | Serving -> drain w
+    | Serving -> drain w
     | exception Closed -> ()
   in
   let finish w =
@@ -878,7 +885,6 @@ let supervise ?(on_event = ignore) ~on_reach (config : Run.config) ~suite tests
           job
     | Counts counts, _ -> Coverage.absorb counts
     | Reached { test; sites }, _ -> on_reach test sites
-    | Hits _, _ -> ()
     | Report (Judge attempt), Some job ->
         job.asked <- Some (attempt, Os.counter ())
     | Report (Done { served; stopped; retire }), Some job ->
@@ -1069,7 +1075,7 @@ type ended = Ran | Lost of string | Expired
 type ran = {
   results : Run.result list;
   release_failures : Failure.t list;
-  armed_hits : int;
+  evaluated : int option;
   ended : ended;
 }
 
@@ -1088,7 +1094,7 @@ type state = {
   mutable finishing : bool; (* Finish was sent *)
   mutable rev_results : Run.result list;
   mutable rev_failures : Failure.t list;
-  mutable hits : int;
+  mutable evaluated : int option;
 }
 
 let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
@@ -1120,7 +1126,7 @@ let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
         {
           results = List.rev st.rev_results;
           release_failures = List.rev st.rev_failures;
-          armed_hits = st.hits;
+          evaluated = st.evaluated;
           ended;
         }
   in
@@ -1139,7 +1145,7 @@ let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
           finishing = false;
           rev_results = [];
           rev_failures = [];
-          hits = 0;
+          evaluated = None;
         }
       in
       incr next;
@@ -1169,12 +1175,25 @@ let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
              | Some text -> before_tests status text
              | None -> ended status))
   in
+  (* A worker sends the evaluations of a test before its [Done]. *)
+  let reached st sites =
+    match st.job.armed with
+    | Some (id, _)
+      when Option.is_none st.evaluated
+           && List.exists (fun (s, _) -> Mutate.compare_id s id = 0) sites ->
+        st.evaluated <- Some (List.length st.rev_results)
+    | Some _ | None -> ()
+  in
   let handle st =
     match receive st.w.reports with
     | exception (Closed | Failure _ | End_of_file) -> closed st
     | Report (Done { served; retire; _ }) ->
         st.rev_results <- served.result :: st.rev_results;
-        if st.job.bail && counted_failure served.result then st.pending <- [];
+        if
+          st.job.bail
+          && counted_failure served.result
+          && Option.is_some st.evaluated
+        then st.pending <- [];
         if retire then begin
           st.finishing <- true;
           request st.w Finish
@@ -1185,8 +1204,8 @@ let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
     | Report (Outside failure) -> st.rev_failures <- failure :: st.rev_failures
     | Report Exited -> st.w.exited <- true
     | Serving -> st.w.serving <- true
-    | Report (Event _ | Judge _) | Reached _ | Counts _ -> ()
-    | Hits hits -> st.hits <- st.hits + hits
+    | Reached { sites; _ } -> reached st sites
+    | Report (Event _ | Judge _) | Counts _ -> ()
   in
   let expired st =
     kill st.w;

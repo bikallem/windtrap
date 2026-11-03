@@ -388,6 +388,13 @@ a lossy `%g` spelling is asked for at the call site.
   `fork` or `waitpid` that fails) aborts the run naming the errno,
   because a score over an unknown number of unsupervised children is not
   a score.
+- A failure counts from the first evaluation. A job's worker runs the
+  code without the mutant until it evaluates the armed site, so
+  `Supervisor.fresh` records the first `Reached` frame that names the
+  site, which a worker sends before the `Done` of its test. The job
+  bails, and the mutant is killed, only on a failure at or after that
+  test. A worker sends the frame of a test that a fatal exception ended
+  before its `Done` too.
 - Verdict files are self-describing: each record carries the
   before/after renderings, not just an identifier, because the catalogue
   lives inside the instrumented binary, which `windtrap mutants` never

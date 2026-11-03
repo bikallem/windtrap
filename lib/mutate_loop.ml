@@ -306,11 +306,23 @@ let probe ~dry_run (ran : Supervisor.ran) =
 
 (* The unexpected pass of a test marked xfail counts as a failure of the run
    and kills no mutant. *)
+let kills (r : Run.result) = Option.is_none r.xfail && counted_failure r
+
+(* Until the first evaluation of its site, the mutant runs the code of the
+   program without it, so a failure before then has another cause. *)
 let killed_by (ran : Supervisor.ran) =
-  ran.release_failures <> []
-  || List.exists
-       (fun (r : Run.result) -> Option.is_none r.xfail && counted_failure r)
-       ran.results
+  match ran.evaluated with
+  | None -> false
+  | Some first ->
+      ran.release_failures <> []
+      || List.exists kills (List.filteri (fun i _ -> i >= first) ran.results)
+
+(* The failure of a job that did not evaluate the armed site. *)
+let uncaused (ran : Supervisor.ran) =
+  match List.find_opt kills ran.results with
+  | Some r -> Some (Test_tree.path_to_string r.path)
+  | None when ran.release_failures <> [] -> Some "a fixture release"
+  | None -> None
 
 let seconds s = if s < 10. then strf "%.1fs" s else strf "%.0fs" s
 
@@ -321,10 +333,12 @@ let verdict ~deadline paths (ran : Supervisor.ran) =
   | Supervisor.Expired ->
       Verdicts.Unknown ("its run passed its deadline of " ^ seconds deadline)
   | Lost how -> Verdicts.Unknown ("its run " ^ how)
-  | Ran ->
+  | Ran -> (
       if killed_by ran then Verdicts.Killed
-      else if ran.armed_hits = 0 then Verdicts.Not_evaluated
-      else Verdicts.survived paths
+      else
+        match ran.evaluated with
+        | None -> Verdicts.Not_evaluated
+        | Some _ -> Verdicts.survived paths)
 
 (* Recorded paths are relative to the project root; under [dune runtest] the
    working directory is inside [_build], where they do not open. *)
@@ -374,8 +388,8 @@ type found = {
 
 (* A survivor's block is committed when its job is given, so a loop that
    dies has printed what it found. *)
-let found_verdict renderer (config : Run.config) ~locations found mutant verdict
-    =
+let found_verdict renderer (config : Run.config) ~locations ~failed found mutant
+    verdict =
   (match verdict with
   | Verdicts.Survived { first; others } ->
       let witness path : Report_sections.witness =
@@ -396,7 +410,7 @@ let found_verdict renderer (config : Run.config) ~locations found mutant verdict
       found.survivors <- survivor :: found.survivors
   | Not_evaluated ->
       found.not_evaluated <-
-        { mutant = shown mutant; invocation = config.invocation }
+        { mutant = shown mutant; invocation = config.invocation; failed }
         :: found.not_evaluated
   | Unknown reason ->
       found.unknown <-
@@ -489,7 +503,8 @@ let test_mutants renderer ~suite (config : Run.config) tests ~dry_run ~wall
     else
       let mutant, site = mutants.(index - 1) in
       let paths = List.rev site.tests in
-      found_verdict renderer config ~locations found mutant
+      found_verdict renderer config ~locations ~failed:(uncaused ran) found
+        mutant
         (verdict ~deadline:(deadline paths) paths ran);
       testing index
   in
@@ -654,41 +669,62 @@ let armed renderer ~spec ~suite (config : Run.config) tests =
          reach no mutant, and elsewhere. *)
       let xfail = xfail_paths tests in
       let hits = ref 0 and xfail_hits = ref 0 in
+      (* The tests that evaluated the site, and whether a window of no test
+         did. *)
+      let reaching = Hashtbl.create 16 and outside = ref false in
       let on_reach test sites =
+        let add count n = count := saturating_add !count n in
         List.iter
           (fun (site, n) ->
             if Mutate.compare_id site mutant.id = 0 then
               match test with
-              | Some path when xfail path ->
-                  xfail_hits := saturating_add !xfail_hits n
-              | Some _ | None -> hits := saturating_add !hits n)
+              | None ->
+                  outside := true;
+                  add hits n
+              | Some path ->
+                  Hashtbl.replace reaching path ();
+                  add (if xfail path then xfail_hits else hits) n)
           sites
       in
       let result =
         Report.run ~execute:(Supervisor.execute ~on_reach) ~suite config tests
       in
+      (* As in a job, a failure counts when its test or an earlier one
+         evaluated the site. The order is the selection's, whatever [-j]. *)
+      let failed (outcome : Run.outcome) =
+        let _, caused, before =
+          List.fold_left
+            (fun (evaluated, caused, before) (r : Run.result) ->
+              let evaluated = evaluated || Hashtbl.mem reaching r.path in
+              if not (kills r) then (evaluated, caused, before)
+              else if evaluated then (evaluated, true, before)
+              else (evaluated, caused, true))
+            (!outside, false, false) (Run.results outcome.run)
+        in
+        (caused, before)
+      in
+      let evaluated = !hits > 0 || !xfail_hits > 0 in
       let xfail_failed (outcome : Run.outcome) =
         List.exists
           (fun (r : Run.result) -> Option.is_some r.xfail && counted_failure r)
           (Run.results outcome.run)
       in
-      let killed (outcome : Run.outcome) =
-        outcome.release_failures <> []
-        || List.exists
-             (fun (r : Run.result) ->
-               Option.is_none r.xfail && counted_failure r)
-             (Run.results outcome.run)
-      in
       (match result with
-      | Ok outcome when killed outcome -> Report.mutation_killed renderer
+      | Ok outcome
+        when fst (failed outcome)
+             || (outcome.release_failures <> [] && evaluated) ->
+          Report.mutation_killed renderer
       | Ok outcome when Run.results outcome.run <> [] -> (
+          let failed_before = snd (failed outcome) in
           match (!hits, !xfail_hits) with
-          | 0, 0 -> Report.mutation_not_evaluated renderer
+          | 0, 0 ->
+              Report.mutation_not_evaluated renderer
+                ~failed:(failed_before || outcome.release_failures <> [])
           | 0, _ -> Report.mutation_not_reached renderer
           | _ ->
               Report.mutation_survived renderer
                 ~hits:(saturating_add !hits !xfail_hits)
-                ~xfail_failed:(xfail_failed outcome))
+                ~xfail_failed:(xfail_failed outcome) ~failed_before)
       | Ok _ | Error _ -> ());
       flush_descriptors ();
       result

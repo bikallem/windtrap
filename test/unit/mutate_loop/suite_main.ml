@@ -455,6 +455,40 @@ let priming =
         if !primed then is_true (Subject.widen 3 4 <> 0));
   ]
 
+(* [priming], but a test that runs unprimed fails before it evaluates
+   [widen]. The job of [widen]'s mutant runs its reaching tests alone, so
+   that failure comes before the first evaluation of the site. *)
+let widen_once_primed () =
+  if not !primed then fail "a failure of its own: not primed";
+  is_true (Subject.widen 3 4 <> 0)
+
+let unprimed =
+  [
+    test "primes" (fun () -> primed := true);
+    test "fails unless primed" widen_once_primed;
+  ]
+
+(* [unprimed] with a later reaching test that pins nothing: the job runs it
+   after the failure, and the mutant survives. *)
+let unprimed_late =
+  unprimed
+  @ [ test "widen is nonzero" (fun () -> is_true (Subject.widen 1 2 <> 0)) ]
+
+(* [unprimed] where the release of a fixture fails in place of the test. *)
+let held_unprimed =
+  fixture
+    ~teardown:(fun () ->
+      if not !primed then failwith "a release of its own: not primed")
+    Fun.id
+
+let unprimed_release =
+  [
+    test "primes" (fun () -> primed := true);
+    test "holds a fixture and widens once primed" (fun () ->
+        held_unprimed ();
+        if !primed then is_true (Subject.widen 3 4 <> 0));
+  ]
+
 let retried = ref 0
 let handle = fixture ~teardown:(fun () -> ignore (Subject.crasher 3 1)) Fun.id
 
@@ -499,6 +533,10 @@ let () =
   | "seeded" -> exit @@ run "calc" [ group "seeded" seeded ]
   | "primed" ->
       exit @@ run "calc" [ group "calc" strong; group "primed" priming ]
+  | "unprimed" -> exit @@ run "calc" [ group "unprimed" unprimed ]
+  | "unprimed_late" -> exit @@ run "calc" [ group "unprimed" unprimed_late ]
+  | "unprimed_release" ->
+      exit @@ run "calc" [ group "unprimed" unprimed_release ]
   | "crash" ->
       exit
       @@ run "calc"
