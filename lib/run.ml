@@ -1857,18 +1857,16 @@ let run_started (config : config) ~suite (selection : selection) =
       seeded;
     }
 
-(* [drive] runs [selected] in order, up to the first counted failure under
-   [config.bail], and is [true] iff a counted failure carried no kept
-   correction. *)
-let drive ~on_event ~interrupt run selected =
+(* [drive] runs [selected] in order, up to the first result that [stops],
+   and is [true] iff a counted failure carried no kept correction. *)
+let drive ~on_event ~interrupt ~stops run selected =
   let rec loop uncorrected = function
     | [] -> uncorrected
     | case :: cases ->
         Option.iter interrupt run.interrupted;
         let { result; corrected; _ } = run_case ~on_event run case in
         let uncorrected = uncorrected || (result.counted && not corrected) in
-        if (run.config.bail && result.counted) || Option.is_some run.stopped
-        then uncorrected
+        if stops result || Option.is_some run.stopped then uncorrected
         else loop uncorrected cases
   in
   try loop false selected
@@ -1916,7 +1914,14 @@ let conclude run (selection : selection) ~suite ~started ~uncorrected
     failed_in_ci = selection.in_ci && List.exists (fun r -> r.counted) results;
   }
 
-let execute ?(on_event = ignore) config ~suite tests =
+(* Whether the run stops after [result]: [stop_after] decides when given,
+   and [config.bail] stops at the first counted failure if not. *)
+let stops config stop_after (result : result) =
+  match stop_after with
+  | Some stop -> stop result
+  | None -> config.bail && result.counted
+
+let execute ?(on_event = ignore) ?stop_after config ~suite tests =
   let started = Os.counter () in
   install_exit_guard ();
   let* selection = select config ~suite tests in
@@ -1931,7 +1936,10 @@ let execute ?(on_event = ignore) config ~suite tests =
   let interrupt = interrupt ~on_event run ~started in
   with_interrupts ~interrupt run @@ fun () ->
   on_event (run_started config ~suite selection);
-  let uncorrected = drive ~on_event ~interrupt run selection.cases in
+  let uncorrected =
+    drive ~on_event ~interrupt ~stops:(stops config stop_after) run
+      selection.cases
+  in
   Option.iter interrupt run.interrupted;
   let release_failures =
     release_fixtures run ~announce:(fun name ->

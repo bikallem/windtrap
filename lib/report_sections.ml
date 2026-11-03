@@ -1550,7 +1550,12 @@ let diagnostic (m : mutant) =
      else strf "lines %d-%d" m.line m.end_line)
     m.col m.end_col
 
-type not_evaluated = { mutant : mutant; invocation : Run.invocation }
+type not_evaluated = {
+  mutant : mutant;
+  invocation : Run.invocation;
+  failed : string option;
+}
+
 type unknown = { mutant : mutant; reason : string; invocation : Run.invocation }
 
 type refused = {
@@ -1693,17 +1698,46 @@ let not_evaluated_section ~tests = function
   | [] -> []
   | not_evaluated ->
       let mutant (n : not_evaluated) =
-        [
-          Line
+        Line
+          [
+            plain "  ";
+            styled `Bold n.mutant.id;
+            plain (strf "  %s \u{2192} %s" n.mutant.before n.mutant.after);
+          ]
+        ::
+        (match n.failed with
+        | None -> []
+        | Some failed ->
             [
-              plain "  ";
-              styled `Bold n.mutant.id;
-              plain (strf "  %s \u{2192} %s" n.mutant.before n.mutant.after);
-            ];
-          Hint
-            ("    arm: "
-            ^ arm_command ~invocation:n.invocation ~tests n.mutant.id);
-        ]
+              Line
+                [
+                  plain "    ";
+                  styled `Yellow "a failure that the mutant did not cause: ";
+                  plain failed;
+                ];
+            ])
+        @ [
+            Hint
+              ("    arm: "
+              ^ arm_command ~invocation:n.invocation ~tests n.mutant.id);
+          ]
+      in
+      let causes =
+        if
+          List.exists
+            (fun (n : not_evaluated) -> n.failed <> None)
+            not_evaluated
+        then
+          [
+            Line
+              [
+                plain
+                  "  A failure in such a child has a cause of its own, for \
+                   example a schedule of domains, the clock or the tests \
+                   before it.";
+              ];
+          ]
+        else []
       in
       Rule (Some (strf "not evaluated (%d)" (List.length not_evaluated)))
       :: Line
@@ -1711,7 +1745,8 @@ let not_evaluated_section ~tests = function
              plain
                "  Each site ran in the dry run and not in its mutant's child.";
            ]
-      :: List.concat_map mutant not_evaluated
+      :: causes
+      @ List.concat_map mutant not_evaluated
       @ [ Rule None ]
 
 (* Each mutant with why no run judged it, and the command that runs it

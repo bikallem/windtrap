@@ -455,6 +455,125 @@ let priming =
         if !primed then is_true (Subject.widen 3 4 <> 0));
   ]
 
+(* [priming], but a test that runs unprimed fails before it evaluates
+   [widen]. The job of [widen]'s mutant runs its reaching tests alone, so
+   that failure comes before the first evaluation of the site. *)
+let widen_once_primed () =
+  if not !primed then fail "a failure of its own: not primed";
+  is_true (Subject.widen 3 4 <> 0)
+
+let unprimed =
+  [
+    test "primes" (fun () -> primed := true);
+    test "fails unless primed" widen_once_primed;
+  ]
+
+(* [unprimed] with a later reaching test that pins nothing: the job runs it
+   after the failure, and the mutant survives. *)
+let unprimed_late =
+  unprimed
+  @ [ test "widen is nonzero" (fun () -> is_true (Subject.widen 1 2 <> 0)) ]
+
+(* [unprimed] where the release of a fixture fails in place of the test. *)
+let held_unprimed =
+  fixture
+    ~teardown:(fun () ->
+      if not !primed then failwith "a release of its own: not primed")
+    Fun.id
+
+let unprimed_release =
+  [
+    test "primes" (fun () -> primed := true);
+    test "holds a fixture and widens once primed" (fun () ->
+        held_unprimed ();
+        if !primed then is_true (Subject.widen 3 4 <> 0));
+  ]
+
+(* [widen] in a process that the test forks, which gives the answer on a
+   pipe. *)
+let widen_in_fork a b =
+  let r, w = Unix.pipe () in
+  match Unix.fork () with
+  | 0 ->
+      Unix.close r;
+      let answer = string_of_int (Subject.widen a b) in
+      ignore (Unix.write_substring w answer 0 (String.length answer));
+      Unix._exit 0
+  | pid ->
+      Unix.close w;
+      let answer = In_channel.input_all (Unix.in_channel_of_descr r) in
+      Unix.close r;
+      ignore (Unix.waitpid [] pid);
+      int_of_string answer
+
+(* The first check evaluates [widen] in a forked process only. Under the
+   mutant it fails before the test evaluates [widen] in its own process. *)
+let forked =
+  [
+    test "widen adds in a fork, then here" (fun () ->
+        equal int 7 (widen_in_fork 3 4);
+        equal int 7 (Subject.widen 3 4));
+  ]
+
+(* Only a forked process evaluates [widen], and the test pins nothing. *)
+let fork_only =
+  [ test "widen in a fork" (fun () -> is_true (widen_in_fork 3 4 <> 0)) ]
+
+(* Spins when [widen]'s answer changes, and swallows the soft limit's
+   exception: only the hard kill at the limit ends it. *)
+let spinning =
+  [
+    test "widen spins when it changes" (fun () ->
+        while Subject.widen 3 4 <> 7 do
+          try Unix.sleepf 0.01 with _ -> ()
+        done);
+  ]
+
+(* A slow test that fails without [widen], then a test that pins it. Under
+   [-j 2] the second ends first. *)
+let ahead =
+  [
+    test "slow red" (fun () ->
+        Unix.sleepf 0.2;
+        equal int 1 2);
+    test "widen adds" (fun () -> equal int 7 (Subject.widen 3 4));
+  ]
+
+(* A test marked xfail that passes, which fails the run, before a test
+   that pins [widen]. *)
+let xpass_first =
+  [
+    xfail @@ test "passes" (fun () -> ());
+    test "widen adds" (fun () -> equal int 7 (Subject.widen 3 4));
+  ]
+
+(* The process spawns a domain before its run, so each worker is a new start
+   of the executable. The second new start dies before it serves, so its
+   test fails before any evaluation. A new start claims MUTATE_MARKER, and
+   the one that finds it taken claims its [.2] and dies. *)
+let claim path =
+  match Unix.openfile path [ O_WRONLY; O_CREAT; O_EXCL ] 0o644 with
+  | fd ->
+      Unix.close fd;
+      true
+  | exception Unix.Unix_error (Unix.EEXIST, _, _) -> false
+
+let start_dies () =
+  match Sys.getenv_opt "MUTATE_MARKER" with
+  | None | Some "" -> ()
+  | Some marker ->
+      if Sys.getenv_opt "MUTATE_STARTED" = None then
+        Unix.putenv "MUTATE_STARTED" "1"
+      else if (not (claim marker)) && claim (marker ^ ".2") then
+        Unix.kill (Unix.getpid ()) Sys.sigkill
+
+let dies_at_start =
+  [
+    test "red" (fun () -> equal int 1 2);
+    test "runs in the second worker" (fun () -> ());
+    test "widen is nonzero" (fun () -> is_true (Subject.widen 3 4 <> 0));
+  ]
+
 let retried = ref 0
 let handle = fixture ~teardown:(fun () -> ignore (Subject.crasher 3 1)) Fun.id
 
@@ -499,6 +618,19 @@ let () =
   | "seeded" -> exit @@ run "calc" [ group "seeded" seeded ]
   | "primed" ->
       exit @@ run "calc" [ group "calc" strong; group "primed" priming ]
+  | "unprimed" -> exit @@ run "calc" [ group "unprimed" unprimed ]
+  | "unprimed_late" -> exit @@ run "calc" [ group "unprimed" unprimed_late ]
+  | "unprimed_release" ->
+      exit @@ run "calc" [ group "unprimed" unprimed_release ]
+  | "forked" -> exit @@ run "calc" [ group "forked" forked ]
+  | "fork_only" -> exit @@ run "calc" [ group "forked" fork_only ]
+  | "spinning" -> exit @@ run "calc" [ group "spinning" spinning ]
+  | "ahead" -> exit @@ run "calc" [ group "ahead" ahead ]
+  | "xpass_first" -> exit @@ run "calc" [ group "xpass" xpass_first ]
+  | "dies_at_start" ->
+      start_dies ();
+      Domain.join (Domain.spawn ignore);
+      exit @@ run "calc" [ group "start" dies_at_start ]
   | "crash" ->
       exit
       @@ run "calc"

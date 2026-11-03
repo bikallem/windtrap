@@ -330,6 +330,7 @@ module Private = struct
   module Shrink = Shrink
   module Source_patch = Source_patch
   module Stateful = Stateful
+  module Supervisor = Supervisor
   module Test_tree = Test_tree
   module Text = Text
   module Tolerance = Tolerance

@@ -466,9 +466,13 @@ type not_evaluated = {
   mutant : mutant;  (** The mutant whose child did not evaluate its site. *)
   invocation : Run.invocation;
       (** How to run again an executable whose child did not evaluate it. *)
+  failed : string option;
+      (** What failed in the child, if something failed: the path of a test, or
+          ["a fixture release"]. The mutant did not cause this failure, because
+          the child did not evaluate its site. *)
 }
-(** The type for a reached mutant whose child passed without evaluating its
-    site, which is no survivor. *)
+(** The type for a reached mutant whose child did not evaluate its site, which
+    is no survivor and no kill. *)
 
 type unknown = {
   mutant : mutant;  (** The mutant that no run judged. *)
@@ -558,8 +562,10 @@ val mutation_closing : config:Run.config -> mutation -> section list
       decided on [m], whatever was printed.
     - when [m.not_evaluated] is not empty, the not-evaluated section, between an
       opening rule that carries their number and a closing rule. It says in one
-      line that each site ran in the dry run and not in the child of its mutant,
-      then gives each mutant on one line and, under it, the [arm:] command that
+      line that each site ran in the dry run and not in the child of its mutant.
+      When a mutant of the section has a [failed], a second line gives possible
+      causes of such a failure. Then the section gives each mutant on one line.
+      Under it come its [failed], when it has one, and the [arm:] command that
       runs its [invocation] with [--arm] and the selection of [config], as the
       [reproduce:] command below does.
     - when [m.unknown] is not empty, the unknown section, laid out as the

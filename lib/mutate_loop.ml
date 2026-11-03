@@ -304,13 +304,26 @@ let probe ~dry_run (ran : Supervisor.ran) =
                ^ ")")
            not_a_number)
 
-(* The unexpected pass of a test marked xfail counts as a failure of the run
-   and kills no mutant. *)
+(* A counted failure of a test not marked xfail. The unexpected pass of a
+   test marked xfail fails the run and kills no mutant. *)
+let kills (r : Run.result) = Option.is_none r.xfail && counted_failure r
+
+(* Until the first evaluation of its site, the mutant runs the code of the
+   program without it, so a failure before then has another cause. A job that
+   cannot see forked processes cannot tell, and each failure counts. *)
 let killed_by (ran : Supervisor.ran) =
-  ran.release_failures <> []
-  || List.exists
-       (fun (r : Run.result) -> Option.is_none r.xfail && counted_failure r)
-       ran.results
+  match if ran.witnessed then ran.evaluated else Some 0 with
+  | None -> false
+  | Some first ->
+      ran.release_failures <> []
+      || List.exists kills (List.filteri (fun i _ -> i >= first) ran.results)
+
+(* The failure of a job that did not evaluate the armed site. *)
+let uncaused (ran : Supervisor.ran) =
+  match List.find_opt kills ran.results with
+  | Some r -> Some (Test_tree.path_to_string r.path)
+  | None when ran.release_failures <> [] -> Some "a fixture release"
+  | None -> None
 
 let seconds s = if s < 10. then strf "%.1fs" s else strf "%.0fs" s
 
@@ -321,10 +334,12 @@ let verdict ~deadline paths (ran : Supervisor.ran) =
   | Supervisor.Expired ->
       Verdicts.Unknown ("its run passed its deadline of " ^ seconds deadline)
   | Lost how -> Verdicts.Unknown ("its run " ^ how)
-  | Ran ->
+  | Ran -> (
       if killed_by ran then Verdicts.Killed
-      else if ran.armed_hits = 0 then Verdicts.Not_evaluated
-      else Verdicts.survived paths
+      else
+        match ran.evaluated with
+        | None -> Verdicts.Not_evaluated
+        | Some _ -> Verdicts.survived paths)
 
 (* Recorded paths are relative to the project root; under [dune runtest] the
    working directory is inside [_build], where they do not open. *)
@@ -374,8 +389,8 @@ type found = {
 
 (* A survivor's block is committed when its job is given, so a loop that
    dies has printed what it found. *)
-let found_verdict renderer (config : Run.config) ~locations found mutant verdict
-    =
+let found_verdict renderer (config : Run.config) ~locations ~failed found mutant
+    verdict =
   (match verdict with
   | Verdicts.Survived { first; others } ->
       let witness path : Report_sections.witness =
@@ -396,7 +411,7 @@ let found_verdict renderer (config : Run.config) ~locations found mutant verdict
       found.survivors <- survivor :: found.survivors
   | Not_evaluated ->
       found.not_evaluated <-
-        { mutant = shown mutant; invocation = config.invocation }
+        { mutant = shown mutant; invocation = config.invocation; failed }
         :: found.not_evaluated
   | Unknown reason ->
       found.unknown <-
@@ -489,7 +504,8 @@ let test_mutants renderer ~suite (config : Run.config) tests ~dry_run ~wall
     else
       let mutant, site = mutants.(index - 1) in
       let paths = List.rev site.tests in
-      found_verdict renderer config ~locations found mutant
+      found_verdict renderer config ~locations ~failed:(uncaused ran) found
+        mutant
         (verdict ~deadline:(deadline paths) paths ran);
       testing index
   in
@@ -552,7 +568,8 @@ let loop renderer ~scope ~suite (config : Run.config) tests =
     let on_reach = observe reach ~xfail:(xfail_paths tests) in
     match
       Report.run
-        ~execute:(Supervisor.execute ~on_reach)
+        ~execute:(fun ?on_event config ->
+          Supervisor.execute ~on_reach ?on_event config)
         ~suite
         { config with junit = None }
         tests
@@ -632,7 +649,9 @@ let loop renderer ~scope ~suite (config : Run.config) tests =
 (* The armed run *)
 
 let armed renderer ~spec ~suite (config : Run.config) tests =
-  match Result.bind (Mutate.id_of_string spec) Mutate.arm with
+  match
+    Result.bind (Mutate.id_of_string spec) (fun id -> Supervisor.arm id)
+  with
   | Error (Mutate.Uncatalogued _ as error) ->
       Os.say (Pp.to_string Mutate.pp_arm_error error);
       ordinary ~suite config tests
@@ -650,45 +669,101 @@ let armed renderer ~spec ~suite (config : Run.config) tests =
       flush_descriptors ();
       (* What module initialization evaluated ran before the mutant was. *)
       Mutate.reset_reach ();
-      (* The evaluations of the armed site inside tests marked xfail, which
-         reach no mutant, and elsewhere. *)
-      let xfail = xfail_paths tests in
-      let hits = ref 0 and xfail_hits = ref 0 in
+      (* The evaluations of the armed site in each test and outside every
+         test, and the tests whose worker ended first, which evaluations are
+         unknown. An evaluation outside every test counts as before every
+         test. *)
+      let reaching = Hashtbl.create 16 and lost = Hashtbl.create 4 in
+      let outside = ref None in
       let on_reach test sites =
         List.iter
           (fun (site, n) ->
             if Mutate.compare_id site mutant.id = 0 then
               match test with
-              | Some path when xfail path ->
-                  xfail_hits := saturating_add !xfail_hits n
-              | Some _ | None -> hits := saturating_add !hits n)
+              | None ->
+                  outside :=
+                    Some (saturating_add (Option.value !outside ~default:0) n)
+              | Some path ->
+                  let hits =
+                    Option.value (Hashtbl.find_opt reaching path) ~default:0
+                  in
+                  Hashtbl.replace reaching path (saturating_add hits n))
           sites
       in
+      let on_lost path = Hashtbl.replace lost path () in
+      let blind () = not (Supervisor.forks_seen ()) in
+      let before () = Option.is_some !outside || blind () in
+      (* As in a job, a failure counts when its test or an earlier one, in
+         the order of the selection, evaluated the site. *)
+      let evaluated_in (r : Run.result) =
+        Hashtbl.mem reaching r.path || Hashtbl.mem lost r.path
+      in
+      (* Under [-x] the run stops at the first failure that kills the
+         mutant. *)
+      let through = ref false in
+      let stop_after (r : Run.result) =
+        through := !through || evaluated_in r;
+        config.bail && kills r && (!through || before ())
+      in
       let result =
-        Report.run ~execute:(Supervisor.execute ~on_reach) ~suite config tests
-      in
-      let xfail_failed (outcome : Run.outcome) =
-        List.exists
-          (fun (r : Run.result) -> Option.is_some r.xfail && counted_failure r)
-          (Run.results outcome.run)
-      in
-      let killed (outcome : Run.outcome) =
-        outcome.release_failures <> []
-        || List.exists
-             (fun (r : Run.result) ->
-               Option.is_none r.xfail && counted_failure r)
-             (Run.results outcome.run)
+        Report.run
+          ~execute:(fun ?on_event config ->
+            Supervisor.execute ~on_reach ~on_lost ~stop_after ?on_event config)
+          ~suite config tests
       in
       (match result with
-      | Ok outcome when killed outcome -> Report.mutation_killed renderer
       | Ok outcome when Run.results outcome.run <> [] -> (
-          match (!hits, !xfail_hits) with
-          | 0, 0 -> Report.mutation_not_evaluated renderer
-          | 0, _ -> Report.mutation_not_reached renderer
-          | _ ->
+          let results = Run.results outcome.run in
+          let _, caused, failed_before =
+            List.fold_left
+              (fun (evaluated, caused, failed_before) (r : Run.result) ->
+                let evaluated = evaluated || evaluated_in r in
+                if not (kills r) then (evaluated, caused, failed_before)
+                else if evaluated then (evaluated, true, failed_before)
+                else (evaluated, caused, true))
+              (before (), false, false)
+              results
+          in
+          (* Only the rows that the run reported count. *)
+          let hits xfailed =
+            List.fold_left
+              (fun acc (r : Run.result) ->
+                match Hashtbl.find_opt reaching r.path with
+                | Some n when Option.is_some r.xfail = xfailed ->
+                    Some (saturating_add (Option.value acc ~default:0) n)
+                | Some _ | None -> acc)
+              None results
+          in
+          let in_other =
+            match (!outside, hits false) with
+            | None, None -> None
+            | a, b ->
+                Some
+                  (saturating_add
+                     (Option.value a ~default:0)
+                     (Option.value b ~default:0))
+          in
+          let in_xfail = hits true in
+          let release_failed = outcome.release_failures <> [] in
+          let xfail_failed =
+            List.exists
+              (fun (r : Run.result) ->
+                Option.is_some r.xfail && counted_failure r)
+              results
+          in
+          match (in_other, in_xfail) with
+          | _ when caused -> Report.mutation_killed renderer
+          | (Some _, _ | _, Some _) when release_failed ->
+              Report.mutation_killed renderer
+          | _ when release_failed && blind () -> Report.mutation_killed renderer
+          | None, None ->
+              Report.mutation_not_evaluated renderer
+                ~failed:(failed_before || release_failed)
+          | None, Some _ -> Report.mutation_not_reached renderer
+          | Some n, x ->
               Report.mutation_survived renderer
-                ~hits:(saturating_add !hits !xfail_hits)
-                ~xfail_failed:(xfail_failed outcome))
+                ~hits:(saturating_add n (Option.value x ~default:0))
+                ~xfail_failed ~failed_before)
       | Ok _ | Error _ -> ());
       flush_descriptors ();
       result

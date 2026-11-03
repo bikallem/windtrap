@@ -349,19 +349,26 @@ val mutation_armed : t -> id:string -> before:string -> after:string -> unit
 *)
 
 val mutation_killed : t -> unit
-(** [mutation_killed t] prints the verdict of an armed run in which the mutant
-    made a test fail, tests marked xfail aside. *)
+(** [mutation_killed t] prints the verdict of an armed run in which a fixture
+    release, or a test not marked xfail, failed after the first evaluation of
+    the armed site. A test that evaluated the site and then failed counts. *)
 
-val mutation_survived : t -> hits:int -> xfail_failed:bool -> unit
+val mutation_survived :
+  ?failed_before:bool -> t -> hits:int -> xfail_failed:bool -> unit
 (** [mutation_survived t ~hits ~xfail_failed] prints the verdict of an armed run
-    in which no test failed although the armed site was evaluated, tests marked
-    xfail aside. The line states [hits], the number of evaluations. When
+    in which no test failed after the first evaluation of the armed site, tests
+    marked xfail aside. The line states [hits], the number of evaluations, or
+    that only a forked process evaluated the site when [hits] is [0]. When
     [xfail_failed] is [true], a test marked xfail passed, which fails it, and
-    the line says that only such tests failed. *)
+    the line says that only such tests failed. When [failed_before] is [true]
+    (default [false]), a test failed before the first evaluation, and the line
+    says that only such tests failed. *)
 
-val mutation_not_evaluated : t -> unit
+val mutation_not_evaluated : ?failed:bool -> t -> unit
 (** [mutation_not_evaluated t] prints the verdict of an armed run in which no
-    selected test evaluated the armed site. *)
+    selected test evaluated the armed site. When [failed] is [true] (default
+    [false]), a test or a fixture release failed, and the line says that the
+    mutant did not cause the failure. *)
 
 val mutation_not_reached : t -> unit
 (** [mutation_not_reached t] prints the verdict of an armed run in which only

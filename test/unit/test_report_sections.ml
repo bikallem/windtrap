@@ -2280,6 +2280,7 @@ let memo_missed =
         ~source:(source_of [ (4, "  | None -> let v = a + b in") ])
         "lib/memo.ml:4:17:sub" 4 "a + b" "a - b";
     invocation = `Exe "./test_memo.exe";
+    failed = None;
   }
 
 let hung =
@@ -2476,6 +2477,21 @@ let mutation_entries () =
         } );
     ( "not evaluated: each mutant with the command that arms it",
       at_rest ~ansi:true reached_report );
+    ( "not evaluated: a failure that the mutant did not cause",
+      at_rest ~ansi:true
+        {
+          loop_report with
+          Sections.survivors = [];
+          not_evaluated =
+            [
+              memo_missed;
+              {
+                memo_missed with
+                Sections.failed = Some "memo \u{203a} cold table";
+              };
+              { memo_missed with Sections.failed = Some "a fixture release" };
+            ];
+        } );
     ( "evaluated outside tests follows never reached",
       at_rest
         {
