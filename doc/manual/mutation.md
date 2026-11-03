@@ -486,10 +486,11 @@ the counts and the score, the verdict files, and each mutant with its
 verdict. A survivor also has the tests that ran it, and an unknown
 mutant has its reason. A test names its verdict file by its index in
 `executables`, because two files can have the same name. Under
-`--lines` or `--diff`, the counts, the score and `mutants` hold only
-the mutants on the lines, but `executables` and `refused` still give
-every verdict file. Under `--min`, the outcome line goes to standard error, and the
-exit code is that of the gate. A later version can add keys. A change
+`--lines` or `--diff`, the verdict counts, the score and `mutants` hold
+only the mutants on the lines. But `executables` still lists every
+verdict file, and `refused` still counts every refused file. Under
+`--min`, the outcome line goes to standard error, and the exit code is
+that of the gate. A later version can add keys. A change
 to the meaning of a key increments `version`.
 [`bin/mutate_cmd.mli`](../../bin/mutate_cmd.mli) gives each key:
 

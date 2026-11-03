@@ -601,8 +601,8 @@ The score and its gate
 
 The score is the percentage of killed mutants among those killed, survived
 and not evaluated. Without a gate, one survivor fails the command. With
---min, the outcome line gives the gate, and only a score below it fails
-the command. The gate compares the score before it is rounded:
+--min, the outcome line gives the gate, and only a score below it, or a
+refused file, fails the command. The gate compares the score before it is rounded:
 
   $ cd "$scratch/three"
   $ for min in 0 60 66.6 66.7 100; do
@@ -889,9 +889,10 @@ refused, or null:
         "reason": "its run was killed by SIGSEGV" } ] }
   [1]
 
-Under a line scope, the counts, the score and "mutants" hold only the
-mutants on the lines. "executables" and "refused" still give every file,
-because each file stays in the merge:
+Under a line scope, the verdict counts, the score and "mutants" hold only
+the mutants on the lines. "executables" still lists every file, and
+"refused" still counts every refused file, because each file stays in the
+merge:
 
   $ run windtrap mutants --json --lines=lib/calc.ml:1
   { "version": 1,

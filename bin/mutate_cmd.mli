@@ -132,8 +132,8 @@
     others. A change to the meaning of a key increments ["version"]. Under
     [--lines] or [--diff], the verdict counts, ["reached"], ["score"] and
     ["mutants"] hold only the mutants on the lines, as the report does. But
-    ["executables"] and ["refused"] still give every file that is kept, because
-    each file stays in the merge.
+    ["executables"] still lists every file that is kept, and ["refused"] still
+    counts every refused file, because each file stays in the merge.
 
     The document is one object with the keys ["version"], ["summary"],
     ["executables"] and ["mutants"]. ["version"] is the number [1].
