@@ -84,10 +84,11 @@ val execute :
     given before the parent reaches its row, and [None] for those of no test,
     the parent's first. Defaults to ignoring them.
 
-    [on_lost path] is called when the worker of the test [path] ends before the
-    test does, by a crash, a signal or the kill at its limit. Its evaluations
-    are then unknown. Defaults to ignoring it. [stop_after] is that of
-    {!Run.execute}. *)
+    [on_lost path] is called when the worker of the test [path] ends during the
+    test, by a crash, a signal or the kill at its limit. Its evaluations are
+    then unknown. A worker that ends before it serves armed no mutant, and is no
+    such end. Defaults to ignoring it. [stop_after] is that of {!Run.execute}.
+*)
 
 val arm :
   ?budget:int ->

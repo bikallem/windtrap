@@ -698,12 +698,12 @@ let armed renderer ~spec ~suite (config : Run.config) tests =
       let evaluated_in (r : Run.result) =
         Hashtbl.mem reaching r.path || Hashtbl.mem lost r.path
       in
-      (* Under [-x] the run stops at a counted row, except at a failure that
-         the mutant did not cause. *)
+      (* Under [-x] the run stops at the first failure that kills the
+         mutant. *)
       let through = ref false in
       let stop_after (r : Run.result) =
         through := !through || evaluated_in r;
-        config.bail && r.counted && ((not (kills r)) || !through || before ())
+        config.bail && kills r && (!through || before ())
       in
       let result =
         Report.run

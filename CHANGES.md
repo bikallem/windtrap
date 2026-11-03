@@ -48,7 +48,7 @@
   `mutant survived: only a forked process evaluated the armed site and no test failed.`
   Before, an `--arm` run in which only a forked process evaluated the
   site ended on `mutant not evaluated`. Under `-x`, an `--arm` run stops
-  only at a failure that kills the mutant.
+  at the first failure that kills the mutant.
 - (breaking) The verdict file format is `windtrap-mutants-v11`. A file
   of an earlier format is refused. Delete `_build/_mutants` and run the
   suites again.

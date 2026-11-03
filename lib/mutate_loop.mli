@@ -176,12 +176,13 @@ val execute_and_report :
     - A test that fails kills the mutant when it or an earlier test, in the
       order of the selection, evaluated the armed site. An evaluation outside
       every test counts as one before every test. A test whose worker ended
-      before the test did has unknown evaluations, and its failure counts. A
-      fixture release that fails kills the mutant when the run evaluated the
-      site at any time. The mutant is armed with [Supervisor.arm], so an
-      evaluation in a forked process counts. Only the rows that the run reports
-      count. Under [-x] the run stops at the first counted failure, except at a
-      failure that the mutant did not cause.
+      during the test has unknown evaluations, and its failure counts. A fixture
+      release that fails kills the mutant when the run evaluated the site at any
+      time. The mutant is armed with [Supervisor.arm], so an evaluation in a
+      forked process counts. The evaluations of a test count only when the run
+      reports its row. An evaluation outside every test always counts, also one
+      in the fixture release of a test that ran past the stop of the run. Under
+      [-x] the run stops at the first failure that kills the mutant.
 
     The result of an armed run is that of {!Report.run}, so its exit code is
     that of the ordinary run, [2] included, and it writes its JUnit file. *)

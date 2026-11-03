@@ -1006,6 +1006,28 @@ let before_evaluation =
           equal string "exited 1" r.status;
           equal string "mutant killed." (outcome r.out));
       test
+        "an armed run under fail-fast does not stop at the unexpected pass of \
+         a test marked xfail" (fun () ->
+          let r =
+            spawn ~env:[ suite "xpass_first" ] [ "--arm"; site 18; "-x" ]
+          in
+          equal string "exited 1" r.status;
+          equal string "mutant killed." (outcome r.out));
+      test
+        "an armed run does not count a test whose worker died before it \
+         served, which armed no mutant" (fun () ->
+          let marker = Filename.concat (temp_dir ()) "marker" in
+          let r =
+            spawn
+              ~env:[ suite "dies_at_start"; ("MUTATE_MARKER", marker) ]
+              [ "--arm"; site 18; "-j"; "2" ]
+          in
+          equal string "exited 1" r.status;
+          equal string
+            "mutant survived: the armed site was evaluated 1 time, and only \
+             tests before its first evaluation failed."
+            (outcome r.out));
+      test
         "an armed run counts a test whose worker crashed, whose evaluations \
          are unknown" (fun () ->
           let r = spawn ~env:[ suite "crash" ] [ "--arm"; site 27 ] in

@@ -539,6 +539,37 @@ let ahead =
     test "widen adds" (fun () -> equal int 7 (Subject.widen 3 4));
   ]
 
+(* A test marked xfail that passes, which fails the run, before a test
+   that pins [widen]. *)
+let xpass_first =
+  [
+    xfail @@ test "passes" (fun () -> ());
+    test "widen adds" (fun () -> equal int 7 (Subject.widen 3 4));
+  ]
+
+(* The process spawns a domain before its run, so each worker is a new start
+   of the executable. The second new start dies before it serves, so its
+   test fails before any evaluation. MUTATE_MARKER names a file that tells
+   the new starts apart. *)
+let start_dies () =
+  match Sys.getenv_opt "MUTATE_MARKER" with
+  | None | Some "" -> ()
+  | Some marker ->
+      if Sys.getenv_opt "MUTATE_STARTED" = None then
+        Unix.putenv "MUTATE_STARTED" "1"
+      else if not (Sys.file_exists marker) then close_out (open_out marker)
+      else if not (Sys.file_exists (marker ^ ".2")) then begin
+        close_out (open_out (marker ^ ".2"));
+        Unix.kill (Unix.getpid ()) Sys.sigkill
+      end
+
+let dies_at_start =
+  [
+    test "red" (fun () -> equal int 1 2);
+    test "runs in the second worker" (fun () -> ());
+    test "widen is nonzero" (fun () -> is_true (Subject.widen 3 4 <> 0));
+  ]
+
 let retried = ref 0
 let handle = fixture ~teardown:(fun () -> ignore (Subject.crasher 3 1)) Fun.id
 
@@ -591,6 +622,11 @@ let () =
   | "fork_only" -> exit @@ run "calc" [ group "forked" fork_only ]
   | "spinning" -> exit @@ run "calc" [ group "spinning" spinning ]
   | "ahead" -> exit @@ run "calc" [ group "ahead" ahead ]
+  | "xpass_first" -> exit @@ run "calc" [ group "xpass" xpass_first ]
+  | "dies_at_start" ->
+      start_dies ();
+      Domain.join (Domain.spawn ignore);
+      exit @@ run "calc" [ group "start" dies_at_start ]
   | "crash" ->
       exit
       @@ run "calc"

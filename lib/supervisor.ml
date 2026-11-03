@@ -737,7 +737,6 @@ let supervise ?(on_event = ignore) ?stop_after ~on_reach ~on_lost
   in
   let drop w = workers := List.filter (fun x -> x != w) !workers in
   let lose (job : case_job) failure =
-    on_lost job.case.path;
     settled.(job.index) <-
       Some
         (Lost (Run.lost run job.case failure ~duration:(Os.count_s job.started)))
@@ -770,6 +769,7 @@ let supervise ?(on_event = ignore) ?stop_after ~on_reach ~on_lost
           | text -> Failure.with_output_tail (Failure.tail text) failure)
     | Some job, _, _ ->
         w.job <- None;
+        on_lost job.case.path;
         let loc = job.case.loc in
         lose job
           (if w.exited then
@@ -793,6 +793,7 @@ let supervise ?(on_event = ignore) ?stop_after ~on_reach ~on_lost
     ignore (reap w);
     bury w;
     w.job <- None;
+    on_lost job.case.path;
     lose job (Failure.timeout ?loc:job.case.loc limit)
   in
   (* An event of the case that the observer is at is given at once, and one
