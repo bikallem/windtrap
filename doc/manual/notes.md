@@ -444,8 +444,9 @@ repeats a comparison's or an arithmetic operator's own mutant, an OS
 flag, and a literal or a statement that runs before any test, which no
 run can judge. It also leaves without a mutant what the syntax alone
 shows equivalent, as `x + 0`, `a && a` and the condition of
-`if c then e else e`, and a change of a log message or of a failure
-message alone: a survivor there asks for no test.
+`if c then e else e`. A change of a log message or of a failure message
+alone gets no mutant either. A test can see such a change, but no test
+should pin the text of a message, as no test should pin a capacity.
 
 ## A mutant killed anywhere is killed
 

@@ -159,22 +159,31 @@
       changes which operand runs.
     - Each rewrite skips the sites in the arguments of a logging function:
       [Logs.app], [Logs.err], [Logs.warn], [Logs.info], [Logs.debug] and
-      [Logs.msg], as the source spells them. The list is fixed. A printing
-      function, as [Printf.printf], is no logging function, because a test can
-      read what it prints.
+      [Logs.msg]. The rule reads these names as the source spells them, so a
+      module [Logs] of the project in another file matches too. A file that
+      declares a module [Logs] loses this rule. The list is fixed.
     - [int] and [bool] skip a literal in the arguments of [failwith] or
       [invalid_arg], with or without [Stdlib.]. A file that binds one of these
-      names loses this rule. A literal in the argument of [raise] keeps its
-      mutant, because a test can compare the exception.
+      names loses this rule. The rewriter does not see a binding that an [open]
+      or an [include] of another unit brings in. The rule does not cover
+      [raise].
+
+    The last two rules are a choice and not an equivalence. A test can read a
+    log message or a failure message, and thus kill such a mutant. The rules
+    hold that no test should pin the text of a message, as no test should pin a
+    capacity. No attribute and no flag gives such a mutant back.
 
     The arguments of [f] are those of [f x], of [f @@ x], of [x |> f], and of
-    [Printf.ksprintf f] and [Format.kasprintf f] applied to a format. A
-    statement in the arguments of a logging function, of [failwith] or of
-    [invalid_arg] keeps its mutants, with the sites inside it, because it acts
-    on the state of the program. A statement is the left operand of a sequence
-    or the expression of [let () = e in]. A logging call that is a statement
-    keeps its own [del] mutant. These two rules do not see other effects, for
-    example of a function that the message calls.
+    [Printf.ksprintf f] and [Format.kasprintf f] applied to a format. [f @@ x]
+    and [x |> f] match only when [f] is a name. Thus the message of
+    [Logs.err ~src @@ fun m -> ...] keeps its mutants, and that of
+    [Logs.err ~src (fun m -> ...)] does not. A statement in the arguments of a
+    logging function, of [failwith] or of [invalid_arg] keeps its mutants, with
+    the sites inside it, because it acts on the state of the program. A
+    statement is the left operand of a sequence or the expression of
+    [let () = e in]. A logging call that is a statement keeps its own [del]
+    mutant. These two rules do not see other effects, for example of a function
+    that the message calls.
 
     Two expressions are one expression when their parsetrees are equal without
     their locations. An expression whose value can depend on its location is one

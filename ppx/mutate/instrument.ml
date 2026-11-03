@@ -88,9 +88,10 @@ let is_test_item si =
 
 (* Operators *)
 
-(* [Message] is the rule of the failure message, which reads [failwith] and
+(* [Log] is the rule of the logging call, which reads the module [Logs], and
+   [Message] the rule of the failure message, which reads [failwith] and
    [invalid_arg]. *)
-type family = Ari | Cmp | Con | Ret | Message
+type family = Ari | Cmp | Con | Ret | Log | Message
 
 (* Each rewritten operator with its family, the name of its rewrite and the
    operator that replaces it. *)
@@ -117,7 +118,8 @@ let operators =
    [tail] name the predefined [None] and give [t] the type of [h :: t], so a
    file that declares a constructor [Some], [None] or [(::)], in a type or as
    an extension constructor, loses them. A file that binds [failwith] or
-   [invalid_arg] loses [Message]. *)
+   [invalid_arg] loses [Message], and one that declares a module [Logs] loses
+   [Log]. *)
 let kept_families structure =
   let lose name lost =
     match (name, List.assoc_opt name operators) with
@@ -128,6 +130,9 @@ let kept_families structure =
   let lose_constructor name lost =
     match name with "Some" | "None" | "::" -> Ret :: lost | _ -> lost
   in
+  let lose_module name lost =
+    match name with Some "Logs" -> Log :: lost | _ -> lost
+  in
   let scan =
     object
       inherit [family list] Ast_traverse.fold as super
@@ -136,9 +141,24 @@ let kept_families structure =
         let lost =
           match p.ppat_desc with
           | Ppat_var { txt; _ } -> lose txt lost
+          | Ppat_unpack { txt; _ } -> lose_module txt lost
           | _ -> lost
         in
         super#pattern p lost
+
+      method! expression e lost =
+        let lost =
+          match e.pexp_desc with
+          | Pexp_letmodule ({ txt; _ }, _, _) -> lose_module txt lost
+          | _ -> lost
+        in
+        super#expression e lost
+
+      method! module_binding mb lost =
+        super#module_binding mb (lose_module mb.pmb_name.txt lost)
+
+      method! module_declaration md lost =
+        super#module_declaration md (lose_module md.pmd_name.txt lost)
 
       method! value_description vd lost =
         super#value_description vd (lose vd.pval_name.txt lost)
@@ -249,7 +269,7 @@ let mutant ~keeps context e =
               mutant
                 (if app.name = "=" || app.name = "<>" then Negate else Swap)
           | Ari -> mutant (Replace replacement)
-          | Ret | Message (* no operator *) -> neg ())
+          | Ret | Log | Message (* no operator *) -> neg ())
       | Some _ | None -> neg ())
 
 (* Literals *)
@@ -1074,7 +1094,7 @@ class instrumenter ~keeps ~module_name =
             e with
             pexp_desc = Pexp_let (Recursive, bindings, self#expression body);
           }
-      | Pexp_apply _ when calls is_logger e ->
+      | Pexp_apply _ when keeps Log && calls is_logger e ->
           self#within ~logging:true ~message (fun () -> super#expression e)
       | Pexp_apply _ when keeps Message && calls is_failure e ->
           self#within ~logging ~message:true (fun () -> super#expression e)

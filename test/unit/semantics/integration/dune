@@ -4,6 +4,7 @@
   arid
   attributes
   forced
+  logs
   no_guard
   oracle
   own_constructors

@@ -514,8 +514,8 @@ site and has no `tail` mutant of its own, since one identifier names one
 site.
 
 The rewriter also gives no mutant where the syntax shows the mutant
-equivalent to the original, or where the mutant changes a log message
-or a failure message alone:
+equivalent to the original. It gives none where the mutant changes a
+log message or a failure message alone. These cases are:
 
 - `x + 0` and `x - 0`, with an integer `0`. `0 + x` keeps its mutant.
 - `a && a` and `a || a`, when `a` is a name, a constructor without an
@@ -524,11 +524,21 @@ or a failure message alone:
   same code. Code that can give its location, as `__LOC__`, `assert` or
   a `match`, is never the same code as its copy.
 - Each site in the arguments of `Logs.app`, `Logs.err`, `Logs.warn`,
-  `Logs.info`, `Logs.debug` and `Logs.msg`, as the source spells them.
-  This list is fixed, and no flag adds a name.
+  `Logs.info`, `Logs.debug` and `Logs.msg`. The rule reads these names
+  as the source spells them, so a module `Logs` of your project in
+  another file matches too. A file that declares a module `Logs` loses
+  the rule. The list is fixed, and no flag adds a name.
 - An integer or boolean literal in the arguments of `failwith` or
-  `invalid_arg`. A literal in the argument of `raise` keeps its mutant,
-  because a test can compare the exception.
+  `invalid_arg`. A file that binds one of these names loses the rule,
+  but the rewriter does not see a binding from an `open` or an
+  `include`. `raise` is not covered.
+
+The last two cases are a choice and not an equivalence. A test can read
+a log message or a failure message, and thus kill such a mutant. The
+rewriter holds that no test should pin the text of a message. No
+attribute and no flag gives such a mutant back. `f @@ x` and `x |> f`
+match only when `f` is a name, so the message of
+`Logs.err ~src @@ fun m -> ...` keeps its mutants.
 
 A statement in these arguments keeps its mutants, because it acts on the
 state of the program. In `a + b + 0` the outermost `+` has no mutant, so

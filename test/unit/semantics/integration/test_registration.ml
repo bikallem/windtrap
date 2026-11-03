@@ -388,7 +388,7 @@ let arid_reading () =
   Arid.logged 4;
   strf "%d %d %b %d %d %d" (Arid.zero 4) (Arid.chain 5 3) (Arid.same true)
     (Arid.branches false 7) (Arid.message 2)
-    (Queue.take Arid.Logs.logged)
+    (Queue.take Windtrap_mutate_forced.Logs.logged)
 
 let arid_sites () =
   let site (m : Mutate.mutant) = strf "%s %s" m.id.rewrite m.before in
@@ -397,14 +397,14 @@ let arid_sites () =
     [ "sub a + b"; "le n < 0" ]
     (List.map site (mutants_of "arid.ml"))
 
-(* [x + 0] is at line 12, column 13, of arid.ml. *)
+(* [x + 0] is at line 11, column 13, of arid.ml. *)
 let arid_unmatched () =
   let file =
     match mutants_of "arid.ml" with
     | m :: _ -> m.id.file
     | [] -> fail "arid.ml has no catalogued mutant"
   in
-  match Mutate.arm { Mutate.file; line = 12; col = 13; rewrite = "sub" } with
+  match Mutate.arm { Mutate.file; line = 11; col = 13; rewrite = "sub" } with
   | Error (Mutate.Unmatched _) -> ()
   | Ok _ | Error (Malformed _ | Uncatalogued _ | Ambiguous _) ->
       disarm ();
