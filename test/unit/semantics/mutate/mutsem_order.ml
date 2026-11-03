@@ -288,10 +288,10 @@ let lazy_witness () =
    leaves the ['a] of [bool * ('a -> 'a) * ...], which no relaxation
    generalizes, weak. The binding sits in a functor, whose body runs when
    it is applied, so the three rewrites mutate it; at the top level it
-   would run at load and carry no site. Nothing here applies it; the check is the module coercion in
-   test_mutate_semantics.ml, which compares this copy's inferred
-   signature against the twin's and fails to compile the day the two
-   disagree. *)
+   would run at load and carry no site. Nothing here applies it; the check
+   is the module coercion in test_mutate_semantics.ml, which compares this
+   copy's inferred signature against the twin's and fails to compile the
+   day the two disagree. *)
 module Generalizes (_ : sig end) = struct
   let pair = (true, (fun x -> x), Some [], [ [] ])
 end

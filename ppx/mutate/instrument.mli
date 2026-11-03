@@ -34,15 +34,15 @@
     the other of [true] and [false], which resolves as the original does unless
     a type in scope redeclares one of the two constructors without the other.
 
-    [none] names the constructor [None] unqualified, where the type of the
-    original [Some e] is expected. The armed arm of [tail] is a copy of [t] in
-    [h :: t], and gets the type of the original. A file that declares a
-    constructor [Some], [None] or [(::)], in a type or as an extension
-    constructor, loses the two rewrites. A constructor that an [open] or
-    type-directed disambiguation takes from another module is not seen. Thus a
-    [Some e] of a type that has no constructor [None], or an [h :: t] whose [t]
-    has another type, fails to compile under instrumentation. [[@mutate off]] on
-    the expression is the way out.
+    [none] names the constructor [None] unqualified, after the original
+    [Some e], so [None] gets the type of the original. The armed arm of [tail]
+    is a copy of [t] in [h :: t], and gets the type of the original. A file that
+    declares a constructor [Some], [None] or [(::)], in a type or as an
+    extension constructor, loses the two rewrites. A constructor that an [open]
+    or type-directed disambiguation takes from another module is not seen. Thus
+    a [Some e] of a type that has no constructor [None], or an [h :: t] whose
+    [t] has another type, fails to compile under instrumentation.
+    [[@mutate off]] on the expression is the way out.
 
     [ari] is the one exception, because [a + b] cannot become [a - b] without
     naming [-]. A file that rebinds an operator where the rewriter can see it
@@ -95,12 +95,14 @@
 
     The guard of [int] and of [bool] is [if armed then n' else n], an [if] whose
     two arms are constants. The guard of [none] is
-    [if armed then None else Some e], so [e] does not run when the mutant is
-    armed. The guard of [tail] is [if Stdlib.not armed then h :: t else t'],
-    where [t'] is a copy of [t] as the source wrote it, with no guard inside it.
-    Thus [t] runs once, and [h] does not run when the mutant is armed. The
-    type-checker counts an [if] as a syntactic value when its two arms are one,
-    whatever its condition, so a binding that generalizes still does.
+    [if Stdlib.not armed then Some e else None], so [e] does not run when the
+    mutant is armed. The guard of [tail] is
+    [if Stdlib.not armed then h :: t else t'], where [t'] is a copy of [t] as
+    the source wrote it, with no guard inside it. [t'] also has the attributes
+    of [h :: t], so that a warning attribute of the source covers it. Thus [t]
+    runs once, and [h] does not run when the mutant is armed. The type-checker
+    counts an [if] as a syntactic value when its two arms are one, whatever its
+    condition, so a binding that generalizes still does.
 
     The guard of [tail] holds a copy of [t]. A site at each [(::)] of a chain
     would thus make the code grow as the square of the length of the chain.
@@ -245,7 +247,11 @@
     is one line. The brackets are those of the printer: [a + b + c] is recorded
     as [(a + b) + c], and its mutant as [(a + b) - c]. The printer gives a list
     as a list literal where it can, so [x :: [y]] is recorded as [[x; y]], and
-    its [tail] mutant as [[y]]. The [after] text of a [none] site is [None]. *)
+    its [tail] mutant as [[y]]. The [after] text of a [none] site is [None].
+
+    A head that is a list, as in [(x :: t) :: acc] or [[x] :: acc], starts at
+    the byte of the outer [tail] site. It would have the identifier of that
+    site, so it carries no [tail] site, and the outer site alone is recorded. *)
 
 (** {1:generated Generated code}
 

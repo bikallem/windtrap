@@ -1,6 +1,13 @@
 (library
  (name windtrap_mutate_forced)
- (modules forced no_guard oracle own_constructors recursive shadowed)
+ (modules
+  attributes
+  forced
+  no_guard
+  oracle
+  own_constructors
+  recursive
+  shadowed)
  (flags
   (:standard -w +a-70 -warn-error +a))
  (preprocess
@@ -11,7 +18,7 @@
 
 (library
  (name windtrap_mutate_disambiguate)
- (modules disambiguate expected_type)
+ (modules codec disambiguate expected_type opened_none)
  (preprocess
   (pps ppx_windtrap.mutate)))
 

@@ -434,14 +434,15 @@ before and after, and the reason of a dismissed site.
     19: 34:13-34:18 "tail" "[2]" -> "[]"
     20: 34:15-34:16 "int" "2" -> "3"
   let wrap x =
-    if Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 0
-    then None
-    else
+    if
+      Stdlib.not (Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 0)
+    then
       Some
-        ((let (__windtrap_mut_1_l, __windtrap_mut_1_r) = (x, 1) in
-          if Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 1
+        (let (__windtrap_mut_1_l, __windtrap_mut_1_r) = (x, 1) in
+         (if Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 1
           then __windtrap_mut_1_l - __windtrap_mut_1_r
           else __windtrap_mut_1_l + __windtrap_mut_1_r))
+    else None
   let push x xs =
     if
       Stdlib.not (Windtrap_mut_________fixture_ret___ml.___windtrap_armed___ 2)
@@ -544,6 +545,47 @@ before and after, and the reason of a dismissed site.
   let rest = [1; 2]
   let qualified x = Option.Some x
   let empty () = (None, [])
+
+  $ mut --impl ./fixture_ret_edges.ml | ../elide.exe
+  mutation sites of "./fixture_ret_edges.ml" in Windtrap_mut_________fixture_ret_edges___ml:
+    0: 3:18-3:79 "tail" "x :: (match y with | Some z -> [z])" -> "match y with | Some z -> [z]"
+    1: 3:49-3:54 "tail" "[z]" -> "[]"
+    2: 4:17-4:74 "tail" "[x; (match y with | Some z -> z)]" -> "[(match y with | Some z -> z)]"
+    3: 8:24-8:41 "tail" "(x :: cur) :: acc" -> "acc"
+    4: 9:19-9:31 "tail" "[x] :: acc" -> "acc"
+  let partial x y =
+    if
+      Stdlib.not
+        (Windtrap_mut_________fixture_ret_edges___ml.___windtrap_armed___ 0)
+    then ((x ::
+      (match y with
+       | Some z ->
+           (if
+              Stdlib.not
+                (Windtrap_mut_________fixture_ret_edges___ml.___windtrap_armed___
+                   1)
+            then [z]
+            else [])))
+      [@ocaml.warning "-8"])
+    else (((match y with | Some z -> [z]))[@ocaml.warning "-8"])
+  let listed x y =
+    if
+      Stdlib.not
+        (Windtrap_mut_________fixture_ret_edges___ml.___windtrap_armed___ 2)
+    then (([x; (match y with | Some z -> z)])[@ocaml.warning "-8"])
+    else (([(match y with | Some z -> z)])[@ocaml.warning "-8"])
+  let grouped x cur acc =
+    if
+      Stdlib.not
+        (Windtrap_mut_________fixture_ret_edges___ml.___windtrap_armed___ 3)
+    then (x :: cur) :: acc
+    else acc
+  let single x acc =
+    if
+      Stdlib.not
+        (Windtrap_mut_________fixture_ret_edges___ml.___windtrap_armed___ 4)
+    then [x] :: acc
+    else acc
 
   $ mut --impl ./fixture_assert.ml | ../elide.exe
   mutation sites of "./fixture_assert.ml" in Windtrap_mut_________fixture_assert___ml, with type 'a operands:

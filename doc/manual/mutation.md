@@ -506,8 +506,11 @@ argument of `~cloexec`. None of these five rewrites has a mutant in code
 that runs when the module is initialized, before any test, as in a
 top-level `let limit = 64` or `let () = setup (); main ()`, since no run
 can judge it. `none` and `tail` also leave alone the right-hand side of
-a `let rec` outside its functions, as `let rec ones = 1 :: ones`, which
-the compiler accepts only as written.
+a `let rec` outside its functions and `lazy` bodies, as
+`let rec ones = 1 :: ones`, which the compiler accepts only as written.
+A head that is a list, as in `[x] :: acc`, starts at the byte of the
+outer `::` and has no `tail` mutant, since one identifier names one
+site.
 
 A comparison outside a condition, as in `let ok = a < b`, carries no
 mutant, and neither does an `assert`. In a chain of one operator, as

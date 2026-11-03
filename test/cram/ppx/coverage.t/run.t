@@ -984,9 +984,11 @@ dune builds for a stanza naming both backends:
     then (___windtrap_visit___ 19; b)
     else __windtrap_mut_12_p
   let wrap f x =
-    if Windtrap_mut_________fixture_guards___ml.___windtrap_armed___ 13
-    then None
-    else (___windtrap_visit___ 21; Some (___windtrap_post_visit___ 20 (f x)))
+    if
+      Stdlib.not
+        (Windtrap_mut_________fixture_guards___ml.___windtrap_armed___ 13)
+    then (___windtrap_visit___ 21; Some (___windtrap_post_visit___ 20 (f x)))
+    else None
   let push f g x xs =
     if
       Stdlib.not

@@ -203,7 +203,8 @@ let render e =
 type guard =
   | Neg
   | Operator of application * operator_guard
-  | Literal of expression (* [int], [bool] and [none], by this constant *)
+  | Literal of expression (* [int] and [bool], by this constant *)
+  | Nothing (* [none] on [Some e] *)
   | Tail of expression (* [tail] on [h :: t], with [t] *)
   | Delete (* [del], whose guard [descend] builds *)
 
@@ -451,22 +452,32 @@ let branch ~loc ~module_name ~index e app left right =
     pexp_attributes = e.pexp_attributes;
   }
 
-(* [tail] keeps the original first, so that the type-checker reads [h]
-   before [t] as in the original and gives the copy [t'] the type of [h :: t].
-   [t'] is [t] as the source wrote it, without guards: when [t'] runs, its own
+(* [none] and [tail] keep the original first, so that the type-checker reads
+   it as in the original: [None] then takes the type of [Some e], and the
+   copy [t'] that of [h :: t]. *)
+let none ~loc ~module_name ~index value =
+  [%expr
+    if Stdlib.not [%e armed ~loc ~module_name index] then [%e value] else None]
+
+(* [t'] is [t] as the source wrote it, without guards: when [t'] runs, its own
    site is the armed one. Its locations are ghost, as generated code has, so
    that no two nodes share a location and the coverage rewriter gives it no
-   point. *)
+   point. It takes the attributes of [h :: t], so that a warning attribute of
+   the source covers it too. *)
 let ghost =
   object
     inherit Ast_traverse.map
     method! location loc = { loc with loc_ghost = true }
   end
 
-let tail ~loc ~module_name ~index value t =
+let tail ~loc ~module_name ~index e value t =
+  let copy = ghost#expression t in
+  let copy =
+    { copy with pexp_attributes = copy.pexp_attributes @ e.pexp_attributes }
+  in
   [%expr
     if Stdlib.not [%e armed ~loc ~module_name index] then [%e value]
-    else [%e ghost#expression t]]
+    else [%e copy]]
 
 (* Traversal *)
 
@@ -634,12 +645,7 @@ class instrumenter ~keeps ~module_name =
       else
         match (e.pexp_desc, cons e) with
         | Pexp_construct ({ txt = Lident "Some"; _ }, Some _), _ ->
-            let none =
-              pexp_construct ~loc:e.pexp_loc
-                (Located.lident ~loc:e.pexp_loc "None")
-                None
-            in
-            Some { guard = Literal none; rewrite = "none"; after = "None" }
+            Some { guard = Nothing; rewrite = "none"; after = "None" }
         | _, Some (_, t) ->
             Some { guard = Tail t; rewrite = "tail"; after = render t }
         | _, None -> None
@@ -704,19 +710,23 @@ class instrumenter ~keeps ~module_name =
       match mutant.guard with
       | Delete -> e (* [descend] guards a statement *)
       | Literal replacement -> (
-          let value = self#descend e in
           match index with
-          | None -> value
+          | None -> e
           | Some index ->
               [%expr
                 if [%e armed ~loc ~module_name index] then
                   [%e { replacement with pexp_loc = loc }]
-                else [%e value]])
+                else [%e e]])
+      | Nothing -> (
+          let value = self#descend e in
+          match index with
+          | None -> value
+          | Some index -> none ~loc ~module_name ~index value)
       | Tail t -> (
           let value = self#chain e in
           match index with
           | None -> value
-          | Some index -> tail ~loc ~module_name ~index value t)
+          | Some index -> tail ~loc ~module_name ~index e value t)
       | Neg -> (
           let value = self#descend e in
           match index with
