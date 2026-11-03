@@ -549,19 +549,23 @@ let xpass_first =
 
 (* The process spawns a domain before its run, so each worker is a new start
    of the executable. The second new start dies before it serves, so its
-   test fails before any evaluation. MUTATE_MARKER names a file that tells
-   the new starts apart. *)
+   test fails before any evaluation. A new start claims MUTATE_MARKER, and
+   the one that finds it taken claims its [.2] and dies. *)
+let claim path =
+  match Unix.openfile path [ O_WRONLY; O_CREAT; O_EXCL ] 0o644 with
+  | fd ->
+      Unix.close fd;
+      true
+  | exception Unix.Unix_error (Unix.EEXIST, _, _) -> false
+
 let start_dies () =
   match Sys.getenv_opt "MUTATE_MARKER" with
   | None | Some "" -> ()
   | Some marker ->
       if Sys.getenv_opt "MUTATE_STARTED" = None then
         Unix.putenv "MUTATE_STARTED" "1"
-      else if not (Sys.file_exists marker) then close_out (open_out marker)
-      else if not (Sys.file_exists (marker ^ ".2")) then begin
-        close_out (open_out (marker ^ ".2"));
+      else if (not (claim marker)) && claim (marker ^ ".2") then
         Unix.kill (Unix.getpid ()) Sys.sigkill
-      end
 
 let dies_at_start =
   [
