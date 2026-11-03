@@ -53,7 +53,7 @@ neither reached:
   ──────────────────────────────────────────────────────────
   
   reproduce: dune exec --instrument-with ppx_windtrap.mutate test/pins_add.exe -- --arm test/cram/bin/calc.ml:14:17:sub
-  mutants: 1 survived of 3 reached, 2 killed, 1 never reached, 2 executables, score 66.7%
+  mutants: 1 survived of 3 reached, 2 killed, 1 never reached, 2 executables, score 66.7% (2/3)
   [1]
 
 The document gives the same answer: each mutant with its verdict, and the
@@ -99,11 +99,11 @@ not fail the command:
 
   $ run windtrap mutants --min 60 > /dev/null
   $ tail -n 1 "$bin/out"
-  mutants: 1 survived of 3 reached, 2 killed, 1 never reached, 2 executables, score 66.7%, minimum 60%: ok
+  mutants: 1 survived of 3 reached, 2 killed, 1 never reached, 2 executables, score 66.7% (2/3), minimum 60%: ok
   $ run windtrap mutants --min 70 > /dev/null
   [1]
   $ tail -n 1 "$bin/out"
-  mutants: 1 survived of 3 reached, 2 killed, 1 never reached, 2 executables, score 66.7%, minimum 70%: FAILED
+  mutants: 1 survived of 3 reached, 2 killed, 1 never reached, 2 executables, score 66.7% (2/3), minimum 70%: FAILED
   $ cp merged "$bin/out"
 
 The command's identifier, pasted into that executable, arms the survivor:

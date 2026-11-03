@@ -614,7 +614,7 @@ let ansi o =
              ~inside_dune:(Os.inside_dune ()) ~term_dumb:(Os.term_dumb ()))
 
 (* A refused file fails the merge, with a gate or without. A document leaves
-   the outcome line out, so the gate says it. *)
+   the outcome line out, so the gate gives it. *)
 let gate o (m : Sections.mutation) =
   match o.min with
   | None -> if m.survivors = [] && m.refused = [] then 0 else 1
@@ -623,7 +623,7 @@ let gate o (m : Sections.mutation) =
         Os.say
           (Sections.render ~ansi:false
              (Sections.mutation_line ~min:(Some min) m));
-      if Sections.mutation_score m >= min && m.refused = [] then 0 else 1
+      if Sections.mutation_gate_met ~min m then 0 else 1
 
 (* Standard output can refuse the text, for example on a full disk. The
    channel is closed, so that the flush at exit does not raise again. *)

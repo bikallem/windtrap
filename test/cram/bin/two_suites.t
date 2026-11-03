@@ -68,7 +68,7 @@ narrowed run of subs writes a refused file:
     pins_both.exe (suite subs)  0 mutants unknown: its selection narrowed the suite, so it saved no verdict: run it whole
   ──────────────────────────────────────────────────────────
   
-  mutants: 1 reached, 1 killed, 1 executable, 1 suite not mutation-tested, score 100.0%
+  mutants: 1 reached, 1 killed, 1 executable, 1 suite not mutation-tested, score 100.0% (1/1)
   [1]
   $ rm -r _build/_mutants
 
@@ -104,7 +104,7 @@ The survivor is the mutant that neither suite pins:
   ──────────────────────────────────────────────────────────
   
   reproduce: dune exec --instrument-with ppx_windtrap.mutate test/pins_both.exe -- --arm test/cram/bin/calc.ml:14:17:sub
-  mutants: 1 survived of 3 reached, 2 killed, 1 never reached, 1 executable, score 66.7%
+  mutants: 1 survived of 3 reached, 2 killed, 1 never reached, 1 executable, score 66.7% (2/3)
   [1]
 
 A suite that is renamed leaves its earlier file in the directory. A run
@@ -122,7 +122,7 @@ the same build wrote it, and the kill of shared removes the survivor:
     1  test/cram/bin/calc.ml   line 15
   ──────────────────────────────────────────────────────────
   
-  mutants: 3 reached, 3 killed, 1 never reached, 1 executable, score 100.0%
+  mutants: 3 reached, 3 killed, 1 never reached, 1 executable, score 100.0% (3/3)
 
 A new build of the executable makes the three files stale. A run of the
 two suites that still exist writes their files again, and the merge
@@ -134,7 +134,7 @@ exists:
   $ printf '\n' >> _build/default/test/pins_both.exe
   $ run _build/default/test/pins_both.exe --mutate=test/cram/bin/calc.ml > /dev/null
   $ run windtrap mutants | grep -e '^mutants:' -e '^--- stderr' -e '^windtrap:'
-  mutants: 1 survived of 3 reached, 2 killed, 1 never reached, 1 executable, score 66.7%
+  mutants: 1 survived of 3 reached, 2 killed, 1 never reached, 1 executable, score 66.7% (2/3)
   --- stderr
   windtrap: .../windtrap-HASH-HASH.mutants: not written by the executable now at _build/default/test/pins_both.exe (rebuilt since); excluding it
   windtrap: re-run every suite with its mutants, then merge again; delete the files whose executable or suite no longer exists
@@ -149,7 +149,7 @@ is complete without a warning:
 
   $ rm "$(file_of renamed)"
   $ run windtrap mutants | grep -e '^mutants:' -e '^--- stderr'
-  mutants: 1 survived of 3 reached, 2 killed, 1 never reached, 1 executable, score 66.7%
+  mutants: 1 survived of 3 reached, 2 killed, 1 never reached, 1 executable, score 66.7% (2/3)
 
 The loop never reads a file at the name of the earlier version, and the
 merge refuses it:
@@ -157,8 +157,8 @@ merge refuses it:
   $ old=$(file_of adds | sed -E 's/-[0-9a-f]{32}\.mutants$/.mutants/')
   $ printf 'windtrap-mutants-v5\ntested\n0\n' > "$old"
   $ run _build/default/test/pins_both.exe --mutate=test/cram/bin/calc.ml | grep -e '^mutants:' -e '^--- stderr'
-  mutants: 2 survived of 3 reached by this suite, 1 killed, 1 never reached, score 33.3%
-  mutants: 2 survived of 3 reached by this suite, 1 killed, 1 never reached, score 33.3%
+  mutants: 2 survived of 3 reached by this suite, 1 killed, 1 never reached, score 33.3% (1/3)
+  mutants: 2 survived of 3 reached by this suite, 1 killed, 1 never reached, score 33.3% (1/3)
   $ run windtrap mutants
   --- stderr
   windtrap: .../windtrap-HASH.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v11", found "windtrap-mutants-v5"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
@@ -190,7 +190,7 @@ the same time. The merge is the same, and it holds the kill of each file:
     2  test/cram/bin/calc.ml   lines 14-15
   ──────────────────────────────────────────────────────────
   
-  mutants: 2 reached, 2 killed, 2 never reached, 1 executable, score 100.0%
+  mutants: 2 reached, 2 killed, 2 never reached, 1 executable, score 100.0% (2/2)
 
 In the other order:
 
@@ -199,7 +199,7 @@ In the other order:
   $ part inline_adds.ml > /dev/null
   $ run windtrap mutants > /dev/null
   $ tail -n 1 "$bin/out"
-  mutants: 2 reached, 2 killed, 2 never reached, 1 executable, score 100.0%
+  mutants: 2 reached, 2 killed, 2 never reached, 1 executable, score 100.0% (2/2)
 
 At the same time:
 
@@ -207,5 +207,5 @@ At the same time:
   $ part inline_adds.ml > "$bin/adds.out" 2>&1 & part inline_subs.ml > "$bin/subs.out" 2>&1 & wait
   $ run windtrap mutants > /dev/null
   $ tail -n 1 "$bin/out"
-  mutants: 2 reached, 2 killed, 2 never reached, 1 executable, score 100.0%
+  mutants: 2 reached, 2 killed, 2 never reached, 1 executable, score 100.0% (2/2)
   $ cd / && rm -rf "$rootB"

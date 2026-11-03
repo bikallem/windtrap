@@ -112,13 +112,15 @@
     The score is {!Windtrap.Private.Report_sections.mutation_score} of the
     merge. It is the percentage of the killed mutants among those killed,
     survived and not evaluated, unrounded. An unknown mutant does not count. The
-    score is [100.] when the merge has none of these mutants. [--min PCT] makes
-    the merge pass when the score is at least [PCT], and a survivor then does
-    not fail it. A refused file fails the merge with a gate or without one. The
-    gate runs after the report or the document is printed, and does not run when
-    standard output refuses them. The outcome line of the report then gives the
-    gate and its result ({!Windtrap.Private.Report_sections.mutation_line}).
-    Thus a score that prints equal to the threshold can fail. *)
+    score is [100.] when the merge has none of these mutants, and the outcome
+    line then says [no scored mutant]. [--min PCT] makes the merge pass when
+    {!Windtrap.Private.Report_sections.mutation_gate_met} is [true]: the score
+    is at least [PCT] and no file is refused. A survivor then does not fail the
+    merge. A refused file fails the merge with a gate or without one. The gate
+    runs after the report or the document is printed, and does not run when the
+    write fails. The outcome line of the report then gives the gate and its
+    result ({!Windtrap.Private.Report_sections.mutation_line}), and the score
+    with its two counts beside its rounding. *)
 
 (** {1:format Machine format}
 
@@ -128,8 +130,10 @@
     when it is not. The keys and the values that follow are frozen. A later
     version can add a key, and that key does not change the meaning of the
     others. A change to the meaning of a key increments ["version"]. Under
-    [--lines] or [--diff], each count and each array holds only the mutants on
-    the lines, as the report does.
+    [--lines] or [--diff], the verdict counts, ["reached"], ["score"] and
+    ["mutants"] hold only the mutants on the lines, as the report does. But
+    ["executables"] and ["refused"] still give every file that is kept, because
+    each file stays in the merge.
 
     The document is one object with the keys ["version"], ["summary"],
     ["executables"] and ["mutants"]. ["version"] is the number [1].
@@ -141,7 +145,9 @@
       ["outside_tests"] and ["unreached"] are each the count of the merged
       mutants that have that verdict.
     - ["refused"] is the count of the refused files.
-    - ["score"] is the score of the {{!section-gate}gate}, with two decimals.
+    - ["score"] is the score of the {{!section-gate}gate}, with two decimals. It
+      is [100.00] when no mutant is scored, as the ["percentage"] of
+      [windtrap coverage --json] is with no point.
 
     ["executables"] is an array with one object for each file that is kept, in
     path order. Two files can have the same name, and the files of the suites of
@@ -241,9 +247,11 @@ val run : string list -> int
       is found. It is also [1] when a file that is not excluded cannot be read,
       is corrupt or has another format version. It is also [1] when every file
       is excluded.
-    - [1] when standard output refuses the report or the document, for example
-      on a full disk. The reader then has only a part of it. Standard error
-      gives the reason, and the gate does not run.
+    - [1] when the write of the report or of the document to standard output
+      fails with an error, for example on a full disk. The reader then has only
+      a part of it. Standard error gives the reason, and the gate does not run.
+      A closed pipe, as after [| head], ends the process by SIGPIPE instead,
+      unless the parent ignores that signal.
     - [2] for a usage error. A usage error is an unknown option, a flag that
       does not have its value, a [--min] that is not in the interval
       \[[0];[100]\], a malformed [--lines], an unreadable [--diff], or a

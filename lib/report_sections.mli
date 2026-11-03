@@ -550,13 +550,20 @@ val mutation_score : mutation -> float
     reached and a mutant that has no verdict do not count. It is {!percent} of
     [m.killed] in their number, and thus [100.] when [m] has none. *)
 
+val mutation_gate_met : min:float -> mutation -> bool
+(** [mutation_gate_met ~min m] is [true] iff {!mutation_score} of [m] is at
+    least [min] and [m.refused] is empty. A merge without the verdicts of a
+    refused suite fails every gate. *)
+
 val mutation_line : min:float option -> mutation -> span list
 (** [mutation_line ~min m] is the outcome line of a mutation report. It gives
     the reached count and each other count of [m] that is not zero. Then it
-    gives {!mutation_score} with one decimal when [m] has a scored mutant. Under
-    a gate [min] it always gives the score, then [min] as {!Pp.decimal} prints
-    it, and tells if the gate is met: if {!mutation_score} is at least [min].
-    The score is styled as failing when the gate is not met. *)
+    gives {!mutation_score} with one decimal, followed by the killed and the
+    scored counts, as in [score 60.0% (3/5)], when [m] has a scored mutant.
+    Under a gate [min] it always gives the score, or [no scored mutant] when [m]
+    has none. Then it gives [min] as {!Pp.decimal} prints it, and [ok] or
+    [FAILED] as {!mutation_gate_met} tells. The score is styled as failing only
+    when it is below [min]. *)
 
 val survivor_block : exe_width:int option -> survivor -> section list
 (** [survivor_block ~exe_width s] is the block of [s]. It holds, in this order:

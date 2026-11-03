@@ -1652,10 +1652,14 @@ let scored (m : mutation) =
 
 let mutation_score m = percent ~visited:m.killed ~total:(scored m)
 
+(* A merge without the verdicts of a refused suite is not the project's. *)
+let mutation_gate_met ~min m = mutation_score m >= min && m.refused = []
+
 (* The reached count is the sum of the other terms, so the line cannot
    disagree with the blocks above it. A zero term is omitted, and so is the
    score of no scored mutant when no gate needs it. As on the coverage line,
-   the gate compares the unrounded score. *)
+   the score has its counts beside its rounding, and the gate compares the
+   unrounded score. *)
 let mutation_line ~min (m : mutation) =
   let survived = List.length m.survivors in
   let unknown =
@@ -1696,17 +1700,25 @@ let mutation_line ~min (m : mutation) =
               [ styled `Red (counted n "suite" ^ " not mutation-tested") ])
       | Suite | Selected _ -> [])
     @
-    let score = mutation_score m in
-    let text = strf "score %.1f%%" score in
+    let score =
+      if scored m = 0 then plain "no scored mutant"
+      else
+        let text =
+          strf "score %.1f%% (%d/%d)" (mutation_score m) m.killed (scored m)
+        in
+        match min with
+        | Some min when mutation_score m < min -> styled `Red text
+        | Some _ | None -> plain text
+    in
     match min with
-    | None -> term (scored m) (fun _ -> [ plain text ])
+    | None -> term (scored m) (fun _ -> [ score ])
     | Some min ->
-        let met = score >= min in
         [
           [
-            (if met then plain text else styled `Red text);
+            score;
             plain (strf ", minimum %s%%: " (Pp.to_string Pp.decimal min));
-            (if met then styled `Green "ok" else styled `Red "FAILED");
+            (if mutation_gate_met ~min m then styled `Green "ok"
+             else styled `Red "FAILED");
           ];
         ]
   in

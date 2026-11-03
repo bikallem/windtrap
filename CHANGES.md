@@ -73,7 +73,7 @@
   site ended on `mutant not evaluated`. Under `-x`, an `--arm` run stops
   at the first failure that kills the mutant.
 - The outcome line of a mutation run and of `windtrap mutants` ends
-  with the mutation score, as `score 66.7%`. The score is the
+  with the mutation score, as `score 66.7% (6/9)`. The score is the
   percentage of killed mutants among those killed, survived and not
   evaluated. An unknown mutant does not count
   (doc/manual/mutation.md#gating-on-the-score).
@@ -85,9 +85,11 @@
   counts, the score, the verdict files, and each mutant with its
   verdict. A survivor has the tests that ran it, and an unknown mutant
   has its reason (doc/manual/mutation.md#exporting-the-verdicts).
-- `windtrap mutants` exits 1 with the reason on standard error when
-  standard output refuses its report or document, for example on a full
-  disk. Before, an uncaught exception gave exit code 2.
+- `windtrap mutants` exits 1 with the reason on standard error when the
+  write of its report or document to standard output fails with an
+  error, for example on a full disk. Before, an uncaught exception gave
+  exit code 2. A closed pipe ends the process by SIGPIPE, as before,
+  unless the parent ignores that signal.
 - (breaking) The verdict file format is `windtrap-mutants-v11`. A file
   of an earlier format is refused. Delete `_build/_mutants` and run the
   suites again.
