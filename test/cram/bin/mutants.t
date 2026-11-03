@@ -242,7 +242,7 @@ read as the others' survivors; the merge then exits 1:
     1  lib/calc.ml   line 3
   ──────────────────────────────────────────────────────────
   
-  mutants: 2 reached, 1 killed, 1 unknown, 1 never reached, 2 executables, 1 not mutation-tested
+  mutants: 2 reached, 1 killed, 1 unknown, 1 never reached, 2 executables, 1 suite not mutation-tested
   [1]
 
 A line scope reports the mutants on its lines alone, from --lines or a
@@ -401,7 +401,7 @@ once:
   --- stderr
   windtrap: .../b.mutants: its executable (_build/default/test/b.exe) no longer exists; excluding it
   windtrap: .../c.mutants: not written by the executable now at _build/default/test/c.exe (rebuilt since); excluding it
-  windtrap: re-run every suite with its mutants, then merge again; delete the files whose executable no longer exists
+  windtrap: re-run every suite with its mutants, then merge again; delete the files whose executable or suite no longer exists
     WINDTRAP_MUTATE=1 dune runtest --force --instrument-with ppx_windtrap.mutate
   [1]
 
@@ -416,7 +416,7 @@ what invalidates one:
   windtrap: found 1 .mutants file and every one is stale
     A verdict is written only by a run asked to test its mutants, and it is
     invalidated by any later build of the executable that wrote it.
-  windtrap: re-run every suite with its mutants, then merge again; delete the files whose executable no longer exists
+  windtrap: re-run every suite with its mutants, then merge again; delete the files whose executable or suite no longer exists
     WINDTRAP_MUTATE=1 dune runtest --force --instrument-with ppx_windtrap.mutate
   [1]
 
@@ -435,7 +435,7 @@ the remedy names no command:
   windtrap: found 1 .mutants file and every one is orphaned
     A verdict is written only by a run asked to test its mutants, and it is
     invalidated by any later build of the executable that wrote it.
-  windtrap: re-run every suite with its mutants (--mutate, instrumented with ppx_windtrap.mutate, forcing the runs your build tool cached), then merge again; delete the files whose executable no longer exists
+  windtrap: re-run every suite with its mutants (--mutate, instrumented with ppx_windtrap.mutate, forcing the runs your build tool cached), then merge again; delete the files whose executable or suite no longer exists
 
 The executable column names each file by its executable's basename, an
 inline-test runner by its library, and a file with no identity by its own
@@ -476,6 +476,72 @@ runs an inline-test runner:
 
   $ run windtrap mutants _build/_mutants/inline.mutants _build/_mutants/plain.mutants | grep reproduce
   reproduce: WINDTRAP_MUTATE_ARM=lib/calc.ml:1:14:add dune runtest --force --instrument-with ppx_windtrap.mutate
+
+Each suite of an executable writes its own file. The files of one
+executable count as one executable. A test path that two suites give is
+named with its suite. The unknown reason and a refused file name the
+suite:
+
+  $ plant "$scratch/suites" && cd "$scratch/suites"
+  $ mkdir -p _build/default/test && echo 'three suites' > _build/default/test/t.exe
+  $ mkdata mutants _build/_mutants/adds.mutants --exe _build/default/test/t.exe --suite adds \
+  >   "$add=killed" "$sub=survived:sub/reaches" "$or=survived:a/same" \
+  >   "$and=unknown:its run was killed by SIGSEGV"
+  $ mkdata mutants _build/_mutants/subs.mutants --exe _build/default/test/t.exe --suite subs \
+  >   "$add=survived:add/reaches" "$sub=killed" "$or=survived:a/same;a/other"
+  $ mkdata mutants _build/_mutants/lts.mutants --exe _build/default/test/t.exe --suite lts \
+  >   --refused "the suite is not deterministic" "$lt=unknown:the suite is not deterministic"
+  $ run windtrap mutants
+  ───────────────────── survivors (1) ──────────────────────
+  File "lib/util.ml", line 1, characters 13-19:
+    SURVIVED  lib/util.ml:1:13:or  p || q → p && q
+        1 │ let ok p q = p || q
+  
+      3 tests ran this line and none failed:
+        t.exe  a › other
+        t.exe  a › same (suite adds)
+        t.exe  a › same (suite subs)
+  ──────────────────────────────────────────────────────────
+  
+  ────────────────────── unknown (1) ───────────────────────
+  File "lib/util.ml", line 3, characters 22-28:
+    lib/util.ml:3:22:and  p && q → p || q
+      t.exe (suite adds): its run was killed by SIGSEGV
+      arm: dune exec --instrument-with ppx_windtrap.mutate test/t.exe -- --arm lib/util.ml:3:22:and
+  ──────────────────────────────────────────────────────────
+  
+  ──────────────── not mutation-tested (1) ─────────────────
+    t.exe (suite lts)  1 mutant unknown: the suite is not deterministic
+  ──────────────────────────────────────────────────────────
+  
+  reproduce: dune exec --instrument-with ppx_windtrap.mutate test/t.exe -- --arm lib/util.ml:1:13:or
+  mutants: 1 survived of 5 reached, 2 killed, 2 unknown, 1 executable, 1 suite not mutation-tested
+  [1]
+
+Two refused suites that hold one mutant as unknown, which a tested suite
+kills, count no mutant. The second row does not say "no other mutant",
+because the first row counts none:
+
+  $ mkdir -p "$scratch/killed/_build/_mutants" && cd "$scratch/killed"
+  $ mkdata mutants _build/_mutants/a.mutants --suite a --refused "RA" "$add=unknown:RA"
+  $ mkdata mutants _build/_mutants/b.mutants --suite b --refused "RB" "$add=unknown:RB"
+  $ mkdata mutants _build/_mutants/c.mutants --suite c "$add=killed"
+  $ run windtrap mutants
+  ──────────────── not mutation-tested (2) ─────────────────
+    a.mutants (suite a)  0 mutants unknown: RA
+    b.mutants (suite b)  0 mutants unknown: RB
+  ──────────────────────────────────────────────────────────
+  
+  mutants: 1 reached, 1 killed, 3 executables, 2 suites not mutation-tested
+  [1]
+  $ cd "$scratch/suites"
+
+Files that a person copies out of the build directory, with a relative
+identity, still count as one executable:
+
+  $ mkdir copied && cp _build/_mutants/adds.mutants _build/_mutants/subs.mutants copied/
+  $ run windtrap mutants copied | tail -n 1
+  mutants: 1 survived of 4 reached, 2 killed, 1 unknown, 1 executable
 
 One column serves every block:
 
@@ -561,13 +627,13 @@ is to delete it, which a coverage dump in the directory shares:
   $ printf 'windtrap-mutants-v0\n1\nsome older payload\n' > _build/_mutants/old.mutants
   $ run windtrap mutants
   --- stderr
-  windtrap: .../old.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v5", found "windtrap-mutants-v0"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
+  windtrap: .../old.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v11", found "windtrap-mutants-v0"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
   [1]
   $ rm _build/_mutants/old.mutants
   $ printf 'windtrap-coverage-v3\n0\n' > _build/_mutants/cov.mutants
   $ run windtrap mutants
   --- stderr
-  windtrap: .../cov.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v5", found "windtrap-coverage-v3"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
+  windtrap: .../cov.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v11", found "windtrap-coverage-v3"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
   [1]
 
 A PATH that cannot be used fails the command, and the files named beside

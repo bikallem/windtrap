@@ -448,9 +448,10 @@ mutant one suite misses may be killed by another. Each suite reported
 alone would produce false survivors, sending a reader to write a test
 that exists. `windtrap mutants` merges the verdict files, a kill
 anywhere winning, and a build gates on its exit code; a single mutation
-run exits 0 whatever it finds. A run whose selection narrows the suite
-saves no verdict, since its partial answer would stand for the whole
-suite in the merge.
+run exits 0 whatever it finds. Each suite of an executable writes its
+own file, because the suites of one executable can run at the same
+time. A run whose selection narrows the suite saves no verdict, since
+its partial answer would stand for the whole suite in the merge.
 
 What no run could judge is unknown, and an unknown mutant is never a
 survivor. A suite that could not be mutation-tested still writes its

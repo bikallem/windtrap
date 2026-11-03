@@ -82,6 +82,12 @@ type freshness =
       (** The executable at the recorded path does not have the recorded digest,
           so another build wrote the file. *)
 
+val executable : path:string -> string -> string option
+(** [executable ~path exe] is the path of the executable whose identity
+    ({!Windtrap_runtime.Instr.type-identity}) [exe] the file at [path] records,
+    resolved as {!type-freshness} resolves it. It is [None] when [exe] is
+    relative and [path] lies below no build directory. *)
+
 val warnings : (string * freshness) list -> string list
 (** [warnings excluded] is the warning lines for the [excluded] files, each a
     path with its freshness, which must not be [Fresh]. There is one line for

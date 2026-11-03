@@ -55,7 +55,7 @@ what is non-obvious.
   cannot be observed from inside its own image), with `plain_main.exe` as the zero-mutant
   control that must be declined by name, `runaway/` for the hit-count
   budget and `inline/` for an armed inline partition. Its scenarios
-  share `suite_main.exe`'s one verdict file, so the stanza runs `-j 1`,
+  share the verdict file of `suite_main.exe`, so the stanza runs `-j 1`,
   whatever `WINDTRAP_JOBS` the environment holds.
   Under `semantics/`, `coverage/` and `mutate/` are the
   semantics-preservation suites: a fixture library instrumented
@@ -149,11 +149,14 @@ what is non-obvious.
   `bin/` pins the `windtrap` command: its dispatch (`windtrap.t`), where
   the two merges find their files and which they merge (`data.t`), the
   coverage and mutants reports (`coverage.t`, `mutants.t`), what they
-  cannot read (`unreadable.t`), and two executables that disagree about
-  one library (`two_executables.t`). `mkdata.exe` writes the synthetic
-  dumps and verdict files the sessions merge; `pins_add.exe` and
-  `pins_sub.exe` are instrumented suites over `calc.ml`, a library under
-  both backends in every build.
+  cannot read (`unreadable.t`), two executables that disagree about one
+  library (`two_executables.t`), and two suites of one executable
+  (`two_suites.t`). `mkdata.exe` writes the synthetic dumps and verdict
+  files the sessions merge; `pins_add.exe` and `pins_sub.exe` are
+  instrumented suites over `calc.ml`, a library under both backends in
+  every build. `pins_both.exe` runs two suites over it, and
+  `pins_inline.exe` is the inline-test runner of a library with two test
+  files.
   `ppx/` holds the rewriters' sessions: their expansions and refusals,
   one session per rewriter (`coverage.t`, `mutate.t`, `expect.t`), over
   fixtures that are never compiled. Each block runs `pp.exe`, a

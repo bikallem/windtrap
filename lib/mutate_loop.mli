@@ -32,11 +32,11 @@ val execute_and_report :
     - Under {!Run.Loop} it is the {{!section-loop}loop}.
 
     A loop that ran whole is [Ok] of its dry run, whatever it found: only
-    [windtrap mutants], which merges the verdict files of every executable,
-    gates on survivors. A loop that refused to start or could not go on, and an
-    [--arm] identifier that is refused, are
-    [Error (Run.Mutation_refused reason)], whose exit code is [1]. Each says its
-    reason on standard error, and none falls back to a default and runs on. *)
+    [windtrap mutants], which merges the verdict files of every suite, gates on
+    survivors. A loop that refused to start or could not go on, and an [--arm]
+    identifier that is refused, are [Error (Run.Mutation_refused reason)], whose
+    exit code is [1]. Each says its reason on standard error, and none falls
+    back to a default and runs on. *)
 
 (** {1:loop The loop}
 
@@ -105,19 +105,20 @@ val execute_and_report :
     {b The verdict file.} The file holds one record per reached mutant, one
     [Outside_tests] record per mutant of the population evaluated outside tests,
     and one [Unreached] record per unreached one. It is written to
-    {!Windtrap_runtime.Verdicts.output_file} of the executable, by
-    {!Windtrap_runtime.Verdicts.save}. Under a scope, the records of the files
-    outside it stay when the file there was written by this build
-    ({!Windtrap_runtime.Verdicts.writer_identity}) for a tested suite, and are
-    dropped otherwise. A file that cannot be written ([Sys_error]) is one
-    sentence on standard error above the outcome line.
+    {!Windtrap_runtime.Verdicts.output_file} of the executable and the suite, by
+    {!Windtrap_runtime.Verdicts.save}, which records the suite. Under a scope,
+    the records of the files outside it stay when the file there was written by
+    this build ({!Windtrap_runtime.Verdicts.writer_identity}) for the same suite
+    and the suite was tested, and are dropped otherwise. A file that cannot be
+    written ([Sys_error]) is one sentence on standard error above the outcome
+    line.
 
     Only a loop that ran whole, over the whole suite, writes its verdicts. A run
     whose selection narrows the suite says so on standard error above the
-    outcome line. It leaves a file that this build wrote, and otherwise writes a
-    refused file, as below, so the merge names the suite. [filter], [exclude],
-    [tags], [exclude_tags], [failed_only], [shard] and an active focus narrow
-    the suite. The scope of [--mutate] does not.
+    outcome line. It leaves a file that this build wrote for the suite, and
+    otherwise writes a refused file, as below, so the merge names the suite.
+    [filter], [exclude], [tags], [exclude_tags], [failed_only], [shard] and an
+    active focus narrow the suite. The scope of [--mutate] does not.
 
     {b What the environment asks.} The facade's [WINDTRAP_MUTATE] rule holds
     when [config.broadcast.mutate] does: an empty population and a selection
@@ -190,6 +191,6 @@ val execute_and_report :
 (** {1:effects Effects}
 
     Beyond the effects of {!Report.run} and [Supervisor.fresh], the loop reads
-    the verdict file of its executable and writes it. For the source line of a
-    survivor it reads the recorded file of the mutant, under {!Os.project_root}
-    first and then as given. *)
+    the verdict file of its executable and suite and writes it. For the source
+    line of a survivor it reads the recorded file of the mutant, under
+    {!Os.project_root} first and then as given. *)

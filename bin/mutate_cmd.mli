@@ -20,10 +20,13 @@
 (** {1:files Files}
 
     The verdict files are those that {!Data_files.discover} finds for
-    [Windtrap_runtime.Verdicts.format] and the [PATH] arguments. A [PATH] that
-    cannot be used fails the command and is never skipped, because a file left
-    out can hold the one kill of a mutant, which would then be reported as a
-    survivor.
+    [Windtrap_runtime.Verdicts.format] and the [PATH] arguments. Each suite of
+    an executable writes its own file, and the command merges the files of all
+    suites. A file of a suite that no longer runs stays in the merge until a new
+    build of its executable makes it stale, or until a person deletes it. A
+    [PATH] that cannot be used fails the command and is never skipped, because a
+    file left out can hold the one kill of a mutant, which would then be
+    reported as a survivor.
 
     A file is judged from the identity on its header ({!Data_files.load_fresh})
     before it is loaded: a file of another build is excluded whatever its
@@ -55,22 +58,30 @@
     a mutant that no file reached is unreached. The counts of the report are
     read off the merged verdicts, and its scope is
     {!Windtrap.Private.Report_sections.scope.Executables} with the number of
-    files kept.
+    executables of the files kept. Files that record one executable
+    ({!Data_files.executable}) count as one. A file that records no identity
+    counts as one executable.
 
     {b Unknown.} A mutant that no file killed and one holds as
     [Windtrap_runtime.Verdicts.Unknown] is unknown. The first file kept, in path
     order, whose writer tested its suite and holds it so names it, with the
-    reason it records after its label, and its launcher is that file's. A mutant
-    that only refused files hold as unknown is counted under the first of them
-    instead. Every refused file is named, in path order, with its reason and
-    that count.
+    reason it records after its label and suite, and its launcher is that
+    file's. A mutant that only refused files hold as unknown is counted under
+    the first of them instead. Every refused file is named, in path order, by
+    its label and the suite that it records, with its reason and that count.
+    When the count is 0 and an earlier refused file counts a mutant that the
+    file holds as unknown, the row says [no other mutant unknown]. Any other
+    count of 0 says [0 mutants unknown]. The outcome line counts the refused
+    files as suites.
 
     {b Reaching tests.} The reaching tests of a survivor are the union of those
     of every file in which the mutant survived. Each is paired with the label of
     its file, and the pairs are sorted by label and then by test, without
-    duplicates. The label is the base name of the executable that the file
-    records. For the inline-test runner of dune, whose base name is the same in
-    every library, it is the name of the library, [<lib>] in
+    duplicates. When files of more than one suite of one label give one test
+    path, each such test is followed by [(suite <suite>)], so that the two stay
+    apart. The label is the base name of the executable that the file records.
+    For the inline-test runner of dune, whose base name is the same in every
+    library, it is the name of the library, [<lib>] in
     [.<lib>.inline-tests/inline-test-runner.exe]. For a file that records no
     identity it is the base name of the file. No reaching test has a location,
     because the command links no test tree.

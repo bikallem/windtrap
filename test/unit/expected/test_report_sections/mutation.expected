@@ -25,7 +25,15 @@ File "lib/spin.ml", line 9, characters 8-13:
 ──────────────────────────────────────────────────────────
 
 reproduce: WINDTRAP_MUTATE_ARM=lib/calc.ml:21:16:ge dune runtest --force --instrument-with ppx_windtrap.mutate
-mutants: 1 survived of 32 reached, 3 killed, 28 unknown, 2 never reached, 3 executables, 1 not mutation-tested
+mutants: 1 survived of 32 reached, 3 killed, 28 unknown, 2 never reached, 3 executables, 1 suite not mutation-tested
+
+=== two refused suites of one executable: the second counts no mutant again
+──────────────── not mutation-tested (2) ─────────────────
+  test_property.exe  27 mutants unknown: the suite is not deterministic: the probe failed 2 tests
+  test_property.exe (suite b)  no other mutant unknown: the suite is not deterministic: the probe failed 1 test
+──────────────────────────────────────────────────────────
+
+mutants: 27 reached, 27 unknown, 1 executable, 2 suites not mutation-tested
 
 === a survivor's block: its rewrite, its source line, the tests that ran it
 File "lib/calc.ml", line 21, characters 16-21:

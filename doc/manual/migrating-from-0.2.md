@@ -286,7 +286,8 @@ change a verdict.
 
 - A verdict file that `--mutate` wrote under 0.2 → refused by
   `windtrap mutants`, since the file now records where each mutant ends
-  (`windtrap-mutants-v5`); run the mutation tests again.
+  (`windtrap-mutants-v5` in 0.3.0 and 0.3.1, a later version since); run
+  the mutation tests again.
 - A project whose `windtrap mutants` passed while one executable's
   `--mutate` was refused → `windtrap mutants` exits `1` and names that
   executable under `not mutation-tested`: 0.2 read the mutants it

@@ -292,7 +292,7 @@ let signal_the_loop_after_its_last_child () =
               Filename.concat tmp scratch;
               string_of_int loop;
               Windtrap_runtime.Verdicts.output_file
-                ~exe:Windtrap_runtime.Instr.executable;
+                ~exe:Windtrap_runtime.Instr.executable ~suite:"calc";
             |]
       | _ -> ())
   | _ -> failwith "TMPDIR holds one entry, the job's temporary directory"
