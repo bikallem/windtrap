@@ -79,7 +79,8 @@ with the re-measured numbers (`testing.md`, "The conformance corpus").
 2. Bump nothing in source: the version comes from the git tag
    (`dune-release` and dune substitute it). Opam metadata lives in
    `dune-project` (`generate_opam_files`); if it changed, `dune build`
-   regenerates the checked-in `.opam` files; commit them.
+   regenerates the checked-in `.opam` files; commit them. The one
+   exception is `flake.nix`: set its `version` to the new version.
 3. `dune-release tag` (annotated tag from `CHANGES.md`), then
    `dune-release distrib`; the tarball build must be clean from a
    pristine checkout, both packages.

@@ -32,8 +32,8 @@
 
       version = "0.3.1";
 
-      # The source has only the files of the build of the two packages. The
-      # packages do not run the tests. Use the dev shell for the tests.
+      # The source has only the files that the two packages need to build.
+      # The packages do not run the tests. Use the dev shell for the tests.
       src =
         lib:
         lib.fileset.toSource {
@@ -46,7 +46,6 @@
             ./ppx
             ./bin
             ./LICENSE
-            ./THIRD_PARTY_LICENSES.md
             ./README.md
           ];
         };
@@ -140,7 +139,7 @@
               ocamlPackages.ppxlib
               # The version of .ocamlformat.
               pkgs.ocamlformat_0_29_0
-              # For `git diff -U0`, the input of --diff.
+              # git makes the input of --diff (`git diff -U0`).
               pkgs.git
               # Dev tools
               ocamlPackages.ocaml-lsp
