@@ -13,6 +13,7 @@ module Pp = Windtrap.Private.Pp
 module Run = Windtrap.Private.Run
 module Test_tree = Windtrap.Private.Test_tree
 module Lines = Windtrap.Private.Lines
+module Json = Windtrap.Private.Json
 
 let strf = Printf.sprintf
 let ( let* ) = Result.bind
@@ -28,6 +29,7 @@ let fail ~code message =
 type file = {
   label : string; (* the executable, as the witness column names it *)
   executable : string; (* the path of the executable, one for its suites *)
+  exe : string option; (* the executable, as the file records it *)
   suite : string option; (* the suite that wrote the file *)
   invocation : Run.invocation; (* how that executable is run again *)
   verdicts : Verdicts.t;
@@ -114,6 +116,7 @@ let fresh files =
           {
             label = label ~path identity;
             executable = executable ~path identity;
+            exe = Option.map (fun (i : Verdicts.identity) -> i.exe) identity;
             suite;
             invocation = invocation identity;
             verdicts;
@@ -172,17 +175,39 @@ let verdicts_by_id f =
     Ids.empty
     (Verdicts.records f.verdicts)
 
+(* The verdict of a mutant, by the spelling of its identifier, in a file of
+   [files]. *)
+let verdict_in files =
+  let by_id = List.map (fun f -> (f, verdicts_by_id f)) files in
+  fun f id -> Ids.find_opt id (List.assq f by_id)
+
+(* A merge is [Unknown] only when a file is. The first file that tested its
+   suite and holds the mutant as unknown names it, with its reason. A mutant
+   that only refused files hold is named by the first of them. *)
+let unknown_in files ~verdict_in id =
+  let reason f =
+    match verdict_in f id with
+    | Some (Verdicts.Unknown reason) -> Some (f, reason)
+    | _ -> None
+  in
+  let tested = List.filter (fun f -> Option.is_none f.refused) files in
+  match List.find_map reason tested with
+  | Some named -> named
+  | None -> (
+      match List.find_map reason files with
+      | Some named -> named
+      | None -> assert false)
+
+let merged files =
+  List.fold_left
+    (fun acc f -> Verdicts.merge acc f.verdicts)
+    Verdicts.empty files
+
 (* [Verdicts.merge] folds away which executable ran a reaching test, so a
    survivor's reaching tests are read from the files in which it survived. *)
-let merge ~source files =
-  let merged =
-    List.fold_left
-      (fun acc f -> Verdicts.merge acc f.verdicts)
-      Verdicts.empty files
-  in
+let merge ~source files merged =
   let survivals = List.map (fun f -> (f, survived_in f.verdicts)) files in
-  let by_id = List.map (fun f -> (f, verdicts_by_id f)) files in
-  let verdict_in f id = Ids.find_opt id (List.assq f by_id) in
+  let verdict_in = verdict_in files in
   let mutant (r : Verdicts.record) : Sections.mutant =
     {
       id = Mutate.id_to_string r.id;
@@ -237,31 +262,18 @@ let merge ~source files =
     in
     { mutant = mutant r; invocation; failed = None }
   in
-  (* A merge is [Unknown] only when a file is. The first executable that ran
-     the mutant and could not judge it names it, with its reason; a mutant
-     that only refused suites hold counts under the first of them. *)
+  (* A mutant that only refused files hold counts under the first of them. *)
   let unknown (r : Verdicts.record) =
     let id = Mutate.id_to_string r.id in
-    let reason f =
-      match verdict_in f id with
-      | Some (Unknown reason) -> Some reason
-      | _ -> None
-    in
-    let tested = List.filter (fun f -> Option.is_none f.refused) files in
-    match
-      List.find_map (fun f -> Option.map (fun r -> (f, r)) (reason f)) tested
-    with
-    | Some (f, reason) ->
+    match unknown_in files ~verdict_in id with
+    | f, reason when Option.is_none f.refused ->
         Either.Left
           {
             Sections.mutant = mutant r;
             reason = strf "%s: %s" (with_suite f) reason;
             invocation = f.invocation;
           }
-    | None -> (
-        match List.find_opt (fun f -> Option.is_some (reason f)) files with
-        | Some f -> Either.Right (id, f)
-        | None -> assert false)
+    | f, _ -> Either.Right (id, f)
   in
   let records = Verdicts.records merged in
   let pick f = List.filter_map f records in
@@ -378,6 +390,93 @@ let on_lines files lines =
       })
     files
 
+(* The document *)
+
+let verdict_name : Verdicts.verdict -> string = function
+  | Killed -> "killed"
+  | Survived _ -> "survived"
+  | Not_evaluated -> "not_evaluated"
+  | Unknown _ -> "unknown"
+  | Outside_tests -> "outside_tests"
+  | Unreached -> "unreached"
+
+(* A file is named by its index in ["executables"], because two files can
+   have one label. [survived_in] gives the tests of a file sorted and without
+   duplicates, so the tests of a survivor are sorted by file, then by test. *)
+let json files merged (m : Sections.mutation) =
+  let string = Json.string in
+  let nullable = function Some s -> string s | None -> "null" in
+  let indexed = List.mapi (fun i f -> (i, f)) files in
+  let index f = fst (List.find (fun (_, g) -> g == f) indexed) in
+  let survivals =
+    List.map (fun (i, f) -> (i, survived_in f.verdicts)) indexed
+  in
+  let verdict_in = verdict_in files in
+  let executable f =
+    strf "\n    { \"name\": %s, \"path\": %s, \"suite\": %s, \"refused\": %s }"
+      (string f.label) (nullable f.exe) (nullable f.suite) (nullable f.refused)
+  in
+  let test (i, path) =
+    strf "\n        { \"executable\": %d, \"test\": [%s] }" i
+      (String.concat ", " (List.map string path))
+  in
+  let details (r : Verdicts.record) =
+    let id = Mutate.id_to_string r.id in
+    match r.verdict with
+    | Survived _ ->
+        let tests =
+          List.concat_map
+            (fun (i, survived) ->
+              match Ids.find_opt id survived with
+              | Some tests -> List.map (fun test -> (i, test)) tests
+              | None -> [])
+            survivals
+        in
+        strf ",\n      \"tests\": [%s ]"
+          (String.concat "," (List.map test tests))
+    | Unknown _ ->
+        let f, reason = unknown_in files ~verdict_in id in
+        strf ", \"executable\": %d,\n      \"reason\": %s" (index f)
+          (string reason)
+    | Killed | Not_evaluated | Outside_tests | Unreached -> ""
+  in
+  let mutant (r : Verdicts.record) =
+    strf
+      "\n\
+      \    { \"id\": %s,\n\
+      \      \"file\": %s, \"line\": %d, \"col\": %d, \"rewrite\": %s,\n\
+      \      \"end_line\": %d, \"end_col\": %d,\n\
+      \      \"before\": %s, \"after\": %s,\n\
+      \      \"verdict\": %s%s }"
+      (string (Mutate.id_to_string r.id))
+      (string r.id.file) r.id.line r.id.col (string r.id.rewrite) r.end_line
+      r.end_col (string r.before) (string r.after)
+      (string (verdict_name r.verdict))
+      (details r)
+  in
+  let records = Verdicts.records merged in
+  let count verdict =
+    List.length
+      (List.filter
+         (fun (r : Verdicts.record) -> verdict_name r.verdict = verdict)
+         records)
+  in
+  let killed = count "killed" and survived = count "survived" in
+  let not_evaluated = count "not_evaluated" and unknown = count "unknown" in
+  strf
+    "{ \"version\": 1,\n\
+    \  \"summary\": { \"reached\": %d, \"killed\": %d, \"survived\": %d,\n\
+    \    \"not_evaluated\": %d, \"unknown\": %d, \"outside_tests\": %d,\n\
+    \    \"unreached\": %d, \"refused\": %d, \"score\": %.2f },\n\
+    \  \"executables\": [%s ],\n\
+    \  \"mutants\": [%s ] }\n"
+    (killed + survived + not_evaluated + unknown)
+    killed survived not_evaluated unknown (count "outside_tests")
+    (count "unreached") (List.length m.refused)
+    (Sections.mutation_score m)
+    (String.concat "," (List.map executable files))
+    (String.concat "," (List.map mutant records))
+
 (* Running *)
 
 let usage = "usage: windtrap mutants [OPTIONS] [PATH...]"
@@ -394,11 +493,18 @@ built without one), walking up from the current directory to the enclosing
 project root; PATH arguments (.mutants files, or directories searched
 recursively) replace that default.
 
-Runs no tests and drives no build.
-Exits 1 when any mutant survived every executable that reached it, or when an
-executable could not mutation-test its suite.
+The score is the percentage of killed mutants among those killed, survived and
+not evaluated. Runs no tests and drives no build. Exits 1 when an executable
+could not mutation-test its suite. Exits 1 also when any mutant survived every
+executable that reached it, or under --min when the score is below PCT.
 
 OPTIONS:
+  --min=PCT
+      Exit 1 when the score is below PCT, and not for a survivor alone.
+
+  --json
+      Machine-readable report on standard output.
+
   --lines=FILE:A-B,...
       Report only the mutants on these lines of these files.
 
@@ -416,84 +522,142 @@ ENVIRONMENT (no flag):
   NO_COLOR
       Any value: never style output (--color auto).|}
 
-(* [--color] and the help flags are the options; any other argument that
-   starts with [-] is refused, and the rest are PATHs. *)
+type options = {
+  min : float option;
+  json : bool;
+  color : Os.color_mode option; (* [--color], which hides [WINDTRAP_COLOR] *)
+  lines : Lines.t option; (* [--lines] and [--diff], added up *)
+  paths : string list;
+}
+
+(* The flags are the options. Any other argument that starts with [-] is
+   refused, and the rest are PATHs. *)
 let options args =
   let usage_error message =
     Os.say message;
     prerr_endline usage;
     Error 2
   in
-  let add_lines lines more =
-    Some (Lines.union (Option.value lines ~default:Lines.empty) more)
+  let add_lines o more =
+    {
+      o with
+      lines =
+        Some (Lines.union (Option.value o.lines ~default:Lines.empty) more);
+    }
   in
-  let rec parse color lines paths = function
-    | [] -> Ok (color, lines, List.rev paths)
+  let rec parse o = function
+    | [] -> Ok { o with paths = List.rev o.paths }
+    | "--min" :: value :: args -> (
+        match float_of_string_opt value with
+        | Some min when 0. <= min && min <= 100. ->
+            parse { o with min = Some min } args
+        | Some _ | None ->
+            usage_error
+              (strf
+                 "invalid value '%s' for --min: expected a percentage (0-100)"
+                 value))
+    | "--json" :: args -> parse { o with json = true } args
     | "--lines" :: value :: args -> (
         match Lines.of_spec value with
-        | Ok more -> parse color (add_lines lines more) paths args
+        | Ok more -> parse (add_lines o more) args
         | Error expected ->
             usage_error
               (strf "invalid value '%s' for --lines: expected %s" value expected)
         )
     | "--diff" :: file :: args -> (
         match In_channel.with_open_bin file In_channel.input_all with
-        | text -> parse color (add_lines lines (Lines.of_diff text)) paths args
+        | text -> parse (add_lines o (Lines.of_diff text)) args
         | exception Sys_error reason ->
             usage_error (strf "cannot read --diff %s: %s" file reason))
-    | [ (("--lines" | "--diff") as flag) ] ->
+    | [ (("--min" | "--lines" | "--diff" | "--color") as flag) ] ->
         usage_error (strf "option '%s' requires an argument" flag)
     | ("-h" | "--help" | "-help") :: _ ->
         print_endline help;
         Error 0
     | "--color" :: value :: args -> (
         match Cli.parse_color value with
-        | Ok color -> parse (Some color) lines paths args
+        | Ok color -> parse { o with color = Some color } args
         | Error error -> usage_error (Cli.error_message error))
-    | [ "--color" ] -> usage_error "option '--color' requires an argument"
     | arg :: _ when String.starts_with ~prefix:"-" arg ->
         usage_error (strf "unknown option '%s'" arg)
-    | path :: args -> parse color lines (path :: paths) args
+    | path :: args -> parse { o with paths = path :: o.paths } args
   in
   (* [--flag=VALUE] is [--flag VALUE]. *)
   let split arg =
     match String.index_opt arg '=' with
     | Some i
-      when List.mem (String.sub arg 0 i) [ "--color"; "--lines"; "--diff" ] ->
+      when List.mem (String.sub arg 0 i)
+             [ "--min"; "--color"; "--lines"; "--diff" ] ->
         [
           String.sub arg 0 i; String.sub arg (i + 1) (String.length arg - i - 1);
         ]
     | Some _ | None -> [ arg ]
   in
-  parse None None [] (List.concat_map split args)
+  parse
+    { min = None; json = false; color = None; lines = None; paths = [] }
+    (List.concat_map split args)
 
 (* [WINDTRAP_COLOR] is read when [--color] is absent, refused on the runner's
-   terms and never read as [auto] out of a typo. *)
-let ansi color =
-  let color =
-    match color with Some color -> Ok color | None -> Cli.color_mode ()
-  in
-  match color with
-  | Error error -> fail ~code:2 (Cli.error_message error)
-  | Ok color ->
-      Ok
-        (Os.resolve_color color ~tty:(Os.is_tty_stdout ())
-           ~inside_dune:(Os.inside_dune ()) ~term_dumb:(Os.term_dumb ()))
+   terms and never read as [auto] out of a typo. A document is never styled,
+   so it reads no [WINDTRAP_COLOR]. *)
+let ansi o =
+  if o.json then Ok false
+  else
+    let color =
+      match o.color with Some color -> Ok color | None -> Cli.color_mode ()
+    in
+    match color with
+    | Error error -> fail ~code:2 (Cli.error_message error)
+    | Ok color ->
+        Ok
+          (Os.resolve_color color ~tty:(Os.is_tty_stdout ())
+             ~inside_dune:(Os.inside_dune ()) ~term_dumb:(Os.term_dumb ()))
+
+(* A refused file fails the merge, with a gate or without. A document leaves
+   the outcome line out, so the gate gives it. *)
+let gate o (m : Sections.mutation) =
+  match o.min with
+  | None -> if m.survivors = [] && m.refused = [] then 0 else 1
+  | Some min ->
+      if o.json then
+        Os.say
+          (Sections.render ~ansi:false
+             (Sections.mutation_line ~min:(Some min) m));
+      if Sections.mutation_gate_met ~min m then 0 else 1
+
+(* Standard output can refuse the text, for example on a full disk. The
+   channel is closed, so that the flush at exit does not raise again. *)
+let write text =
+  match
+    print_string text;
+    flush stdout
+  with
+  | () -> Ok ()
+  | exception Sys_error reason ->
+      close_out_noerr stdout;
+      fail ~code:1 (strf "cannot write to standard output: %s" reason)
 
 let run args =
   let code =
-    let* color, lines, paths = options args in
-    let* ansi = ansi color in
+    let* o = options args in
+    let* ansi = ansi o in
     let* files, roots =
-      match Data_files.discover Verdicts.format paths with
+      match Data_files.discover Verdicts.format o.paths with
       | Ok found -> Ok found
       | Error message -> fail ~code:1 message
     in
     let* files = fresh files in
-    let files = Option.fold ~none:files ~some:(on_lines files) lines in
-    let mutation, invocation = merge ~source:(source ~roots) files in
-    Sections.print ~out:Format.std_formatter ~ansi
-      (Sections.mutation_report ~invocation mutation);
-    Ok (if mutation.survivors = [] && mutation.refused = [] then 0 else 1)
+    let files = Option.fold ~none:files ~some:(on_lines files) o.lines in
+    let merged = merged files in
+    let mutation, invocation = merge ~source:(source ~roots) files merged in
+    let* () =
+      write
+        (if o.json then json files merged mutation
+         else
+           Pp.str "%a"
+             (fun out -> Sections.print ~out ~ansi)
+             (Sections.mutation_report ~invocation ~min:o.min mutation))
+    in
+    Ok (gate o mutation)
   in
   match code with Ok code | Error code -> code

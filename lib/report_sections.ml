@@ -1647,9 +1647,20 @@ let survivor_block ~exe_width (s : survivor) =
   in
   (Line [ plain (diagnostic m) ] :: title :: source) @ reaching
 
+let scored (m : mutation) =
+  m.killed + List.length m.survivors + List.length m.not_evaluated
+
+let mutation_score m = percent ~visited:m.killed ~total:(scored m)
+
+(* A merge without the verdicts of a refused suite is not the project's. *)
+let mutation_gate_met ~min m = mutation_score m >= min && m.refused = []
+
 (* The reached count is the sum of the other terms, so the line cannot
-   disagree with the blocks above it. A zero term is omitted. *)
-let mutation_summary (m : mutation) =
+   disagree with the blocks above it. A zero term is omitted, and so is the
+   score of no scored mutant when no gate needs it. As on the coverage line,
+   the score has its counts beside its rounding, and the gate compares the
+   unrounded score. *)
+let mutation_line ~min (m : mutation) =
   let survived = List.length m.survivors in
   let unknown =
     List.fold_left
@@ -1682,13 +1693,34 @@ let mutation_summary (m : mutation) =
     @ term (List.length m.outside_tests) (fun n ->
         [ styled `Yellow (strf "%d evaluated outside tests" n) ])
     @ term m.not_tested (fun n -> [ plain (strf "%d not tested" n) ])
+    @ (match m.scope with
+      | Executables n ->
+          [ plain (counted n "executable") ]
+          :: term (List.length m.refused) (fun n ->
+              [ styled `Red (counted n "suite" ^ " not mutation-tested") ])
+      | Suite | Selected _ -> [])
     @
-    match m.scope with
-    | Executables n ->
-        [ plain (counted n "executable") ]
-        :: term (List.length m.refused) (fun n ->
-            [ styled `Red (counted n "suite" ^ " not mutation-tested") ])
-    | Suite | Selected _ -> []
+    let score =
+      if scored m = 0 then plain "no scored mutant"
+      else
+        let text =
+          strf "score %.1f%% (%d/%d)" (mutation_score m) m.killed (scored m)
+        in
+        match min with
+        | Some min when mutation_score m < min -> styled `Red text
+        | Some _ | None -> plain text
+    in
+    match min with
+    | None -> term (scored m) (fun _ -> [ score ])
+    | Some min ->
+        [
+          [
+            score;
+            plain (strf ", minimum %s%%: " (Pp.to_string Pp.decimal min));
+            (if mutation_gate_met ~min m then styled `Green "ok"
+             else styled `Red "FAILED");
+          ];
+        ]
   in
   plain "mutants: " :: separated (plain ", ") terms
 
@@ -1847,14 +1879,14 @@ let outside_tests_section =
       ]
 
 (* The command arms the first survivor printed. *)
-let outcome ~invocation ~tests (m : mutation) =
+let outcome ~invocation ~tests ~min (m : mutation) =
   (match m.survivors with
     | [] -> []
     | first :: _ ->
         [
           Hint ("reproduce: " ^ arm_command ~invocation ~tests first.mutant.id);
         ])
-  @ [ Line (mutation_summary m) ]
+  @ [ Line (mutation_line ~min m) ]
 
 (* The caller hands over the survivors whose blocks it printed. *)
 let mutation_closing ~(config : Run.config) (m : mutation) =
@@ -1867,14 +1899,14 @@ let mutation_closing ~(config : Run.config) (m : mutation) =
       outside_tests_section m.outside_tests;
     ]
   in
-  let rest = join (sections @ [ outcome ~invocation ~tests m ]) in
+  let rest = join (sections @ [ outcome ~invocation ~tests ~min:None m ]) in
   match m.survivors with
   | [] when List.for_all (function [] -> true | _ :: _ -> false) sections ->
       rest
   | [] -> Line [] :: rest
   | _ :: _ -> Rule None :: Line [] :: rest
 
-let mutation_report ~invocation (m : mutation) =
+let mutation_report ~invocation ~min (m : mutation) =
   let exes =
     List.concat_map
       (fun (s : survivor) ->
@@ -1902,5 +1934,5 @@ let mutation_report ~invocation (m : mutation) =
       refused_section m.refused;
       unreached_section m.unreached;
       outside_tests_section m.outside_tests;
-      outcome ~invocation ~tests:(`Filter None) m;
+      outcome ~invocation ~tests:(`Filter None) ~min m;
     ]

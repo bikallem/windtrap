@@ -13,9 +13,11 @@
 
     {!run} is the whole command.
     {!Windtrap.Private.Report_sections.mutation_report} states what the report
-    holds. This interface states the {{!section-files}files} that are merged and
-    what the {{!section-merge}merge} decides: the verdicts, the reaching tests,
-    the order of the survivors and the launcher of the [reproduce:] command. *)
+    holds. This interface states the {{!section-files}files} that are merged,
+    what the {{!section-merge}merge} decides (the verdicts, the reaching tests,
+    the order of the survivors and the launcher of the [reproduce:] command),
+    the {{!section-gate}gate}, and the {{!section-format}machine format}, whose
+    keys and values are frozen. *)
 
 (** {1:files Files}
 
@@ -105,6 +107,89 @@
     - [`Exe] of the path of the executable, as one such word, when the identity
       is absolute. *)
 
+(** {1:gate The gate}
+
+    The score is {!Windtrap.Private.Report_sections.mutation_score} of the
+    merge. It is the percentage of the killed mutants among those killed,
+    survived and not evaluated, unrounded. An unknown mutant does not count. The
+    score is [100.] when the merge has none of these mutants, and the outcome
+    line then says [no scored mutant]. [--min PCT] makes the merge pass when
+    {!Windtrap.Private.Report_sections.mutation_gate_met} is [true]: the score
+    is at least [PCT] and no file is refused. A survivor then does not fail the
+    merge. A refused file fails the merge with a gate or without one. The gate
+    runs after the report or the document is printed, and does not run when the
+    write fails. The outcome line of the report then gives the gate and its
+    result ({!Windtrap.Private.Report_sections.mutation_line}), and the score
+    with its two counts beside its rounding. *)
+
+(** {1:format Machine format}
+
+    [--json] makes standard output the document, so the report is not printed.
+    The outcome line is not printed on standard output either. Under [--min],
+    standard error gives its text behind [windtrap:], when the gate is met and
+    when it is not. The keys and the values that follow are frozen. A later
+    version can add a key, and that key does not change the meaning of the
+    others. A change to the meaning of a key increments ["version"]. Under
+    [--lines] or [--diff], the verdict counts, ["reached"], ["score"] and
+    ["mutants"] hold only the mutants on the lines, as the report does. But
+    ["executables"] still lists every file that is kept, and ["refused"] still
+    counts every refused file, because each file stays in the merge.
+
+    The document is one object with the keys ["version"], ["summary"],
+    ["executables"] and ["mutants"]. ["version"] is the number [1].
+
+    ["summary"] is an object with these keys:
+    - ["reached"] is the sum of ["killed"], ["survived"], ["not_evaluated"] and
+      ["unknown"].
+    - ["killed"], ["survived"], ["not_evaluated"], ["unknown"],
+      ["outside_tests"] and ["unreached"] are each the count of the merged
+      mutants that have that verdict.
+    - ["refused"] is the count of the refused files.
+    - ["score"] is the score of the {{!section-gate}gate}, with two decimals. It
+      is [100.00] when no mutant is scored, as the ["percentage"] of
+      [windtrap coverage --json] is with no point.
+
+    ["executables"] is an array with one object for each file that is kept, in
+    path order. Two files can have the same name, and the files of the suites of
+    one executable have the same name and path. The object has these keys:
+    - ["name"] is the label that the report gives the executable
+      ({{!section-merge}the merge}).
+    - ["path"] is the executable that the file records, as
+      {!Windtrap_runtime.Instr.exe_identity} spells it. It is [null] for a file
+      that records none.
+    - ["suite"] is the suite that the file records, or [null].
+    - ["refused"] is the reason why the writer of the file could not test its
+      mutants, or [null] when it tested them.
+
+    ["mutants"] is an array with one object for each merged mutant, in the order
+    of [Windtrap_runtime.Mutate.compare_id]. The object has these keys:
+    - ["id"] is the identifier, as [Windtrap_runtime.Mutate.id_to_string] spells
+      it.
+    - ["file"], ["line"], ["col"] and ["rewrite"] are the four parts of the
+      identifier.
+    - ["end_line"] and ["end_col"] are the one-based line and the zero-based
+      column of the byte after the mutated expression.
+    - ["before"] is the source text of the original expression.
+    - ["after"] is the source text of the armed expression.
+    - ["verdict"] is one of ["killed"], ["survived"], ["not_evaluated"],
+      ["unknown"], ["outside_tests"] and ["unreached"].
+    - ["tests"] is in the object of a survivor only. It is an array of the tests
+      that reached the survivor.
+    - ["executable"] and ["reason"] are in the object of an unknown mutant only.
+      ["executable"] is the index in ["executables"] of the file that the report
+      names for the mutant ({{!section-merge}the merge}), and ["reason"] is the
+      reason that this file records.
+
+    ["tests"] has one object for each reaching test of the survivor in each file
+    in which it survived. The objects are sorted by file, and then by the names
+    of the test, one name after the other. There are no duplicates. This order
+    can be different from the order of the report. The object has these keys:
+    - ["executable"] is the index of the file in ["executables"].
+    - ["test"] is the path of the test as an array of names, the outermost group
+      first.
+
+    {!Windtrap.Private.Json.string} writes each string. *)
+
 (** {1:running Running} *)
 
 val run : string list -> int
@@ -113,38 +198,64 @@ val run : string list -> int
     calls [exit].
 
     The command line is [windtrap mutants [OPTIONS] [PATH...]]. [-h], [--help]
-    and [-help] print the help page on standard output. [--lines SPEC] and
-    [--diff FILE], also spelled with [=], repeat and add up into a
-    {!Windtrap.Private.Lines.t}, read by {!Windtrap.Private.Lines.of_spec} and
-    {!Windtrap.Private.Lines.of_diff}: each file's records off those lines are
-    dropped before the {{!section-merge}merge}, so the report and the exit code
-    are those of the mutants on the lines. A malformed [SPEC] or an unreadable
-    [FILE] is a usage error. [--color MODE], also spelled [--color=MODE], is the
-    runner's flag, read by {!Windtrap.Private.Cli.parse_color}; without it the
-    colour mode is its mirror [WINDTRAP_COLOR], read by
+    and [-help] print the help page on standard output. [--min PCT] and [--json]
+    are those of the {{!section-gate}gate} and the
+    {{!section-format}machine format}. A [PCT] that is not a number from [0] to
+    [100] is a usage error. [--lines SPEC] and [--diff FILE] repeat and add up
+    into a {!Windtrap.Private.Lines.t}, read by
+    {!Windtrap.Private.Lines.of_spec} and {!Windtrap.Private.Lines.of_diff}.
+    Each file's records off those lines are dropped before the
+    {{!section-merge}merge}, so the report, the document and the exit code are
+    those of the mutants on the lines. A malformed [SPEC] or an unreadable
+    [FILE] is a usage error. [--color MODE] is the runner's flag, read by
+    {!Windtrap.Private.Cli.parse_color}. Without it, the colour mode of the
+    report is its mirror [WINDTRAP_COLOR], read by
     {!Windtrap.Private.Cli.color_mode}. The mode is resolved for standard output
-    by {!Windtrap.Private.Os.resolve_color}. Every other argument that starts
-    with [-] is refused, and the rest are [PATH]s.
+    by {!Windtrap.Private.Os.resolve_color}, and a document is never styled. A
+    flag that takes a value can also be spelled [--flag=value]. Every other
+    argument that starts with [-] is refused, and the rest are [PATH]s.
 
-    [run] parses the arguments, reads [WINDTRAP_COLOR] when [--color] is absent,
-    finds the {{!section-files}files}, judges and loads them, and prints the
-    report of the {{!section-merge}merge} on standard output, in that order. A
-    step that fails returns its code, so a failure prints no report. Every other
-    line goes to standard error, through {!Windtrap.Private.Os.say} but for the
-    usage line that follows a usage error.
+    [run] does these steps, in this order:
+    - It parses the arguments.
+    - It reads [WINDTRAP_COLOR] for the report when [--color] is absent.
+    - It finds the {{!section-files}files}, judges them and loads them.
+    - It prints the report or the document of the {{!section-merge}merge} on
+      standard output.
+    - It runs the gate.
+
+    A step before the gate that fails gives its code, and the steps after it do
+    not run. Every other line goes to standard error, through
+    {!Windtrap.Private.Os.say} but for the usage line that follows a usage
+    error.
 
     The result is:
-    - [0] when the report was printed, no mutant survived and every file was
-      tested. Unreached, unknown and not-evaluated mutants are listed and do not
-      fail the command. It is also [0] for the help page.
-    - [1] when the report was printed and at least one mutant survived every
-      executable that reached it, or a file is refused: a merge without that
-      suite's verdicts is not the project's. The command has no threshold, so
-      one survivor fails it, and a mutant that is equivalent to the original is
-      dismissed at its site with [[@mutate off]]. It is also [1], with no
-      report, when a [PATH] cannot be used, when no verdict file is found, when
-      a file that is not excluded cannot be read, is corrupt or has another
-      format version, or when every file is excluded.
-    - [2] for a usage error: an unknown option, a [--color] without its value or
-      with a value that the flag refuses. It is also [2] for a [WINDTRAP_COLOR]
-      that the flag would refuse, read when [--color] is absent. *)
+    - [0] when the report or the document was printed and the merge passes.
+      Without [--min], the merge passes when no mutant survived and every file
+      was tested. Under [--min], it passes when the score meets the gate and
+      every file was tested, and a survivor does not fail it. Unreached, unknown
+      and not-evaluated mutants are listed and do not fail the merge by
+      themselves. The result is also [0] for the help page.
+    - [1] when the report or the document was printed and the merge fails.
+      Without [--min], the merge fails when at least one mutant survived every
+      executable that reached it. Under [--min], it fails when the score is
+      below the gate. Thus under the gate, a merge with no survivor can fail,
+      because a mutant that was not evaluated lowers the score. The merge also
+      fails when a file is refused: a merge without the verdicts of that suite
+      is not the project's. Without the gate, a mutant that is equivalent to the
+      original is dismissed at its site with [[@mutate off]].
+    - [1], with no report, when a [PATH] cannot be used or when no verdict file
+      is found. It is also [1] when a file that is not excluded cannot be read,
+      is corrupt or has another format version. It is also [1] when every file
+      is excluded.
+    - [1] when the write of the report or of the document to standard output
+      fails with an error, for example on a full disk. The reader then has only
+      a part of it. Standard error gives the reason, and the gate does not run.
+      A closed pipe, as after [| head], ends the process by SIGPIPE instead,
+      unless the parent ignores that signal.
+    - [2] for a usage error. A usage error is an unknown option, a flag that
+      does not have its value, a [--min] that is not in the interval
+      \[[0];[100]\], a malformed [--lines], an unreadable [--diff], or a
+      [--color] value that the flag refuses.
+    - [2] also for a [WINDTRAP_COLOR] that the flag would refuse, when [--color]
+      is absent and the report is printed. A document reads no [WINDTRAP_COLOR].
+*)
