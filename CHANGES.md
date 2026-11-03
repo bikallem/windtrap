@@ -10,6 +10,9 @@
 
 ### Mutation testing
 
+- `--arm` refuses a mutant that `[@mutate off]` dismisses, and exits 1.
+  The message names the reason. Before, the run armed no guard and ended
+  on `mutant not evaluated`.
 - The dry run finds each test that reaches a mutation site, also when
   the test evaluates the site on several domains at the same time. The
   test must synchronize with these domains when it starts and when it

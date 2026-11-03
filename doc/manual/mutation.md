@@ -154,7 +154,8 @@ mutants: 3 survived of 9 reached by this suite, 6 killed, 1 never reached
 
 ## Reproducing a survivor
 
-The `reproduce:` line arms the first survivor. `--arm ID` runs the
+The `reproduce:` line arms the first survivor. `--arm` for a mutant that
+`[@mutate off]` dismisses is a usage error and exits 1. `--arm ID` runs the
 suite once with that mutant active, names it first, records no
 correction, and ends on one verdict line:
 
@@ -322,7 +323,9 @@ expression, in this version and in any later one that gives the
 expression more mutants. `[@@mutate off]` dismisses a binding,
 `[@@@mutate off]` and `[@@@mutate on]` the structure items between
 them, and `[@@@mutate exclude_file]` a file. Only `off` takes a reason,
-which no report prints.
+which no report prints. `--arm` names it when it refuses the mutant:
+a dismissed site has no guard, so `--arm` for its mutant is a usage
+error and exits 1.
 
 ## Mutation testing a project
 
@@ -547,7 +550,9 @@ program would not reach its run. A test may spawn a domain. A run that
 is refused, or whose selection narrows the suite, still writes its
 verdict file when this build has none, saying why, and the project's
 merge names the executable and the suite under `not mutation-tested`.
-`--mutate` and `--arm` together are a usage error. An interrupt ends the
+`--mutate` and `--arm` together are a usage error. `--arm` refuses a
+mutant that `[@mutate off]` dismisses, names the reason, and exits 1:
+its site has no guard, so no run can arm it. An interrupt ends the
 run: the running mutants are killed, the first not yet reported is named
 on standard error, and no verdict file is written.
 

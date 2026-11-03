@@ -164,6 +164,10 @@ val execute_and_report :
       catalogues is [Error (Run.Mutation_refused _)], with the sentence of
       {!Windtrap_runtime.Mutate.pp_arm_error} on standard error, before anything
       runs.
+    - A mutant that {!Windtrap_runtime.Mutate.arm} gives with [dismissed] set to
+      [Some reason] is [Error (Run.Mutation_refused _)] before anything runs.
+      Its site has no guard, so an armed run of it is the unarmed run. The
+      sentence on standard error names the dismissal and the reason.
     - {!Windtrap_runtime.Mutate.Uncatalogued} is no refusal. The same sentence
       goes to standard error before the transcript, and the result is that of
       the ordinary run under {!Run.No_mutation}.
