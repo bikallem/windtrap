@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Coverage
+
+- `windtrap coverage --json` writes each malformed UTF-8 sequence of a
+  path as U+FFFD, and DEL as `\u007f`, as the `--json` document of a run
+  does. Thus the document is always valid JSON.
+
 ## v0.3.1 2026-11-01
 
 Windtrap 0.3.1 fixes two bugs that failed tests that were not at fault:
