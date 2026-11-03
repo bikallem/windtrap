@@ -76,11 +76,12 @@ val execute_and_report :
     ({!Cli.settings}), so a property draws the same cases in the dry run, the
     probe and every job, and on every run of one binary.
 
-    {b Verdicts.} A mutant is {!Windtrap_runtime.Verdicts.Killed} when its job
-    counted a failure, that of a fixture release included, after the first
-    evaluation of the armed site or in the test of that evaluation. Until that
-    evaluation, the job runs the code of the program without the mutant. Thus a
-    failure before it has another cause, and the job does not stop there. It is
+    {b Verdicts.} A mutant is {!Windtrap_runtime.Verdicts.Killed} when a test of
+    its job failed in or after the test that first evaluated the armed site. It
+    is killed too when a fixture release or a function of [at_exit] failed, and
+    the job evaluated the site at any time. Until the first evaluation, the job
+    runs the code of the program without the mutant. Thus a test that fails
+    before it has another cause, and the job does not stop there. It is
     {!Windtrap_runtime.Verdicts.Unknown} when its job ended before its tests
     did: its worker was killed by a signal or exited, code under test calling
     [exit] included, or it passed its deadline. Otherwise it is
@@ -172,12 +173,15 @@ val execute_and_report :
       unexpected pass of such a test fails the run and kills no mutant, and a
       site that only such tests evaluated is not reached
       ({!Report.mutation_not_reached}).
-    - A failure kills the mutant as in a job: when its test or an earlier one,
-      in the order of the selection, evaluated the armed site. A fixture release
-      that failed kills it when the run evaluated the site. The mutant is armed
-      with [Supervisor.arm], so an evaluation in a forked process counts. Under
-      [-x] the run stops at the first counted failure, also when it comes before
-      the first evaluation.
+    - A test that fails kills the mutant when it or an earlier test, in the
+      order of the selection, evaluated the armed site. An evaluation outside
+      every test counts as one before every test. A test whose worker ended
+      before the test did has unknown evaluations, and its failure counts. A
+      fixture release that fails kills the mutant when the run evaluated the
+      site at any time. The mutant is armed with [Supervisor.arm], so an
+      evaluation in a forked process counts. Only the rows that the run reports
+      count. Under [-x] the run stops at the first counted failure, except at a
+      failure that the mutant did not cause.
 
     The result of an armed run is that of {!Report.run}, so its exit code is
     that of the ordinary run, [2] included, and it writes its JUnit file. *)

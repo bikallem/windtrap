@@ -26,17 +26,17 @@ type reaching_test = string list
     mutant that no test reached is {!Outside_tests} or {!Unreached}. *)
 type verdict =
   | Killed
-      (** A reaching test failed, or a fixture release failed, in the run that
-          armed the mutant, after the first evaluation of the armed site or in
-          the test of that evaluation. *)
+      (** In the run that armed the mutant, a reaching test failed in or after
+          the test that first evaluated the armed site. Or a fixture release
+          failed, and the run evaluated the site at any time. *)
   | Unknown of string
       (** No verdict, and the string says why: the run that armed the mutant
           ended before its tests did, by a crash, an exit or its deadline, or
           the executable could not be mutation-tested, as when its dry run is
           red, its suite is not deterministic or its selection narrows it. *)
   | Survived of { first : reaching_test; others : reaching_test list }
-      (** The armed site was evaluated, and no reaching test and no fixture
-          release failed after its first evaluation. A test that failed before
+      (** The armed site was evaluated, no reaching test failed after its first
+          evaluation, and no fixture release failed. A test that failed before
           the first evaluation does not count. [first] and [others] are the
           reaching tests, sorted and without duplicates, and [first] is the
           first. *)

@@ -13,6 +13,7 @@ open Windtrap
 module Mutate = Windtrap_runtime.Mutate
 module Verdicts = Windtrap_runtime.Verdicts
 module Child = Windtrap_test_support.Child
+module Supervisor = Windtrap.Private.Supervisor
 
 let strf = Printf.sprintf
 let exe_dir = Filename.dirname Windtrap_runtime.Instr.executable
@@ -851,6 +852,36 @@ let verdicts =
             (masked r.out));
     ]
 
+(* An arming whose byte cannot be mapped, in this process: its runs count
+   each failure. *)
+let unwitnessed () =
+  let file = "t/witness.ml" in
+  let site : Mutate.site =
+    {
+      line = 1;
+      col = 0;
+      end_line = 1;
+      end_col = 1;
+      rewrite = "not";
+      before = "b";
+      after = "a";
+      dismissed = None;
+    }
+  in
+  let (_ : int -> bool) = Mutate.register ~file ~sites:[| site |] in
+  let id = { Mutate.file; line = 1; col = 0; rewrite = "not" } in
+  let temp = Filename.get_temp_dir_name () in
+  Fun.protect ~finally:(fun () ->
+      Filename.set_temp_dir_name temp;
+      ignore (Supervisor.arm { id with file = "t/nowhere.ml" }))
+  @@ fun () ->
+  Filename.set_temp_dir_name (Filename.concat temp "windtrap-no-such-dir");
+  is_true (Result.is_ok (Supervisor.arm id));
+  equal bool false (Supervisor.forks_seen ());
+  Filename.set_temp_dir_name temp;
+  is_true (Result.is_ok (Supervisor.arm id));
+  equal bool true (Supervisor.forks_seen ())
+
 (* Failures before the first evaluation *)
 
 (* In [unprimed], the job of [widen]'s mutant runs its reaching tests
@@ -954,15 +985,41 @@ let before_evaluation =
             "mutant survived: only a forked process evaluated the armed site \
              and no test failed."
             (outcome r.out));
+      test "an arming that cannot map its byte sees no forked process"
+        unwitnessed;
       test
-        "an armed run under fail-fast stops at a failure before the first \
-         evaluation, which the mutant did not cause" (fun () ->
+        "an armed run under fail-fast does not stop at a failure before the \
+         first evaluation" (fun () ->
           let r = spawn ~env:[ suite "red" ] [ "--arm"; site 18; "-x" ] in
           equal string "exited 1" r.status;
           equal string
-            "mutant not evaluated: no selected test ran the site, so the \
-             mutant did not cause the failure."
+            "mutant survived: the armed site was evaluated 2 times, and only \
+             tests before its first evaluation failed."
             (outcome r.out));
+      cases "an armed run under fail-fast stops at a failure that counts"
+        ~id:(fun jobs -> "-j " ^ jobs)
+        [ "1"; "2" ]
+        (fun jobs ->
+          let r =
+            spawn ~env:[ suite "ahead" ] [ "--arm"; site 18; "-x"; "-j"; jobs ]
+          in
+          equal string "exited 1" r.status;
+          equal string "mutant killed." (outcome r.out));
+      test
+        "an armed run counts a test whose worker crashed, whose evaluations \
+         are unknown" (fun () ->
+          let r = spawn ~env:[ suite "crash" ] [ "--arm"; site 27 ] in
+          equal string "exited 1" r.status;
+          equal string "mutant killed." (outcome r.out));
+      test "an armed run counts a test whose worker was killed at its limit"
+        (fun () ->
+          let r =
+            spawn
+              ~env:[ suite "spinning" ]
+              [ "--arm"; site 18; "--timeout"; "0.3" ]
+          in
+          equal string "exited 1" r.status;
+          equal string "mutant killed." (outcome r.out));
     ]
 
 (* Tests marked xfail *)

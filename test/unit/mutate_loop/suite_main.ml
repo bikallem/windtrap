@@ -519,6 +519,26 @@ let forked =
 let fork_only =
   [ test "widen in a fork" (fun () -> is_true (widen_in_fork 3 4 <> 0)) ]
 
+(* Spins when [widen]'s answer changes, and swallows the soft limit's
+   exception: only the hard kill at the limit ends it. *)
+let spinning =
+  [
+    test "widen spins when it changes" (fun () ->
+        while Subject.widen 3 4 <> 7 do
+          try Unix.sleepf 0.01 with _ -> ()
+        done);
+  ]
+
+(* A slow test that fails without [widen], then a test that pins it. Under
+   [-j 2] the second ends first. *)
+let ahead =
+  [
+    test "slow red" (fun () ->
+        Unix.sleepf 0.2;
+        equal int 1 2);
+    test "widen adds" (fun () -> equal int 7 (Subject.widen 3 4));
+  ]
+
 let retried = ref 0
 let handle = fixture ~teardown:(fun () -> ignore (Subject.crasher 3 1)) Fun.id
 
@@ -569,6 +589,8 @@ let () =
       exit @@ run "calc" [ group "unprimed" unprimed_release ]
   | "forked" -> exit @@ run "calc" [ group "forked" forked ]
   | "fork_only" -> exit @@ run "calc" [ group "forked" fork_only ]
+  | "spinning" -> exit @@ run "calc" [ group "spinning" spinning ]
+  | "ahead" -> exit @@ run "calc" [ group "ahead" ahead ]
   | "crash" ->
       exit
       @@ run "calc"

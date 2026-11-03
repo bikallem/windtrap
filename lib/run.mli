@@ -721,6 +721,7 @@ type outcome = {
 
 val execute :
   ?on_event:(event -> unit) ->
+  ?stop_after:(result -> bool) ->
   config ->
   suite:string ->
   Test_tree.t list ->
@@ -730,6 +731,10 @@ val execute :
     anything executes.
     - [on_event] receives the {!type-event}s. Defaults to a function that
       ignores them.
+    - [stop_after], when given, receives each result in order, after its
+      {!Test_finished}, and the run stops after the first for which it is
+      [true]. It takes the place of the rule of [config.bail], which stops after
+      the first counted failure.
     - [suite] names the directory of the capture logs and of the last-failed
       store, under [config.log_dir].
 

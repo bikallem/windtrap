@@ -691,8 +691,8 @@ type settled =
   | Served of { served : Run.served; stopped : bool }
   | Lost of Run.result
 
-let supervise ?(on_event = ignore) ~on_reach (config : Run.config) ~suite tests
-    ~spawn =
+let supervise ?(on_event = ignore) ?stop_after ~on_reach ~on_lost
+    (config : Run.config) ~suite tests ~spawn =
   let started = Os.counter () in
   let* selection = Run.select config ~suite tests in
   let run = Run.supervising config ~suite in
@@ -737,6 +737,7 @@ let supervise ?(on_event = ignore) ~on_reach (config : Run.config) ~suite tests
   in
   let drop w = workers := List.filter (fun x -> x != w) !workers in
   let lose (job : case_job) failure =
+    on_lost job.case.path;
     settled.(job.index) <-
       Some
         (Lost (Run.lost run job.case failure ~duration:(Os.count_s job.started)))
@@ -892,7 +893,12 @@ let supervise ?(on_event = ignore) ~on_reach (config : Run.config) ~suite tests
           Run.add_result run result;
           give (Test_finished result);
           uncorrected := !uncorrected || (result.counted && not corrected);
-          if (config.bail && result.counted) || stopped then stopping := true;
+          let stops =
+            match stop_after with
+            | Some stop -> stop result
+            | None -> config.bail && result.counted
+          in
+          if stops || stopped then stopping := true;
           incr reached;
           reach ()
   in
@@ -1104,8 +1110,8 @@ let supervise ?(on_event = ignore) ~on_reach (config : Run.config) ~suite tests
 
 (* The parent's own evaluations, at module initialization, are outside
    every test. *)
-let execute ?(on_reach = fun _ _ -> ()) ?(on_event = ignore)
-    (config : Run.config) ~suite tests =
+let execute ?(on_reach = fun _ _ -> ()) ?(on_lost = ignore) ?stop_after
+    ?(on_event = ignore) (config : Run.config) ~suite tests =
   if mutating config then window ~send:on_reach None;
   let spawning = if Sys.win32 then `None else spawning () in
   if config.in_process || spawning = `None then (
@@ -1113,7 +1119,7 @@ let execute ?(on_reach = fun _ _ -> ()) ?(on_event = ignore)
       if mutating config then reach_windows ~send:on_reach event;
       on_event event
     in
-    let ran = Run.execute ~on_event config ~suite tests in
+    let ran = Run.execute ~on_event ?stop_after config ~suite tests in
     if mutating config then window ~send:on_reach None;
     ran)
   else
@@ -1122,7 +1128,8 @@ let execute ?(on_reach = fun _ _ -> ()) ?(on_event = ignore)
       | `Exec -> exec ~quiet:false ~armed:None config ~suite tests
       | `Fork | `None -> fork ~quiet:false ~armed:None config ~suite tests
     in
-    supervise ~on_event ~on_reach config ~suite tests ~spawn
+    supervise ~on_event ?stop_after ~on_reach ~on_lost config ~suite tests
+      ~spawn
 
 (* Fresh workers *)
 

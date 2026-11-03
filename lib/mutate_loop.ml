@@ -304,8 +304,8 @@ let probe ~dry_run (ran : Supervisor.ran) =
                ^ ")")
            not_a_number)
 
-(* The unexpected pass of a test marked xfail counts as a failure of the run
-   and kills no mutant. *)
+(* A counted failure of a test not marked xfail. The unexpected pass of a
+   test marked xfail fails the run and kills no mutant. *)
 let kills (r : Run.result) = Option.is_none r.xfail && counted_failure r
 
 (* Until the first evaluation of its site, the mutant runs the code of the
@@ -568,7 +568,8 @@ let loop renderer ~scope ~suite (config : Run.config) tests =
     let on_reach = observe reach ~xfail:(xfail_paths tests) in
     match
       Report.run
-        ~execute:(Supervisor.execute ~on_reach)
+        ~execute:(fun ?on_event config ->
+          Supervisor.execute ~on_reach ?on_event config)
         ~suite
         { config with junit = None }
         tests
@@ -668,74 +669,101 @@ let armed renderer ~spec ~suite (config : Run.config) tests =
       flush_descriptors ();
       (* What module initialization evaluated ran before the mutant was. *)
       Mutate.reset_reach ();
-      (* The evaluations of the armed site inside tests marked xfail, which
-         reach no mutant, and elsewhere. *)
-      let xfail = xfail_paths tests in
-      let hits = ref 0 and xfail_hits = ref 0 in
-      (* The tests that evaluated the site, and whether a window of no test
-         did. *)
-      let reaching = Hashtbl.create 16 and outside = ref false in
+      (* The evaluations of the armed site in each test and outside every
+         test, and the tests whose worker ended first, which evaluations are
+         unknown. An evaluation outside every test counts as before every
+         test. *)
+      let reaching = Hashtbl.create 16 and lost = Hashtbl.create 4 in
+      let outside = ref None in
       let on_reach test sites =
-        let add count n = count := saturating_add !count n in
         List.iter
           (fun (site, n) ->
             if Mutate.compare_id site mutant.id = 0 then
               match test with
               | None ->
-                  outside := true;
-                  add hits n
+                  outside :=
+                    Some (saturating_add (Option.value !outside ~default:0) n)
               | Some path ->
-                  Hashtbl.replace reaching path ();
-                  add (if xfail path then xfail_hits else hits) n)
+                  let hits =
+                    Option.value (Hashtbl.find_opt reaching path) ~default:0
+                  in
+                  Hashtbl.replace reaching path (saturating_add hits n))
           sites
       in
+      let on_lost path = Hashtbl.replace lost path () in
+      let blind () = not (Supervisor.forks_seen ()) in
+      let before () = Option.is_some !outside || blind () in
+      (* As in a job, a failure counts when its test or an earlier one, in
+         the order of the selection, evaluated the site. *)
+      let evaluated_in (r : Run.result) =
+        Hashtbl.mem reaching r.path || Hashtbl.mem lost r.path
+      in
+      (* Under [-x] the run stops at a counted row, except at a failure that
+         the mutant did not cause. *)
+      let through = ref false in
+      let stop_after (r : Run.result) =
+        through := !through || evaluated_in r;
+        config.bail && r.counted && ((not (kills r)) || !through || before ())
+      in
       let result =
-        Report.run ~execute:(Supervisor.execute ~on_reach) ~suite config tests
-      in
-      (* As in a job, a failure counts when its test or an earlier one
-         evaluated the site. The order is the selection's, whatever [-j]. *)
-      let blind = not (Supervisor.forks_seen ()) in
-      let failed (outcome : Run.outcome) =
-        let _, caused, before =
-          List.fold_left
-            (fun (evaluated, caused, before) (r : Run.result) ->
-              let evaluated = evaluated || Hashtbl.mem reaching r.path in
-              if not (kills r) then (evaluated, caused, before)
-              else if evaluated then (evaluated, true, before)
-              else (evaluated, caused, true))
-            (!outside || blind, false, false)
-            (Run.results outcome.run)
-        in
-        (caused, before)
-      in
-      let in_xfail, in_other =
-        Hashtbl.fold
-          (fun path () (in_xfail, in_other) ->
-            if xfail path then (true, in_other) else (in_xfail, true))
-          reaching (false, !outside)
-      in
-      let xfail_failed (outcome : Run.outcome) =
-        List.exists
-          (fun (r : Run.result) -> Option.is_some r.xfail && counted_failure r)
-          (Run.results outcome.run)
+        Report.run
+          ~execute:(fun ?on_event config ->
+            Supervisor.execute ~on_reach ~on_lost ~stop_after ?on_event config)
+          ~suite config tests
       in
       (match result with
-      | Ok outcome
-        when fst (failed outcome)
-             || outcome.release_failures <> []
-                && (in_xfail || in_other || blind) ->
-          Report.mutation_killed renderer
       | Ok outcome when Run.results outcome.run <> [] -> (
-          let failed_before = snd (failed outcome) in
+          let results = Run.results outcome.run in
+          let _, caused, failed_before =
+            List.fold_left
+              (fun (evaluated, caused, failed_before) (r : Run.result) ->
+                let evaluated = evaluated || evaluated_in r in
+                if not (kills r) then (evaluated, caused, failed_before)
+                else if evaluated then (evaluated, true, failed_before)
+                else (evaluated, caused, true))
+              (before (), false, false)
+              results
+          in
+          (* Only the rows that the run reported count. *)
+          let hits xfailed =
+            List.fold_left
+              (fun acc (r : Run.result) ->
+                match Hashtbl.find_opt reaching r.path with
+                | Some n when Option.is_some r.xfail = xfailed ->
+                    Some (saturating_add (Option.value acc ~default:0) n)
+                | Some _ | None -> acc)
+              None results
+          in
+          let in_other =
+            match (!outside, hits false) with
+            | None, None -> None
+            | a, b ->
+                Some
+                  (saturating_add
+                     (Option.value a ~default:0)
+                     (Option.value b ~default:0))
+          in
+          let in_xfail = hits true in
+          let release_failed = outcome.release_failures <> [] in
+          let xfail_failed =
+            List.exists
+              (fun (r : Run.result) ->
+                Option.is_some r.xfail && counted_failure r)
+              results
+          in
           match (in_other, in_xfail) with
-          | false, false ->
+          | _ when caused -> Report.mutation_killed renderer
+          | (Some _, _ | _, Some _) when release_failed ->
+              Report.mutation_killed renderer
+          | _ when release_failed && blind () -> Report.mutation_killed renderer
+          | None, None ->
               Report.mutation_not_evaluated renderer
-                ~failed:(failed_before || outcome.release_failures <> [])
-          | false, true -> Report.mutation_not_reached renderer
-          | true, _ ->
+                ~failed:(failed_before || release_failed)
+          | None, Some _ -> Report.mutation_not_reached renderer
+          | Some n, x ->
               Report.mutation_survived renderer
-                ~hits:(saturating_add !hits !xfail_hits)
-                ~xfail_failed:(xfail_failed outcome) ~failed_before)
+                ~hits:(saturating_add n (Option.value x ~default:0))
+                ~xfail_failed ~failed_before)
       | Ok _ | Error _ -> ());
       flush_descriptors ();
       result

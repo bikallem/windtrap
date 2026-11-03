@@ -156,11 +156,23 @@ mutants: 3 survived of 9 reached by this suite, 6 killed, 1 never reached
 
 The `reproduce:` line arms the first survivor. `--arm ID` runs the
 suite once with that mutant active, names it first, records no
-correction, and ends on its verdict: killed, survived, or not evaluated
-when no selected test ran the site. A failure kills the mutant as in a
-mutation run, only when its test or an earlier one ran the site. Under
-`-x` the run stops at the first failure, also when no test ran the site
-before it. Under `dune runtest`, the mirror arms it in every suite that
+correction, and ends on one verdict line:
+
+- `mutant killed.`
+- `mutant survived: the armed site was evaluated N times and no test
+  failed.` Other forms of this line say that only tests marked `xfail`
+  failed, that only tests before the first evaluation failed, or that
+  only a process that a test forked evaluated the site.
+- `mutant not evaluated: no selected test ran the site.` When a test
+  failed, the line adds that the mutant did not cause the failure.
+- `mutant not reached: only xfail tests ran the site.`
+
+A test that fails kills the mutant as in a mutation run: only when it or
+an earlier test in the selection ran the site. An evaluation outside
+every test counts as one before every test. A test whose worker crashed,
+or was killed at its limit, kills the mutant, because its evaluations
+are unknown. Under `-x` the run stops at the first failure that kills
+the mutant. Under `dune runtest`, the mirror arms it in every suite that
 holds its file, as in
 `WINDTRAP_MUTATE_ARM=ID dune runtest --force --instrument-with ppx_windtrap.mutate`
 (see [Mutation testing a project](#mutation-testing-a-project) for
@@ -274,13 +286,14 @@ decided whether the site runs, is not evaluated and is no survivor
 either, listed under `not evaluated` with its `arm:` command.
 
 Until a mutant's run evaluates the site, the run executes the code
-without the mutant. Thus a test or a fixture release that fails before
-the first evaluation does not kill the mutant. Its failure has another
-cause, for example a schedule of domains, the clock or an earlier test.
-The run does not stop there, and runs the next reaching test. A failure
-in the test that evaluates the site, or after it, kills the mutant.
-When the run does not evaluate the site, the mutant is not evaluated,
-and the report names the failure under it, as
+without the mutant. Thus a test that fails before the first evaluation
+does not kill the mutant. Its failure has another cause, for example a
+schedule of domains, the clock or an earlier test. The run does not stop
+there. It runs the next reaching test. A failure in the test that
+evaluates the site, or after it, kills the mutant. A fixture release or
+an `at_exit` function that fails kills the mutant when the run evaluated
+the site at any time. When the run does not evaluate the site, the
+mutant is not evaluated, and the report names the failure under it, as
 `a failure that the mutant did not cause: calc › memo`. For this rule,
 an evaluation in a process that a test forks counts, also under
 `--arm`. The dry run does not see such an evaluation, so it does not

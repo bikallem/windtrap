@@ -32,7 +32,7 @@
 - A failure before the first evaluation of a mutant's site does not
   kill the mutant. Until that evaluation, the mutant's run executes the
   code without the mutant, so the failure has another cause, for example
-  a schedule of domains or the clock. The run does not stop there, and
+  a schedule of domains or the clock. The run does not stop there. It
   runs the next reaching test. A mutant whose run did not evaluate its
   site is not evaluated, and the report names the failure under it, as
   `a failure that the mutant did not cause: calc › memo`. Before, such a
@@ -46,7 +46,9 @@
   When only a forked process evaluated the site and no test failed, it
   ends on
   `mutant survived: only a forked process evaluated the armed site and no test failed.`
-  Before, it ended on `mutant not evaluated`.
+  Before, an `--arm` run in which only a forked process evaluated the
+  site ended on `mutant not evaluated`. Under `-x`, an `--arm` run stops
+  only at a failure that kills the mutant.
 - (breaking) The verdict file format is `windtrap-mutants-v11`. A file
   of an earlier format is refused. Delete `_build/_mutants` and run the
   suites again.
