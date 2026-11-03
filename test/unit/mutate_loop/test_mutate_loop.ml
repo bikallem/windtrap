@@ -934,6 +934,27 @@ let before_evaluation =
              tests before its first evaluation failed."
             (outcome r.out));
       test
+        "an evaluation in a process that a test forks counts, and the failure \
+         after it kills the mutant" (fun () ->
+          let r = spawn ~env:[ suite "forked" ] [ mutate ] in
+          equal string "exited 0" r.status;
+          equal string
+            "mutants: 1 reached by this suite, 1 killed, 3 never reached"
+            (outcome r.out));
+      test "an armed run counts an evaluation in a forked process" (fun () ->
+          let r = spawn ~env:[ suite "forked" ] [ "--arm"; site 18 ] in
+          equal string "exited 1" r.status;
+          equal string "mutant killed." (outcome r.out));
+      test
+        "an armed run in which only a forked process evaluates the site \
+         survives" (fun () ->
+          let r = spawn ~env:[ suite "fork_only" ] [ "--arm"; site 18 ] in
+          equal string "exited 0" r.status;
+          equal string
+            "mutant survived: only a forked process evaluated the armed site \
+             and no test failed."
+            (outcome r.out));
+      test
         "an armed run under fail-fast stops at a failure before the first \
          evaluation, which the mutant did not cause" (fun () ->
           let r = spawn ~env:[ suite "red" ] [ "--arm"; site 18; "-x" ] in

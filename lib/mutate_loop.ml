@@ -309,9 +309,10 @@ let probe ~dry_run (ran : Supervisor.ran) =
 let kills (r : Run.result) = Option.is_none r.xfail && counted_failure r
 
 (* Until the first evaluation of its site, the mutant runs the code of the
-   program without it, so a failure before then has another cause. *)
+   program without it, so a failure before then has another cause. A job that
+   cannot see forked processes cannot tell, and each failure counts. *)
 let killed_by (ran : Supervisor.ran) =
-  match ran.evaluated with
+  match if ran.witnessed then ran.evaluated else Some 0 with
   | None -> false
   | Some first ->
       ran.release_failures <> []
@@ -647,7 +648,9 @@ let loop renderer ~scope ~suite (config : Run.config) tests =
 (* The armed run *)
 
 let armed renderer ~spec ~suite (config : Run.config) tests =
-  match Result.bind (Mutate.id_of_string spec) Mutate.arm with
+  match
+    Result.bind (Mutate.id_of_string spec) (fun id -> Supervisor.arm id)
+  with
   | Error (Mutate.Uncatalogued _ as error) ->
       Os.say (Pp.to_string Mutate.pp_arm_error error);
       ordinary ~suite config tests
@@ -691,6 +694,7 @@ let armed renderer ~spec ~suite (config : Run.config) tests =
       in
       (* As in a job, a failure counts when its test or an earlier one
          evaluated the site. The order is the selection's, whatever [-j]. *)
+      let blind = not (Supervisor.forks_seen ()) in
       let failed (outcome : Run.outcome) =
         let _, caused, before =
           List.fold_left
@@ -699,11 +703,17 @@ let armed renderer ~spec ~suite (config : Run.config) tests =
               if not (kills r) then (evaluated, caused, before)
               else if evaluated then (evaluated, true, before)
               else (evaluated, caused, true))
-            (!outside, false, false) (Run.results outcome.run)
+            (!outside || blind, false, false)
+            (Run.results outcome.run)
         in
         (caused, before)
       in
-      let evaluated = !hits > 0 || !xfail_hits > 0 in
+      let in_xfail, in_other =
+        Hashtbl.fold
+          (fun path () (in_xfail, in_other) ->
+            if xfail path then (true, in_other) else (in_xfail, true))
+          reaching (false, !outside)
+      in
       let xfail_failed (outcome : Run.outcome) =
         List.exists
           (fun (r : Run.result) -> Option.is_some r.xfail && counted_failure r)
@@ -712,16 +722,17 @@ let armed renderer ~spec ~suite (config : Run.config) tests =
       (match result with
       | Ok outcome
         when fst (failed outcome)
-             || (outcome.release_failures <> [] && evaluated) ->
+             || outcome.release_failures <> []
+                && (in_xfail || in_other || blind) ->
           Report.mutation_killed renderer
       | Ok outcome when Run.results outcome.run <> [] -> (
           let failed_before = snd (failed outcome) in
-          match (!hits, !xfail_hits) with
-          | 0, 0 ->
+          match (in_other, in_xfail) with
+          | false, false ->
               Report.mutation_not_evaluated renderer
                 ~failed:(failed_before || outcome.release_failures <> [])
-          | 0, _ -> Report.mutation_not_reached renderer
-          | _ ->
+          | false, true -> Report.mutation_not_reached renderer
+          | true, _ ->
               Report.mutation_survived renderer
                 ~hits:(saturating_add !hits !xfail_hits)
                 ~xfail_failed:(xfail_failed outcome) ~failed_before)

@@ -1053,23 +1053,22 @@ let mutation_killed t =
 
 let mutation_survived ?(failed_before = false) t ~hits ~xfail_failed =
   clear_live t;
+  let evaluated site =
+    if hits = 0 then strf "only a forked process evaluated the %s" site
+    else strf "the %s was evaluated %d time%s" site hits (plural hits)
+  in
   let line =
     match (xfail_failed, failed_before) with
     | true, false ->
-        strf
-          "mutant survived: the site was evaluated %d time%s and only xfail \
-           tests failed."
-          hits (plural hits)
+        strf "mutant survived: %s and only xfail tests failed."
+          (evaluated "site")
     | false, false ->
-        strf
-          "mutant survived: the armed site was evaluated %d time%s and no test \
-           failed."
-          hits (plural hits)
+        strf "mutant survived: %s and no test failed." (evaluated "armed site")
     | xfail_failed, true ->
         strf
-          "mutant survived: the armed site was evaluated %d time%s, and only \
-           %stests before its first evaluation failed."
-          hits (plural hits)
+          "mutant survived: %s, and only %stests before its first evaluation \
+           failed."
+          (evaluated "armed site")
           (if xfail_failed then "xfail tests and " else "")
   in
   put t [ styled `Red line ]

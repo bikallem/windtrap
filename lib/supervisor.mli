@@ -58,8 +58,10 @@
     what [Windtrap_runtime.Mutate.drain] gives when the test ends, its window
     opening when the test starts. What it evaluates outside every test, in a
     fixture release, and what the parent evaluated as its modules initialised,
-    belong to no test. An [--arm] worker arms its mutant as it starts, and its
-    evaluations count from there. *)
+    belong to no test. An [--arm] worker arms its mutant as it starts, with
+    {!arm}, and its evaluations count from there. The armed site also shows in
+    the window of a test in which only a process that the test forked evaluated
+    it, with [0] evaluations. *)
 
 val execute :
   ?on_reach:
@@ -80,6 +82,22 @@ val execute :
     given before the parent reaches its row, and [None] for those of no test,
     the parent's first. Defaults to ignoring them. *)
 
+val arm :
+  ?budget:int ->
+  Windtrap_runtime.Mutate.id ->
+  (Windtrap_runtime.Mutate.mutant, Windtrap_runtime.Mutate.arm_error) result
+(** [arm ?budget id] is [Windtrap_runtime.Mutate.arm ?budget id] with an
+    [on_evaluation] hook that sets one byte. The byte is a shared map of a
+    removed temporary file, so a process that a test forks sets it too, and the
+    windows of this process ({!execute}) read it. On Windows, which has no
+    [fork], the byte is in the memory of the process. When the map fails, no
+    hook is given, and {!forks_seen} is [false]. *)
+
+val forks_seen : unit -> bool
+(** [forks_seen ()] is [false] when the last {!arm} of this process, or of a
+    worker of an {!execute} run since then, could not map its byte. Then an
+    evaluation in a process that a test forks is not seen. *)
+
 (** {1:fresh Fresh workers}
 
     A mutant runs in a worker of its own, started as {!execute} starts one,
@@ -94,7 +112,8 @@ type job = {
           which its process group is killed. *)
   bail : bool;
       (** Whether the job stops at its first counted failure in or after the
-          test that first evaluated the armed site. *)
+          test that first evaluated the armed site, or at its first counted
+          failure when a worker is not [witnessed]. *)
   armed : (Windtrap_runtime.Mutate.id * int) option;
       (** The mutant that each of its workers arms before its first case, with
           its budget ([Windtrap_runtime.Mutate.arm]). *)
@@ -120,7 +139,11 @@ type ran = {
           the test of result [i]. [i] is [List.length results] when it came
           after the last test, in a release. [None] when no worker evaluated the
           site, or none is armed. The mutant did not cause a failure of a result
-          before [i]. *)
+          before [i]. An evaluation in a process that a test forks counts. *)
+  witnessed : bool;
+      (** [false] when a worker of the job could not map the byte of {!arm}, so
+          an evaluation in a process that a test forks is not seen. Then the
+          mutant can cause each failure. *)
   ended : ended;  (** How it ended. *)
 }
 (** The type for what a job did. *)

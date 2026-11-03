@@ -90,8 +90,10 @@ val execute_and_report :
     not-evaluated and an unknown mutant with the [--arm] command that runs it
     again, and names it no survivor. Under a not-evaluated mutant, the report
     names the first test of its job that failed, or a fixture release, as a
-    failure that the mutant did not cause. An evaluation in a process that a
-    test forks does not count.
+    failure that the mutant did not cause. For this rule, an evaluation in a
+    process that a test forks counts ([Supervisor.arm]). The dry run does not
+    see such an evaluation. A job whose worker cannot map the byte that shows it
+    counts each failure, as when it could not tell.
 
     {b Tests marked xfail.} A test marked xfail ({!Test_tree.val-xfail}) reaches
     no mutant and kills none. The dry run and the probe run it, no mutant's job
@@ -172,9 +174,10 @@ val execute_and_report :
       ({!Report.mutation_not_reached}).
     - A failure kills the mutant as in a job: when its test or an earlier one,
       in the order of the selection, evaluated the armed site. A fixture release
-      that failed kills it when the run evaluated the site. Under [-x] the run
-      stops at the first counted failure, also when it comes before the first
-      evaluation.
+      that failed kills it when the run evaluated the site. The mutant is armed
+      with [Supervisor.arm], so an evaluation in a forked process counts. Under
+      [-x] the run stops at the first counted failure, also when it comes before
+      the first evaluation.
 
     The result of an armed run is that of {!Report.run}, so its exit code is
     that of the ordinary run, [2] included, and it writes its JUnit file. *)

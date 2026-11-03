@@ -281,9 +281,10 @@ The run does not stop there, and runs the next reaching test. A failure
 in the test that evaluates the site, or after it, kills the mutant.
 When the run does not evaluate the site, the mutant is not evaluated,
 and the report names the failure under it, as
-`a failure that the mutant did not cause: calc › memo`. An evaluation
-in a process that a test forks does not count, in the dry run or in a
-mutant's run.
+`a failure that the mutant did not cause: calc › memo`. For this rule,
+an evaluation in a process that a test forks counts, also under
+`--arm`. The dry run does not see such an evaluation, so it does not
+make a test reach the site.
 
 A site that no test runs, and that module initialization or a
 fixture release runs, is evaluated outside tests. No run tests its

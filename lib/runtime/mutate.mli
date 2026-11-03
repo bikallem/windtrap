@@ -159,13 +159,18 @@ val id_of_string : string -> (id, arm_error) result
     [id_of_string (id_to_string id)] is [Ok id] for every identifier of
     {!val-catalogue}, unless its file was registered under the name [""]. *)
 
-val arm : ?budget:int -> id -> (mutant, arm_error) result
-(** [arm ?budget id] arms the mutant that [id] names and is that mutant, or an
-    {!Uncatalogued}, {!Unmatched} or {!Ambiguous} error. The mutant that was
-    armed before is disarmed first, whether or not [id] resolves. From then on
-    the guard of the site answers [true], in every module that registered an
-    equal table for its file. [arm] does not read [dismissed]. Arming a
-    dismissed mutant succeeds, and no guard ever evaluates its site.
+val arm :
+  ?budget:int ->
+  ?on_evaluation:(unit -> unit) ->
+  id ->
+  (mutant, arm_error) result
+(** [arm ?budget ?on_evaluation id] arms the mutant that [id] names and is that
+    mutant, or an {!Uncatalogued}, {!Unmatched} or {!Ambiguous} error. The
+    mutant that was armed before is disarmed first, whether or not [id]
+    resolves. From then on the guard of the site answers [true], in every module
+    that registered an equal table for its file. [arm] does not read
+    [dismissed]. Arming a dismissed mutant succeeds, and no guard ever evaluates
+    its site.
 
     [budget] bounds the evaluations of the armed site. With a budget of [n],
     evaluation [n + 1] raises {!Runaway}. There is no bound by default. The
@@ -173,6 +178,11 @@ val arm : ?budget:int -> id -> (mutant, arm_error) result
     {!armed_hits} adds them up. The count is the one since the last
     {!reset_reach}, and not since this call, so a caller that inherited counts,
     as a forked child does, must call {!reset_reach} after [arm].
+
+    The guard calls [on_evaluation ()] at each evaluation of the armed site,
+    before it compares the count with [budget], in each process that has the
+    arming, a process that a test forks included. It must not raise. The next
+    [arm] drops it. It does nothing by default.
 
     Raises [Invalid_argument] if [budget] is not positive, and nothing is
     disarmed then. *)

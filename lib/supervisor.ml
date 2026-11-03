@@ -22,6 +22,7 @@ type to_parent =
   | Report of Run.report
   | Reached of { test : string list option; sites : (Mutate.id * int) list }
   | Counts of Coverage.t
+  | Unwitnessed (* it armed a mutant and could not map its byte *)
 
 (* A frame is a 4-byte length and a [Marshal]led value. Nothing that crosses
    holds a closure, which [Marshal] would refuse at once. *)
@@ -69,15 +70,76 @@ let mutating (config : Run.config) =
   | Run.No_mutation -> false
   | Run.Loop _ | Run.Armed _ -> true
 
+(* The witness of the armed site *)
+
+type byte =
+  (char, Bigarray.int8_unsigned_elt, Bigarray.c_layout) Bigarray.Array1.t
+
+(* A byte that each process with the arming sets when it evaluates the armed
+   site: a shared map of a file removed at once, so a process that a test
+   forks sets it too. Windows has no fork, and keeps it in this process. *)
+let shared_byte () : byte option =
+  if Sys.win32 then
+    Some (Bigarray.Array1.init Bigarray.char C_layout 1 (fun _ -> '\000'))
+  else
+    match Filename.temp_file "windtrap-armed" "" with
+    | exception Sys_error _ -> None
+    | path -> (
+        Fun.protect ~finally:(fun () ->
+            try Sys.remove path with Sys_error _ -> ())
+        @@ fun () ->
+        match Unix.openfile path [ Unix.O_RDWR; Unix.O_CLOEXEC ] 0o600 with
+        | exception Unix.Unix_error _ -> None
+        | fd -> (
+            Fun.protect ~finally:(fun () -> Unix.close fd) @@ fun () ->
+            match Unix.map_file fd Bigarray.char C_layout true [| 1 |] with
+            | map -> Some (Bigarray.array1_of_genarray map)
+            | exception (Unix.Unix_error _ | Sys_error _ | Failure _) -> None))
+
+(* The site that this process armed, with its byte. *)
+let witness : (Mutate.id * byte option) option ref = ref None
+
+(* This process, or a worker of a run it supervised, armed a mutant and could
+   not map its byte. *)
+let unwitnessed = ref false
+
+let arm ?budget id =
+  let byte = shared_byte () in
+  let on_evaluation =
+    Option.map (fun b () -> Bigarray.Array1.unsafe_set b 0 '\001') byte
+  in
+  let armed = Mutate.arm ?budget ?on_evaluation id in
+  (match armed with
+  | Ok (m : Mutate.mutant) ->
+      witness := Some (m.id, byte);
+      unwitnessed := Option.is_none byte
+  | Error _ ->
+      witness := None;
+      unwitnessed := false);
+  armed
+
+let forks_seen () = not !unwitnessed
+
 (* Under mutation a test's window opens at its start and closes at its end,
    so what module initialization and a fixture release evaluate falls in a
-   window of no test. *)
+   window of no test. An armed site that only a forked process evaluated in
+   the window counts [0] evaluations. *)
 let window ~send test =
-  (match Mutate.drain () with
-  | [] -> ()
-  | reached ->
-      send test
-        (List.map (fun (r : Mutate.reached) -> (r.mutant.id, r.hits)) reached));
+  let reached =
+    List.map
+      (fun (r : Mutate.reached) -> (r.mutant.id, r.hits))
+      (Mutate.drain ())
+  in
+  let reached =
+    match !witness with
+    | Some (id, Some byte) when Bigarray.Array1.get byte 0 <> '\000' ->
+        Bigarray.Array1.set byte 0 '\000';
+        if List.exists (fun (s, _) -> Mutate.compare_id s id = 0) reached then
+          reached
+        else (id, 0) :: reached
+    | Some _ | None -> reached
+  in
+  (match reached with [] -> () | reached -> send test reached);
   Mutate.next_epoch ()
 
 let reach_windows ~send (event : Run.event) =
@@ -102,7 +164,7 @@ let serve (config : Run.config) ~suite tests ~temp_dir ~own_exits ~input ~output
      arms anew. Evaluations count from here. *)
   (match config.mutation with
   | Run.Armed spec ->
-      ignore (Result.bind (Mutate.id_of_string spec) (fun id -> Mutate.arm id))
+      ignore (Result.bind (Mutate.id_of_string spec) (fun id -> arm id))
   | Run.No_mutation | Run.Loop _ -> ());
   if mutating config then Mutate.reset_reach ();
   (* A domain the test left running can call exit while the test's domain
@@ -113,6 +175,7 @@ let serve (config : Run.config) ~suite tests ~temp_dir ~own_exits ~input ~output
     Mutex.protect lock (fun () -> write_all output frame 0 (Bytes.length frame))
   in
   let reached test sites = send (Reached { test; sites }) in
+  if mutating config && !unwitnessed then send Unwitnessed;
   let last () =
     (if mutating config then try window ~send:reached None with _ -> ());
     let counts = Coverage.take () in
@@ -233,12 +296,10 @@ let null () = Unix.openfile "/dev/null" [ Unix.O_WRONLY ] 0
 (* A mutant is armed as its worker starts, after module initialisation, and
    its evaluations count from there. A mutant of the catalogue always arms,
    and one that did not would count no hit. *)
-let arm = function
+let arm_job = function
   | None -> ()
   | Some (id, budget) -> (
-      match Mutate.arm ~budget id with
-      | Ok _ -> Mutate.reset_reach ()
-      | Error _ -> ())
+      match arm ~budget id with Ok _ -> Mutate.reset_reach () | Error _ -> ())
 
 (* A fork of the parent before it ran any test, so the worker starts from
    what module initialisation built and nothing a test left. The buffers are
@@ -264,7 +325,7 @@ let fork ~quiet ~armed config ~suite tests =
           end
           else config
         in
-        arm armed;
+        arm_job armed;
         serve config ~suite tests ~temp_dir ~own_exits:false ~input ~output
       with _ -> Unix._exit 2)
   | pid ->
@@ -487,7 +548,7 @@ let work w ~suite tests =
          with Sys_error _ -> ());
         let serving = frame Serving in
         write_all w.output serving 0 (Bytes.length serving);
-        arm armed;
+        arm_job armed;
         serve config ~suite tests ~temp_dir:w.dir ~own_exits:true ~input:w.input
           ~output:w.output
       with _ -> Unix._exit 2)
@@ -783,6 +844,9 @@ let supervise ?(on_event = ignore) ~on_reach (config : Run.config) ~suite tests
     | Reached { test; sites } ->
         on_reach test sites;
         drain w
+    | Unwitnessed ->
+        unwitnessed := true;
+        drain w
     | Serving -> drain w
     | exception Closed -> ()
   in
@@ -885,6 +949,7 @@ let supervise ?(on_event = ignore) ~on_reach (config : Run.config) ~suite tests
           job
     | Counts counts, _ -> Coverage.absorb counts
     | Reached { test; sites }, _ -> on_reach test sites
+    | Unwitnessed, _ -> unwitnessed := true
     | Report (Judge attempt), Some job ->
         job.asked <- Some (attempt, Os.counter ())
     | Report (Done { served; stopped; retire }), Some job ->
@@ -1076,6 +1141,7 @@ type ran = {
   results : Run.result list;
   release_failures : Failure.t list;
   evaluated : int option;
+  witnessed : bool;
   ended : ended;
 }
 
@@ -1095,6 +1161,7 @@ type state = {
   mutable rev_results : Run.result list;
   mutable rev_failures : Failure.t list;
   mutable evaluated : int option;
+  mutable witnessed : bool;
 }
 
 let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
@@ -1127,6 +1194,7 @@ let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
           results = List.rev st.rev_results;
           release_failures = List.rev st.rev_failures;
           evaluated = st.evaluated;
+          witnessed = st.witnessed;
           ended;
         }
   in
@@ -1146,6 +1214,7 @@ let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
           rev_results = [];
           rev_failures = [];
           evaluated = None;
+          witnessed = true;
         }
       in
       incr next;
@@ -1192,7 +1261,7 @@ let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
         if
           st.job.bail
           && counted_failure served.result
-          && Option.is_some st.evaluated
+          && (Option.is_some st.evaluated || not st.witnessed)
         then st.pending <- [];
         if retire then begin
           st.finishing <- true;
@@ -1205,6 +1274,7 @@ let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
     | Report Exited -> st.w.exited <- true
     | Serving -> st.w.serving <- true
     | Reached { sites; _ } -> reached st sites
+    | Unwitnessed -> st.witnessed <- false
     | Report (Event _ | Judge _) | Counts _ -> ()
   in
   let expired st =

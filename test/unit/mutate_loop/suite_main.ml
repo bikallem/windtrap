@@ -489,6 +489,36 @@ let unprimed_release =
         if !primed then is_true (Subject.widen 3 4 <> 0));
   ]
 
+(* [widen] in a process that the test forks, which gives the answer on a
+   pipe. *)
+let widen_in_fork a b =
+  let r, w = Unix.pipe () in
+  match Unix.fork () with
+  | 0 ->
+      Unix.close r;
+      let answer = string_of_int (Subject.widen a b) in
+      ignore (Unix.write_substring w answer 0 (String.length answer));
+      Unix._exit 0
+  | pid ->
+      Unix.close w;
+      let answer = In_channel.input_all (Unix.in_channel_of_descr r) in
+      Unix.close r;
+      ignore (Unix.waitpid [] pid);
+      int_of_string answer
+
+(* The first check evaluates [widen] in a forked process only. Under the
+   mutant it fails before the test evaluates [widen] in its own process. *)
+let forked =
+  [
+    test "widen adds in a fork, then here" (fun () ->
+        equal int 7 (widen_in_fork 3 4);
+        equal int 7 (Subject.widen 3 4));
+  ]
+
+(* Only a forked process evaluates [widen], and the test pins nothing. *)
+let fork_only =
+  [ test "widen in a fork" (fun () -> is_true (widen_in_fork 3 4 <> 0)) ]
+
 let retried = ref 0
 let handle = fixture ~teardown:(fun () -> ignore (Subject.crasher 3 1)) Fun.id
 
@@ -537,6 +567,8 @@ let () =
   | "unprimed_late" -> exit @@ run "calc" [ group "unprimed" unprimed_late ]
   | "unprimed_release" ->
       exit @@ run "calc" [ group "unprimed" unprimed_release ]
+  | "forked" -> exit @@ run "calc" [ group "forked" forked ]
+  | "fork_only" -> exit @@ run "calc" [ group "forked" fork_only ]
   | "crash" ->
       exit
       @@ run "calc"

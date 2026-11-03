@@ -1919,6 +1919,10 @@ let verdict_rows =
             ~failed_before:true),
         "mutant survived: the armed site was evaluated 1 time, and only xfail \
          tests and tests before its first evaluation failed.\n" ) );
+    ( "survived, and only a forked process evaluated the site",
+      ( (fun r -> Report.mutation_survived r ~hits:0 ~xfail_failed:false),
+        "mutant survived: only a forked process evaluated the armed site and \
+         no test failed.\n" ) );
     ( "not evaluated",
       ( (fun r -> Report.mutation_not_evaluated r),
         "mutant not evaluated: no selected test ran the site.\n" ) );

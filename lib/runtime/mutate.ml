@@ -92,6 +92,7 @@ type state = {
   marked : (entry * int) list Atomic.t; (* newest first *)
   mutable armed : entry list; (* the registrations of the armed file *)
   mutable budget : int;
+  mutable on_evaluation : unit -> unit;
 }
 
 let state =
@@ -101,6 +102,7 @@ let state =
     marked = Atomic.make [];
     armed = [];
     budget = max_int;
+    on_evaluation = ignore;
   }
 
 (* A compare-and-set loses no push of another domain. *)
@@ -189,11 +191,14 @@ let register ~file ~sites =
           end
         end;
         if i <> entry.armed_index then false
-        else if hits <= state.budget then true
-        else
-          raise
-            (Runaway
-               { id = (site_mutant entry i).id; hits; budget = state.budget })
+        else begin
+          state.on_evaluation ();
+          if hits <= state.budget then true
+          else
+            raise
+              (Runaway
+                 { id = (site_mutant entry i).id; hits; budget = state.budget })
+        end
 
 let catalogue () =
   let mutants entry =
@@ -278,9 +283,10 @@ let id_of_string spec =
 let disarm () =
   List.iter (fun entry -> entry.armed_index <- -1) state.armed;
   state.armed <- [];
-  state.budget <- max_int
+  state.budget <- max_int;
+  state.on_evaluation <- ignore
 
-let arm ?(budget = max_int) (id : id) =
+let arm ?(budget = max_int) ?(on_evaluation = ignore) (id : id) =
   if budget <= 0 then
     invalid_arg "Windtrap_runtime.Mutate.arm: budget must be positive";
   (* A refused arming must not leave the previous mutant live, or the next
@@ -307,6 +313,7 @@ let arm ?(budget = max_int) (id : id) =
           List.iter (fun entry -> entry.armed_index <- i) entries;
           state.armed <- entries;
           state.budget <- budget;
+          state.on_evaluation <- on_evaluation;
           Ok (site_mutant first i)
       | indices ->
           (* A table arms one index, and no identifier tells these apart,

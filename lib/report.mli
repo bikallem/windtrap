@@ -357,7 +357,8 @@ val mutation_survived :
   ?failed_before:bool -> t -> hits:int -> xfail_failed:bool -> unit
 (** [mutation_survived t ~hits ~xfail_failed] prints the verdict of an armed run
     in which no test failed after the first evaluation of the armed site, tests
-    marked xfail aside. The line states [hits], the number of evaluations. When
+    marked xfail aside. The line states [hits], the number of evaluations, or
+    that only a forked process evaluated the site when [hits] is [0]. When
     [xfail_failed] is [true], a test marked xfail passed, which fails it, and
     the line says that only such tests failed. When [failed_before] is [true]
     (default [false]), a test failed before the first evaluation, and the line
