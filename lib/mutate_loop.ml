@@ -648,6 +648,15 @@ let loop renderer ~scope ~suite (config : Run.config) tests =
 
 (* The armed run *)
 
+(* A dismissed site has no guard, so an armed run of its mutant is the
+   unarmed run, and it would end on a false "not evaluated". *)
+let dismissal (mutant : Mutate.mutant) reason =
+  strf
+    "%s: [@mutate off] dismisses this mutant%s, so its site has no guard and \
+     no run can arm it"
+    (Mutate.id_to_string mutant.id)
+    (if reason = "" then "" else strf " (%s)" reason)
+
 let armed renderer ~spec ~suite (config : Run.config) tests =
   match
     Result.bind (Mutate.id_of_string spec) (fun id -> Supervisor.arm id)
@@ -657,6 +666,10 @@ let armed renderer ~spec ~suite (config : Run.config) tests =
       ordinary ~suite config tests
   | Error error ->
       let message = Pp.to_string Mutate.pp_arm_error error in
+      Os.say message;
+      Error (Run.Mutation_refused message)
+  | Ok ({ dismissed = Some reason; _ } as mutant) ->
+      let message = dismissal mutant reason in
       Os.say message;
       Error (Run.Mutation_refused message)
   | Ok mutant ->

@@ -449,10 +449,10 @@ let rewrites () =
 let population =
   group "Population"
     [
-      test "the fixture catalogues subject.ml's five sites in source order"
+      test "the fixture catalogues subject.ml's six sites in source order"
         (fun () ->
           equal (list string)
-            [ "15 add"; "18 sub"; "21 sub"; "27 add"; "33 sub" ]
+            [ "15 add"; "18 sub"; "21 sub"; "27 add"; "33 sub"; "37 sub" ]
             (rewrites ()));
       test "a scope keeps every mutant under it, and dismissal drops one"
         (fun () ->
@@ -1702,6 +1702,23 @@ let plain_armed () =
   contains ~sub:"not this executable's mutant" r.err;
   contains ~sub:"instrumented with ppx_windtrap.mutate" r.err
 
+(* A dismissed site has no guard, so an armed run of its mutant is the
+   unarmed run. The refusal comes before anything runs. *)
+let dismissed_armed () =
+  let r = spawn ~env:[ suite "dismissed" ] [ "--arm"; site 33 ] in
+  equal string "exited 1" r.status;
+  equal text "" r.out;
+  contains ~sub:(site 33) r.err;
+  contains ~sub:"[@mutate off] dismisses this mutant" r.err;
+  contains ~sub:"the boundary is unobservable" r.err;
+  contains ~sub:"no run can arm it" r.err
+
+let bare_dismissed_armed () =
+  let r = spawn ~env:[ suite "dismissed" ] [ "--arm"; site 37 ] in
+  equal string "exited 1" r.status;
+  equal text "" r.out;
+  contains ~sub:"[@mutate off] dismisses this mutant, so its site" r.err
+
 let inline_armed () = inline_run [ ("WINDTRAP_MUTATE_ARM", site 18) ]
 
 (* Exit 0 would be the correction-coverage downgrade firing on output an
@@ -1755,6 +1772,9 @@ let armed =
             r.out);
       test "an identifier of a build with no mutants declines by name"
         plain_armed;
+      test "a mutant that [@mutate off] dismisses is refused" dismissed_armed;
+      test "a mutant that a bare [@mutate off] dismisses names no reason"
+        bare_dismissed_armed;
       test "an armed site only tests marked xfail ran is not reached" (fun () ->
           let r = known_armed 21 in
           equal string "exited 0" r.status;
