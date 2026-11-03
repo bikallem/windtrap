@@ -283,6 +283,10 @@ LH:3
 end_of_record
 ```
 
+In the JSON document, each malformed UTF-8 sequence of a path becomes
+U+FFFD, and DEL becomes `\u007f`. Thus the document is always valid
+JSON.
+
 GitLab's merge-request coverage view reads Cobertura or JaCoCo XML and
 not LCOV, and windtrap writes neither. A GitLab job can still show the
 total: its `coverage` keyword with the regular expression

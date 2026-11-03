@@ -201,17 +201,31 @@ without its source, or with a stale one, lists no line:
   { "summary": { "visited": 0, "total": 0, "percentage": 100.00 },
   $ cd "$scratch/proj"
 
-A recorded name is escaped as JSON needs, and every other byte is written
-as it is:
+A recorded name is escaped as JSON needs, DEL included, and every other
+byte of valid UTF-8 is written as it is:
 
   $ mkdir "$scratch/escape" && cd "$scratch/escape"
   $ mkdata coverage _build/_coverage/names.coverage 'lib/q\"b\\s\tt\r\nx\001\127\195\169.ml=0'
   $ run windtrap coverage --json
   { "summary": { "visited": 0, "total": 1, "percentage": 0.00 },
     "files": [
-      { "path": "lib/q\"b\\s\tt\r\nx\u0001é.ml", "visited": 0, "total": 1,
+      { "path": "lib/q\"b\\s\tt\r\nx\u0001\u007fé.ml", "visited": 0, "total": 1,
         "percentage": 0.00,
         "uncovered_lines": [] } ] }
+  $ cd "$scratch/proj"
+
+Bytes that are not UTF-8, a lone byte or a cut sequence, become U+FFFD,
+so the document is always valid JSON:
+
+  $ mkdir "$scratch/malformed" && cd "$scratch/malformed"
+  $ mkdata coverage _build/_coverage/names.coverage 'lib/a\255b\226\130c.ml=0'
+  $ run windtrap coverage --json; echo "[$?]"
+  { "summary": { "visited": 0, "total": 1, "percentage": 0.00 },
+    "files": [
+      { "path": "lib/a�b�c.ml", "visited": 0, "total": 1,
+        "percentage": 0.00,
+        "uncovered_lines": [] } ] }
+  [0]
   $ cd "$scratch/proj"
 
 --lcov writes an LCOV tracefile: each file's lines with their visits, in

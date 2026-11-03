@@ -75,6 +75,11 @@
  (libraries windtrap))
 
 (test
+ (name test_json)
+ (modules test_json)
+ (libraries windtrap))
+
+(test
  (name test_lines)
  (modules test_lines)
  (libraries windtrap))
