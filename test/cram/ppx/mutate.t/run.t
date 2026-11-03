@@ -1399,6 +1399,18 @@ Code that gives its location keeps the mutants of its two copies:
   $ sites --impl ./fixture_equivalent_log_bound.ml
     0: 8:37-8:44 "sub" "x + 1" -> "x - 1"
 
+  $ sites --impl ./fixture_equivalent_log_letmodule.ml
+    0: 7:25-7:32 "sub" "x + 1" -> "x - 1"
+
+  $ sites --impl ./fixture_equivalent_log_signature.ml
+    0: 10:37-10:44 "sub" "x + 1" -> "x - 1"
+
+  $ sites --impl ./fixture_equivalent_log_unpack.ml
+    0: 4:55-4:62 "sub" "x + 1" -> "x - 1"
+
+  $ sites --impl ./fixture_equivalent_log_functor.ml
+    0: 5:39-5:46 "sub" "x + 1" -> "x - 1"
+
   $ mut --impl ./fixture_equivalent_message.ml | ../elide.exe
   mutation sites of "./fixture_equivalent_message.ml" in Windtrap_mut_________fixture_equivalent_message___ml:
     0: 8:54-8:61 "sub" "n + 1" -> "n - 1"

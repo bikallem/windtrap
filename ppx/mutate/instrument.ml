@@ -160,6 +160,14 @@ let kept_families structure =
       method! module_declaration md lost =
         super#module_declaration md (lose_module md.pmd_name.txt lost)
 
+      method! functor_parameter fp lost =
+        let lost =
+          match fp with
+          | Named ({ txt; _ }, _) -> lose_module txt lost
+          | Unit -> lost
+        in
+        super#functor_parameter fp lost
+
       method! value_description vd lost =
         super#value_description vd (lose vd.pval_name.txt lost)
 

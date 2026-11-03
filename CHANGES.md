@@ -24,8 +24,9 @@
   and no report counts it (doc/manual/mutation.md#what-is-mutated).
 - The rewriter gives no mutant in the arguments of a `Logs` function
   that logs a message. It gives none to an integer or boolean literal
-  in the arguments of `failwith` or `invalid_arg`. A test can see these
-  mutants, but no test should pin the text of a message. A statement in
+  in the arguments of `failwith` or `invalid_arg`. A test can kill such
+  a mutant if it reads the message, but no test should pin the text of a
+  message. A statement in
   these arguments keeps its mutants. A file that declares a module
   `Logs` loses the first rule. A file that binds `failwith` or
   `invalid_arg` loses the second.

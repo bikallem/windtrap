@@ -529,16 +529,19 @@ log message or a failure message alone. These cases are:
   another file matches too. A file that declares a module `Logs` loses
   the rule. The list is fixed, and no flag adds a name.
 - An integer or boolean literal in the arguments of `failwith` or
-  `invalid_arg`. A file that binds one of these names loses the rule,
-  but the rewriter does not see a binding from an `open` or an
-  `include`. `raise` is not covered.
+  `invalid_arg`. A file that binds one of these names loses the rule.
+  The rewriter does not see a binding that an `open` or an `include` of
+  another unit brings in. The rule does not cover `raise`.
 
 The last two cases are a choice and not an equivalence. A test can read
-a log message or a failure message, and thus kill such a mutant. The
-rewriter holds that no test should pin the text of a message. No
-attribute and no flag gives such a mutant back. `f @@ x` and `x |> f`
-match only when `f` is a name, so the message of
-`Logs.err ~src @@ fun m -> ...` keeps its mutants.
+a log message or a failure message, and thus kill such a mutant. No test
+should pin the text of a message. No attribute and no flag gives such a
+mutant back.
+
+These two rules read `f x`, `f @@ x`, `x |> f`, `Printf.ksprintf f` and
+`Format.kasprintf f` as calls of `f`. `f @@ x` and `x |> f` match only
+when `f` is a name. Thus the message of `Logs.err ~src @@ fun m -> ...`
+keeps its mutants, and that of `Logs.err ~src (fun m -> ...)` does not.
 
 A statement in these arguments keeps its mutants, because it acts on the
 state of the program. In `a + b + 0` the outermost `+` has no mutant, so

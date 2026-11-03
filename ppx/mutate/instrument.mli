@@ -169,9 +169,9 @@
       [raise].
 
     The last two rules are a choice and not an equivalence. A test can read a
-    log message or a failure message, and thus kill such a mutant. The rules
-    hold that no test should pin the text of a message, as no test should pin a
-    capacity. No attribute and no flag gives such a mutant back.
+    log message or a failure message, and thus kill such a mutant. No test
+    should pin the text of a message, as no test should pin a capacity. No
+    attribute and no flag gives such a mutant back.
 
     The arguments of [f] are those of [f x], of [f @@ x], of [x |> f], and of
     [Printf.ksprintf f] and [Format.kasprintf f] applied to a format. [f @@ x]
@@ -179,7 +179,7 @@
     [Logs.err ~src @@ fun m -> ...] keeps its mutants, and that of
     [Logs.err ~src (fun m -> ...)] does not. A statement in the arguments of a
     logging function, of [failwith] or of [invalid_arg] keeps its mutants, with
-    the sites inside it, because it acts on the state of the program. A
+    the sites inside it. A statement acts on the state of the program. A
     statement is the left operand of a sequence or the expression of
     [let () = e in]. A logging call that is a statement keeps its own [del]
     mutant. These two rules do not see other effects, for example of a function
