@@ -17,6 +17,21 @@
   dry run could give such a mutant a count of 0 or below, or a count
   that included the evaluations of earlier tests, and thus an incorrect
   budget.
+- Each suite of an executable writes its own verdict file. Before, the
+  suite that finished last replaced the one file of its executable. As a
+  result, `windtrap mutants` could call a killed mutant a survivor. This
+  applied to a main that calls `Windtrap.run` with more than one suite
+  name, and to the partitions of an inline-test library, which dune runs
+  at the same time.
+- `windtrap mutants` merges the files of all suites, and counts the
+  files of one executable as one executable. Its `not mutation-tested`
+  rows and its unknown reasons name the suite, as in
+  `t.exe (suite lts)`, and its outcome line counts the suites that are
+  not mutation-tested. A later refused row whose mutants an earlier row
+  counts says `no other mutant unknown`.
+- (breaking) The verdict file format is `windtrap-mutants-v11`. A file
+  of an earlier format is refused. Delete `_build/_mutants` and run the
+  suites again.
 
 ## v0.3.1 2026-11-01
 

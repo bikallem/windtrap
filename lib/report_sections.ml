@@ -1552,7 +1552,14 @@ let diagnostic (m : mutant) =
 
 type not_evaluated = { mutant : mutant; invocation : Run.invocation }
 type unknown = { mutant : mutant; reason : string; invocation : Run.invocation }
-type refused = { executable : string; reason : string; mutants : int }
+
+type refused = {
+  executable : string;
+  reason : string;
+  mutants : int;
+  counted_earlier : bool;
+}
+
 type scope = Suite | Selected of int | Executables of int
 
 type mutation = {
@@ -1675,7 +1682,7 @@ let mutation_summary (m : mutation) =
     | Executables n ->
         [ plain (counted n "executable") ]
         :: term (List.length m.refused) (fun n ->
-            [ styled `Red (strf "%d not mutation-tested" n) ])
+            [ styled `Red (counted n "suite" ^ " not mutation-tested") ])
     | Suite | Selected _ -> []
   in
   plain "mutants: " :: separated (plain ", ") terms
@@ -1742,7 +1749,10 @@ let refused_section = function
             plain "  ";
             styled `Bold r.executable;
             plain
-              (strf "  %s unknown: %s" (counted r.mutants "mutant") r.reason);
+              (strf "  %s unknown: %s"
+                 (if r.mutants = 0 && r.counted_earlier then "no other mutant"
+                  else counted r.mutants "mutant")
+                 r.reason);
           ]
       in
       Rule (Some (strf "not mutation-tested (%d)" (List.length refused)))

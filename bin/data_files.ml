@@ -141,6 +141,20 @@ let exe_digest exe_path =
       Hashtbl.replace digests exe_path digest;
       digest
 
+(* A relative identity is a path below a build directory. The file's own
+   build directory locates it, the same directory whether the file was
+   discovered or named on the command line. *)
+let located ~path exe =
+  if not (Filename.is_relative exe) then Some (exe, exe)
+  else
+    Option.map
+      (fun build_dir ->
+        ( Filename.concat build_dir exe,
+          spf "%s/%s" (Filename.basename build_dir) exe ))
+      (Instr.build_dir ~path)
+
+let executable ~path exe = Option.map fst (located ~path exe)
+
 (* The comparison is by content digest because a modification time proves
    nothing here: dune's shared cache restores a rebuilt artifact with its
    original timestamp. *)
@@ -148,20 +162,7 @@ let freshness ~path identity =
   match (identity : Instr.identity option) with
   | None -> Fresh
   | Some { exe; digest } -> (
-      (* The executable's path, and its spelling from the project root. *)
-      let located =
-        if not (Filename.is_relative exe) then Some (exe, exe)
-        else
-          (* A relative identity is a path below a build directory; the
-             file's own locates it, the same directory whether the file
-             was discovered or named on the command line. *)
-          Option.map
-            (fun build_dir ->
-              ( Filename.concat build_dir exe,
-                spf "%s/%s" (Filename.basename build_dir) exe ))
-            (Instr.build_dir ~path)
-      in
-      match located with
+      match located ~path exe with
       | None -> Fresh
       | Some (exe_path, spelled) -> (
           if not (Sys.file_exists exe_path) then Orphan spelled

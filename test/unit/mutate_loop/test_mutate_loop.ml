@@ -102,8 +102,19 @@ let local file =
 let row (r : Verdicts.record) =
   strf "%s:%d %s" (local r.id.file) r.id.line (verdict r.verdict)
 
+(* The verdict file of the one suite of each fixture executable. *)
+let verdicts_path ?(exe = suite_exe) () =
+  let suite =
+    if exe = plain_exe then "plain"
+    else if exe = runaway_exe then "spin"
+    else if exe = inline_exe then "inline_armed"
+    else "calc"
+  in
+  Verdicts.output_file ~exe ~suite
+
 type file = {
   raw : string;
+  suite : string option;
   refused : string option;
   rows : string list;
   identity : (string * string) option; (* The writer's path and digest. *)
@@ -116,17 +127,25 @@ let saved path =
   else
     let raw = read path in
     match Verdicts.load path with
-    | Ok { verdicts; identity = writer; refused } ->
+    | Ok { verdicts; identity = writer; suite; refused } ->
         Some
           {
             raw;
+            suite;
             refused;
             rows = List.map row (Verdicts.records verdicts);
             identity = Option.map identity writer;
           }
     | Error e ->
         let reason = Format.asprintf "unreadable: %a" Verdicts.pp_error e in
-        Some { raw; refused = None; rows = [ reason ]; identity = None }
+        Some
+          {
+            raw;
+            suite = None;
+            refused = None;
+            rows = [ reason ];
+            identity = None;
+          }
 
 type ran = {
   status : string;
@@ -144,7 +163,7 @@ let quiet env = ("WINDTRAP_SLOW_THRESHOLD", "0") :: env
 (* The executable's verdict file is removed first, so a stale file cannot
    pass a test the loop failed to write. *)
 let spawn ?(exe = suite_exe) ?cwd ?(env = []) args =
-  let path = Verdicts.output_file ~exe in
+  let path = verdicts_path ~exe () in
   remove path;
   let r = Child.run ?cwd ~env:(quiet env) exe args in
   {
@@ -187,7 +206,7 @@ let finish started =
     status = ended status;
     out = read started.out_path;
     err = read started.err_path;
-    file = saved (Verdicts.output_file ~exe:suite_exe);
+    file = saved (verdicts_path ());
   }
 
 (* A process this suite started must not outlive it: a file that never
@@ -224,7 +243,7 @@ let finish_within ?(seconds = 10.) ~what started =
         status = ended status;
         out = read started.out_path;
         err = read started.err_path;
-        file = saved (Verdicts.output_file ~exe:suite_exe);
+        file = saved (verdicts_path ());
       }
   | None ->
       (try Unix.kill started.pid Sys.sigterm with Unix.Unix_error _ -> ());
@@ -914,7 +933,7 @@ type blocked = { run : ran; grandchildren : int list; elapsed : float }
 let blocked =
   lazy
     (let pidfile = Filename.concat (temp_dir ()) "grandchild" in
-     remove (Verdicts.output_file ~exe:suite_exe);
+     remove (verdicts_path ());
      let began = Unix.gettimeofday () in
      let run =
        finish_within ~what:"the blocked child's deadline"
@@ -1030,13 +1049,14 @@ let written () =
   let writer = Option.map identity (Verdicts.writer_identity ~exe:suite_exe) in
   equal text "" r.err;
   equal (option (pair string string)) writer f.identity;
+  equal (option string) (Some "calc") f.suite;
   equal (list string) green_rows f.rows
 
 (* The selection reaches only [sub], whose mutant dies, so its records
    would call [widen] unreached over the whole run's survivor. *)
 let narrowed () =
   let whole = require_some (Lazy.force green).file in
-  let path = Verdicts.output_file ~exe:suite_exe in
+  let path = verdicts_path () in
   write path whole.raw;
   let r = Child.run ~env:(quiet []) suite_exe [ mutate; "-f"; "calc" ] in
   equal string "exited 0" (ended r.Child.status);
@@ -1060,9 +1080,9 @@ let elsewhere =
     verdict = Verdicts.Killed;
   }
 
-let rerun_over ?identity collection =
-  let path = Verdicts.output_file ~exe:suite_exe in
-  Verdicts.save ?identity path (Verdicts.add collection elsewhere);
+let rerun_over ?identity ?suite collection =
+  let path = verdicts_path () in
+  Verdicts.save ?identity ?suite path (Verdicts.add collection elsewhere);
   let r = Child.run ~env:(quiet []) suite_exe [ mutate ] in
   equal string "exited 0" (ended r.Child.status);
   equal text "" r.Child.err;
@@ -1070,9 +1090,9 @@ let rerun_over ?identity collection =
 
 let kept_by_build () =
   let whole = require_some (Lazy.force green).file in
-  let path = Verdicts.output_file ~exe:suite_exe in
+  let path = verdicts_path () in
   write path whole.raw;
-  let { Verdicts.verdicts = collection; identity; _ } =
+  let { Verdicts.verdicts = collection; identity; suite; _ } =
     require_ok ~pp:Verdicts.pp_error (Verdicts.load path)
   in
   let other_build =
@@ -1083,11 +1103,19 @@ let kept_by_build () =
   equal
     (option (list string))
     (Some ("elsewhere/other.ml:1 killed" :: green_rows))
-    (rerun_over ?identity collection);
+    (rerun_over ?identity ?suite collection);
   equal
     (option (list string))
     (Some green_rows)
-    (rerun_over ?identity:other_build collection);
+    (rerun_over ?identity:other_build ?suite collection);
+  equal
+    (option (list string))
+    (Some green_rows)
+    (rerun_over ?identity ~suite:"another suite" collection);
+  equal
+    (option (list string))
+    (Some green_rows)
+    (rerun_over ?identity collection);
   equal (option (list string)) (Some green_rows) (rerun_over collection)
 
 let failed_run () =
@@ -1128,7 +1156,7 @@ let widen_diff =
    +let widen a b = a + b\n"
 
 let line_scoped args =
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdicts_path ());
   let r = spawn (mutate :: args) in
   equal string "exited 0" r.status;
   (outcome r.out, rows r)
@@ -1190,11 +1218,14 @@ let verdict_file =
   group "The verdict file"
     [
       test
-        "a loop that ran whole under a scope writes its file, with its writer"
+        "a loop that ran whole under a scope writes its file, with its writer \
+         and its suite"
         written;
       test "a narrowed run reports in full, says so, and leaves the file"
         narrowed;
-      test "a scoped run keeps the other files' records only from its own build"
+      test
+        "a scoped run keeps the other files' records only from its own build \
+         and suite"
         kept_by_build;
       cases
         "every narrowing of the suite saves no verdict, and its file names the \
@@ -1211,6 +1242,7 @@ let verdict_file =
           equal (pair string text) ("exited 0", not_saved) (r.status, r.err);
           let f = require_some r.file in
           equal (option string) (Some narrowing) f.refused;
+          equal (option string) (Some "calc") f.suite;
           equal (list string)
             (List.map
                (fun line -> strf "subject.ml:%d unknown: %s" line narrowing)
@@ -1343,11 +1375,16 @@ let loud_scope () =
 let refusals =
   group "Refusals"
     [
-      test "a red dry run refuses to score anything" (fun () ->
+      test
+        "a red dry run refuses to score anything, and its file names the suite"
+        (fun () ->
           let r = spawn ~env:[ suite "red" ] [ mutate ] in
           equal string "exited 1" r.status;
           contains ~sub:"the dry run is red" r.err;
-          not_contains ~sub:"mutants: " r.out);
+          not_contains ~sub:"mutants: " r.out;
+          let f = require_some r.file in
+          equal (option string) (Some "calc") f.suite;
+          is_some f.refused);
       test "a selection that matched nothing is refused with 1, never 2"
         (fun () ->
           let r = spawn [ mutate; "-f"; "no-such-test" ] in
@@ -1656,7 +1693,7 @@ let streamed () =
   let dir = temp_dir () in
   let began = Filename.concat dir "began"
   and gate = Filename.concat dir "gate" in
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdicts_path ());
   let run =
     start
       ~env:[ suite "held"; ("MUTATE_STARTED", began); ("MUTATE_GATE", gate) ]
@@ -1708,7 +1745,7 @@ let held_at_the_gate ?exe ?(args = [ mutate ]) name =
   let dir = temp_dir () and tmpdir = temp_dir () in
   let began = Filename.concat dir "began"
   and gate = Filename.concat dir "gate" in
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdicts_path ());
   let reader, writer = Unix.pipe ~cloexec:true () in
   let run =
     start ?exe ~stdout:writer
@@ -1782,7 +1819,7 @@ let late_interrupt () =
   Unix.clear_nonblock writer;
   Unix.close writer;
   open_gate ();
-  let path = Verdicts.output_file ~exe:suite_exe in
+  let path = verdicts_path () in
   await ~what:"the verdict file" run path;
   Unix.sleepf 0.2;
   Unix.kill run.pid Sys.sigint;
@@ -1798,7 +1835,7 @@ let late_interrupt () =
 let interrupted_by signal =
   let pidfile = Filename.concat (temp_dir ()) "hanging"
   and tmpdir = temp_dir () in
-  remove (Verdicts.output_file ~exe:suite_exe);
+  remove (verdicts_path ());
   let run =
     start
       ~env:
@@ -1868,7 +1905,7 @@ let probe_interrupted () =
    the loop in the window between its last child and its handlers'
    restoration (see suite_main.ml). *)
 let after_last_child () =
-  let path = Verdicts.output_file ~exe:suite_exe in
+  let path = verdicts_path () in
   remove path;
   Unix.mkfifo path 0o600;
   let tmpdir = temp_dir () in
@@ -1969,7 +2006,7 @@ let effects =
 let () =
   at_exit (fun () ->
       List.iter
-        (fun exe -> remove (Verdicts.output_file ~exe))
+        (fun exe -> remove (verdicts_path ~exe ()))
         [ suite_exe; inline_exe; runaway_exe; plain_exe ])
 
 let () =

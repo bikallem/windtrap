@@ -311,6 +311,14 @@ most reached first, and when an executable could not mutation-test its
 suite: the merge names it under `not mutation-tested`, with the mutants
 its file leaves unknown.
 
+Each suite of an executable writes its own verdict file, and the report
+names the suite of a file. A refused row names it, as in
+`t.exe (suite lts)`, and the outcome line counts the suites not
+mutation-tested. A later refused row whose mutants an earlier row
+already counts says `no other mutant unknown`. When two suites of one
+executable report the same test path, each witness row ends with
+`(suite X)`.
+
 Dune does not track `WINDTRAP_MUTATE`. A suite that ran without it
 does not run again when it is set, unless its build changed, and the
 merge then finds no verdict of that build.
@@ -474,14 +482,26 @@ arithmetic operators, the six comparisons or the two connectives.
 ## Where the verdicts are
 
 A suite's `--mutate` run over the whole suite writes one verdict file
-under `_build/_mutants`, and its next such run replaces it. An
-executable outside any build directory writes under `_windtrap/mutants`
-in its working directory. A run under `--mutate=PREFIX` replaces the
-verdicts under its prefixes and keeps the others, when the same build
-wrote the file. A verdict file records its executable and a digest of
-its bytes, and `windtrap mutants` leaves out one whose executable was
-deleted or rebuilt since, with a warning, as
+under `_build/_mutants`, and the next such run of that suite replaces
+the file. Each suite of an executable has its own file, named from the
+executable and the suite. Thus a main that calls `Windtrap.run` with
+more than one suite name keeps the verdicts of each suite. The
+partitions of an inline-test library, which dune runs at the same time,
+also keep their verdicts. An executable outside any build directory
+writes under `_windtrap/mutants` in its working directory.
+
+A run under `--mutate=PREFIX` replaces the verdicts under its prefixes
+and keeps the others, when the same build wrote the file for the same
+suite. A verdict file records its executable, a digest of its bytes and
+its suite. `windtrap mutants` merges the files of all suites, and counts
+the files of one executable as one executable. It leaves out a file
+whose executable was deleted or rebuilt since, with a warning, as
 [`windtrap coverage`](coverage.md#when-a-dump-is-excluded) does a dump.
+
+A suite that you rename, or that no longer runs, leaves its file in the
+directory. `windtrap mutants` merges this file until a new build of the
+executable makes it stale. To remove its verdicts before that, delete
+the file.
 
 ## Mutation testing without dune
 
@@ -497,10 +517,10 @@ domain before its run: that process cannot fork, and a new start of the
 program would not reach its run. A test may spawn a domain. A run that
 is refused, or whose selection narrows the suite, still writes its
 verdict file when this build has none, saying why, and the project's
-merge names the executable under `not mutation-tested`. `--mutate` and
-`--arm` together are a usage error. An interrupt ends the run: the
-running mutants are killed, the first not yet reported is named on
-standard error, and no verdict file is written.
+merge names the executable and the suite under `not mutation-tested`.
+`--mutate` and `--arm` together are a usage error. An interrupt ends the
+run: the running mutants are killed, the first not yet reported is named
+on standard error, and no verdict file is written.
 
 ## The command's options
 

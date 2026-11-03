@@ -162,23 +162,24 @@ let narrows_suite (config : Run.config) ~focus =
   || config.exclude_tags <> [] || config.failed_only || focus
   || config.shard <> None
 
-(* What this build's file holds, if the file is this build's. *)
-let this_build () =
+(* What the file of [suite] holds, if this build wrote it for [suite]. *)
+let this_build ~suite =
   let exe = Windtrap_runtime.Instr.executable in
   match
-    (Verdicts.writer_identity ~exe, Verdicts.load (Verdicts.output_file ~exe))
+    ( Verdicts.writer_identity ~exe,
+      Verdicts.load (Verdicts.output_file ~exe ~suite) )
   with
-  | Some identity, Ok ({ identity = Some writer; _ } as file)
-    when writer = identity ->
+  | Some identity, Ok ({ identity = Some writer; suite = Some s; _ } as file)
+    when writer = identity && String.equal s suite ->
       Some file
   | _ -> None
 
 (* Under a scope, the records of the other files stay when this build wrote
    them and tested its suite. *)
-let save ~scope ?refused records =
+let save ~suite ~scope ?refused records =
   let exe = Windtrap_runtime.Instr.executable in
   let kept =
-    match (this_build (), refused) with
+    match (this_build ~suite, refused) with
     | Some { verdicts; refused = None; _ }, None ->
         List.filter
           (fun (r : Verdicts.record) -> not (in_scope ~scope r.id))
@@ -189,8 +190,8 @@ let save ~scope ?refused records =
   match
     Verdicts.save
       ?identity:(Verdicts.writer_identity ~exe)
-      ?refused
-      (Verdicts.output_file ~exe)
+      ~suite ?refused
+      (Verdicts.output_file ~exe ~suite)
       verdicts
   with
   | () -> None
@@ -212,26 +213,28 @@ let unknown_records ?reach population reason =
 
 (* A refusal still writes the file, which says why, so the merge names the
    suite and its mutants never read as the other suites' survivors. *)
-let refuse ?(say = true) ?reach ~scope population message =
+let refuse ?(say = true) ?reach ~suite ~scope population message =
   if say then Os.say message;
   Option.iter Os.say
-    (save ~scope ~refused:message (unknown_records ?reach population message));
+    (save ~suite ~scope ~refused:message
+       (unknown_records ?reach population message));
   Error (Run.Mutation_refused message)
 
 let narrowing =
   "its selection narrowed the suite, so it saved no verdict: run it whole"
 
 (* A narrowed run cannot unsay what a whole run of the same build found. *)
-let save_narrowed ~scope population =
+let save_narrowed ~suite ~scope population =
   let note =
     "verdicts not saved: this run's selection narrows the suite, and a partial \
      run's verdicts would stand in the project merge as the whole."
   in
-  match this_build () with
+  match this_build ~suite with
   | Some _ -> Some note
   | None -> (
       match
-        save ~scope ~refused:narrowing (unknown_records population narrowing)
+        save ~suite ~scope ~refused:narrowing
+          (unknown_records population narrowing)
       with
       | None -> Some note
       | Some failed -> Some (note ^ " " ^ failed))
@@ -535,7 +538,9 @@ let loop renderer ~scope ~suite (config : Run.config) tests =
   let all = Result.value population ~default:[] in
   let reach = { sites = Hashtbl.create 256; outside = Hashtbl.create 16 } in
   let started = Os.counter () in
-  let refuse ?say ?reach message = refuse ?say ?reach ~scope all message in
+  let refuse ?say ?reach message =
+    refuse ?say ?reach ~suite ~scope all message
+  in
   if not (Supervisor.can_spawn ()) then
     refuse
       "this run is in a process that has spawned a domain, after which OCaml \
@@ -585,9 +590,9 @@ let loop renderer ~scope ~suite (config : Run.config) tests =
               in
               let narrowed = narrows_suite config ~focus:outcome.focus_active in
               let save records =
-                if narrowed then save_narrowed ~scope population
+                if narrowed then save_narrowed ~suite ~scope population
                 else
-                  save ~scope
+                  save ~suite ~scope
                     (records
                     @ recorded Verdicts.Outside_tests outside
                     @ recorded Verdicts.Unreached unreached)

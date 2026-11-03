@@ -482,11 +482,19 @@ type unknown = {
     no survivor. *)
 
 type refused = {
-  executable : string;  (** The executable, as a merge labels it. *)
+  executable : string;
+      (** The executable and its suite, as a merge labels them. *)
   reason : string;  (** Why it could not test its mutants. *)
-  mutants : int;  (** The mutants that its file holds as unknown. *)
+  mutants : int;
+      (** The unknown mutants of the merge that this row counts: its file holds
+          them as unknown, no tested file does, and no earlier row counts them.
+      *)
+  counted_earlier : bool;
+      (** [true] when an earlier row counts a mutant that its file holds as
+          unknown. A row with [0] [mutants] then says [no other mutant unknown],
+          and otherwise [0 mutants unknown]. *)
 }
-(** The type for an executable that could not mutation-test its suite. *)
+(** The type for a suite of an executable that could not be mutation-tested. *)
 
 (** The type for what the reached count of a report is relative to. The outcome
     line names it. *)
@@ -496,7 +504,8 @@ type scope =
       (** The run of one executable whose selection narrowed the suite to this
           many tests. *)
   | Executables of int
-      (** A merge over the verdict files of this many executables. *)
+      (** A merge over the verdict files of this many executables. The files of
+          the suites of one executable count as one. *)
 
 type mutation = {
   survivors : survivor list;
@@ -508,9 +517,9 @@ type mutation = {
       (** Every reached mutant whose run ended before its tests did, in the
           order in which it prints. *)
   refused : refused list;
-      (** The executables of a merge that could not mutation-test their suite.
-          It is empty in the report of one executable, whose refusal ends its
-          run on standard error. *)
+      (** The suites of a merge that could not be mutation-tested, one for each
+          verdict file. It is empty in the report of one executable, whose
+          refusal ends its run on standard error. *)
   unreached : (string * int) list;
       (** The file and the one-based line of each mutant that no test evaluated,
           one pair per mutant, except those of [outside_tests]. *)
@@ -579,5 +588,5 @@ val mutation_report : invocation:Run.invocation -> mutation -> section list
     each of [m.refused] with its count and reason, the never-reached section,
     the section of the mutants evaluated outside tests, the [reproduce:] command
     and the outcome line follow, as {!mutation_closing} builds them for a run
-    that selects every test. The outcome line counts the executables of
-    [m.refused] after the executables. *)
+    that selects every test. The outcome line counts the suites of [m.refused]
+    after the executables. *)

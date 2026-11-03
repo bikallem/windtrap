@@ -2297,6 +2297,16 @@ let property_refused =
     Sections.executable = "test_property.exe";
     reason = "the suite is not deterministic: the probe failed 2 tests";
     mutants = 27;
+    counted_earlier = false;
+  }
+
+(* A second suite of the executable, whose mutants the first row counts. *)
+let second_suite_refused =
+  {
+    Sections.executable = "test_property.exe (suite b)";
+    reason = "the suite is not deterministic: the probe failed 1 test";
+    mutants = 0;
+    counted_earlier = true;
   }
 
 let loop_report =
@@ -2387,6 +2397,16 @@ let mutation_entries () =
           unknown = [ hung ];
           refused = [ property_refused ];
           scope = Sections.Executables 3;
+        } );
+    ( "two refused suites of one executable: the second counts no mutant again",
+      at_rest
+        {
+          loop_report with
+          Sections.survivors = [];
+          refused = [ property_refused; second_suite_refused ];
+          killed = 0;
+          unreached = [];
+          scope = Sections.Executables 1;
         } );
     ( "a survivor's block: its rewrite, its source line, the tests that ran it",
       printed ~ansi:true (Sections.survivor_block ~exe_width:None ge_survivor)
@@ -2574,7 +2594,14 @@ let summary_rows =
         summary ~survivors:s ~unknown:[ hung ] ~refused:[ property_refused ]
           ~killed:2 (Sections.Executables 2)),
       "mutants: 1 survived of 31 reached, 2 killed, 28 unknown, 2 executables, \
-       1 not mutation-tested" );
+       1 suite not mutation-tested" );
+    ( "two refused suites of one executable count as suites",
+      (fun () ->
+        summary
+          ~refused:[ property_refused; second_suite_refused ]
+          ~killed:0 (Sections.Executables 1)),
+      "mutants: 27 reached, 27 unknown, 1 executable, 2 suites not \
+       mutation-tested" );
     ( "a mutant its child did not evaluate is reached",
       (fun () ->
         summary ~survivors:s ~not_evaluated:[ memo_missed ] ~killed:2

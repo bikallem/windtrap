@@ -27,6 +27,8 @@ let fail ~code message =
 
 type file = {
   label : string; (* the executable, as the witness column names it *)
+  executable : string; (* the path of the executable, one for its suites *)
+  suite : string option; (* the suite that wrote the file *)
   invocation : Run.invocation; (* how that executable is run again *)
   verdicts : Verdicts.t;
   refused : string option; (* why it could not test its mutants *)
@@ -50,6 +52,16 @@ let label ~path = function
   | None -> Filename.basename path
   | Some ({ exe; _ } : Verdicts.identity) ->
       Option.value (inline_library exe) ~default:(Filename.basename exe)
+
+let with_suite f =
+  match f.suite with
+  | Some suite -> strf "%s (suite %s)" f.label suite
+  | None -> f.label
+
+let executable ~path = function
+  | None -> path
+  | Some ({ exe; _ } : Verdicts.identity) ->
+      Option.value (Data_files.executable ~path exe) ~default:exe
 
 (* [dune exec] takes a target below the build context, which is the first
    component of a relative identity. *)
@@ -86,21 +98,23 @@ let remedy excluded =
   let under_build_dir (path, _) = Option.is_some (Instr.build_dir ~path) in
   if List.for_all under_build_dir excluded then
     "re-run every suite with its mutants, then merge again; delete the files \
-     whose executable no longer exists\n\
+     whose executable or suite no longer exists\n\
     \  WINDTRAP_MUTATE=1 dune runtest --force --instrument-with \
      ppx_windtrap.mutate"
   else
     "re-run every suite with its mutants (--mutate, instrumented with \
      ppx_windtrap.mutate, forcing the runs your build tool cached), then merge \
-     again; delete the files whose executable no longer exists"
+     again; delete the files whose executable or suite no longer exists"
 
 let fresh files =
   let load path =
     match Verdicts.load path with
-    | Ok { Verdicts.verdicts; identity; refused } ->
+    | Ok { Verdicts.verdicts; identity; suite; refused } ->
         Ok
           {
             label = label ~path identity;
+            executable = executable ~path identity;
+            suite;
             invocation = invocation identity;
             verdicts;
             refused;
@@ -190,18 +204,25 @@ let merge ~source files =
           match Ids.find_opt id survived with
           | Some tests ->
               List.map
-                (fun test -> (f.label, Test_tree.path_to_string test))
+                (fun test -> (f.label, Test_tree.path_to_string test, f.suite))
                 tests
           | None -> [])
         survivals
+      |> List.sort_uniq compare
     in
-    {
-      mutant = mutant r;
-      witnesses =
-        List.map
-          (fun (exe, test) -> { Sections.test; loc = None; exe = Some exe })
-          (List.sort_uniq compare witnesses);
-    }
+    (* The suite tells apart one test path that two suites of an executable
+       report. *)
+    let witness (exe, test, suite) =
+      let shared (e, t, _) = e = exe && t = test in
+      let test =
+        match suite with
+        | Some suite when List.length (List.filter shared witnesses) > 1 ->
+            strf "%s (suite %s)" test suite
+        | Some _ | None -> test
+      in
+      { Sections.test; loc = None; exe = Some exe }
+    in
+    { mutant = mutant r; witnesses = List.map witness witnesses }
   in
   (* The first executable, in the order of [files], that did not evaluate
      the mutant is the one its command runs. A merge is [Not_evaluated] only
@@ -234,12 +255,12 @@ let merge ~source files =
         Either.Left
           {
             Sections.mutant = mutant r;
-            reason = strf "%s: %s" f.label reason;
+            reason = strf "%s: %s" (with_suite f) reason;
             invocation = f.invocation;
           }
     | None -> (
         match List.find_opt (fun f -> Option.is_some (reason f)) files with
-        | Some f -> Either.Right f
+        | Some f -> Either.Right (id, f)
         | None -> assert false)
   in
   let records = Verdicts.records merged in
@@ -277,9 +298,19 @@ let merge ~source files =
         Option.map
           (fun reason ->
             {
-              Sections.executable = f.label;
+              Sections.executable = with_suite f;
               reason;
-              mutants = List.length (List.filter (( == ) f) untested);
+              mutants =
+                List.length (List.filter (fun (_, g) -> g == f) untested);
+              counted_earlier =
+                List.exists
+                  (fun (id, g) ->
+                    g != f
+                    &&
+                    match verdict_in f id with
+                    | Some (Unknown _) -> true
+                    | _ -> false)
+                  untested;
             })
           f.refused)
       files
@@ -323,7 +354,11 @@ let merge ~source files =
       outside_tests;
       killed;
       not_tested = 0;
-      scope = Executables (List.length files);
+      scope =
+        Executables
+          (List.length
+             (List.sort_uniq String.compare
+                (List.map (fun f -> f.executable) files)));
     },
     invocation )
 

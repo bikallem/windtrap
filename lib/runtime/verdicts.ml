@@ -104,7 +104,7 @@ let merge a b = Id_map.union (fun _ a b -> Some (combine a b)) a b
 
 let format =
   {
-    Instr.magic = "windtrap-mutants-v5";
+    Instr.magic = "windtrap-mutants-v11";
     kind = "verdict";
     dir = "mutants";
     ext = "mutants";
@@ -129,17 +129,25 @@ let writer_identity ~exe =
     (fun digest -> { exe = Instr.exe_identity ~exe; digest })
     (Instr.file_digest exe)
 
-let output_file ~exe = Instr.output_file format ~exe
+(* A digest, because a suite name can hold "/" or differ from another only
+   in case. *)
+let output_file ~exe ~suite =
+  Printf.sprintf "%s-%s.%s"
+    (Instr.output_dir format ~exe)
+    (Digest.to_hex (Digest.string suite))
+    format.ext
 
 type file = {
   verdicts : t;
   identity : identity option;
+  suite : string option;
   refused : string option;
 }
 
 (* The records after the header. Every number is in decimal, and a name is
    [<byte length> <bytes>], so it may hold any byte:
 
+     [suite <name>]
      tested | refused <reason>
      <record count>
      <file> <line> <col> <end line> <end col> <rewrite> <before> <after> <verdict>
@@ -201,8 +209,15 @@ let load path =
   | Ok c -> (
       try
         let identity = Instr.read_identity c in
-        let refused =
+        let suite, status =
           match Instr.read_word c "status" with
+          | "suite" ->
+              let suite = Instr.read_name c "suite" in
+              (Some suite, Instr.read_word c "status")
+          | word -> (None, word)
+        in
+        let refused =
+          match status with
           | "tested" -> None
           | "refused" -> Some (Instr.read_name c "refusal")
           | word -> Instr.parse_fail "unknown status %S" word
@@ -211,10 +226,10 @@ let load path =
           read_records c empty (Instr.read_count c "record count")
         in
         Instr.finish c;
-        Ok { verdicts; identity; refused }
+        Ok { verdicts; identity; suite; refused }
       with Instr.Parse_error reason -> Error (Corrupt { path; reason }))
 
-let save ?identity ?refused path t =
+let save ?identity ?suite ?refused path t =
   let add_name b s = Printf.bprintf b "%d %s" (String.length s) s in
   let add_test b names =
     Printf.bprintf b "%d" (List.length names);
@@ -233,6 +248,7 @@ let save ?identity ?refused path t =
   in
   let b = Buffer.create 1024 in
   Instr.add_header format b identity;
+  Option.iter (Printf.bprintf b "suite %a\n" add_name) suite;
   (match refused with
   | None -> Buffer.add_string b "tested\n"
   | Some reason -> Printf.bprintf b "refused %a\n" add_name reason);
