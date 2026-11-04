@@ -90,9 +90,38 @@
   error, for example on a full disk. Before, an uncaught exception gave
   exit code 2. A closed pipe ends the process by SIGPIPE, as before,
   unless the parent ignores that signal.
-- (breaking) The verdict file format is `windtrap-mutants-v11`. A file
-  of an earlier format is refused. Delete `_build/_mutants` and run the
-  suites again.
+- `--skip-killed` and its mirror `WINDTRAP_SKIP_KILLED` let a mutation
+  run skip a reached mutant that the verdict file of another suite
+  killed. The executable of that file must not have changed since it
+  wrote the file. The rewriter must have read the same source file for
+  the two executables, and the mutant must be the same. The verdict file records the mutant as
+  killed elsewhere, with the executable of that file. The report names
+  each verdict file that the run used, and the outcome line counts the
+  skipped mutants as not tested. The run uses only the files on disk
+  after its dry run, so run the fast suites first. Two suites with the
+  option that run at the same time can skip one mutant because of each
+  other, so run them one after the other, for example with
+  `dune runtest -j 1`
+  (doc/manual/mutation.md#skipping-the-mutants-that-another-suite-killed).
+- `windtrap mutants` counts a mutant killed elsewhere as killed when
+  another file of the killing executable kills it, or when no other file
+  of that executable holds it. In the second case, a note on standard
+  error tells which run to do again. In every other case the skip does
+  not count. The merge leaves out every skip that does not count, and
+  the other records then give the verdict. The mutant is unknown when
+  they give no verdict of a reached mutant. When no file of the merge
+  kills the mutant directly, a note tells to run the suite that skipped
+  it again.
+- (breaking) `ppx_windtrap.mutate` registers the digest of each source
+  file that it reads, and the catalogue gives it with each mutant:
+  `Mutate.register` takes `~digest`, and `Mutate.mutant` has
+  `source_digest`. Thus code that an earlier `ppx_windtrap.mutate`
+  instrumented does not compile or link against this runtime. Build it
+  again. Under dune the build does this automatically.
+- (breaking) The verdict file format is `windtrap-mutants-v12`. Each
+  record keeps the digest of the source file of its mutant, and a
+  skipped mutant is killed elsewhere. A file of an earlier format is
+  refused. Delete `_build/_mutants` and run the suites again.
 
 ## v0.3.1 2026-11-01
 

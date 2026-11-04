@@ -143,6 +143,7 @@ let mutation ~name = function
          let ___windtrap_armed___ =
            Windtrap_runtime.Mutate.register
              ~file:[%e? file]
+             ~digest:[%e? _]
              ~sites:[%e? { pexp_desc = Pexp_array sites; _ }]];
       ] ->
           Option.bind (all site sites)

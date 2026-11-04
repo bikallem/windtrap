@@ -942,6 +942,357 @@ document nor the exit code:
   [1]
   $ diff json shown
 
+Killed elsewhere
+
+A suite that ran with --skip-killed records a mutant that another suite
+killed as killed elsewhere, with the executable of that suite. The merge
+counts it as killed. Each project below writes the executables that it
+names, and plants each file with the identity of its executable, so that
+the file is fresh:
+
+  $ exes() { mkdir -p _build/default/test; for n in "$@"; do echo "suite $n" > "_build/default/test/$n.exe"; done; }
+
+When a file of the merge kills the mutant directly, the merge says nothing
+more. The report is the report of the runs that tested every mutant:
+
+  $ plant "$scratch/direct" && cd "$scratch/direct" && exes a b
+  $ mkdata mutants _build/_mutants/windtrap-a.mutants --exe _build/default/test/a.exe \
+  >   "$add=killed" "$sub=survived:calc/subs"
+  $ mkdata mutants _build/_mutants/windtrap-b.mutants --exe _build/default/test/b.exe \
+  >   "$add=elsewhere:default/test/a.exe" "$sub=survived:cli/subs"
+  $ run windtrap mutants > skipped
+  [1]
+  $ test ! -s "$bin/err"
+  $ mkdata mutants _build/_mutants/windtrap-b.mutants --exe _build/default/test/b.exe \
+  >   "$add=survived:cli/adds" "$sub=survived:cli/subs"
+  $ run windtrap mutants > tested
+  [1]
+  $ test ! -s "$bin/err"
+  $ cmp skipped tested
+
+When no file of the merge kills the mutant, the mutant is still killed, and
+the merge says on standard error which run to do again. Here the file of
+a.exe is not in the merge:
+
+  $ plant "$scratch/missing" && cd "$scratch/missing" && exes a b
+  $ mkdata mutants _build/_mutants/windtrap-b.mutants --exe _build/default/test/b.exe \
+  >   "$add=elsewhere:default/test/a.exe" "$sub=survived:cli/subs" "$lt=unreached" "$or=unreached" "$and=unreached"
+  $ run windtrap mutants
+  ───────────────────── survivors (1) ──────────────────────
+  File "lib/calc.ml", line 2, characters 14-19:
+    SURVIVED  lib/calc.ml:2:14:sub  a - b → a + b
+        2 │ let sub a b = a - b
+  
+      1 test ran this line and did not fail:
+        b.exe  cli › subs
+  ──────────────────────────────────────────────────────────
+  
+  ─────────────────── never reached (3) ────────────────────
+    1  lib/calc.ml   line 3
+    2  lib/util.ml   lines 1, 3
+  ──────────────────────────────────────────────────────────
+  
+  reproduce: dune exec --instrument-with ppx_windtrap.mutate test/b.exe -- --arm lib/calc.ml:2:14:sub
+  mutants: 1 survived of 2 reached, 1 killed, 3 never reached, 1 executable, score 50.0% (1/2)
+  --- stderr
+  windtrap: 1 mutant counts as killed by default/test/a.exe, but no verdict file of the merge gives this kill: run default/test/a.exe with its mutants, then merge again
+  [1]
+
+The document counts the mutant as killed, and the note is the same:
+
+  $ run windtrap mutants --json
+  { "version": 1,
+    "summary": { "reached": 2, "killed": 1, "survived": 1,
+      "not_evaluated": 0, "unknown": 0, "outside_tests": 0,
+      "unreached": 3, "refused": 0, "score": 50.00 },
+    "executables": [
+      { "name": "b.exe", "path": "default/test/b.exe", "suite": null, "refused": null } ],
+    "mutants": [
+      { "id": "lib/calc.ml:1:14:add",
+        "file": "lib/calc.ml", "line": 1, "col": 14, "rewrite": "add",
+        "end_line": 1, "end_col": 19,
+        "before": "a + b", "after": "a - b",
+        "verdict": "killed" },
+      { "id": "lib/calc.ml:2:14:sub",
+        "file": "lib/calc.ml", "line": 2, "col": 14, "rewrite": "sub",
+        "end_line": 2, "end_col": 19,
+        "before": "a - b", "after": "a + b",
+        "verdict": "survived",
+        "tests": [
+          { "executable": 0, "test": ["cli", "subs"] } ] },
+      { "id": "lib/calc.ml:3:14:lt",
+        "file": "lib/calc.ml", "line": 3, "col": 14, "rewrite": "lt",
+        "end_line": 3, "end_col": 19,
+        "before": "a < b", "after": "a <= b",
+        "verdict": "unreached" },
+      { "id": "lib/util.ml:1:13:or",
+        "file": "lib/util.ml", "line": 1, "col": 13, "rewrite": "or",
+        "end_line": 1, "end_col": 19,
+        "before": "p || q", "after": "p && q",
+        "verdict": "unreached" },
+      { "id": "lib/util.ml:3:22:and",
+        "file": "lib/util.ml", "line": 3, "col": 22, "rewrite": "and",
+        "end_line": 3, "end_col": 28,
+        "before": "p && q", "after": "p || q",
+        "verdict": "unreached" } ] }
+  --- stderr
+  windtrap: 1 mutant counts as killed by default/test/a.exe, but no verdict file of the merge gives this kill: run default/test/a.exe with its mutants, then merge again
+  [1]
+
+There is one note for each killer, in the order of the killers. The count
+and the words follow the number of mutants:
+
+  $ plant "$scratch/plurals" && cd "$scratch/plurals" && exes a b c
+  $ mkdata mutants _build/_mutants/windtrap-b.mutants --exe _build/default/test/b.exe \
+  >   "$add=elsewhere:default/test/a.exe" "$sub=elsewhere:default/test/a.exe" \
+  >   "$lt=elsewhere:default/test/c.exe" "$or=unreached" "$and=unreached"
+  $ run windtrap mutants
+  ─────────────────── never reached (2) ────────────────────
+    2  lib/util.ml   lines 1, 3
+  ──────────────────────────────────────────────────────────
+  
+  mutants: 3 reached, 3 killed, 2 never reached, 1 executable, score 100.0% (3/3)
+  --- stderr
+  windtrap: 2 mutants count as killed by default/test/a.exe, but no verdict file of the merge gives these kills: run default/test/a.exe with its mutants, then merge again
+  windtrap: 1 mutant counts as killed by default/test/c.exe, but no verdict file of the merge gives this kill: run default/test/c.exe with its mutants, then merge again
+
+A skip stands only when another file of the killer kills the mutant, or
+when no other file of the killer holds it. When a file of the killer holds
+the mutant and none kills it, the kill does not hold, and the skip does
+not count. The merge drops the skip when the other records give a
+verdict of a reached mutant. Thus the gate sees the survivor. The note
+tells to run the suite that skipped the mutant:
+
+  $ plant "$scratch/present" && cd "$scratch/present" && exes a b c
+  $ mkdata mutants _build/_mutants/windtrap-a.mutants --exe _build/default/test/a.exe \
+  >   "$add=survived:calc/adds"
+  $ mkdata mutants _build/_mutants/windtrap-b.mutants --exe _build/default/test/b.exe \
+  >   "$add=elsewhere:default/test/a.exe"
+  $ run windtrap mutants --min 60
+  ───────────────────── survivors (1) ──────────────────────
+  File "lib/calc.ml", line 1, characters 14-19:
+    SURVIVED  lib/calc.ml:1:14:add  a + b → a - b
+        1 │ let add a b = a + b
+  
+      1 test ran this line and did not fail:
+        a.exe  calc › adds
+  ──────────────────────────────────────────────────────────
+  
+  reproduce: dune exec --instrument-with ppx_windtrap.mutate test/a.exe -- --arm lib/calc.ml:1:14:add
+  mutants: 1 survived of 1 reached, 2 executables, score 0.0% (0/1), minimum 60%: FAILED
+  --- stderr
+  windtrap: 1 mutant that default/test/b.exe skipped as killed by default/test/a.exe is not killed by it in the merge, so the skip does not count: run default/test/b.exe again with its mutants, then merge again
+  [1]
+
+The document gives the verdict of the other records:
+
+  $ run windtrap mutants --json
+  { "version": 1,
+    "summary": { "reached": 1, "killed": 0, "survived": 1,
+      "not_evaluated": 0, "unknown": 0, "outside_tests": 0,
+      "unreached": 0, "refused": 0, "score": 0.00 },
+    "executables": [
+      { "name": "a.exe", "path": "default/test/a.exe", "suite": null, "refused": null },
+      { "name": "b.exe", "path": "default/test/b.exe", "suite": null, "refused": null } ],
+    "mutants": [
+      { "id": "lib/calc.ml:1:14:add",
+        "file": "lib/calc.ml", "line": 1, "col": 14, "rewrite": "add",
+        "end_line": 1, "end_col": 19,
+        "before": "a + b", "after": "a - b",
+        "verdict": "survived",
+        "tests": [
+          { "executable": 0, "test": ["calc", "adds"] } ] } ] }
+  --- stderr
+  windtrap: 1 mutant that default/test/b.exe skipped as killed by default/test/a.exe is not killed by it in the merge, so the skip does not count: run default/test/b.exe again with its mutants, then merge again
+  [1]
+
+When another executable kills the mutant directly, the mutant is killed,
+and no note comes:
+
+  $ mkdata mutants _build/_mutants/windtrap-c.mutants --exe _build/default/test/c.exe \
+  >   "$add=killed"
+  $ run windtrap mutants
+  mutants: 1 reached, 1 killed, 3 executables, score 100.0% (1/1)
+  $ rm _build/_mutants/windtrap-c.mutants
+
+The note counts each mutant once, also when two suites of one executable
+skipped it, and it names the suites:
+
+  $ mkdata mutants _build/_mutants/windtrap-b2.mutants --exe _build/default/test/b.exe \
+  >   --suite other "$add=elsewhere:default/test/a.exe"
+  $ mkdata mutants _build/_mutants/windtrap-b.mutants --exe _build/default/test/b.exe \
+  >   --suite main "$add=elsewhere:default/test/a.exe"
+  $ run windtrap mutants | tail -n 3
+  mutants: 1 survived of 1 reached, 2 executables, score 0.0% (0/1)
+  --- stderr
+  windtrap: 1 mutant that default/test/b.exe (suites main, other) skipped as killed by default/test/a.exe is not killed by it in the merge, so the skip does not count: run default/test/b.exe again with its mutants, then merge again
+  $ rm _build/_mutants/windtrap-b2.mutants
+
+When another suite of the killer kills the mutant, the kill holds, and the
+merge says nothing more:
+
+  $ mkdata mutants _build/_mutants/windtrap-a2.mutants --exe _build/default/test/a.exe \
+  >   --suite other "$add=killed"
+  $ run windtrap mutants
+  mutants: 1 reached, 1 killed, 2 executables, score 100.0% (1/1)
+
+When the files of the killer reach the mutant no more, the other records
+give no verdict of a reached mutant. The skip then becomes unknown,
+because the suite that skipped reached the mutant:
+
+  $ rm _build/_mutants/windtrap-a2.mutants
+  $ mkdata mutants _build/_mutants/windtrap-a.mutants --exe _build/default/test/a.exe \
+  >   "$add=unreached"
+  $ run windtrap mutants
+  ────────────────────── unknown (1) ───────────────────────
+  File "lib/calc.ml", line 1, characters 14-19:
+    lib/calc.ml:1:14:add  a + b → a - b
+      b.exe (suite main): it skipped the mutant as killed by default/test/a.exe, which does not kill it in this merge
+      arm: dune exec --instrument-with ppx_windtrap.mutate test/b.exe -- --arm lib/calc.ml:1:14:add
+  ──────────────────────────────────────────────────────────
+  
+  mutants: 1 reached, 1 unknown, 2 executables
+  --- stderr
+  windtrap: 1 mutant that default/test/b.exe skipped as killed by default/test/a.exe is not killed by it in the merge, so the skip does not count: run default/test/b.exe again with its mutants, then merge again
+
+Two suites that skipped one mutant because of each other leave no kill,
+so the two skips do not count. Alone, they give an unknown mutant:
+
+  $ plant "$scratch/mutual" && cd "$scratch/mutual" && exes a b c
+  $ mkdata mutants _build/_mutants/windtrap-a.mutants --exe _build/default/test/a.exe \
+  >   "$add=elsewhere:default/test/b.exe"
+  $ mkdata mutants _build/_mutants/windtrap-b.mutants --exe _build/default/test/b.exe \
+  >   "$add=elsewhere:default/test/a.exe"
+  $ run windtrap mutants
+  ────────────────────── unknown (1) ───────────────────────
+  File "lib/calc.ml", line 1, characters 14-19:
+    lib/calc.ml:1:14:add  a + b → a - b
+      a.exe: it skipped the mutant as killed by default/test/b.exe, which does not kill it in this merge
+      arm: dune exec --instrument-with ppx_windtrap.mutate test/a.exe -- --arm lib/calc.ml:1:14:add
+  ──────────────────────────────────────────────────────────
+  
+  mutants: 1 reached, 1 unknown, 2 executables
+  --- stderr
+  windtrap: 1 mutant that default/test/a.exe skipped as killed by default/test/b.exe is not killed by it in the merge, so the skip does not count: run default/test/a.exe again with its mutants, then merge again
+  windtrap: 1 mutant that default/test/b.exe skipped as killed by default/test/a.exe is not killed by it in the merge, so the skip does not count: run default/test/b.exe again with its mutants, then merge again
+
+With a survivor in a third file, the mutant survives, and the gate fails:
+
+  $ mkdata mutants _build/_mutants/windtrap-c.mutants --exe _build/default/test/c.exe \
+  >   "$add=survived:cli/adds"
+  $ run windtrap mutants --min 60
+  ───────────────────── survivors (1) ──────────────────────
+  File "lib/calc.ml", line 1, characters 14-19:
+    SURVIVED  lib/calc.ml:1:14:add  a + b → a - b
+        1 │ let add a b = a + b
+  
+      1 test ran this line and did not fail:
+        c.exe  cli › adds
+  ──────────────────────────────────────────────────────────
+  
+  reproduce: dune exec --instrument-with ppx_windtrap.mutate test/c.exe -- --arm lib/calc.ml:1:14:add
+  mutants: 1 survived of 1 reached, 3 executables, score 0.0% (0/1), minimum 60%: FAILED
+  --- stderr
+  windtrap: 1 mutant that default/test/a.exe skipped as killed by default/test/b.exe is not killed by it in the merge, so the skip does not count: run default/test/a.exe again with its mutants, then merge again
+  windtrap: 1 mutant that default/test/b.exe skipped as killed by default/test/a.exe is not killed by it in the merge, so the skip does not count: run default/test/b.exe again with its mutants, then merge again
+  [1]
+
+The other verdicts of the killer give these results. A mutant that the
+killer did not evaluate is not evaluated, a mutant that it ran outside
+every test is unknown, and a refused file of the killer gives the
+mutant as unknown under that file:
+
+  $ plant "$scratch/verdicts" && cd "$scratch/verdicts" && exes a b
+  $ mkdata mutants _build/_mutants/windtrap-b.mutants --exe _build/default/test/b.exe \
+  >   "$add=elsewhere:default/test/a.exe"
+  $ mkdata mutants _build/_mutants/windtrap-a.mutants --exe _build/default/test/a.exe \
+  >   "$add=not_evaluated"
+  $ run windtrap mutants > /dev/null; tail -n 1 "$bin/out"
+  mutants: 1 reached, 1 not evaluated, 2 executables, score 0.0% (0/1)
+  $ mkdata mutants _build/_mutants/windtrap-a.mutants --exe _build/default/test/a.exe \
+  >   "$add=outside_tests"
+  $ run windtrap mutants > /dev/null; tail -n 1 "$bin/out"
+  mutants: 1 reached, 1 unknown, 2 executables
+  $ mkdata mutants _build/_mutants/windtrap-a.mutants --exe _build/default/test/a.exe \
+  >   --refused "its dry run is red" "$add=unknown:its dry run is red"
+  $ run windtrap mutants
+  ──────────────── not mutation-tested (1) ─────────────────
+    a.exe  1 mutant unknown: its dry run is red
+  ──────────────────────────────────────────────────────────
+  
+  mutants: 1 reached, 1 unknown, 2 executables, 1 suite not mutation-tested
+  --- stderr
+  windtrap: 1 mutant that default/test/b.exe skipped as killed by default/test/a.exe is not killed by it in the merge, so the skip does not count: run default/test/b.exe again with its mutants, then merge again
+  [1]
+
+A chain of skips ends on the kill: a skip because of a skip does not
+count, and the kill of the last file gives the verdict, with no note:
+
+  $ plant "$scratch/chain" && cd "$scratch/chain" && exes a b c
+  $ mkdata mutants _build/_mutants/windtrap-a.mutants --exe _build/default/test/a.exe \
+  >   "$add=elsewhere:default/test/b.exe"
+  $ mkdata mutants _build/_mutants/windtrap-b.mutants --exe _build/default/test/b.exe \
+  >   "$add=elsewhere:default/test/c.exe"
+  $ mkdata mutants _build/_mutants/windtrap-c.mutants --exe _build/default/test/c.exe \
+  >   "$add=killed"
+  $ run windtrap mutants
+  mutants: 1 reached, 1 killed, 3 executables, score 100.0% (1/1)
+
+A suite that skipped because of another suite of its own executable,
+whose file is not in the merge, counts the mutant as killed, with a
+note. When the other suite holds the mutant and does not kill it, the
+note names the suite that skipped:
+
+  $ plant "$scratch/own" && cd "$scratch/own" && exes a
+  $ mkdata mutants _build/_mutants/windtrap-a1.mutants --exe _build/default/test/a.exe \
+  >   --suite s1 "$add=elsewhere:default/test/a.exe"
+  $ run windtrap mutants
+  mutants: 1 reached, 1 killed, 1 executable, score 100.0% (1/1)
+  --- stderr
+  windtrap: 1 mutant counts as killed by default/test/a.exe, but no verdict file of the merge gives this kill: run default/test/a.exe with its mutants, then merge again
+  $ mkdata mutants _build/_mutants/windtrap-a2.mutants --exe _build/default/test/a.exe \
+  >   --suite s2 "$add=survived:calc/adds"
+  $ run windtrap mutants > /dev/null
+  [1]
+  $ cat "$bin/err"
+  windtrap: 1 mutant that default/test/a.exe (suite s1) skipped as killed by default/test/a.exe is not killed by it in the merge, so the skip does not count: run default/test/a.exe again with its mutants, then merge again
+
+A file of the killer that does not hold the mutant comes from a build
+that no longer reaches it. A run of the killer then gives no kill, so
+the note tells to run the suite that skipped:
+
+  $ plant "$scratch/moved" && cd "$scratch/moved" && exes a b
+  $ mkdata mutants _build/_mutants/windtrap-a.mutants --exe _build/default/test/a.exe \
+  >   "$sub=killed"
+  $ mkdata mutants _build/_mutants/windtrap-b.mutants --exe _build/default/test/b.exe \
+  >   "$add=elsewhere:default/test/a.exe"
+  $ run windtrap mutants
+  mutants: 2 reached, 2 killed, 2 executables, score 100.0% (2/2)
+  --- stderr
+  windtrap: 1 mutant counts as killed by default/test/a.exe, but no verdict file of default/test/a.exe in the merge holds it: run default/test/b.exe again with its mutants, then merge again
+
+When the killer no longer exists, no run of it can give the kill. The note
+tells to run each suite that skipped the mutant, once:
+
+  $ plant "$scratch/gone" && cd "$scratch/gone" && exes b c
+  $ mkdata mutants _build/_mutants/windtrap-b.mutants --exe _build/default/test/b.exe \
+  >   "$add=elsewhere:default/test/gone.exe"
+  $ mkdata mutants _build/_mutants/windtrap-c.mutants --exe _build/default/test/c.exe \
+  >   "$add=elsewhere:default/test/gone.exe"
+  $ run windtrap mutants
+  mutants: 1 reached, 1 killed, 2 executables, score 100.0% (1/1)
+  --- stderr
+  windtrap: 1 mutant counts as killed by default/test/gone.exe, but default/test/gone.exe no longer exists: run default/test/b.exe, default/test/c.exe again with their mutants, then merge again
+
+A file with no identity names no executable, so the note names the file:
+
+  $ plant "$scratch/anonymous" && cd "$scratch/anonymous" && exes b
+  $ mkdata mutants _build/_mutants/windtrap-b.mutants "$add=elsewhere:default/test/gone.exe"
+  $ run windtrap mutants
+  mutants: 1 reached, 1 killed, 1 executable, score 100.0% (1/1)
+  --- stderr
+  windtrap: 1 mutant counts as killed by default/test/gone.exe, but default/test/gone.exe no longer exists: run the executable that wrote .../windtrap-b.mutants again with its mutants, then merge again
+
 Files that cannot be merged
 
 Nothing to merge is exit 1, with a hint that names the backend and the
@@ -972,13 +1323,13 @@ is to delete it, which a coverage dump in the directory shares:
   $ printf 'windtrap-mutants-v0\n1\nsome older payload\n' > _build/_mutants/old.mutants
   $ run windtrap mutants
   --- stderr
-  windtrap: .../old.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v11", found "windtrap-mutants-v0"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
+  windtrap: .../old.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v12", found "windtrap-mutants-v0"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
   [1]
   $ rm _build/_mutants/old.mutants
   $ printf 'windtrap-coverage-v3\n0\n' > _build/_mutants/cov.mutants
   $ run windtrap mutants
   --- stderr
-  windtrap: .../cov.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v11", found "windtrap-coverage-v3"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
+  windtrap: .../cov.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v12", found "windtrap-coverage-v3"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
   [1]
 
 A PATH that cannot be used fails the command, and the files named beside

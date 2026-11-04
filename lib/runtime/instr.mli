@@ -38,6 +38,9 @@ type identity = { exe : string; digest : string }
     contents when it wrote. An executable at [exe] whose {!file_digest} differs
     is not the one that wrote the file. *)
 
+val is_digest : string -> bool
+(** [is_digest s] is [true] iff [s] is 32 lowercase hexadecimal digits. *)
+
 val file_digest : string -> string option
 (** [file_digest path] is the lowercase hexadecimal MD5 of the contents of the
     file at [path], or [None] when the file cannot be read. *)
@@ -88,6 +91,36 @@ val exe_identity : exe:string -> string
     directory, so an executable whose own name starts with [_build] lies below
     none. The build context is part of the result, as in [default/test/t.exe],
     and the build directory is not. *)
+
+val exe_location : path:string -> string -> (string * string) option
+(** [exe_location ~path exe] is the path of the executable whose {!exe_identity}
+    is [exe], for a file at [path] that this executable wrote, and the spelling
+    of that path from the project root. An absolute [exe] is its own path and
+    spelling. A relative [exe] lies below [build_dir ~path], and its spelling
+    starts with the name of that directory, as in [_build/default/test/t.exe].
+    It is [None] when [exe] is relative and [path] lies below no build
+    directory. *)
+
+(** The type for the freshness of a file, judged from the {!type-identity} on
+    its header. The comparison is by {!file_digest} and never by modification
+    time. [Orphan] and [Stale] carry the spelling of the recorded executable
+    that {!exe_location} gives. *)
+type freshness =
+  | Fresh
+      (** The executable at the recorded path has the recorded digest, or
+          nothing can be judged: the file records no identity, which it does
+          when written by hand or merged, or its identity is relative and it
+          lies in no build directory, or its executable exists and cannot be
+          read. *)
+  | Orphan of string  (** No executable exists at the recorded path. *)
+  | Stale of string
+      (** The executable at the recorded path does not have the recorded digest,
+          so another build wrote the file. *)
+
+val freshness : path:string -> identity option -> freshness
+(** [freshness ~path identity] is the freshness of the file at [path] whose
+    header records [identity]. The executable at the path that {!exe_location}
+    gives is read once in the process, the first time that a file names it. *)
 
 val data_dir : format -> build_dir:string -> string
 (** [data_dir f ~build_dir] is [<build_dir>/_<f.dir>]. *)

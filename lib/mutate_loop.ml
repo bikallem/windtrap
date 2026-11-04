@@ -67,7 +67,8 @@ let population ~scope =
       catalogue
   in
   match (catalogue, scoped, undismissed) with
-  | [], _, _ when scope = Run.every_mutant -> Error Uninstrumented
+  | [], _, _ when { scope with skip_killed = false } = Run.every_mutant ->
+      Error Uninstrumented
   | _ :: _, [], _
     when Option.fold ~none:false ~some:names_a_file scope.Run.lines ->
       Error No_site_on_lines
@@ -417,7 +418,7 @@ let found_verdict renderer (config : Run.config) ~locations ~failed found mutant
       found.unknown <-
         { mutant = shown mutant; reason; invocation = config.invocation }
         :: found.unknown
-  | Killed | Outside_tests | Unreached -> ());
+  | Killed | Killed_elsewhere _ | Outside_tests | Unreached -> ());
   found.records <- Verdicts.record_of_mutant mutant verdict :: found.records
 
 (* Signals *)
@@ -549,6 +550,109 @@ let report ~narrowed ~dry_run ~reached ~unreached ~outside found :
        else Report_sections.Suite);
   }
 
+(* Killed elsewhere *)
+
+(* The loop opens only a regular file, because the read of a FIFO or of a
+   device can block. *)
+let regular path =
+  match Unix.stat path with
+  | { Unix.st_kind = Unix.S_REG; _ } -> true
+  | _ -> false
+  | exception Unix.Unix_error _ -> false
+
+(* The executable of the verdict file that killed each mutant of [reached],
+   and the executable of each file that the loop used. A kill counts for the
+   mutant of this executable only when the two compiled the same source and
+   agree on the extent and the renderings. Only a direct kill counts, so a
+   skip never comes from another skip. Of two killers the smaller stays, so
+   the order of the files does not count. *)
+let killed_elsewhere ~suite reached =
+  let own =
+    Verdicts.output_file ~exe:Windtrap_runtime.Instr.executable ~suite
+  in
+  let dir = Filename.dirname own in
+  let wanted = Hashtbl.create 64 and killers = Hashtbl.create 64 in
+  List.iter
+    (fun ((m : Mutate.mutant), _) -> Hashtbl.replace wanted m.id m)
+    reached;
+  let ignored fmt =
+    Printf.ksprintf (fun m -> Os.warn ("--skip-killed ignores " ^ m)) fmt
+  in
+  let use (file : Verdicts.file) exe =
+    List.iter
+      (fun (r : Verdicts.record) ->
+        let same (m : Mutate.mutant) =
+          Option.is_some m.source_digest
+          && r.source_digest = m.source_digest
+          && r.end_line = m.end_line && r.end_col = m.end_col
+          && String.equal r.before m.before
+          && String.equal r.after m.after
+        in
+        match (r.verdict, Hashtbl.find_opt wanted r.id) with
+        | Verdicts.Killed, Some m when same m -> (
+            match Hashtbl.find_opt killers r.id with
+            | Some prior when String.compare prior exe <= 0 -> ()
+            | Some _ | None -> Hashtbl.replace killers r.id exe)
+        | _ -> ())
+      (Verdicts.records file.verdicts)
+  in
+  let candidate name =
+    Filename.check_suffix name ("." ^ Verdicts.format.ext)
+    && name <> Filename.basename own
+    && regular (Filename.concat dir name)
+  in
+  let names =
+    match Sys.readdir dir with
+    | names ->
+        List.filter candidate (List.sort String.compare (Array.to_list names))
+    | exception Sys_error _ -> []
+  in
+  let used =
+    List.filter_map
+      (fun name ->
+        let path = Filename.concat dir name in
+        match Verdicts.load path with
+        | Error e ->
+            ignored "%s" (Pp.to_string Verdicts.pp_error e);
+            None
+        | Ok { identity = None; _ } ->
+            ignored "%s: the file names no executable" path;
+            None
+        | Ok { refused = Some _; _ } -> None
+        | Ok ({ identity = Some identity; _ } as file) -> (
+            match Windtrap_runtime.Instr.freshness ~path (Some identity) with
+            | Orphan exe ->
+                ignored "%s: its executable (%s) no longer exists" path exe;
+                None
+            | Stale exe ->
+                ignored "%s: not written by the executable now at %s" path exe;
+                None
+            | Fresh ->
+                use file identity.exe;
+                Some identity.exe))
+      names
+  in
+  (killers, used)
+
+(* The line names the executable of each file that the loop used, so that a
+   reader can find the run that gave a skip. *)
+let elsewhere_line ~used skipped =
+  let plural n = if n = 1 then "" else "s" in
+  let n = List.length skipped in
+  let files =
+    match List.sort_uniq String.compare used with
+    | [] -> "no other verdict file"
+    | exes ->
+        let count exe =
+          List.length (List.filter (fun (_, e) -> e = exe) skipped)
+        in
+        strf "the verdict file%s of %s"
+          (plural (List.length used))
+          (String.concat ", "
+             (List.map (fun exe -> strf "%s (%d)" exe (count exe)) exes))
+  in
+  strf "killed elsewhere: %d mutant%s, not tested, from %s" n (plural n) files
+
 let loop renderer ~scope ~suite (config : Run.config) tests =
   let population = population ~scope in
   let all = Result.value population ~default:[] in
@@ -605,19 +709,38 @@ let loop renderer ~scope ~suite (config : Run.config) tests =
                   (fun (m : Mutate.mutant) -> Hashtbl.mem reach.outside m.id)
                   unreached
               in
+              let wall = Float.max 0.01 (Os.count_s started) in
+              let skipped, to_test, lines =
+                if not scope.skip_killed then ([], reached, [])
+                else
+                  let killers, used = killed_elsewhere ~suite reached in
+                  let skipped, to_test =
+                    List.partition_map
+                      (fun (((m : Mutate.mutant), _) as mutant) ->
+                        match Hashtbl.find_opt killers m.id with
+                        | Some exe -> Either.Left (m, exe)
+                        | None -> Either.Right mutant)
+                      reached
+                  in
+                  (skipped, to_test, [ elsewhere_line ~used skipped ])
+              in
               let narrowed = narrows_suite config ~focus:outcome.focus_active in
               let save records =
                 if narrowed then save_narrowed ~suite ~scope population
                 else
                   save ~suite ~scope
                     (records
+                    @ List.map
+                        (fun (m, exe) ->
+                          Verdicts.record_of_mutant m
+                            (Verdicts.Killed_elsewhere { exe }))
+                        skipped
                     @ recorded Verdicts.Outside_tests outside
                     @ recorded Verdicts.Unreached unreached)
               in
-              let wall = Float.max 0.01 (Os.count_s started) in
               match
                 test_mutants renderer ~suite config tests ~dry_run ~wall ~save
-                  reached
+                  to_test
               with
               | exception Sys_error _ when !signal = Some Sys.sigpipe ->
                   Os.die_by Sys.sigpipe
@@ -628,7 +751,7 @@ let loop renderer ~scope ~suite (config : Run.config) tests =
                 ->
                   Os.die_by Sys.sigpipe
               | Interrupted (s, testing), found ->
-                  Report.mutation_interrupted renderer
+                  Report.mutation_interrupted renderer ~lines
                     ~testing:
                       (Option.map
                          (fun (m : Mutate.mutant) -> Mutate.id_to_string m.id)
@@ -638,7 +761,7 @@ let loop renderer ~scope ~suite (config : Run.config) tests =
                   flush_descriptors ();
                   Os.die_by s
               | Finished note, found -> (
-                  Report.mutation_finish ?note renderer
+                  Report.mutation_finish ?note ~lines renderer
                     (report ~narrowed ~dry_run ~reached ~unreached ~outside
                        found);
                   flush_descriptors ();

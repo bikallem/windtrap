@@ -2070,6 +2070,51 @@ let mutation_entries () =
               killed = 0;
               not_tested = 2;
             }) );
+    ( "the lines print in order above the reproduce line",
+      rendered ~config:(config ~invocation:loop_invocation ()) (fun r ->
+          Report.mutation_finish
+            ~lines:
+              [
+                "first line";
+                "killed elsewhere: 1 mutant, not tested, from the verdict file \
+                 of default/a.exe (1)";
+              ]
+            r
+            {
+              loop_report with
+              Sections.survivors = [ add_survivor ];
+              not_tested = 1;
+            }) );
+    ( "the lines print above a lone outcome line, and a note follows them",
+      rendered (fun r ->
+          Report.mutation_finish ~note:"verdicts not saved"
+            ~lines:
+              [
+                "killed elsewhere: 1 mutant, not tested, from the verdict file \
+                 of default/a.exe (1)";
+              ]
+            r
+            {
+              loop_report with
+              Sections.survivors = [];
+              unreached = [];
+              not_tested = 1;
+            }) );
+    ( "an interrupted loop prints its lines",
+      rendered (fun r ->
+          Report.mutation_interrupted
+            ~lines:
+              [
+                "killed elsewhere: 1 mutant, not tested, from the verdict file \
+                 of default/a.exe (1)";
+              ]
+            r ~testing:(Some "lib/calc.ml:9:12:add")
+            {
+              loop_report with
+              Sections.survivors = [];
+              unreached = [];
+              not_tested = 2;
+            }) );
     ( "stopped before a child ended",
       rendered (fun r ->
           Report.mutation_finish r

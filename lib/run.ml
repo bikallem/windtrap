@@ -12,10 +12,16 @@ let ( let* ) = Result.bind
 (* Configuration *)
 
 type invocation = [ `Exe of string | `Mirrors ]
-type scope = { prefixes : string list; lines : Lines.t option }
+
+type scope = {
+  prefixes : string list;
+  lines : Lines.t option;
+  skip_killed : bool;
+}
+
 type mutation = No_mutation | Loop of scope | Armed of string
 
-let every_mutant = { prefixes = []; lines = None }
+let every_mutant = { prefixes = []; lines = None; skip_killed = false }
 
 type broadcast = { selection : bool; mutate : bool }
 type case_file = { file : string; choices : int64 array }

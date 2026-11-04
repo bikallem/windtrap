@@ -98,6 +98,46 @@ let locate exe =
 
 let exe_identity ~exe = snd (locate exe)
 
+(* A relative identity lies below the build directory of the file, so a file
+   that the merge discovers and a file that it names find one executable. *)
+let exe_location ~path exe =
+  if not (Filename.is_relative exe) then Some (exe, exe)
+  else
+    Option.map
+      (fun build_dir ->
+        ( Filename.concat build_dir exe,
+          strf "%s/%s" (Filename.basename build_dir) exe ))
+      (build_dir ~path)
+
+type freshness = Fresh | Orphan of string | Stale of string
+
+(* One digest for each executable, however many files name it. A process
+   judges the files once, before an executable can change. *)
+let digests : (string, string option) Hashtbl.t = Hashtbl.create 64
+
+let exe_digest exe_path =
+  match Hashtbl.find_opt digests exe_path with
+  | Some digest -> digest
+  | None ->
+      let digest = file_digest exe_path in
+      Hashtbl.replace digests exe_path digest;
+      digest
+
+(* By content digest, because dune's shared cache restores a rebuilt
+   artifact with its original timestamp. *)
+let freshness ~path identity =
+  match identity with
+  | None -> Fresh
+  | Some { exe; digest } -> (
+      match exe_location ~path exe with
+      | None -> Fresh
+      | Some (exe_path, spelled) -> (
+          if not (Sys.file_exists exe_path) then Orphan spelled
+          else
+            match exe_digest exe_path with
+            | Some actual when actual <> digest -> Stale spelled
+            | Some _ | None -> Fresh))
+
 (* The files of a format sit beside the contexts of a build directory, the
    underscore marking them as no context. A tree without one must never grow
    one, so its files go under the project's own [_windtrap]. *)

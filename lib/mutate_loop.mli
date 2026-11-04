@@ -57,14 +57,17 @@ val execute_and_report :
       module initialization or in a fixture release, is evaluated outside tests
       ({!Windtrap_runtime.Verdicts.Outside_tests}). A site that only tests
       marked xfail evaluated is unreached.
+    + Under the [skip_killed] of the scope, it reads the other verdict files and
+      skips each reached mutant that one of them killed ({b Killed elsewhere}
+      below). A skipped mutant gets no job.
     + It runs the jobs ([Supervisor.fresh]), each in a worker of its own, which
       ran no test before it: the determinism probe, which is the tests that the
-      dry run executed, unarmed, and then one job per reached mutant, in the
-      order of the catalogue, with the mutant armed and its reaching tests up to
-      the first failure in or after the test that first evaluated the armed
-      site. Up to [config.jobs] run at once, and they are given in that order.
-      The probe agrees iff it executed as many tests, skipped as many and
-      counted no failure.
+      dry run executed, unarmed, and then one job per reached mutant that it
+      does not skip, in the order of the catalogue, with the mutant armed and
+      its reaching tests up to the first failure in or after the test that first
+      evaluated the armed site. Up to [config.jobs] run at once, and they are
+      given in that order. The probe agrees iff it executed as many tests,
+      skipped as many and counted no failure.
     + Once the last job is given it writes the verdict file.
 
     A job starts from module initialization, so what the dry run left, a table
@@ -96,6 +99,26 @@ val execute_and_report :
     see such an evaluation. A job whose worker cannot map the byte that shows it
     counts each failure, as when it could not tell.
 
+    {b Killed elsewhere.} Under the [skip_killed] of {!Run.scope}
+    ([--skip-killed]), the loop reads the regular files with the extension
+    [.mutants] in the directory of {!Windtrap_runtime.Verdicts.output_file},
+    except its own file, in name order. It does not use a refused file, a file
+    that does not load, a file that names no executable, or a file whose
+    {!Windtrap_runtime.Instr.type-freshness} is not [Fresh]. It names each of
+    the last three in a warning on standard error. A reached mutant gets no job
+    when a used file gives it {!Windtrap_runtime.Verdicts.Killed}, and that
+    record has the source digest of the mutant of this executable
+    ({!Windtrap_runtime.Mutate.mutant.source_digest}), not [None], and its
+    renderings and extent. A {!Windtrap_runtime.Verdicts.Killed_elsewhere}
+    record does not skip a mutant. The mutant gets a [Killed_elsewhere] record
+    that names the executable of that file, the smaller one in [String.compare]
+    order when several files kill it. The report counts the mutant as not
+    tested. Above the outcome line and its [reproduce:] line, one line gives the
+    number of skipped mutants and the executable of each used file, with the
+    number of skips that it gave. The loop uses the files as they are on disk
+    after the dry run. The time that it takes to read them does not count in the
+    deadline of a job.
+
     {b Tests marked xfail.} A test marked xfail ({!Test_tree.val-xfail}) reaches
     no mutant and kills none. The dry run and the probe run it, no mutant's job
     runs it, and no survivor names it.
@@ -113,7 +136,9 @@ val execute_and_report :
 
     {b The verdict file.} The file holds one record per reached mutant, one
     [Outside_tests] record per mutant of the population evaluated outside tests,
-    and one [Unreached] record per unreached one. It is written to
+    and one [Unreached] record per unreached one. A skipped mutant has a
+    [Killed_elsewhere] record. Each record has the source digest of its mutant
+    ({!Windtrap_runtime.Verdicts.record_of_mutant}). The file is written to
     {!Windtrap_runtime.Verdicts.output_file} of the executable and the suite, by
     {!Windtrap_runtime.Verdicts.save}, which records the suite. Under a scope,
     the records of the files outside it stay when the file there was written by
@@ -216,4 +241,7 @@ val execute_and_report :
     Beyond the effects of {!Report.run} and [Supervisor.fresh], the loop reads
     the verdict file of its executable and suite and writes it. For the source
     line of a survivor it reads the recorded file of the mutant, under
-    {!Os.project_root} first and then as given. *)
+    {!Os.project_root} first and then as given. Under [skip_killed], it lists
+    the directory of its verdict file after the dry run, reads the other regular
+    files with the extension [.mutants] in it, and reads the executable that
+    each such file names. *)

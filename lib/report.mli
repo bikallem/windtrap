@@ -391,25 +391,33 @@ val mutation_survivor : t -> Report_sections.survivor -> unit
     [s], flushed. The first call precedes the block by the rule that opens the
     survivors. A block has no column of executables. *)
 
-val mutation_finish : ?note:string -> t -> Report_sections.mutation -> unit
-(** [mutation_finish ?note t m] ends the report of a loop with
+val mutation_finish :
+  ?note:string -> ?lines:string list -> t -> Report_sections.mutation -> unit
+(** [mutation_finish ?note ?lines t m] ends the report of a loop with
     {!Report_sections.mutation_closing} of [m] under the configuration of [t],
     flushed. [m.survivors] must be the survivors that {!mutation_survivor} was
     given, in order. The closing rule prints iff that list is not empty,
     whatever [t] committed, and [reproduce:] arms its first. [note] is said on
     standard error ({!Os.say}) after [out] is flushed and before the outcome
-    line, so the outcome line is the last line of the two streams. *)
+    line, so the outcome line is the last line of the two streams. [lines]
+    (default none) tell how the loop ran, as the line of the mutants that it
+    skipped. They print on [out], in order, above the outcome line and its
+    [reproduce:] line, and before [note]. *)
 
 val mutation_refused : t -> string -> unit
 (** [mutation_refused t message] erases the live line, flushes [out] and says
     [message] on standard error ({!Os.say}). *)
 
 val mutation_interrupted :
-  t -> testing:string option -> Report_sections.mutation -> unit
-(** [mutation_interrupted t ~testing m] ends the report of a loop that a signal
-    is stopping. It says on standard error what was interrupted: the child of
-    the mutant [testing], or the determinism probe when [testing] is [None]. It
-    then calls {!mutation_finish} over [m]. *)
+  ?lines:string list ->
+  t ->
+  testing:string option ->
+  Report_sections.mutation ->
+  unit
+(** [mutation_interrupted ?lines t ~testing m] ends the report of a loop that a
+    signal is stopping. It says on standard error what was interrupted: the
+    child of the mutant [testing], or the determinism probe when [testing] is
+    [None]. It then calls {!mutation_finish} over [m] and [lines]. *)
 
 (** {1:running Running} *)
 

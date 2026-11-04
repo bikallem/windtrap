@@ -9,6 +9,7 @@ type reaching_test = string list
 
 type verdict =
   | Killed
+  | Killed_elsewhere of { exe : string }
   | Unknown of string
   | Survived of { first : reaching_test; others : reaching_test list }
   | Not_evaluated
@@ -26,7 +27,8 @@ let survived ts =
 
 (* The order in which verdicts outrank one another in a merge. *)
 let rank = function
-  | Killed -> 5
+  | Killed -> 6
+  | Killed_elsewhere _ -> 5
   | Unknown _ -> 4
   | Not_evaluated -> 3
   | Survived _ -> 2
@@ -34,16 +36,20 @@ let rank = function
   | Unreached -> 0
 
 (* The verdict of a mutant that one executable saw as [a] and another as
-   [b]. Both are held by a collection, so a survivor is already sorted. *)
+   [b]. Both are held by a collection, so a survivor is already sorted. Of
+   two reasons or two killers, the smaller stays, so the merge does not depend
+   on the order. *)
 let merge_verdict a b =
   match (a, b) with
   | Survived x, Survived y ->
       survived (x.first :: y.first :: (x.others @ y.others))
   | Unknown x, Unknown y -> Unknown (if String.compare x y <= 0 then x else y)
-  | ( ( Killed | Unknown _ | Not_evaluated | Survived _ | Outside_tests
-      | Unreached ),
-      ( Killed | Unknown _ | Not_evaluated | Survived _ | Outside_tests
-      | Unreached ) ) ->
+  | Killed_elsewhere x, Killed_elsewhere y ->
+      if String.compare x.exe y.exe <= 0 then a else b
+  | ( ( Killed | Killed_elsewhere _ | Unknown _ | Not_evaluated | Survived _
+      | Outside_tests | Unreached ),
+      ( Killed | Killed_elsewhere _ | Unknown _ | Not_evaluated | Survived _
+      | Outside_tests | Unreached ) ) ->
       if rank a >= rank b then a else b
 
 (* Collections *)
@@ -54,6 +60,7 @@ type record = {
   end_col : int;
   before : string;
   after : string;
+  source_digest : string option;
   verdict : verdict;
 }
 
@@ -64,6 +71,7 @@ let record_of_mutant (m : Mutate.mutant) verdict =
     end_col = m.end_col;
     before = m.before;
     after = m.after;
+    source_digest = m.source_digest;
     verdict;
   }
 
@@ -78,12 +86,12 @@ type t = record Id_map.t
 
 let empty = Id_map.empty
 
-(* Two records of one mutant disagree on its rendering or its end only
-   across builds of one source, and nothing says which build the reader has
-   open. The smaller rendering wins, then the smaller end, which keeps [add]
-   and [merge] commutative and associative. *)
+(* Two records of one mutant disagree on its rendering, its end or its source
+   only across builds of one source, and nothing says which build the reader
+   has open. The smaller rendering wins, then the smaller end and source
+   digest, which keeps [add] and [merge] commutative and associative. *)
 let combine a b =
-  let key r = (r.before, r.after, r.end_line, r.end_col) in
+  let key r = (r.before, r.after, r.end_line, r.end_col, r.source_digest) in
   let kept = if compare (key a) (key b) <= 0 then a else b in
   { kept with verdict = merge_verdict a.verdict b.verdict }
 
@@ -91,7 +99,9 @@ let add t r =
   let r =
     match r.verdict with
     | Survived s -> { r with verdict = survived (s.first :: s.others) }
-    | Killed | Unknown _ | Not_evaluated | Outside_tests | Unreached -> r
+    | Killed | Killed_elsewhere _ | Unknown _ | Not_evaluated | Outside_tests
+    | Unreached ->
+        r
   in
   Id_map.update r.id
     (function None -> Some r | Some prior -> Some (combine prior r))
@@ -104,7 +114,7 @@ let merge a b = Id_map.union (fun _ a b -> Some (combine a b)) a b
 
 let format =
   {
-    Instr.magic = "windtrap-mutants-v11";
+    Instr.magic = "windtrap-mutants-v12";
     kind = "verdict";
     dir = "mutants";
     ext = "mutants";
@@ -150,13 +160,16 @@ type file = {
      [suite <name>]
      tested | refused <reason>
      <record count>
-     <file> <line> <col> <end line> <end col> <rewrite> <before> <after> <verdict>
+     <file> <line> <col> <end line> <end col> <rewrite> <before> <after> <source> <verdict>
 
    with one such line for each record, in [Mutate.compare_id] order.
-   [<verdict>] is [unreached], [outside_tests], [killed], [not_evaluated],
-   [unknown <reason>], or [survived <n>] and then [n] reaching tests, each
-   [<k>] and then its [k] names. [load] reads this grammar and nothing else, and refuses a rewrite
-   outside [Mutate.rewrites], which no report could render. *)
+   [<source>] is a name: the digest of the source file that the instrumenter
+   read, or empty when the instrumenter could not read it. [<verdict>] is [unreached],
+   [outside_tests], [killed], [killed_elsewhere <exe>] with a name that is
+   not empty, [not_evaluated], [unknown <reason>], or [survived <n>] and then
+   [n] reaching tests, each [<k>] and then its [k] names. [load] reads this
+   grammar and nothing else, and refuses a rewrite outside [Mutate.rewrites],
+   which no report could render. *)
 let load path =
   let read_test c =
     List.init (Instr.read_count c "test path length") (fun _ ->
@@ -166,6 +179,10 @@ let load path =
     match Instr.read_word c "verdict" with
     | "unreached" -> Unreached
     | "killed" -> Killed
+    | "killed_elsewhere" ->
+        let exe = Instr.read_name c "killing executable" in
+        if exe = "" then Instr.parse_fail "empty killing executable";
+        Killed_elsewhere { exe }
     | "not_evaluated" -> Not_evaluated
     | "outside_tests" -> Outside_tests
     | "unknown" -> Unknown (Instr.read_name c "reason")
@@ -193,8 +210,14 @@ let load path =
     let id = { Mutate.file; line; col; rewrite } in
     let before = Instr.read_name c "before" in
     let after = Instr.read_name c "after" in
+    let source_digest =
+      match Instr.read_name c "source digest" with
+      | "" -> None
+      | digest when Instr.is_digest digest -> Some digest
+      | digest -> Instr.parse_fail "%S is not a source digest" digest
+    in
     let verdict = read_verdict c in
-    { id; end_line; end_col; before; after; verdict }
+    { id; end_line; end_col; before; after; source_digest; verdict }
   in
   let rec read_records c t n =
     if n = 0 then t
@@ -238,6 +261,8 @@ let save ?identity ?suite ?refused path t =
   let add_verdict b = function
     | Unreached -> Buffer.add_string b "unreached"
     | Killed -> Buffer.add_string b "killed"
+    | Killed_elsewhere { exe } ->
+        Printf.bprintf b "killed_elsewhere %a" add_name exe
     | Not_evaluated -> Buffer.add_string b "not_evaluated"
     | Outside_tests -> Buffer.add_string b "outside_tests"
     | Unknown reason -> Printf.bprintf b "unknown %a" add_name reason
@@ -255,8 +280,10 @@ let save ?identity ?suite ?refused path t =
   Printf.bprintf b "%d\n" (Id_map.cardinal t);
   Id_map.iter
     (fun (id : Mutate.id) r ->
-      Printf.bprintf b "%a %d %d %d %d %a %a %a %a\n" add_name id.file id.line
-        id.col r.end_line r.end_col add_name id.rewrite add_name r.before
-        add_name r.after add_verdict r.verdict)
+      Printf.bprintf b "%a %d %d %d %d %a %a %a %a %a\n" add_name id.file
+        id.line id.col r.end_line r.end_col add_name id.rewrite add_name
+        r.before add_name r.after add_name
+        (Option.value r.source_digest ~default:"")
+        add_verdict r.verdict)
     t;
   Instr.write_file path (Buffer.contents b)

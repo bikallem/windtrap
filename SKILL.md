@@ -459,6 +459,12 @@ dune exec windtrap -- mutants
 mutants. Set PCT a little under the measured score, as for coverage
 `--min`. `--json` gives each verdict to other tools.
 
+`--skip-killed` (`WINDTRAP_SKIP_KILLED=1`) skips a mutant that another
+suite already killed. It reads only the verdict files on disk, so run
+the fast suites first, in a separate `dune runtest`. Two suites that use
+the option at the same time can skip one mutant because of each other.
+Thus run them one after the other (`dune runtest -j 1`).
+
 Mutation testing starts a worker per mutant and is refused on Windows.
 `windtrap coverage --help`, `windtrap mutants --help` and a suite's
 `--help` (`--mutate`, `--arm`) state the flags.

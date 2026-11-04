@@ -14,6 +14,7 @@ type parsed = {
   given : string list;
   lines : Lines.t option;
   diff : string option;
+  skip_killed : bool;
   case : string option;
   list_only : bool;
   help : bool;
@@ -26,6 +27,7 @@ let start () =
     given = [];
     lines = None;
     diff = None;
+    skip_killed = false;
     case = None;
     list_only = false;
     help = false;
@@ -271,7 +273,12 @@ let entries =
                Ok
                  (field
                     (fun c () ->
-                      { c with mutation = Run.Loop { prefixes; lines = None } })
+                      {
+                        c with
+                        mutation =
+                          Run.Loop
+                            { prefixes; lines = None; skip_killed = false };
+                      })
                     p ()));
          })
       ~mirror:(mirrored "WINDTRAP_MUTATE")
@@ -286,6 +293,11 @@ let entries =
       ~mirror:(mirrored "WINDTRAP_DIFF")
       "Test only the mutants on the lines that FILE, the output of git diff \
        -U0, adds or changes (with --mutate).";
+    row "--skip-killed"
+      (Flag (fun p -> { p with skip_killed = true }))
+      ~mirror:(mirrored "WINDTRAP_SKIP_KILLED")
+      "Skip the mutants that the verdict file of another suite killed (with \
+       --mutate).";
     row "--arm"
       (value "ID" any (field (fun c id -> { c with mutation = Run.Armed id })))
       ~mirror:(mirrored "WINDTRAP_MUTATE_ARM")
@@ -505,15 +517,16 @@ let case_file ~cli ~(layered : parsed) =
    random root made a mutant that some cases kill flip from run to run. *)
 let mutation_seed = 0x6d7574616e747321L (* "mutants!" *)
 
-(* A line scope from the command line without [--mutate] would scope
-   nothing; one from a mirror reaches every stanza, and the stanzas that do
-   not mutate ignore it. *)
+(* A line scope or a skip from the command line without [--mutate] would
+   scope nothing; one from a mirror reaches every stanza, and the stanzas that
+   do not mutate ignore it. *)
 let line_scope ~cli ~layered =
   let given = Option.value layered.lines ~default:Lines.empty in
-  match (gave cli "--lines", gave cli "--diff", gave layered "--mutate") with
-  | true, _, false -> Error (Requires ("--lines", "--mutate"))
-  | false, true, false -> Error (Requires ("--diff", "--mutate"))
-  | _ -> (
+  let scopes = [ "--lines"; "--diff"; "--skip-killed" ] in
+  match List.find_opt (gave cli) scopes with
+  | Some flag when not (gave layered "--mutate") ->
+      Error (Requires (flag, "--mutate"))
+  | Some _ | None -> (
       match Option.map (absolute_path ~cli "--diff") layered.diff with
       | None -> Ok layered.lines
       | Some path -> (
@@ -554,7 +567,8 @@ let settings cli =
         | Run.Loop _ | Run.Armed _ | Run.No_mutation -> c.seed);
       mutation =
         (match c.mutation with
-        | Run.Loop { prefixes; _ } -> Run.Loop { prefixes; lines }
+        | Run.Loop { prefixes; _ } ->
+            Run.Loop { prefixes; lines; skip_killed = layered.skip_killed }
         | (Run.Armed _ | Run.No_mutation) as m -> m);
       case_file;
       log_dir = path "--output" c.log_dir;

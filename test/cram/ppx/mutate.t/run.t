@@ -24,6 +24,7 @@ in full. The file is mutated under its own name:
       type 'a operands = ('a * 'a)
       let ___windtrap_armed___ =
         Windtrap_runtime.Mutate.register ~file:"./fixture_input_name.ml"
+          ~digest:(Some "9bbb82795a1e351d9fa7ce6919db5ddd")
           ~sites:[|{
                      line = 5;
                      col = 34;
@@ -83,6 +84,12 @@ in full. The file is mutated under its own name:
       if Windtrap_mut_________fixture_input_name___ml.___windtrap_armed___ 0
       then 1
       else 0
+
+The digest is that of the file that the rewriter reads under the input
+name. A file that it cannot read gives no digest:
+
+  $ mut -loc-filename lib/nothere.ml --impl ./fixture_input_name.ml | grep -e '~file' -e '~digest'
+        Windtrap_runtime.Mutate.register ~file:"lib/nothere.ml" ~digest:None
 
 Every other expansion shows that module condensed by elide.exe to its
 file and its sites: where each starts and ends, the rewrite, the text

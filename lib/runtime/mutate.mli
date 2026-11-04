@@ -52,8 +52,9 @@ val compare_id : id -> id -> int
 (** {1:catalogue Sites and the catalogue}
 
     Generated code is the only caller of {!register}. Generated code names the
-    labels of {!register} and the eight fields of {!type-site}, in their order,
-    so a record that drifts is a compile error in every instrumented file. *)
+    three labels of {!register} and the eight fields of {!type-site}, in their
+    order, so a record that drifts is a compile error in every instrumented
+    file. *)
 
 type site = {
   line : int;
@@ -72,11 +73,16 @@ type site = {
 }
 (** The type for mutation sites: one entry of the site table of a file. *)
 
-val register : file:string -> sites:site array -> int -> bool
-(** [register ~file ~sites] records the site table of [file] and is its guard.
-    [sites] is kept and not copied, so it must not be mutated afterwards. An
-    executable catalogues the instrumented modules that it links, so a module of
-    a library that the executable never references has no mutant there.
+val register :
+  file:string -> digest:string option -> sites:site array -> int -> bool
+(** [register ~file ~digest ~sites] records the site table of [file] and is its
+    guard. [digest] is the lowercase hexadecimal MD5 of the source file that the
+    instrumenter read, or [None] when it could not read the file. A compiler
+    [-pp] preprocessor runs after that read, so its output does not change the
+    digest. [sites] is kept and not copied, so it must not be mutated
+    afterwards. An executable catalogues the instrumented modules that it links,
+    so a module of a library that the executable never references has no mutant
+    there.
 
     Applied to the index [i] of a site, the guard does three things in order.
     + It adds one to the count of evaluations of site [i], which saturates at
@@ -100,16 +106,17 @@ val register : file:string -> sites:site array -> int -> bool
     When [file] is registered again with an equal table, as when one source is
     compiled into two modules, the two registrations arm together, and
     {!val-catalogue} and {!drain} report each mutant once. Two tables are equal
-    when their sites agree on the eight fields. A table that differs from an
-    earlier one for [file] is dropped. One line then goes to standard error,
-    behind [windtrap: warning:], when the module loads and whatever the flags of
-    a run. The guard that is returned answers [false] at every index, counts
-    nothing and never raises.
+    when their sites agree on the eight fields and their [digest]s are equal. A
+    table that differs from an earlier one for [file] is dropped. One line then
+    goes to standard error, behind [windtrap: warning:], when the module loads
+    and whatever the flags of a run. The guard that is returned answers [false]
+    at every index, counts nothing and never raises.
 
     Raises [Invalid_argument] if a site has [line < 1], [col < 0], an end before
-    its start or a [rewrite] outside {!rewrites}. Only a broken instrumenter
-    produces such a table, and the exception is raised when the module loads.
-    [file] is not checked, and [""] is accepted. *)
+    its start or a [rewrite] outside {!rewrites}, or if [digest] is not 32
+    lowercase hexadecimal digits. Only a broken instrumenter produces such a
+    table, and the exception is raised when the module loads. [file] is not
+    checked, and [""] is accepted. *)
 
 type mutant = {
   id : id;  (** The identifier of the mutant. *)
@@ -118,8 +125,12 @@ type mutant = {
   before : string;  (** The original expression, printed from the parsetree. *)
   after : string;  (** The armed expression, printed from the parsetree. *)
   dismissed : string option;  (** The reason of [[@mutate off]], if any. *)
+  source_digest : string option;
+      (** The [digest] that {!register} gave for its file: the MD5 of the source
+          file that the instrumenter read. *)
 }
-(** The type for catalogued mutants: a {!type-site} with its file. *)
+(** The type for catalogued mutants: a {!type-site} with its file and the digest
+    of its source. *)
 
 val catalogue : unit -> mutant list
 (** [catalogue ()] is every mutant registered in this executable, the dismissed

@@ -84,6 +84,7 @@ let flags (p : Cli.parsed) =
         | Run.Loop { prefixes; _ } -> [ "mutate " ^ words prefixes ]
         | Run.Armed id -> [ "arm " ^ id ]
         | Run.No_mutation -> []);
+        bool "skip_killed" p.skip_killed;
         bool "help" p.help;
         bool "version" p.version;
       ]
@@ -100,9 +101,12 @@ let parsed args = parsed_argv (Array.of_list ("windtrap-test" :: args))
 
 let mutation_name = function
   | Run.No_mutation -> "none"
-  | Run.Loop { prefixes; lines = None } -> "loop " ^ words prefixes
-  | Run.Loop { prefixes; lines = Some lines } ->
-      strf "loop %s lines %s" (words prefixes) (Lines.to_string lines)
+  | Run.Loop { prefixes; lines; skip_killed } ->
+      strf "loop %s%s%s" (words prefixes)
+        (Option.fold ~none:""
+           ~some:(fun l -> " lines " ^ Lines.to_string l)
+           lines)
+        (if skip_killed then " skip_killed" else "")
   | Run.Armed id -> "armed " ^ id
 
 let baseline_name = function
@@ -298,6 +302,9 @@ let mirrors =
           ("WINDTRAP_STREAM", "yes", "stream");
           ("WINDTRAP_VERBOSE", " OFF ", "defaults");
           ("WINDTRAP_STREAM", "maybe", {|invalid WINDTRAP_STREAM "maybe"|});
+          ( "WINDTRAP_SKIP_KILLED",
+            "maybe",
+            {|invalid WINDTRAP_SKIP_KILLED "maybe"|} );
         ];
       test "a boolean mirror refuses another word in Os.bool_expected's words"
         boolean_wording;
@@ -452,13 +459,14 @@ let every_flag () =
     "filter [pat], exclude [ex], tags [a; b], exclude_tags [c], shard 2/4, \
      failed_only, list_only, bail, stream, update, seed s1:00000000000000ff, \
      timeout 2.5, slow_threshold 3, prop_count 50, verbose, junit out.xml, \
-     color never, log_dir logs, arm lib/a.ml:1:0:add"
+     color never, log_dir logs, arm lib/a.ml:1:0:add, skip_killed"
     (parsed
        (String.split_on_char ' '
           "-f pat -e ex --tag a --tag b --exclude-tag c --shard 2/4 --failed \
            -l -x -s -u --seed s1:00000000000000ff --timeout 2.5 \
            --slow-threshold 3 --prop-count 50 -v --junit out.xml --color never \
-           -o logs --mutate=lib/a.ml,lib/b.ml --arm lib/a.ml:1:0:add"))
+           -o logs --mutate=lib/a.ml,lib/b.ml --skip-killed --arm \
+           lib/a.ml:1:0:add"))
 
 (* Whole arguments: each valueless flag in both spellings, value flags with a
    good value, and misspellings and separators, so that most vectors parse
@@ -868,6 +876,27 @@ let resolution =
             "invalid --lines \"lib/a.ml:0\"" );
         ];
       test "--diff scopes --mutate to the lines that its file changes" diff_file;
+      resolve_rows
+        "--skip-killed or its mirror sets the skip_killed of the loop, and \
+         needs --mutate on the command line"
+        [
+          ([], [ "--mutate"; "--skip-killed" ], "mutation loop [] skip_killed");
+          ( [ ("WINDTRAP_SKIP_KILLED", "1") ],
+            [ "--mutate=lib/"; "--lines=lib/a.ml:3" ],
+            "mutation loop [lib/] lines lib/a.ml:3 skip_killed" );
+          ([ ("WINDTRAP_SKIP_KILLED", "0") ], [ "--mutate" ], "mutation loop []");
+          ( [ ("WINDTRAP_MUTATE", "1") ],
+            [ "--skip-killed" ],
+            "mutation loop [] skip_killed, broadcast mutate" );
+          ([], [ "--skip-killed" ], "--skip-killed requires --mutate");
+          ( [],
+            [ "--arm"; "lib/a.ml:9:12:add"; "--skip-killed" ],
+            "--skip-killed requires --mutate" );
+          ([ ("WINDTRAP_SKIP_KILLED", "1") ], [], "defaults");
+          ( [ ("WINDTRAP_SKIP_KILLED", "1") ],
+            [ "--arm"; "lib/a.ml:9:12:add" ],
+            "mutation armed lib/a.ml:9:12:add" );
+        ];
       resolve_rows "--mutate with --arm is refused, whichever layer gave each"
         [
           ([], [ "--mutate"; "--arm"; "x" ], "incompatible --mutate --arm");

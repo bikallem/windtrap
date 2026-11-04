@@ -1100,8 +1100,20 @@ let mutation_survivor t survivor =
     @ Sections.survivor_block ~exe_width:None survivor);
   t.survivors <- t.survivors + 1
 
-let mutation_finish ?note t m =
+let mutation_finish ?note ?(lines = []) t m =
   let closing = Sections.mutation_closing ~config:t.config m in
+  (* The lines go above the outcome group, so that [reproduce:] stays
+     directly above its outcome line. *)
+  let closing =
+    let lines =
+      List.rev_map (fun line -> Sections.Line [ Sections.plain line ]) lines
+    in
+    match List.rev closing with
+    | outcome :: (Sections.Hint _ as reproduce) :: rest ->
+        List.rev (outcome :: reproduce :: (lines @ rest))
+    | outcome :: rest -> List.rev (outcome :: (lines @ rest))
+    | [] -> closing
+  in
   match (note, List.rev closing) with
   | Some note, outcome :: rest ->
       print t (List.rev rest);
@@ -1114,12 +1126,12 @@ let mutation_refused t message =
   Pp.flush t.out ();
   Os.say message
 
-let mutation_interrupted t ~testing m =
+let mutation_interrupted ?lines t ~testing m =
   mutation_refused t
     (match testing with
     | Some id -> "interrupted while testing " ^ id
     | None -> "interrupted during the determinism probe");
-  mutation_finish t m
+  mutation_finish ?lines t m
 
 (* Running *)
 

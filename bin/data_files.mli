@@ -60,32 +60,21 @@ val discover :
 
 (** {1:freshness Freshness} *)
 
-(** The type for the freshness of a file, judged from the
-    {!Windtrap_runtime.Instr.identity} on its header. The records that follow
-    the header are not parsed, so a file whose records are corrupt is judged
-    too. An absolute [identity.exe] is the path of the executable. A relative
-    one is resolved below the build directory of the file
-    ({!Windtrap_runtime.Instr.build_dir}). The comparison is by
-    {!Windtrap_runtime.Instr.file_digest} and never by modification time.
-    [Orphan] and [Stale] carry the path of the recorded executable relative to
-    the parent of its build directory, as [_build/default/test/t.exe], or its
-    absolute path when it lies below no build directory. *)
-type freshness =
+(** The type for the freshness of a file, which is
+    {!Windtrap_runtime.Instr.type-freshness}, where each case is described. The
+    records that follow the header are not parsed, so a file whose records are
+    corrupt is judged too. A relative [identity.exe] is resolved below the build
+    directory of the file ({!Windtrap_runtime.Instr.exe_location}). *)
+type freshness = Windtrap_runtime.Instr.freshness =
   | Fresh
-      (** The executable at the recorded path has the recorded digest, or
-          nothing can be judged: the file records no identity, which it does
-          when written by hand or merged, or its identity is relative and it
-          lies in no build directory, or its executable exists and cannot be
-          read. *)
-  | Orphan of string  (** No executable exists at the recorded path. *)
+  | Orphan of string
   | Stale of string
-      (** The executable at the recorded path does not have the recorded digest,
-          so another build wrote the file. *)
 
 val executable : path:string -> string -> string option
 (** [executable ~path exe] is the path of the executable whose identity
     ({!Windtrap_runtime.Instr.type-identity}) [exe] the file at [path] records,
-    resolved as {!type-freshness} resolves it. It is [None] when [exe] is
+    resolved as {!type-freshness} resolves it
+    ({!Windtrap_runtime.Instr.exe_location}). It is [None] when [exe] is
     relative and [path] lies below no build directory. *)
 
 val warnings : (string * freshness) list -> string list

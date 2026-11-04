@@ -11,7 +11,7 @@
 module Mutate = Windtrap_runtime.Mutate
 
 let guard =
-  Mutate.register ~file:"lib/child.ml"
+  Mutate.register ~digest:None ~file:"lib/child.ml"
     ~sites:
       [|
         {

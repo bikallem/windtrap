@@ -42,12 +42,17 @@ type scope = {
       (** [--lines] and [--diff]: a mutant is in scope when it lies on one of
           these lines, by its recorded file and line. [None] keeps every line.
       *)
+  skip_killed : bool;
+      (** [--skip-killed]: the loop starts no worker for a reached mutant that
+          the verdict file of another suite killed, and records it as
+          [Windtrap_runtime.Verdicts.Killed_elsewhere]. The mutant stays in
+          scope. *)
 }
-(** The type for the mutants that a mutation loop tests: those that both fields
-    keep. *)
+(** The type for the mutants that a mutation loop tests: those that [prefixes]
+    and [lines] keep, less those that [skip_killed] skips. *)
 
 val every_mutant : scope
-(** [every_mutant] keeps every mutant: no prefix and no line set. *)
+(** [every_mutant] keeps every mutant: no prefix, no line set and no skip. *)
 
 (** The type for what a run does with the mutants of an executable built for
     mutation testing. *)

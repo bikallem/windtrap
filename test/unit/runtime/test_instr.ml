@@ -40,6 +40,18 @@ let identities =
       test "file_digest of a file that cannot be read is None" (fun () ->
           equal (option string) None
             (Instr.file_digest (Filename.concat (temp_dir ()) "missing")));
+      test "is_digest is true of 32 lowercase hexadecimal digits only"
+        (fun () ->
+          equal (list bool)
+            [ true; false; false; false; false ]
+            (List.map Instr.is_digest
+               [
+                 md5 "x";
+                 String.uppercase_ascii (md5 "x");
+                 String.sub (md5 "x") 0 31;
+                 md5 "x" ^ "0";
+                 String.make 32 'g';
+               ]));
     ]
 
 (* Build paths *)
@@ -104,6 +116,25 @@ let build_dirs =
     ("/w/p/_build_ci/.sandbox/3f/default", Some "/w/p/_build_ci");
     ("/w/p\\_build\\default", Some "/w/p/_build");
     ("/w/p/src/lib", None);
+  ]
+
+let exe_locations =
+  [
+    ( "a relative executable lies below the build directory",
+      ("/w/_build/_mutants/windtrap-a.mutants", "default/t.exe"),
+      Some ("/w/_build/default/t.exe", "_build/default/t.exe") );
+    ( "a private build directory keeps its name",
+      ("/w/_build_ci/_mutants/windtrap-a.mutants", "default/t.exe"),
+      Some ("/w/_build_ci/default/t.exe", "_build_ci/default/t.exe") );
+    ( "an absolute executable is its own path and spelling",
+      ("/w/_build/_mutants/windtrap-a.mutants", "/opt/t.exe"),
+      Some ("/opt/t.exe", "/opt/t.exe") );
+    ( "a relative executable of a file below no build directory",
+      ("/w/p/windtrap-a.mutants", "default/t.exe"),
+      None );
+    ( "an absolute executable of a file below no build directory",
+      ("/w/p/windtrap-a.mutants", "/opt/t.exe"),
+      Some ("/opt/t.exe", "/opt/t.exe") );
   ]
 
 let relative_path () =
@@ -191,6 +222,71 @@ let build_paths =
             (Instr.output_dir format ~exe));
       test "a value that needs an unreadable current directory raises Sys_error"
         unreadable_cwd;
+      cases
+        "exe_location is the path and the spelling of the executable that \
+         wrote a file"
+        ~id:(fun (name, _, _) -> name)
+        exe_locations
+        (fun (_, (path, exe), expected) ->
+          equal
+            (option (pair string string))
+            expected
+            (Instr.exe_location ~path exe));
+    ]
+
+(* Freshness *)
+
+let pp_freshness ppf = function
+  | Instr.Fresh -> Format.pp_print_string ppf "fresh"
+  | Orphan exe -> Format.fprintf ppf "orphan %s" exe
+  | Stale exe -> Format.fprintf ppf "stale %s" exe
+
+let freshness = Testable.make ~pp:pp_freshness ~equal:( = )
+
+(* A scratch build directory with the executable [default/t.exe] when
+   [contents] is given, and the path of a file in its data directory. *)
+let built contents =
+  let build = Filename.concat (temp_dir ()) "_build" in
+  Sys.mkdir build 0o755;
+  Sys.mkdir (Filename.concat build "default") 0o755;
+  Option.iter (write (Filename.concat build "default/t.exe")) contents;
+  Filename.concat build "_samples/windtrap-a.smp"
+
+let judged ?(exe = "default/t.exe") ~digest path =
+  Instr.freshness ~path (Some { Instr.exe; digest })
+
+let freshnesses =
+  group "Freshness"
+    [
+      test "a file with no identity is fresh" (fun () ->
+          equal freshness Instr.Fresh (Instr.freshness ~path:(built None) None));
+      test "a file whose executable has the recorded digest is fresh" (fun () ->
+          equal freshness Instr.Fresh
+            (judged ~digest:(md5 "an executable")
+               (built (Some "an executable"))));
+      test
+        "a file whose executable has another digest is stale, spelled from the \
+         project root" (fun () ->
+          equal freshness (Instr.Stale "_build/default/t.exe")
+            (judged ~digest:(md5 "an earlier build")
+               (built (Some "an executable"))));
+      test "a file whose executable does not exist is an orphan" (fun () ->
+          equal freshness (Instr.Orphan "_build/default/t.exe")
+            (judged ~digest:(md5 "x") (built None)));
+      test "a relative executable of a file below no build directory is fresh"
+        (fun () ->
+          equal freshness Instr.Fresh
+            (judged ~digest:(md5 "x")
+               (Filename.concat (temp_dir ()) "windtrap-a.smp")));
+      test "an absolute executable is judged at its own path" (fun () ->
+          let exe = Filename.concat (temp_dir ()) "t.exe" in
+          write exe "an executable";
+          equal (list freshness)
+            [ Instr.Fresh; Instr.Stale exe ]
+            [
+              judged ~exe ~digest:(md5 "an executable") (built None);
+              judged ~exe ~digest:(md5 "x") (built None);
+            ]);
     ]
 
 (* Errors and warnings *)
@@ -522,6 +618,7 @@ let () =
        [
          identities;
          build_paths;
+         freshnesses;
          errors;
          reading_and_writing;
          the_header;

@@ -441,6 +441,80 @@ can then be fully covered and have no mutant reached. To test those
 mutants, put the tool's entry point in the library, call it from a
 test, and check what it prints with `expect` or `expect_file`.
 
+## Skipping the mutants that another suite killed
+
+A project with several suites tests a mutant in each suite that reaches
+it. One kill is enough for the merge, so the other suites do work that
+does not change the report. `--skip-killed` (mirror
+`WINDTRAP_SKIP_KILLED`) skips this work. It narrows `--mutate`, as
+`--lines` does, and without `--mutate` on the command line it is a
+usage error. The mirror alone has no effect on a suite that does not
+mutate.
+
+After the dry run, the suite reads the other verdict files in its
+directory, the files of the other suites of its executable included. A
+reached mutant gets no worker when another file kills it directly. The
+record of that kill must also be of the same mutant: the rewriter read
+the same source file for the two executables, and the mutant has the
+same renderings and extent. A mutant that another suite skipped does not cause a skip,
+so a skip always comes from a run that tested the mutant.
+
+The suite does not use a refused file, and it gives no warning for it. A
+refused file holds no kill. The suite also does not use these files, and
+it gives a warning for each of them:
+
+- A file that it cannot read, or that is not a verdict file of this
+  version.
+- A file that names no executable.
+- A file whose executable was deleted since, or rebuilt since. These
+  are the files that `windtrap mutants` leaves out.
+
+The verdict file records a skipped mutant as killed elsewhere, with the
+executable of the file that killed it. The report of the suite counts
+the mutant as not tested, and a line above the outcome line names the
+executable of each file that the suite used, with the number of skips
+that it gave:
+
+```
+killed elsewhere: 2 mutants, not tested, from the verdict files of default/test/a.exe (1), default/test/b.exe (1)
+```
+
+`windtrap mutants` first judges each skip. A skip stands when another
+file of the killing executable kills the mutant. It also stands when no
+other file of the killing executable holds the mutant, for example
+because the file of the killing suite is now stale. In every other case
+the kill does not hold, and the skip does not count:
+
+The merge leaves out every skip that does not count. The other records
+of the mutant then give the verdict:
+
+- When they give a verdict of a reached mutant, the merge drops the
+  skip, and that verdict stands. For example, a survivor that the
+  killing suite now reports stays a survivor.
+- When they give no such verdict, the mutant is unknown, because the
+  suite that skipped it reached it. Two suites that skipped one mutant
+  because of each other give this result when no other record gives a
+  verdict of a reached mutant. A third file that holds the mutant as
+  never reached gives this result too.
+
+When no file of the merge kills the mutant directly, a note on standard
+error then tells to run the suite that skipped the mutant again. A
+mutant that another file kills gets no such note. A skip that stands
+counts as killed, also in the score and in the `--json` document. When
+no file of the merge kills that mutant directly, a note on standard
+error tells which suite to run again. The notes do not change the exit
+code.
+
+The option uses only the files on disk. Thus run the fast suites first,
+for example in a first `dune runtest`, and then the slow suites with
+`--skip-killed`. Do not run two suites with the option at the same
+time, as `dune runtest` does by default. Each suite can skip a mutant
+because of the earlier file of the other. Then no new file kills the
+mutant, and the merge gives it as unknown. To run the suites one after
+the other, use `dune runtest -j 1`. A suite tests a mutant again when
+the rewriter read different source files of the mutant for the two
+suites. The digests then differ.
+
 ## Gating on the score
 
 The outcome line gives the mutation score. The score is the percentage
@@ -683,9 +757,11 @@ writes under `_windtrap/mutants` in its working directory.
 A run under `--mutate=PREFIX` replaces the verdicts under its prefixes
 and keeps the others, when the same build wrote the file for the same
 suite. A verdict file records its executable, a digest of its bytes and
-its suite. `windtrap mutants` merges the files of all suites, and counts
-the files of one executable as one executable. It leaves out a file
-whose executable was deleted or rebuilt since, with a warning, as
+its suite. Each record keeps the digest of the source file of its mutant,
+as the rewriter read it, which `--skip-killed` compares.
+`windtrap mutants` merges the files of all suites, and counts the files
+of one executable as one executable. It leaves out a file whose
+executable was deleted or rebuilt since, with a warning, as
 [`windtrap coverage`](coverage.md#when-a-dump-is-excluded) does a dump.
 
 A suite that you rename, or that no longer runs, leaves its file in the
