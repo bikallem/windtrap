@@ -16,7 +16,9 @@
      VERDICT is killed, elsewhere:EXE, not_evaluated, outside_tests,
      unreached or survived:TESTS, where EXE is the identity of the killing
      executable and TESTS are ';'-separated paths of '/'-separated names.
-     --suite records the suite. No record has a source digest.
+     VERDICT@PREVIOUS gives the record the previous outcome PREVIOUS:
+     killed, survived or not_evaluated. --suite records the suite. No record
+     has a source digest.
 
    --exe records the identity of the executable at EXE as it is now. *)
 
@@ -80,8 +82,21 @@ let verdict = function
       | [ "elsewhere"; exe ] -> Verdicts.Killed_elsewhere { exe }
       | _ -> die "%S: not a verdict" v)
 
+let previous = function
+  | "killed" -> `Killed
+  | "survived" -> `Survived
+  | "not_evaluated" -> `Not_evaluated
+  | p -> die "%S: not an outcome" p
+
 let record spec =
   let mutant, v = split_last '=' spec in
+  let v, previous =
+    match String.index_opt v '@' with
+    | Some i ->
+        ( String.sub v 0 i,
+          Some (previous (String.sub v (i + 1) (String.length v - i - 1))) )
+    | None -> (v, None)
+  in
   match String.split_on_char ':' mutant with
   | [ file; line; col; rewrite; before; after ] ->
       let id =
@@ -101,6 +116,7 @@ let record spec =
         after;
         source_digest = None;
         verdict = verdict v;
+        previous;
       }
   | _ -> die "%S: not FILE:LINE:COL:REWRITE:BEFORE:AFTER" mutant
 

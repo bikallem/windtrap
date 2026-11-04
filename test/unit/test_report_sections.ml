@@ -2315,6 +2315,7 @@ let loop_report =
     Sections.survivors = [ add_survivor; ge_survivor ];
     not_evaluated = [];
     unknown = [];
+    unstable = [];
     refused = [];
     unreached = [ ("lib/calc.ml", 40); ("lib/calc.ml", 41) ];
     outside_tests = [];
@@ -2359,6 +2360,7 @@ let merge_report =
     Sections.survivors = [ eq_survivor; not_survivor ];
     not_evaluated = [];
     unknown = [];
+    unstable = [];
     refused = [];
     unreached =
       List.map (fun line -> ("lib/text.ml", line)) [ 12; 13; 14; 32 ]
@@ -2387,6 +2389,23 @@ let with_source source (s : Sections.survivor) =
 
 let reached_report =
   { loop_report with Sections.survivors = []; not_evaluated = [ memo_missed ] }
+
+(* The mutants whose verdict changed, as the producers spell them. *)
+let sub_change =
+  {
+    Sections.id = "lib/calc.ml:13:9:sub";
+    exe = None;
+    previous = `Survived;
+    verdict = `Killed;
+  }
+
+let tail_change =
+  {
+    Sections.id = "lib/calc.ml:22:4:tail";
+    exe = None;
+    previous = `Killed;
+    verdict = `Not_evaluated;
+  }
 
 let mutation_entries () =
   [
@@ -2475,6 +2494,7 @@ let mutation_entries () =
           Sections.survivors = [];
           not_evaluated = [];
           unknown = [];
+          unstable = [];
           refused = [];
           unreached =
             List.init 60 (fun i -> ("lib/report.ml", (i * 3) + 10))
@@ -2507,6 +2527,23 @@ let mutation_entries () =
               { memo_missed with Sections.failed = Some "a fixture release" };
             ];
         } );
+    ( "unstable: one row per mutant, its previous verdict and its verdict, \
+       after not evaluated",
+      at_rest ~ansi:true
+        { reached_report with Sections.unstable = [ sub_change; tail_change ] }
+    );
+    ( "unstable in a merge: the executable first, after not mutation-tested",
+      at_rest
+        {
+          merge_report with
+          Sections.survivors = [];
+          refused = [ property_refused ];
+          unstable =
+            [
+              { sub_change with Sections.exe = Some "test_calc.exe" };
+              { tail_change with Sections.exe = Some "test_eval.exe (suite b)" };
+            ];
+        } );
     ( "evaluated outside tests follows never reached",
       at_rest
         {
@@ -2534,6 +2571,14 @@ let mutation_entries () =
           unreached = [];
           outside_tests = [ ("lib/table.ml", 7) ];
         } );
+    ( "unstable alone, in a loop: a blank line opens it",
+      closing
+        {
+          loop_report with
+          Sections.survivors = [];
+          unreached = [];
+          unstable = [ sub_change ];
+        } );
     ( "an interrupted loop counts what it did not test",
       closing
         ~invocation:
@@ -2557,6 +2602,7 @@ let summary ?(survivors = []) ?(not_evaluated = []) ?(unknown = [])
          Sections.survivors;
          not_evaluated;
          unknown;
+         unstable = [];
          refused;
          unreached;
          outside_tests;

@@ -116,6 +116,16 @@
 
     The notes do not change the exit code.
 
+    {b Unstable verdicts.} The report lists, for each file that is kept, each
+    record whose outcome changed ([Windtrap_runtime.Verdicts.changed]), with the
+    label and the suite of the file. The rows are sorted by identifier, and then
+    in path order of the files. The rows come from each file after the skips are
+    judged and before the merge, because the merge folds the previous outcomes
+    of several suites into one. A skip that stands is no outcome, and a refused
+    skip is dropped or unknown, so a skip gives no row. Under [--lines] or
+    [--diff] only the records on the lines give rows. The rows do not change the
+    score or the exit code.
+
     {b Reaching tests.} The reaching tests of a survivor are the union of those
     of every file in which the mutant survived. Each is paired with the label of
     its file, and the pairs are sorted by label and then by test, without
@@ -170,13 +180,15 @@
     when it is not. The keys and the values that follow are frozen. A later
     version can add a key, and that key does not change the meaning of the
     others. A change to the meaning of a key increments ["version"]. Under
-    [--lines] or [--diff], the verdict counts, ["reached"], ["score"] and
-    ["mutants"] hold only the mutants on the lines, as the report does. But
-    ["executables"] still lists every file that is kept, and ["refused"] still
-    counts every refused file, because each file stays in the merge.
+    [--lines] or [--diff], the verdict counts, ["reached"], ["score"],
+    ["mutants"] and ["unstable"] hold only the mutants on the lines, as the
+    report does. But ["executables"] still lists every file that is kept, and
+    ["refused"] still counts every refused file, because each file stays in the
+    merge.
 
     The document is one object with the keys ["version"], ["summary"],
-    ["executables"] and ["mutants"]. ["version"] is the number [1].
+    ["executables"], ["mutants"] and ["unstable"]. ["version"] is the number
+    [1].
 
     ["summary"] is an object with these keys:
     - ["reached"] is the sum of ["killed"], ["survived"], ["not_evaluated"] and
@@ -228,6 +240,15 @@
     - ["executable"] is the index of the file in ["executables"].
     - ["test"] is the path of the test as an array of names, the outermost group
       first.
+
+    ["unstable"] is an array with one object for each row of the unstable
+    verdicts ({{!section-merge}the merge}), in the order of the report. The
+    object has these keys:
+    - ["id"] is the identifier of the mutant.
+    - ["executable"] is the index in ["executables"] of the file of the row.
+    - ["previous"] and ["verdict"] are the previous outcome and the outcome that
+      the file records. Each is one of ["killed"], ["survived"] and
+      ["not_evaluated"].
 
     {!Windtrap.Private.Json.string} writes each string. *)
 

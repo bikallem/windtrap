@@ -59,7 +59,10 @@ what is non-obvious.
   whatever `WINDTRAP_JOBS` the environment holds.
   The scenarios of `--skip-killed` copy `suite_main.exe` into a scratch
   build directory, and put the verdict files of other suites beside its
-  file there.
+  file there. The scenarios of unstable verdicts run the loop two times
+  over one verdict file. A rewrite of the file or another fixture of the
+  suite changes the verdict, so no scenario depends on the speed of the
+  host.
   Under `semantics/`, `coverage/` and `mutate/` are the
   semantics-preservation suites: a fixture library instrumented
   unconditionally through `(pps)`, run and compared with the

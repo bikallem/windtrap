@@ -515,6 +515,54 @@ the other, use `dune runtest -j 1`. A suite tests a mutant again when
 the rewriter read different source files of the mutant for the two
 suites. The digests then differ.
 
+## Unstable verdicts
+
+A mutation run compares the verdict of each mutant with the verdict of
+the last run of the same suite. When the verdict changed, the report
+lists the mutant in the `unstable` section. A change to a test can
+cause this. A test whose result depends on the clock, on the order of
+domains or on the tests before it can cause it too:
+
+```
+────────────────────── unstable (2) ──────────────────────
+  The source of each mutant did not change, but its verdict did.
+  calc.ml:10:16:ge   survived → killed
+  calc.ml:10:37:le   killed → survived
+──────────────────────────────────────────────────────────
+```
+
+The run compares only the verdicts killed, survived and not evaluated.
+These verdicts do not appear in the section:
+
+- An unknown verdict. The run of the mutant gave no verdict.
+- A mutant that no test reached, or that ran outside every test.
+- A mutant that the suite skipped under `--skip-killed`. No test of the
+  suite ran it.
+
+After such a verdict, the next run compares with the verdict before it.
+For example, a mutant that survived, then was skipped, and then was
+killed appears as `survived → killed`. Two survivors with other
+reaching tests have the same verdict.
+
+The run compares a mutant only with the same mutant: the rewriter read
+the same source file, with the same digest, and the mutant has the same
+renderings and extent. Thus a change to the source file of a mutant
+starts a new comparison. The earlier verdict file can come from another
+build, because almost each change to a test builds the executable
+again. It must come from the same suite.
+
+A run that writes no verdict file shows no section: a run whose
+selection narrows the suite, a refused run, a run that a signal stopped,
+and a run whose file cannot be written. Under `--lines` or `--diff`,
+the section has only the mutants on the lines. The section does not
+change the score or the exit code.
+
+The verdict file keeps the previous verdict of each mutant. Thus
+`windtrap mutants` shows the same section, with the executable and the
+suite of each row. The rows come from each verdict file, sorted by
+mutant and then by file. Under `--json`, the array `unstable` holds the
+same rows, each with the index of its verdict file in `executables`.
+
 ## Gating on the score
 
 The outcome line gives the mutation score. The score is the percentage
@@ -614,7 +662,8 @@ $ dune exec windtrap -- mutants --json --lines=calc.ml:10
       "file": "calc.ml", "line": 10, "col": 56, "rewrite": "int",
       "end_line": 10, "end_col": 57,
       "before": "0", "after": "1",
-      "verdict": "unreached" } ] }
+      "verdict": "unreached" } ],
+  "unstable": [ ] }
 ```
 
 ## Killing a survivor
@@ -758,7 +807,9 @@ A run under `--mutate=PREFIX` replaces the verdicts under its prefixes
 and keeps the others, when the same build wrote the file for the same
 suite. A verdict file records its executable, a digest of its bytes and
 its suite. Each record keeps the digest of the source file of its mutant,
-as the rewriter read it, which `--skip-killed` compares.
+as the rewriter read it, which `--skip-killed` compares. Each record also
+keeps the previous verdict of its mutant
+(see [Unstable verdicts](#unstable-verdicts)).
 `windtrap mutants` merges the files of all suites, and counts the files
 of one executable as one executable. It leaves out a file whose
 executable was deleted or rebuilt since, with a warning, as

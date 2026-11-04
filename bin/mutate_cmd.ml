@@ -209,6 +209,22 @@ let merged files =
     (fun acc f -> Verdicts.merge acc f.verdicts)
     Verdicts.empty files
 
+(* Each record whose verdict changed, with its file, by identifier and then
+   in the order of [files]. The merge folds the previous outcomes of several
+   suites into one, so they are read from each file. *)
+let unstable files =
+  List.stable_sort
+    (fun (a, _, _, _) (b, _, _, _) -> Mutate.compare_id a b)
+    (List.concat_map
+       (fun f ->
+         List.filter_map
+           (fun (r : Verdicts.record) ->
+             Option.map
+               (fun (was, is) -> (r.id, f, was, is))
+               (Verdicts.changed r))
+           (Verdicts.records f.verdicts))
+       files)
+
 (* [Verdicts.merge] folds away which executable ran a reaching test, so a
    survivor's reaching tests are read from the files in which it survived. *)
 let merge ~source files merged =
@@ -371,6 +387,16 @@ let merge ~source files merged =
       Sections.survivors;
       not_evaluated;
       unknown;
+      unstable =
+        List.map
+          (fun (id, f, previous, verdict) : Sections.unstable ->
+            {
+              id = Mutate.id_to_string id;
+              exe = Some (with_suite f);
+              previous;
+              verdict;
+            })
+          (unstable files);
       refused;
       unreached;
       outside_tests;
@@ -676,19 +702,36 @@ let json files merged (m : Sections.mutation) =
   in
   let killed = count "killed" and survived = count "survived" in
   let not_evaluated = count "not_evaluated" and unknown = count "unknown" in
+  let outcome = function
+    | `Killed -> "killed"
+    | `Survived -> "survived"
+    | `Not_evaluated -> "not_evaluated"
+  in
+  let change (id, f, previous, verdict) =
+    strf
+      "\n\
+      \    { \"id\": %s, \"executable\": %d, \"previous\": %s, \"verdict\": %s \
+       }"
+      (string (Mutate.id_to_string id))
+      (index f)
+      (string (outcome previous))
+      (string (outcome verdict))
+  in
   strf
     "{ \"version\": 1,\n\
     \  \"summary\": { \"reached\": %d, \"killed\": %d, \"survived\": %d,\n\
     \    \"not_evaluated\": %d, \"unknown\": %d, \"outside_tests\": %d,\n\
     \    \"unreached\": %d, \"refused\": %d, \"score\": %.2f },\n\
     \  \"executables\": [%s ],\n\
-    \  \"mutants\": [%s ] }\n"
+    \  \"mutants\": [%s ],\n\
+    \  \"unstable\": [%s ] }\n"
     (killed + survived + not_evaluated + unknown)
     killed survived not_evaluated unknown (count "outside_tests")
     (count "unreached") (List.length m.refused)
     (Sections.mutation_score m)
     (String.concat "," (List.map executable files))
     (String.concat "," (List.map mutant records))
+    (String.concat "," (List.map change (unstable files)))
 
 (* Running *)
 

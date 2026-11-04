@@ -161,7 +161,7 @@ merge refuses it:
   mutants: 2 survived of 3 reached by this suite, 1 killed, 1 never reached, score 33.3% (1/3)
   $ run windtrap mutants
   --- stderr
-  windtrap: .../windtrap-HASH.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v12", found "windtrap-mutants-v5"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
+  windtrap: .../windtrap-HASH.mutants: not a windtrap verdict file (expected header "windtrap-mutants-v13", found "windtrap-mutants-v5"); files written by other windtrap versions are not readable - delete the stale verdict files, then re-run the mutation tests
   [1]
   $ cd / && rm -rf "$rootA"
 

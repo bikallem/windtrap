@@ -412,6 +412,15 @@ a lossy `%g` spelling is asked for at the call site.
   the digest, the renderings and the extent are equal, and the file is
   one that `windtrap mutants` keeps. Thus the freshness rule is in
   `Windtrap_runtime.Instr`, where the loop and the command both read it.
+- Each record also keeps the previous outcome of its mutant: killed,
+  survived or not evaluated. The loop reads the file that it replaces
+  in the same read that gives the kept records, of any build, because
+  almost each change to a test builds the executable again. The digest,
+  the renderings and the extent make sure that the mutant is the same.
+  A verdict that is no outcome (a skip, unknown, unreached) keeps the
+  outcome before it, so a skip between two runs hides no change and
+  shows none. The file keeps the field because `windtrap mutants` reads
+  only the fresh files and has no earlier run to compare with.
 
 **The runtime (`Windtrap_runtime.Mutate`, `.Coverage`).**
 
