@@ -9,11 +9,10 @@
 
    Under mutation testing without --mutate-workers, a stateful test on
    several domains spawns nothing, and every test here that spawns a pool
-   skips. The scenarios that
-   leave a domain running forever or spawn every domain the runtime has run
-   in a fresh process of this executable, which the test that reads them
-   starts: each worker starts the executable again, so work done as the
-   module initialises is paid once per worker. *)
+   skips. The scenarios that leave a domain running forever or spawn every
+   domain the runtime has run in a fresh process of this executable, which
+   the test that reads them starts: each worker starts the executable
+   again, so work done as the module initialises is paid once per worker. *)
 
 open Windtrap
 module Failure = Windtrap.Private.Failure
@@ -1493,7 +1492,17 @@ let run_all workers jobs = Workers.run workers ~grace:(Fun.const 0.) jobs
    the way from the job's end to the mark that ends it: a block allocated
    there is a point where an asynchronous exception could land. Flushing
    the formatters allocates, and swallows what lands there. *)
+(* The mutation guards of an instrumented pool allocate, so a test that
+   counts the blocks of a worker skips in a mutation run, also under
+   --mutate-workers. *)
+let unguarded () =
+  match (Run.config (Run.current ())).mutation with
+  | Run.No_mutation -> ()
+  | Run.Loop _ | Run.Armed _ ->
+      skip ~reason:"under mutation testing the guards of the pool allocate" ()
+
 let allocates_nothing_but_flush () =
+  unguarded ();
   let lock = Mutex.create () and stacks = ref [] in
   let finished = Array.init 2 (fun _ -> Atomic.make (-1)) in
   let on_worker stack =
@@ -1519,6 +1528,7 @@ let allocates_nothing_but_flush () =
    exception could land between a worker's arrival and the wake of the
    others. *)
 let starts_without_allocating () =
+  unguarded ();
   let delay = 0.05 in
   let lock = Mutex.create () and stacks = ref [] in
   let taken = Array.init 2 (fun _ -> Atomic.make (-1)) in

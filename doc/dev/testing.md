@@ -40,11 +40,14 @@ what is non-obvious.
   the domain a call runs on, never on a race, so every verdict is
   deterministic. Under mutation testing without `--mutate-workers` it
   spawns nothing: a stateful test on several domains then runs each
-  program on the test's domain, and each test that spawns a pool skips. Its scenarios that leave a
-  domain running forever or spawn every domain the runtime has run in
-  a fresh process of the executable, which the test that reads them
-  starts: run at module initialisation, they would cost 2.3 s in each
-  of the twenty or so workers the suite starts.
+  program on the test's domain, and each test that spawns a pool skips.
+  Under mutation testing with `--mutate-workers`, the two tests that
+  count the allocations of a worker skip, because the mutation guards
+  of the instrumented pool allocate. Its scenarios that leave a domain
+  running forever or spawn every domain the runtime has run in a fresh
+  process of the executable, which the test that reads them starts:
+  run at module initialisation, they would cost 2.3 s in each of the
+  twenty or so workers the suite starts.
   `runtime/` holds the suites over the runtime's modules:
   `test_coverage` and `test_mutate`, each with a child executable (for
   the at_exit dump and for a registration that runs before any window
