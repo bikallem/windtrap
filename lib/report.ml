@@ -1010,7 +1010,8 @@ let escape_property s = encode ~property:true (Text.escape_controls s)
 let group_start name = strf "::group::%s\n" (escape_data name)
 let group_end = "::endgroup::\n"
 
-let annotation ?(invocation = `Mirrors) ?armed ?paths ~path (f : Failure.t) =
+let annotation ?(invocation = `Mirrors) ?armed ?workers ?paths ~path
+    (f : Failure.t) =
   let path = Test_tree.path_to_string path in
   let location =
     match f.loc with
@@ -1019,14 +1020,15 @@ let annotation ?(invocation = `Mirrors) ?armed ?paths ~path (f : Failure.t) =
     | None -> ""
   in
   let _, lines =
-    Sections.unstyled_entry ~filter:(Some path) ~invocation ?armed ?paths f
+    Sections.unstyled_entry ~filter:(Some path) ~invocation ?armed ?workers
+      ?paths f
   in
   strf "::error %stitle=%s::%s\n" location
     (escape_property ("Test failure: " ^ path))
     (escape_data (String.concat "\n" lines))
 
-let annotations ?invocation ?armed ?paths ~release_failures results =
-  let annotate path f = annotation ?invocation ?armed ?paths ~path f in
+let annotations ?invocation ?armed ?workers ?paths ~release_failures results =
+  let annotate path f = annotation ?invocation ?armed ?workers ?paths ~path f in
   let counted (r : Run.result) =
     if status r = `Failed then List.map (annotate r.path) (failures r) else []
   in
@@ -1187,8 +1189,8 @@ let run
     if config.github then begin
       print_string group_end;
       print_string
-        (annotations ~invocation:config.invocation ?armed:renderer.armed ~paths
-           ~release_failures results)
+        (annotations ~invocation:config.invocation ?armed:renderer.armed
+           ~workers:config.mutate_workers ~paths ~release_failures results)
     end
   in
   (* The transcript observes first, so a subscriber can neither drop nor
@@ -1221,7 +1223,8 @@ let run
       (* Last, so the file is written from the rows the terminal has shown. *)
       Option.iter
         (Report_junit.write ~invocation:config.invocation ?armed:renderer.armed
-           ~paths ~suite ~duration:outcome.duration ~results ~release_failures)
+           ~workers:config.mutate_workers ~paths ~suite
+           ~duration:outcome.duration ~results ~release_failures)
         config.junit;
       Option.iter
         (Report_json.write ~suite ~seed:config.seed

@@ -66,8 +66,10 @@ val execute_and_report :
       does not skip, in the order of the catalogue, with the mutant armed and
       its reaching tests up to the first failure in or after the test that first
       evaluated the armed site. Up to [config.jobs] run at once, and they are
-      given in that order. The probe agrees iff it executed as many tests,
-      skipped as many and counted no failure.
+      given in that order. A job that holds a test that spawned a pool of worker
+      domains in the dry run ([config.mutate_workers]) runs alone. The probe
+      agrees iff it executed as many tests, skipped as many and counted no
+      failure.
     + Once the last job is given it writes the verdict file.
 
     A job starts from module initialization, so what the dry run left, a table

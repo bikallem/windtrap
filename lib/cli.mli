@@ -159,6 +159,9 @@ val settings : parsed -> (Run.config, error) result
       alone they are ignored. Both at once is [Error (Incompatible_flags _)],
       whichever layer gave each, and it is checked after every mirror. A prefix
       that spells a boolean cannot go through the variable.
+    - [mutate_workers] is [true] when a layer gives [--mutate-workers], with or
+      without [--mutate] or [--arm]. Outside those two, a stateful test spawns
+      its worker domains anyway, so the flag changes nothing.
     - A relative path of [--junit], [--json] or [-o] is made absolute, against
       the working directory when the command line gives it and against
       {!Os.project_root} when its mirror does. It is kept as given when that

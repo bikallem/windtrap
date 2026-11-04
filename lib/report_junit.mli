@@ -81,6 +81,7 @@
 val write :
   invocation:Run.invocation ->
   ?armed:string ->
+  ?workers:bool ->
   ?paths:string list ->
   suite:string ->
   duration:float ->
@@ -102,9 +103,10 @@ val write :
       their names apart. [write] creates the directory and its parents
       ({!Os.mkdir_p}), and it never creates the parent of an [.xml] target.
 
-    [invocation] and [armed], which is the identifier of an armed mutant, spell
-    the hint lines of each failure. The caller must pass those of the run, so
-    that the text of a [failure] is the lines of the block on the terminal.
+    [invocation], [armed], which is the identifier of an armed mutant, and
+    [workers] ({!Report_sections.replay}) spell the hint lines of each failure.
+    The caller must pass those of the run, so that the text of a [failure] is
+    the lines of the block on the terminal.
 
     {!Os.atomic_write} writes the file, so an existing report is replaced whole.
     A report that cannot be written is one warning on standard error

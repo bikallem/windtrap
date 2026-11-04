@@ -1450,6 +1450,7 @@ let narrowed =
   }
 
 let failed_run = { narrowed with Run.filter = []; failed_only = true }
+let workers_run = { (Run.default_config ()) with Run.mutate_workers = true }
 let qa = `Exe "./_build/default/qa/x/t.exe"
 
 let accept_rows =
@@ -1672,7 +1673,56 @@ let replay_rows =
         replay
           ("WINDTRAP_MUTATE_ARM=" ^ armed ^ " WINDTRAP_SEED=" ^ seed
          ^ " dune runtest --instrument-with ppx_windtrap.mutate") ) );
+    ( "an armed run's keeps its --mutate-workers after --arm",
+      ( Some armed,
+        exe,
+        `Run workers_run,
+        [ Fixtures.prop_failure ],
+        replay ("./t.exe --arm " ^ armed ^ " --mutate-workers --seed " ^ seed)
+      ) );
+    ( "and as its mirror under a build action",
+      ( Some armed,
+        `Mirrors,
+        `Run workers_run,
+        [ Fixtures.prop_failure ],
+        replay
+          ("WINDTRAP_MUTATE_ARM=" ^ armed
+         ^ " WINDTRAP_MUTATE_WORKERS=1 WINDTRAP_SEED=" ^ seed
+         ^ " dune runtest --instrument-with ppx_windtrap.mutate") ) );
+    ( "a run with no armed mutant leaves out --mutate-workers",
+      ( None,
+        exe,
+        `Run workers_run,
+        [ Fixtures.prop_failure ],
+        replay ("./t.exe --seed " ^ seed) ) );
   ]
+
+(* A [`Filter] selection carries no configuration, so [workers] tells. *)
+let filter_workers_rows =
+  let replay s = Some ("replay: " ^ s) in
+  [
+    ( "an armed run's filter keeps --mutate-workers",
+      ( Some armed,
+        exe,
+        replay
+          ("./t.exe --arm " ^ armed ^ " --mutate-workers --seed " ^ seed
+         ^ " -f 'mod7'") ) );
+    ( "and its mirror under a build action",
+      ( Some armed,
+        `Mirrors,
+        replay
+          ("WINDTRAP_MUTATE_ARM=" ^ armed
+         ^ " WINDTRAP_MUTATE_WORKERS=1 WINDTRAP_SEED=" ^ seed
+         ^ " WINDTRAP_FILTER='mod7' dune runtest --instrument-with \
+            ppx_windtrap.mutate") ) );
+    ( "a filter with no armed mutant leaves it out",
+      (None, exe, replay ("./t.exe --seed " ^ seed ^ " -f 'mod7'")) );
+  ]
+
+let filter_workers_row (_, (armed, invocation, expected)) =
+  equal (option string) expected
+    (Sections.replay ?armed ~workers:true ~invocation
+       ~tests:(`Filter (Some "mod7")) [ Fixtures.prop_failure ])
 
 let replay_row (_, (armed, invocation, tests, failures, expected)) =
   equal (option string) expected
@@ -1788,6 +1838,8 @@ let failure_projections =
         accept_row;
       cases "replay reruns the tests with the values they drew" ~id:fst
         replay_rows replay_row;
+      cases "replay keeps --mutate-workers that a filter's run had" ~id:fst
+        filter_workers_rows filter_workers_row;
     ]
 
 (* Names and command words *)
@@ -2563,6 +2615,14 @@ let mutation_entries () =
       closing
         ~config:(fun c -> { c with Run.filter = [ "memoized" ] })
         reached_report );
+    ( "a loop's arm: command keeps --mutate-workers",
+      closing
+        ~config:(fun c -> { c with Run.mutate_workers = true })
+        reached_report );
+    ( "a loop's reproduce: command keeps its mirror under a build action",
+      closing ~invocation:`Mirrors
+        ~config:(fun c -> { c with Run.mutate_workers = true })
+        loop_report );
     ( "outside tests alone, in a loop: a blank line opens it",
       closing
         {

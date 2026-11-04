@@ -66,6 +66,7 @@
 val execute :
   ?on_reach:
     (string list option -> (Windtrap_runtime.Mutate.id * int) list -> unit) ->
+  ?on_pool:(string list -> unit) ->
   ?on_lost:(string list -> unit) ->
   ?stop_after:(Run.result -> bool) ->
   ?on_event:(Run.event -> unit) ->
@@ -83,6 +84,11 @@ val execute :
     of each window that evaluated a mutant: [test] is [Some path] for a test's,
     given before the parent reaches its row, and [None] for those of no test,
     the parent's first. Defaults to ignoring them.
+
+    Under mutation, [on_pool path] is called for each test [path] that called
+    [Workers.spawn], as a stateful test on several domains does under
+    [config.mutate_workers]. It comes before the parent reaches the row of the
+    test. Defaults to ignoring it.
 
     [on_lost path] is called when the worker of the test [path] ends during the
     test, by a crash, a signal or the kill at its limit. Its evaluations are
@@ -125,6 +131,9 @@ type job = {
   armed : (Windtrap_runtime.Mutate.id * int) option;
       (** The mutant that each of its workers arms before its first case, with
           its budget ([Windtrap_runtime.Mutate.arm]). *)
+  alone : bool;
+      (** Whether no other job runs at the same time as this job, because its
+          tests spawn worker domains that need the CPUs. *)
 }
 (** The type for a job: some cases of the suite, run in one fresh worker. *)
 
@@ -172,7 +181,8 @@ val fresh :
 (** [fresh config ~suite tests jobs ~on_ran ~on_signal] runs each of [jobs] in a
     worker of its own, started as {!execute} starts one, up to [config.jobs] at
     once, in the order of the list, and gives [on_ran i ran] for job [i] in that
-    order, once every earlier one was given. {!can_spawn} must hold.
+    order, once every earlier one was given. A job with [alone] starts when no
+    other job runs, and no job starts while it runs. {!can_spawn} must hold.
 
     A worker of a job serves its cases with {!Run.serve} under [config] with
     {!Baseline.Check}, no [stream] and no JUnit file, its capture logs under its

@@ -1677,6 +1677,116 @@ let refusals =
             (Option.map (fun (f : file) -> Option.is_some f.refused) r.file));
     ]
 
+(* Stateful tests on several domains *)
+
+let workers = "--mutate-workers"
+
+let one_killed =
+  "mutants: 1 reached by this suite, 1 killed, 3 never reached, score 100.0% \
+   (1/1)"
+
+let killed_by_stateful args () =
+  let r = spawn ~env:[ suite "stateful_domains" ] (mutate :: args) in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal string one_killed (outcome r.out)
+
+let on_workers args = spawn ~env:[ suite "on_workers" ] args
+
+let armed_on_workers () =
+  let r = on_workers [ "--arm"; site 15; workers ] in
+  equal string "exited 1" r.status;
+  equal string "mutant killed." (outcome r.out);
+  contains
+    ~sub:
+      (strf "\nreplay: %s --arm %s --mutate-workers --seed " suite_exe (site 15))
+    r.out
+
+let junit_keeps_workers () =
+  let junit = Filename.concat (temp_dir ()) "junit.xml" in
+  let r = on_workers [ "--arm"; site 15; workers; "--junit"; junit ] in
+  equal string "mutant killed." (outcome r.out);
+  contains
+    ~sub:(strf " --arm %s --mutate-workers --seed " (site 15))
+    (read junit)
+
+(* The times of the calls of the pool test under its mutant, and the spans
+   of the other tests under theirs (see suite_main's [pool_alone]). *)
+let notes path =
+  List.fold_left
+    (fun (pool, spans) line ->
+      match String.split_on_char ' ' line with
+      | [ "pool"; t ] -> (float_of_string t :: pool, spans)
+      | [ "span"; a; b ] ->
+          (pool, (float_of_string a, float_of_string b) :: spans)
+      | _ -> (pool, spans))
+    ([], [])
+    (lines (read path))
+
+let pool_alone () =
+  let path = Filename.concat (temp_dir ()) "spans" in
+  let r =
+    spawn
+      ~env:[ suite "pool_alone"; ("MUTATE_SPANS", path) ]
+      [ mutate; workers; "-j"; "4" ]
+  in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal string
+    "mutants: 3 survived of 3 reached by this suite, 1 never reached, score \
+     0.0% (0/3)"
+    (outcome r.out);
+  equal (option string)
+    (Some (strf "%s --arm %s --mutate-workers" suite_exe (site 15)))
+    (reproduce r.out);
+  let pool, spans = notes path in
+  is_true ~msg:"the pool test ran under its mutant" (pool <> []);
+  let during (a, b) = List.exists (fun t -> a < t && t < b) pool in
+  equal (list bool) [ false; false ] (List.map during spans);
+  match spans with
+  | [ (a1, b1); (a2, b2) ] ->
+      is_true ~msg:"the jobs without a pool test ran at once"
+        (Float.max a1 a2 < Float.min b1 b2)
+  | _ -> fail "two spans expected"
+
+let stateful_domains =
+  group "Stateful tests on several domains"
+    [
+      test "without --mutate-workers, a stateful test on two domains kills"
+        (killed_by_stateful []);
+      test "with --mutate-workers, it spawns its pool and kills"
+        (killed_by_stateful [ workers ]);
+      test
+        "without --mutate-workers, no test reaches a site that only a worker \
+         of the pool evaluates" (fun () ->
+          equal string "mutants: 0 reached by this suite, 4 never reached"
+            (outcome (on_workers [ mutate ]).out));
+      test "with --mutate-workers, the pool kills the mutant of such a site"
+        (fun () ->
+          let r = on_workers [ mutate; workers ] in
+          equal (pair string text) ("exited 0", "") (r.status, r.err);
+          equal string one_killed (outcome r.out));
+      test "an armed run without --mutate-workers does not evaluate such a site"
+        (fun () ->
+          equal string "mutant not evaluated: no selected test ran the site."
+            (outcome (on_workers [ "--arm"; site 15 ]).out));
+      test
+        "an armed run with --mutate-workers kills its mutant, and its replay \
+         line keeps the flag"
+        armed_on_workers;
+      test "the mirror WINDTRAP_MUTATE_WORKERS acts as the flag" (fun () ->
+          let r =
+            spawn
+              ~env:[ suite "on_workers"; ("WINDTRAP_MUTATE_WORKERS", "1") ]
+              [ "--arm"; site 15 ]
+          in
+          equal string "mutant killed." (outcome r.out));
+      test "an armed run keeps --mutate-workers in its JUnit file"
+        junit_keeps_workers;
+      test
+        "under -j 4, a job with a pool test runs alone, and the other jobs run \
+         at once"
+        pool_alone;
+    ]
+
 (* The armed run *)
 
 let armed_kill () =
@@ -3257,6 +3367,7 @@ let () =
          refusals;
          armed;
          reproducing;
+         stateful_domains;
          forks;
          signals;
          effects;

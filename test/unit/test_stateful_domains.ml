@@ -7,8 +7,9 @@
    that depend on the domain a call runs on, never on a race, so every
    verdict here is deterministic.
 
-   Under mutation testing a stateful test on several domains spawns
-   nothing, and every test here that spawns a pool skips. The scenarios that
+   Under mutation testing without --mutate-workers, a stateful test on
+   several domains spawns nothing, and every test here that spawns a pool
+   skips. The scenarios that
    leave a domain running forever or spawn every domain the runtime has run
    in a fresh process of this executable, which the test that reads them
    starts: each worker starts the executable again, so work done as the
@@ -157,9 +158,10 @@ let body tree =
 (* Workers *)
 
 let mutating () =
-  match (Run.config (Run.current ())).mutation with
+  let config = Run.config (Run.current ()) in
+  match config.mutation with
   | Run.No_mutation -> false
-  | Run.Loop _ | Run.Armed _ -> true
+  | Run.Loop _ | Run.Armed _ -> not config.mutate_workers
 
 let with_pool n fn =
   if mutating () then
@@ -1889,17 +1891,6 @@ let stops_at_a_control () =
   equal string "raised windtrap skip: why" (armed_run (value tree));
   equal int 0 !ticked
 
-let mutation =
-  group "Under mutation testing"
-    [
-      test "each program runs on the test's domain, and nothing spawns"
-        (fun () ->
-          equal string "pass" (Recorded.row under_mutation [ "sequential" ]);
-          equal (list int) [ self () ] seen_under_mutation);
-      test "a control from a branch ends the run before the next branch"
-        stops_at_a_control;
-    ]
-
 (* A call that never returns *)
 
 (* The run happens in a fresh process of this executable, before any domain
@@ -2024,6 +2015,40 @@ let never_returns () =
          stopped after: stuck\n\
          exit: 1"
         text
+
+(* Under mutation testing with --mutate-workers: the text is the row of the
+   test, and whether a call ran on a domain other than the test's. *)
+let workers_under_mutation =
+  in_a_fresh_process "workers_under_mutation" (fun () ->
+      let r =
+        Recorded.execute
+          ~config:(fun c ->
+            {
+              c with
+              mutation = Run.Loop Run.every_mutant;
+              mutate_workers = true;
+            })
+          [ Stateful.stateful ~count:5 ~domains:2 "parallel" [ where () ] ]
+      in
+      let others = List.filter (fun d -> d <> self ()) (Log.take ()) in
+      Scratch.remove_tree (Filename.dirname (Recorded.log_dir r));
+      strf "%s %b" (Recorded.row r [ "parallel" ]) (others <> []))
+
+let mutation =
+  group "Under mutation testing"
+    [
+      test "each program runs on the test's domain, and nothing spawns"
+        (fun () ->
+          equal string "pass" (Recorded.row under_mutation [ "sequential" ]);
+          equal (list int) [ self () ] seen_under_mutation);
+      test "with --mutate-workers, a program runs its calls on the workers"
+        (fun () ->
+          match Lazy.force workers_under_mutation with
+          | None -> skip ~reason:"POSIX only: the run is in a fresh process" ()
+          | Some text -> equal string "pass true" text);
+      test "a control from a branch ends the run before the next branch"
+        stops_at_a_control;
+    ]
 
 let stopping =
   group "Spawning and stopping"

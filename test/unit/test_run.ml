@@ -187,6 +187,7 @@ let fields (c : Run.config) =
     ("verbose", string_of_bool c.verbose);
     ("junit", opt Fun.id c.junit);
     ("mutation", mutation_name c.mutation);
+    ("mutate_workers", string_of_bool c.mutate_workers);
     ("github", string_of_bool c.github);
     ( "invocation",
       match c.invocation with `Exe cmd -> "exe " ^ cmd | `Mirrors -> "mirrors"
@@ -218,6 +219,7 @@ let given_no_flag =
     ("verbose", "false");
     ("junit", "none");
     ("mutation", "none");
+    ("mutate_workers", "false");
     ("github", "false");
     ("invocation", "mirrors");
     ("broadcast", "none");

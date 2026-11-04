@@ -470,14 +470,17 @@ type ended =
   | Interrupted of int * Mutate.mutant option
   | Finished of (Verdicts.record list * string option)
 
-(* The budget counts the job's evaluations, not the dry run's. *)
-let jobs_of ~deadline ~dry_run reached =
+(* The budget counts the job's evaluations, not the dry run's. A job with a
+   test that spawned a pool in the dry run runs alone, so that the pool gets
+   the CPUs that its deadline assumes. *)
+let jobs_of ~deadline ~pooled ~dry_run reached =
   let job ~bail ~armed paths =
     {
       Supervisor.cases = List.map Test_tree.path_to_string paths;
       deadline = deadline paths;
       bail;
       armed;
+      alone = List.exists (Hashtbl.mem pooled) paths;
     }
   in
   job ~bail:false ~armed:None
@@ -492,8 +495,8 @@ let jobs_of ~deadline ~dry_run reached =
 (* Every job runs in a fresh worker, the probe first and then one per reached
    mutant in catalogue order, up to [-j] at once; they are given in that
    order. *)
-let test_mutants renderer ~suite (config : Run.config) tests ~dry_run ~wall
-    ~save reached =
+let test_mutants renderer ~suite (config : Run.config) tests ~dry_run ~pooled
+    ~wall ~save reached =
   let durations = Hashtbl.create 256 in
   List.iter
     (fun (r : Run.result) -> Hashtbl.replace durations r.path r.duration)
@@ -535,7 +538,7 @@ let test_mutants renderer ~suite (config : Run.config) tests ~dry_run ~wall
     with_interrupts @@ fun () ->
     match
       Supervisor.fresh config ~suite tests
-        (jobs_of ~deadline ~dry_run reached)
+        (jobs_of ~deadline ~pooled ~dry_run reached)
         ~on_ran ~on_signal:record
     with
     | exception Refused message -> Refused_by message
@@ -696,10 +699,12 @@ let loop renderer ~scope ~suite (config : Run.config) tests =
        domain in a test instead"
   else
     let on_reach = observe reach ~xfail:(xfail_paths tests) in
+    let pooled = Hashtbl.create 4 in
+    let on_pool path = Hashtbl.replace pooled path () in
     match
       Report.run
         ~execute:(fun ?on_event config ->
-          Supervisor.execute ~on_reach ?on_event config)
+          Supervisor.execute ~on_reach ~on_pool ?on_event config)
         ~suite
         { config with junit = None }
         tests
@@ -765,8 +770,8 @@ let loop renderer ~scope ~suite (config : Run.config) tests =
                     @ recorded Verdicts.Unreached unreached)
               in
               match
-                test_mutants renderer ~suite config tests ~dry_run ~wall ~save
-                  to_test
+                test_mutants renderer ~suite config tests ~dry_run ~pooled ~wall
+                  ~save to_test
               with
               | exception Sys_error _ when !signal = Some Sys.sigpipe ->
                   Os.die_by Sys.sigpipe

@@ -38,9 +38,9 @@ what is non-obvious.
   in an executable of its own because each of its tests that spawns a
   domain retires its worker. Its systems give results that depend on
   the domain a call runs on, never on a race, so every verdict is
-  deterministic. Under mutation testing it spawns nothing: a stateful
-  test on several domains then runs each program on the test's domain,
-  and each test that spawns a pool skips. Its scenarios that leave a
+  deterministic. Under mutation testing without `--mutate-workers` it
+  spawns nothing: a stateful test on several domains then runs each
+  program on the test's domain, and each test that spawns a pool skips. Its scenarios that leave a
   domain running forever or spawn every domain the runtime has run in
   a fresh process of the executable, which the test that reads them
   starts: run at module initialisation, they would cost 2.3 s in each

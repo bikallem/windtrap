@@ -15,12 +15,14 @@ let ( let* ) = Result.bind
 (* Frames *)
 
 (* What a worker sends: that a new start of the executable reached its run
-   and serves, a report of [Run.serve], the mutants each test evaluated, and
-   as it ends the coverage counts it hands over. *)
+   and serves, a report of [Run.serve], the mutants each test evaluated, the
+   tests that spawned a pool of worker domains, and as it ends the coverage
+   counts it hands over. *)
 type to_parent =
   | Serving
   | Report of Run.report
   | Reached of { test : string list option; sites : (Mutate.id * int) list }
+  | Pool of string list
   | Counts of Coverage.t
   | Unwitnessed (* it armed a mutant and could not map its byte *)
 
@@ -150,6 +152,18 @@ let reach_windows ~send (event : Run.event) =
     ->
       ()
 
+(* The tests that called [Workers.spawn]. Under mutation only a stateful test
+   under [--mutate-workers] does, and the loop runs its jobs alone. *)
+let pool_watch ~send =
+  let before = ref (Workers.spawns ()) in
+  fun (event : Run.event) ->
+    match event with
+    | Test_started _ -> before := Workers.spawns ()
+    | Test_finished result when Workers.spawns () <> !before -> send result.path
+    | Test_finished _ | Run_started _ | Shrinking _ | Shrunk _
+    | Fixture_release _ | Interrupted _ ->
+        ()
+
 (* The worker is a session of its own, so a terminal's signal reaches the
    parent alone, which forwards it, and the parent kills the group. *)
 let serve (config : Run.config) ~suite tests ~temp_dir ~own_exits ~input ~output
@@ -175,6 +189,7 @@ let serve (config : Run.config) ~suite tests ~temp_dir ~own_exits ~input ~output
     Mutex.protect lock (fun () -> write_all output frame 0 (Bytes.length frame))
   in
   let reached test sites = send (Reached { test; sites }) in
+  let pools = pool_watch ~send:(fun path -> send (Pool path)) in
   if mutating config && !unwitnessed then send Unwitnessed;
   let last () =
     (if mutating config then try window ~send:reached None with _ -> ());
@@ -188,6 +203,7 @@ let serve (config : Run.config) ~suite tests ~temp_dir ~own_exits ~input ~output
     | Run.Event event as report ->
         if mutating config then begin
           reach_windows ~send:reached event;
+          pools event;
           match event with
           | Test_started _ -> in_test := true
           | Test_finished _ -> in_test := false
@@ -691,7 +707,7 @@ type settled =
   | Served of { served : Run.served; stopped : bool }
   | Lost of Run.result
 
-let supervise ?(on_event = ignore) ?stop_after ~on_reach ~on_lost
+let supervise ?(on_event = ignore) ?stop_after ~on_reach ~on_pool ~on_lost
     (config : Run.config) ~suite tests ~spawn =
   let started = Os.counter () in
   let* selection = Run.select config ~suite tests in
@@ -846,6 +862,9 @@ let supervise ?(on_event = ignore) ?stop_after ~on_reach ~on_lost
     | Reached { test; sites } ->
         on_reach test sites;
         drain w
+    | Pool path ->
+        on_pool path;
+        drain w
     | Unwitnessed ->
         unwitnessed := true;
         drain w
@@ -956,6 +975,7 @@ let supervise ?(on_event = ignore) ?stop_after ~on_reach ~on_lost
           job
     | Counts counts, _ -> Coverage.absorb counts
     | Reached { test; sites }, _ -> on_reach test sites
+    | Pool path, _ -> on_pool path
     | Unwitnessed, _ -> unwitnessed := true
     | Report (Judge attempt), Some job ->
         job.asked <- Some (attempt, Os.counter ())
@@ -1111,13 +1131,17 @@ let supervise ?(on_event = ignore) ?stop_after ~on_reach ~on_lost
 
 (* The parent's own evaluations, at module initialization, are outside
    every test. *)
-let execute ?(on_reach = fun _ _ -> ()) ?(on_lost = ignore) ?stop_after
-    ?(on_event = ignore) (config : Run.config) ~suite tests =
+let execute ?(on_reach = fun _ _ -> ()) ?(on_pool = ignore) ?(on_lost = ignore)
+    ?stop_after ?(on_event = ignore) (config : Run.config) ~suite tests =
   if mutating config then window ~send:on_reach None;
   let spawning = if Sys.win32 then `None else spawning () in
   if config.in_process || spawning = `None then (
+    let pools = pool_watch ~send:on_pool in
     let on_event event =
-      if mutating config then reach_windows ~send:on_reach event;
+      if mutating config then begin
+        reach_windows ~send:on_reach event;
+        pools event
+      end;
       on_event event
     in
     let ran = Run.execute ~on_event ?stop_after config ~suite tests in
@@ -1129,8 +1153,8 @@ let execute ?(on_reach = fun _ _ -> ()) ?(on_lost = ignore) ?stop_after
       | `Exec -> exec ~quiet:false ~armed:None config ~suite tests
       | `Fork | `None -> fork ~quiet:false ~armed:None config ~suite tests
     in
-    supervise ~on_event ?stop_after ~on_reach ~on_lost config ~suite tests
-      ~spawn
+    supervise ~on_event ?stop_after ~on_reach ~on_pool ~on_lost config ~suite
+      tests ~spawn
 
 (* Fresh workers *)
 
@@ -1141,6 +1165,7 @@ type job = {
   deadline : float;
   bail : bool;
   armed : (Mutate.id * int) option;
+  alone : bool;
 }
 
 type ended = Ran | Lost of string | Expired
@@ -1206,10 +1231,16 @@ let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
           ended;
         }
   in
+  let fits job =
+    match !running with
+    | [] -> true
+    | running ->
+        List.length running < config.jobs
+        && (not job.alone)
+        && not (List.exists (fun st -> st.job.alone) running)
+  in
   let start () =
-    while
-      !next < n && List.length !running < config.jobs && Option.is_none !signal
-    do
+    while !next < n && fits jobs.(!next) && Option.is_none !signal do
       let job = jobs.(!next) in
       let st =
         {
@@ -1283,7 +1314,7 @@ let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
     | Serving -> st.w.serving <- true
     | Reached { sites; _ } -> reached st sites
     | Unwitnessed -> st.witnessed <- false
-    | Report (Event _ | Judge _) | Counts _ -> ()
+    | Report (Event _ | Judge _) | Counts _ | Pool _ -> ()
   in
   let expired st =
     kill st.w;

@@ -298,6 +298,11 @@ let entries =
       ~mirror:(mirrored "WINDTRAP_SKIP_KILLED")
       "Skip the mutants that the verdict file of another suite killed (with \
        --mutate).";
+    row "--mutate-workers"
+      (switch (fun c -> { c with mutate_workers = true }))
+      ~mirror:(mirrored "WINDTRAP_MUTATE_WORKERS")
+      "Let a stateful test on several domains spawn its worker domains (with \
+       --mutate or --arm).";
     row "--arm"
       (value "ID" any (field (fun c id -> { c with mutation = Run.Armed id })))
       ~mirror:(mirrored "WINDTRAP_MUTATE_ARM")

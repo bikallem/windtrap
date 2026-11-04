@@ -51,6 +51,7 @@ type config = {
   junit : string option;
   json : string option;
   mutation : mutation;
+  mutate_workers : bool;
   github : bool;
   invocation : invocation;
   broadcast : broadcast;
@@ -84,6 +85,7 @@ let default_config () =
     junit = None;
     json = None;
     mutation = No_mutation;
+    mutate_workers = false;
     github = false;
     invocation = `Mirrors;
     broadcast = not_broadcast;
