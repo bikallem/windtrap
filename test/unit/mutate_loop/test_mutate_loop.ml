@@ -1747,6 +1747,19 @@ let pool_alone () =
         (Float.max a1 a2 < Float.min b1 b2)
   | _ -> fail "two spans expected"
 
+(* The probe's second worker hangs as it starts (see suite_main's
+   [start_hangs]): a start leaves out at most the deadline. *)
+let start_hangs () =
+  let starts = Filename.concat (temp_dir ()) "starts" in
+  let r =
+    finish_within ~what:"the deadline of a start that hangs"
+      (start
+         ~env:[ suite "start_hangs"; ("MUTATE_STARTS", starts) ]
+         [ mutate; workers; "-j"; "1" ])
+  in
+  equal string "exited 1" r.status;
+  contains ~sub:"the determinism probe exceeded its deadline" r.err
+
 let stateful_domains =
   group "Stateful tests on several domains"
     [
@@ -1791,6 +1804,7 @@ let stateful_domains =
           in
           equal (pair string text) ("exited 0", "") (r.status, r.err);
           equal string one_killed (outcome r.out));
+      test "a start that hangs ends at the deadline of its job" start_hangs;
     ]
 
 (* The armed run *)

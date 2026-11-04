@@ -1487,11 +1487,6 @@ let mentions ~sub s =
 
 let run_all workers jobs = Workers.run workers ~grace:(Fun.const 0.) jobs
 
-(* Each job ends by marking its domain, and allocates nothing, so what that
-   domain allocates from then until the run returns is the pool's own, on
-   the way from the job's end to the mark that ends it: a block allocated
-   there is a point where an asynchronous exception could land. Flushing
-   the formatters allocates, and swallows what lands there. *)
 (* The mutation guards of an instrumented pool allocate, so a test that
    counts the blocks of a worker skips in a mutation run, also under
    --mutate-workers. *)
@@ -1500,6 +1495,12 @@ let unguarded () =
   | Run.No_mutation -> ()
   | Run.Loop _ | Run.Armed _ ->
       skip ~reason:"under mutation testing the guards of the pool allocate" ()
+
+(* Each job ends by marking its domain, and allocates nothing, so what that
+   domain allocates from then until the run returns is the pool's own, on
+   the way from the job's end to the mark that ends it: a block allocated
+   there is a point where an asynchronous exception could land. Flushing
+   the formatters allocates, and swallows what lands there. *)
 
 let allocates_nothing_but_flush () =
   unguarded ();

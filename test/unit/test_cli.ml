@@ -34,6 +34,8 @@ let error_row = function
   | Cli.Incompatible_flags (first, second) ->
       strf "incompatible %s %s" first second
   | Cli.Requires (flag, needed) -> strf "%s requires %s" flag needed
+  | Cli.Requires_any (flag, needed) ->
+      strf "%s requires %s" flag (String.concat " or " needed)
 
 let pp_error ppf e = Format.pp_print_string ppf (error_row e)
 
@@ -370,6 +372,8 @@ let messages () =
         { source = "--prop-count"; value = "x"; expected = "an int" };
       Cli.Incompatible_flags ("-u", "--corrected");
       Cli.Incompatible_flags ("--mutate", "--arm");
+      Cli.Requires ("--lines", "--mutate");
+      Cli.Requires_any ("--mutate-workers", [ "--mutate"; "--arm" ]);
     ]
   in
   let refused =
@@ -401,6 +405,8 @@ let messages () =
     invalid value 'x' for --prop-count: expected an int
     options '-u' and '--corrected' cannot be combined
     options '--mutate' and '--arm' cannot be combined
+    option '--lines' scopes '--mutate', which is not given
+    option '--mutate-workers' requires '--mutate' or '--arm'
     invalid value 'nope' for --seed: expected an s1: token with 16 lowercase hexadecimal digits
     invalid value '9/2' for --shard: expected K/N with 1 <= K <= N (e.g. 2/4)
     invalid value 'x' for --list: expected no argument

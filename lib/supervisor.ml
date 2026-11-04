@@ -1196,7 +1196,7 @@ type state = {
   mutable evaluated : int option;
   mutable witnessed : bool;
   mutable restarted : Os.counter option; (* a new start, until it serves *)
-  mutable left_out : float; (* the seconds of the new starts that served *)
+  mutable left_out : float; (* the seconds left out for the new starts *)
 }
 
 let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
@@ -1288,6 +1288,10 @@ let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
              | Some text -> before_tests status text
              | None -> ended status))
   in
+  (* The module initialization of a worker that replaces a retired one is no
+     part of the job's tests, as in [supervise]. Each start leaves out at most
+     the job's deadline, so a start that hangs still expires. *)
+  let starting st c = Float.min st.job.deadline (Os.count_s c) in
   (* A worker sends the evaluations of a test before its [Done]. *)
   let reached st sites =
     match st.job.armed with
@@ -1319,7 +1323,7 @@ let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
     | Serving ->
         st.w.serving <- true;
         Option.iter
-          (fun c -> st.left_out <- st.left_out +. Os.count_s c)
+          (fun c -> st.left_out <- st.left_out +. starting st c)
           st.restarted;
         st.restarted <- None
     | Reached { sites; _ } -> reached st sites
@@ -1341,10 +1345,8 @@ let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
           on_ran index ran;
           deliver ()
   in
-  (* The module initialization of a worker that replaces a retired one is no
-     part of the job's tests, as in [supervise]. *)
   let remaining st =
-    let starting = Option.fold ~none:0. ~some:Os.count_s st.restarted in
+    let starting = Option.fold ~none:0. ~some:(starting st) st.restarted in
     st.job.deadline -. (Os.count_s st.started -. st.left_out -. starting)
   in
   (* A worker found dead may have left reports in its pipe, which say more
@@ -1367,7 +1369,10 @@ let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
     | running' ->
         let wait =
           List.fold_left
-            (fun acc st -> Float.min acc (Float.max 0. (remaining st)))
+            (fun acc st ->
+              (* A new start is checked once a step until it serves. *)
+              if Option.is_some st.restarted then acc
+              else Float.min acc (Float.max 0. (remaining st)))
             1. running'
         in
         let ready =

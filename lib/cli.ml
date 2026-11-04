@@ -47,6 +47,7 @@ type error =
   | Invalid_value of { source : string; value : string; expected : string }
   | Incompatible_flags of string * string
   | Requires of string * string
+  | Requires_any of string * string list
 
 let ( let* ) = Result.bind
 
@@ -385,6 +386,9 @@ let error_message = function
       Pp.str "options '%s' and '%s' cannot be combined" first second
   | Requires (flag, needed) ->
       Pp.str "option '%s' scopes '%s', which is not given" flag needed
+  | Requires_any (flag, needed) ->
+      Pp.str "option '%s' requires %s" flag
+        (String.concat " or " (List.map (Pp.str "'%s'") needed))
 
 (* Parsing *)
 
@@ -557,7 +561,7 @@ let settings cli =
   let mutates = gave layered "--mutate" || gave layered "--arm" in
   let* () =
     if gave cli "--mutate-workers" && not mutates then
-      Error (Requires ("--mutate-workers", "--mutate or --arm"))
+      Error (Requires_any ("--mutate-workers", [ "--mutate"; "--arm" ]))
     else Ok ()
   in
   let* () =

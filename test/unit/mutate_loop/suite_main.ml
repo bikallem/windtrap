@@ -661,6 +661,15 @@ let pool_restarts =
             (fun () -> Subject.sub 10 4);
         ])
 
+(* Each process claims the next of the files MUTATE_STARTS.1, .2, ... as it
+   starts. Under -j 1 the fifth process is the worker that replaces the
+   retired one in the probe, and it hangs before it serves. *)
+let start_index path =
+  let rec next i =
+    if claim (Printf.sprintf "%s.%d" path i) then i else next (i + 1)
+  in
+  next 1
+
 let retried = ref 0
 let handle = fixture ~teardown:(fun () -> ignore (Subject.crasher 3 1)) Fun.id
 
@@ -742,6 +751,13 @@ let () =
       exit @@ run "calc" [ group "stateful" stateful_domains ]
   | "on_workers" -> exit @@ run "calc" [ group "stateful" on_workers ]
   | "pool_alone" -> exit @@ run "calc" [ group "pool" pool_alone ]
+  | "start_hangs" ->
+      (match Sys.getenv_opt "MUTATE_STARTS" with
+      | Some path when start_index path = 5 -> Unix.sleepf 60.
+      | Some _ | None -> ());
+      exit
+      @@ run "calc"
+           [ group "pool" (List.filteri (fun i _ -> i < 2) pool_restarts) ]
   | "pool_restarts" ->
       Unix.sleepf 0.3;
       exit @@ run "calc" [ group "pool" pool_restarts ]
