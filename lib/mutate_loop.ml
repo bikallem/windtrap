@@ -352,22 +352,19 @@ let killing_test ran =
 let check_runs = 3
 
 (* The failure of [test] in a run of a check, as one line. A run that ended
-   before its tests did gives none. *)
+   before [test] ended has no row of it, and gives none. *)
 let check_failure test (ran : Supervisor.ran) =
-  match ran.ended with
-  | Supervisor.Expired | Lost _ -> None
-  | Ran ->
-      List.find_map
-        (fun (r : Run.result) ->
-          match r.outcome with
-          | Failure.Fail (f :: _)
-            when kills r && List.equal String.equal r.path test ->
-              Some
-                (strf "its killing test %s also fails with no mutant: %s"
-                   (Test_tree.path_to_string test)
-                   (Report_sections.headline f))
-          | Pass | Fail _ | Skip _ -> None)
-        ran.results
+  List.find_map
+    (fun (r : Run.result) ->
+      match r.outcome with
+      | Failure.Fail (f :: _)
+        when kills r && List.equal String.equal r.path test ->
+          Some
+            (strf "its killing test %s also fails with no mutant: %s"
+               (Test_tree.path_to_string test)
+               (Report_sections.headline f))
+      | Pass | Fail _ | Skip _ -> None)
+    ran.results
 
 (* [paths] up to and with [test]. *)
 let rec through test = function
@@ -685,12 +682,17 @@ let test_mutants renderer ~suite (config : Run.config) tests ~dry_run ~pooled
           if j + 1 < Array.length due then testing (first due.(j + 1))
         in
         testing (first due.(0));
-        pass config ~suite tests
-          (Array.to_list
-             (Array.map
-                (fun check -> unarmed_job ~deadline ~pooled check.paths)
-                due))
-          ~on_ran;
+        (* A run of a check has the longest deadline of the jobs that wait for
+           it, so a killing test that fails at its own timeout fails in time. *)
+        let job check =
+          let longest =
+            List.fold_left
+              (fun d (i, _) -> Float.max d (deadline (paths i)))
+              0. check.waiting
+          in
+          unarmed_job ~deadline:(fun _ -> longest) ~pooled check.paths
+        in
+        pass config ~suite tests (Array.to_list (Array.map job due)) ~on_ran;
         check_passes ~run:(run + 1) (List.rev !clean)
   in
   let rec passes ~run = function

@@ -175,10 +175,11 @@
   up to and with the killing test, with no mutant, up to 3 times, each
   in a fresh worker. When the killing test fails in one of these runs,
   a kill in the first run is unknown, with the reason
-  `its killing test <test> also fails with no mutant: <failure>`. A kill
-  in a retry then leaves the mutant a survivor. An unknown mutant is not
-  part of the score, so a flaky test makes the denominator smaller. One
-  list of tests gets one check. The checks run after the retries, in
+  `its killing test <test> also fails with no mutant: <failure>`. When
+  the check of a kill in a retry fails, the mutant stays a survivor. An
+  unknown mutant is not part of the score, so a flaky test makes the
+  denominator smaller. One list of tests gets one check, and each run
+  has the deadline of the job of the kill. The checks run after the retries, in
   passes of up to `-j` runs at once. The verdict file format does not
   change (doc/manual/mutation.md#flaky-kills).
 

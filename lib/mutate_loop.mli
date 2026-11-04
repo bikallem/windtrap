@@ -124,23 +124,25 @@ val execute_and_report :
     names a killing test waits for a check. The killing test is the first test
     that has a counted failure, is not marked xfail, and comes in or after the
     test that first evaluated the site. A kill by a fixture release alone names
-    no test and gets no check. The check runs the cases of the job up to and
-    with the killing test, with no mutant and with no stop at a failure, in a
-    fresh worker. Two kills with the same cases share one check.
+    no test and gets no check. The check runs the cases of the job, which are
+    the reaching tests of the mutant, up to and with the killing test. It runs
+    them with no mutant and with no stop at a failure, in a fresh worker. Two
+    kills whose checks run the same cases share one check.
 
     The checks run after the last retry pass, in up to [3] passes
     ([check_runs]). Each pass runs once each check that has not failed, up to
     [config.jobs] at once, in the catalogue order of the first mutant that waits
-    for the check. A check that holds a test that spawned a pool runs alone. The
-    deadline of a run is that of a job with the same cases. The live line names
-    the first mutant that waits for a check at each of its runs.
+    for the check. A check that holds a test that spawned a pool runs alone. A
+    run of a check has the longest deadline of the jobs that wait for it, so a
+    killing test that fails at its own timeout also fails in the check. The live
+    line names the first mutant that waits for a check at each of its runs.
 
     A check fails when the killing test has a counted failure in one of its
-    runs. A run that ends before its tests do, at its deadline or with its
-    worker, gives no failure. When the check fails, a kill in the first run is
-    {!Windtrap_runtime.Verdicts.Unknown}, with the reason
-    ["its killing test <path> also fails with no mutant: <failure>"]. The
-    failure is the headline of the first failure of the test in that run
+    runs, also when the run then passes its deadline or loses its worker. A run
+    that ends before the killing test ends gives no failure. When the check
+    fails, a kill in the first run is {!Windtrap_runtime.Verdicts.Unknown}, with
+    the reason ["its killing test <path> also fails with no mutant: <failure>"].
+    The failure is the headline of the first failure of the test in that run
     ({!Report_sections.headline}). Otherwise the kill stays.
 
     When the check of a kill in a retry fails, the mutant stays a survivor, and

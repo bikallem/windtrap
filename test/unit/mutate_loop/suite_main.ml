@@ -728,11 +728,21 @@ let intermittent =
      MUTATE_FIRST_RUNS. Under MUTATE_FIRST_PINS the first test pins
      [widen].
    - Under MUTATE_KILL_SUB the two tests also reach [sub], so the jobs of
-     [sub] and [widen] run the same tests. *)
+     [sub] and [widen] run the same tests.
+   - The second test holds a fixture whose release hangs at the run
+     MUTATE_RELEASE_HANG_AT. *)
 let among var n =
   match Sys.getenv_opt var with
   | None | Some "" -> false
   | Some runs -> List.mem (string_of_int n) (String.split_on_char ',' runs)
+
+let b_run = ref 0
+
+let held_by_b =
+  fixture
+    ~teardown:(fun () ->
+      if at "MUTATE_RELEASE_HANG_AT" !b_run then Unix.sleepf 600.)
+    Fun.id
 
 let flaky_kill =
   let reach () =
@@ -748,6 +758,8 @@ let flaky_kill =
           equal int 7 (Subject.widen 3 4));
     test "fails at the given runs" (fun () ->
         let run = count "MUTATE_RUNS" in
+        b_run := run;
+        held_by_b ();
         reach ();
         if at "MUTATE_GATE_AT" run then wait_at_gate ();
         if at "MUTATE_HANG_AT" run then Unix.sleepf 600.;
@@ -756,6 +768,22 @@ let flaky_kill =
           among "MUTATE_FAIL_AT" run
           || (Sys.getenv_opt "MUTATE_FAIL_ARMED" <> None && armed ())
         then fail (Printf.sprintf "run %d" run));
+  ]
+
+(* The fixture of the deadline of a check. The first test reaches [widen],
+   and at each run in MUTATE_FAIL_AT it hangs until its timeout. Its runs
+   count as in [flaky_kill]. The second test runs after it and takes 0.5 s,
+   so the job of [widen] has a longer deadline than a run of the first test
+   alone. *)
+let timed_kill =
+  [
+    test ~timeout:2.0 "times out at the given runs" (fun () ->
+        let run = count "MUTATE_RUNS" in
+        is_true (Subject.widen 3 4 <> 0);
+        if among "MUTATE_FAIL_AT" run then Unix.sleepf 600.);
+    test "takes 0.5 s" (fun () ->
+        Unix.sleepf 0.5;
+        is_true (Subject.widen 1 2 <> 99));
   ]
 
 let retried = ref 0
@@ -841,6 +869,7 @@ let () =
   | "pool_alone" -> exit @@ run "calc" [ group "pool" pool_alone ]
   | "intermittent" -> exit @@ run "calc" [ group "intermittent" intermittent ]
   | "flaky_kill" -> exit @@ run "calc" [ group "kill" flaky_kill ]
+  | "timed_kill" -> exit @@ run "calc" [ group "kill" timed_kill ]
   | "start_hangs" ->
       (match Sys.getenv_opt "MUTATE_STARTS" with
       | Some path when start_index path = 5 -> Unix.sleepf 60.

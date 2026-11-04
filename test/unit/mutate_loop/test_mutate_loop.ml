@@ -4008,6 +4008,55 @@ let ended_check env =
 let check_past_its_deadline () = ended_check [ ("MUTATE_HANG_AT", "4") ]
 let check_run_lost () = ended_check [ ("MUTATE_EXIT_AT", "4") ]
 
+(* The killing test fails at its timeout of 2 s in run 3 and in the first
+   check run. A run of the killing test alone would have a deadline of about
+   1 s, and the job of the mutant has one of about 5 s. *)
+let check_with_the_deadline_of_its_job () =
+  let b_file = Filename.concat (temp_dir ()) "b-runs" in
+  let r =
+    spawn
+      ~env:[ suite "timed_kill"; ("MUTATE_RUNS", b_file); fail_at "3,4" ]
+      [ mutate; retry_once ]
+  in
+  ended_well r;
+  equal string unknown_outcome (outcome r.out);
+  equal int 4 (line_count b_file);
+  equal
+    (option (list string))
+    (intermittent_rows
+       "unknown: its killing test kill \u{203a} times out at the given runs \
+        also fails with no mutant: timed out after 2s")
+    (rows r)
+
+(* The killing test fails in check run 4, and then the release of its
+   fixture hangs until the deadline of the run. *)
+let failure_before_a_hang () =
+  let k =
+    kill_run
+      ~env:[ fail_at "3,4"; ("MUTATE_RELEASE_HANG_AT", "4") ]
+      [ retry_once ]
+  in
+  ended_well k.r;
+  equal int 4 k.b_runs;
+  equal (option (list string)) (flaky_rows 4) (rows k.r)
+
+(* An --arm run under the mirror of --mutate-retry runs the suite once. *)
+let arm_no_check () =
+  let b_file = Filename.concat (temp_dir ()) "b-runs" in
+  let r =
+    spawn
+      ~env:
+        [
+          suite "flaky_kill";
+          ("MUTATE_RUNS", b_file);
+          fail_at "1";
+          ("WINDTRAP_MUTATE_RETRY", "1");
+        ]
+      [ "--arm"; site 18 ]
+  in
+  contains ~sub:"mutant killed." r.out;
+  equal int 1 (line_count b_file)
+
 (* A fixture release kills the mutant, and no test names a kill to check. *)
 let release_kill_no_check () =
   let r = spawn ~env:[ suite "release"; measured () ] [ mutate; retry_once ] in
@@ -4135,6 +4184,15 @@ let flaky_kills =
       test "a check run that passes its deadline gives no failure"
         check_past_its_deadline;
       test "a check run whose worker exits gives no failure" check_run_lost;
+      test
+        "a check run has the deadline of the job, so a killing test that fails \
+         at its timeout fails in the check"
+        check_with_the_deadline_of_its_job;
+      test
+        "a failure of the killing test counts when the run then passes its \
+         deadline"
+        failure_before_a_hang;
+      test "an --arm run does no check" arm_no_check;
       test "a kill by a fixture release alone gets no check"
         release_kill_no_check;
       test "a signal that stops a check leaves its mutant with no verdict"

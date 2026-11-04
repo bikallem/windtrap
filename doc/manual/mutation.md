@@ -399,15 +399,18 @@ mutant, it can kill a mutant that the tests do not find.
 Under `--mutate-retry N` with `N` above 0, the loop does a check of each
 kill that names a test. The killing test is the first test that fails
 in or after the test that first evaluates the site. The check runs the
-tests of the kill up to and with the killing test, with no mutant, in a
+tests of the job that killed the mutant, which are its reaching tests,
+up to and with the killing test. It runs them with no mutant, in a
 fresh worker. A failure of an earlier test does not stop this run. The
 check does this run up to 3 times:
 
 - If the killing test fails in a run, the check fails and stops.
 - If the killing test does not fail in the 3 runs, the kill stays.
 
-A run that passes its deadline, or whose worker ends first, does not
-give a failure of the test. A kill that names no test gets no check,
+A run that ends before the killing test ends, at its deadline or with
+its worker, does not give a failure of the test. A failure of the test
+counts also when the run then ends early, for example in a fixture
+release that hangs. A kill that names no test gets no check,
 for example a kill by a fixture release. An `--arm` run does no check.
 
 When the check of a kill in the first run fails, the mutant is unknown.
@@ -444,10 +447,11 @@ of retries:
 The loop runs the checks in passes after the last pass of retries.
 Each pass runs once each check that has not failed, up to `-j` at once.
 A check that holds a test that spawned a pool runs alone, as a job does.
-The loop does one check for each different list of tests, also when the
-list killed more than one mutant. Each run of the check has the
-deadline of a job with the same tests. Thus each different list of a
-kill costs up to 3 more runs. The live line shows a run of a check
+Two kills whose checks run the same tests share one check, also when
+the two jobs had different tests after the killing test. Each run of
+the check has the longest deadline of the jobs that wait for it. Thus a
+killing test that fails at its own timeout also fails in the check.
+Each different list of tests costs up to 3 more runs. The live line shows a run of a check
 with the first mutant that waits for it.
 
 Three runs with no failure do not prove that a test is not flaky. For
@@ -458,9 +462,9 @@ fail in each run, and the test can also fail with no mutant.
 
 A signal stops the loop during a check as it does during a job. A kill
 that waits for its check gets no verdict, and the loop writes no
-verdict file. When the signal comes during a pass of checks or between
-two passes, and the first mutant with no verdict waits for its check,
-the message names that mutant, as in
+verdict file. The signal can come during a pass of checks or between
+two passes. If the first mutant with no verdict then waits for its
+check, the message names that mutant, as in
 `interrupted while the kill of calc.ml:13:9:sub waits for its check`.
 
 ## Stateful tests on several domains
