@@ -76,6 +76,21 @@
     count of 0 says [0 mutants unknown]. The outcome line counts the refused
     files as suites.
 
+    {b Killed elsewhere.} A [Windtrap_runtime.Verdicts.Killed_elsewhere] verdict
+    counts as killed, in the report, in the score and in the document. When the
+    merged verdict of a mutant is [Killed_elsewhere], no file of the merge kills
+    it directly. For each executable that such verdicts name as the killer, the
+    command then gives one note on standard error, before the report. The note
+    tells how many mutants count as killed by that executable and which run to
+    do again:
+    - When a file of the killer is in the merge, or when the killer no longer
+      exists ({!Windtrap_runtime.Instr.exe_location}), the run of the
+      executables whose files skipped the mutants. A file that records no
+      identity is named by its path.
+    - In the other cases, the run of the killer.
+
+    The notes do not change the exit code.
+
     {b Reaching tests.} The reaching tests of a survivor are the union of those
     of every file in which the mutant survived. Each is paired with the label of
     its file, and the pairs are sorted by label and then by test, without
@@ -172,7 +187,8 @@
     - ["before"] is the source text of the original expression.
     - ["after"] is the source text of the armed expression.
     - ["verdict"] is one of ["killed"], ["survived"], ["not_evaluated"],
-      ["unknown"], ["outside_tests"] and ["unreached"].
+      ["unknown"], ["outside_tests"] and ["unreached"]. A mutant killed
+      elsewhere ({{!section-merge}the merge}) is ["killed"].
     - ["tests"] is in the object of a survivor only. It is an array of the tests
       that reached the survivor.
     - ["executable"] and ["reason"] are in the object of an unknown mutant only.
@@ -219,6 +235,8 @@ val run : string list -> int
     - It parses the arguments.
     - It reads [WINDTRAP_COLOR] for the report when [--color] is absent.
     - It finds the {{!section-files}files}, judges them and loads them.
+    - It says the notes of the mutants killed elsewhere
+      ({{!section-merge}the merge}) on standard error.
     - It prints the report or the document of the {{!section-merge}merge} on
       standard output.
     - It runs the gate.

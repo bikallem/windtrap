@@ -90,9 +90,25 @@
   error, for example on a full disk. Before, an uncaught exception gave
   exit code 2. A closed pipe ends the process by SIGPIPE, as before,
   unless the parent ignores that signal.
-- (breaking) The verdict file format is `windtrap-mutants-v11`. A file
-  of an earlier format is refused. Delete `_build/_mutants` and run the
-  suites again.
+- `--skip-killed` and its mirror `WINDTRAP_SKIP_KILLED` let a mutation
+  run skip a reached mutant that the verdict file of another suite
+  killed. The skip applies only when the executable of that file did not
+  change since it wrote the file, and the source file of the mutant has
+  the same digest. The verdict file records the
+  mutant as killed elsewhere, with the executable of that file. The
+  report names each verdict file that the run used, and the outcome line
+  counts the skipped mutants as not tested. `windtrap mutants` counts
+  them as killed. When no verdict file of the merge has the kill, it
+  gives a note on standard error that tells which run to do again. The
+  run uses only the files on disk after its dry run, so run the fast
+  suites first. Two suites with the option that run at the same time can
+  skip one mutant because of each other, so run them one after the
+  other, for example with `dune runtest -j 1`
+  (doc/manual/mutation.md#skipping-the-mutants-that-another-suite-killed).
+- (breaking) The verdict file format is `windtrap-mutants-v12`. Each
+  record keeps the digest of the source file of its mutant, and a
+  skipped mutant is killed elsewhere. A file of an earlier format is
+  refused. Delete `_build/_mutants` and run the suites again.
 
 ## v0.3.1 2026-11-01
 

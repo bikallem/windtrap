@@ -431,6 +431,10 @@ OPTIONS:
       Test only the mutants on the lines that FILE, the output of git diff -U0,
       adds or changes (with --mutate).
 
+  --skip-killed (env WINDTRAP_SKIP_KILLED)
+      Skip the mutants that the verdict file of another suite killed (with
+      --mutate).
+
   --arm=ID (env WINDTRAP_MUTATE_ARM)
       Run once with mutant ID armed.
 

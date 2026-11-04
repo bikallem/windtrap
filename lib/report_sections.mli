@@ -533,9 +533,9 @@ type mutation = {
           mutant. *)
   killed : int;  (** The number of mutants killed. *)
   not_tested : int;
-      (** The number of reached mutants that have no verdict, which are those
-          that an interrupted loop did not finish. It is [0] in every other
-          report. *)
+      (** The number of reached mutants that no worker of the loop tested: those
+          that an interrupted loop did not finish, and those that the loop
+          skipped under [--skip-killed]. It is [0] in a merge. *)
   scope : scope;  (** What the reached count is relative to. *)
 }
 (** The type for a whole mutation report. Its reached count is
@@ -547,7 +547,7 @@ val mutation_score : mutation -> float
 (** [mutation_score m] is the percentage of killed mutants among the scored
     mutants of [m], unrounded. The scored mutants are those killed, those that
     survived and those not evaluated. An unknown mutant, a mutant that no test
-    reached and a mutant that has no verdict do not count. It is {!percent} of
+    reached and a mutant that no worker tested do not count. It is {!percent} of
     [m.killed] in their number, and thus [100.] when [m] has none. *)
 
 val mutation_gate_met : min:float -> mutation -> bool

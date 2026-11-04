@@ -13,9 +13,10 @@
 
    mkdata mutants OUT [--exe EXE] [--suite NAME] [--refused REASON]
        FILE:LINE:COL:REWRITE:BEFORE:AFTER=VERDICT...
-     VERDICT is killed, not_evaluated, outside_tests, unreached or
-     survived:TESTS, where TESTS are ';'-separated paths of '/'-separated
-     names. --suite records the suite.
+     VERDICT is killed, elsewhere:EXE, not_evaluated, outside_tests,
+     unreached or survived:TESTS, where EXE is the identity of the killing
+     executable and TESTS are ';'-separated paths of '/'-separated names.
+     --suite records the suite. No record has a source digest.
 
    --exe records the identity of the executable at EXE as it is now. *)
 
@@ -76,6 +77,7 @@ let verdict = function
           Verdicts.survived
             (List.map (String.split_on_char '/')
                (String.split_on_char ';' tests))
+      | [ "elsewhere"; exe ] -> Verdicts.Killed_elsewhere { exe }
       | _ -> die "%S: not a verdict" v)
 
 let record spec =
@@ -97,6 +99,7 @@ let record spec =
         end_col = id.col + String.length before;
         before;
         after;
+        source_digest = None;
         verdict = verdict v;
       }
   | _ -> die "%S: not FILE:LINE:COL:REWRITE:BEFORE:AFTER" mutant

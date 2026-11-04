@@ -57,6 +57,9 @@ what is non-obvious.
   budget and `inline/` for an armed inline partition. Its scenarios
   share the verdict file of `suite_main.exe`, so the stanza runs `-j 1`,
   whatever `WINDTRAP_JOBS` the environment holds.
+  The scenarios of `--skip-killed` copy `suite_main.exe` into a scratch
+  build directory, and put the verdict files of other suites beside its
+  file there.
   Under `semantics/`, `coverage/` and `mutate/` are the
   semantics-preservation suites: a fixture library instrumented
   unconditionally through `(pps)`, run and compared with the

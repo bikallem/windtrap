@@ -386,6 +386,12 @@ dune's cache restores a rebuilt artifact with its original time. No
 option keeps a stale file, since a number computed from another build's
 data describes a program that no longer exists.
 
+`--skip-killed` follows the same rule: a suite does not skip a mutant
+because of a stale file. Each verdict record also keeps a digest of the
+source file of its mutant. Thus a suite does not skip a mutant whose
+source changed since the other suite killed it, also when the other
+executable was not built again.
+
 ## A suite is its own mutation runner
 
 The test executable runs its own mutation run under `--mutate`. It is

@@ -84,6 +84,7 @@ let seconds_masked reason =
 
 let verdict = function
   | Verdicts.Killed -> "killed"
+  | Verdicts.Killed_elsewhere { exe } -> "killed elsewhere by " ^ exe
   | Verdicts.Unknown reason -> "unknown: " ^ seconds_masked reason
   | Verdicts.Survived { first; others } ->
       "survived by "
@@ -1291,6 +1292,7 @@ let elsewhere =
     end_col = 5;
     before = "a - b";
     after = "a + b";
+    source_digest = None;
     verdict = Verdicts.Killed;
   }
 
@@ -1341,17 +1343,23 @@ let failed_run () =
   contains ~sub:"reached by the 1 selected test" (outcome r.out);
   equal text not_saved r.err
 
-(* A copy of the suite under a scratch build directory whose _mutants is a
-   file. *)
-let unwritable () =
-  let root = temp_dir () in
+(* A copy of the suite in [root/_build/default], which is a scratch build
+   directory. *)
+let copied_suite root =
   let build = Filename.concat root "_build" in
   let exe = Filename.concat build "default/suite_main.exe" in
   Sys.mkdir build 0o755;
   Sys.mkdir (Filename.dirname exe) 0o755;
   write exe (read suite_exe);
   Unix.chmod exe 0o755;
-  write (Filename.concat build "_mutants") "a file\n";
+  exe
+
+(* A copy of the suite under a scratch build directory whose _mutants is a
+   file. *)
+let unwritable () =
+  let root = temp_dir () in
+  let exe = copied_suite root in
+  write (Filename.concat root "_build/_mutants") "a file\n";
   let r = spawn ~exe ~env:[ suite "weak" ] [ mutate ] in
   equal string "exited 0" r.status;
   equal string
@@ -2242,6 +2250,464 @@ let effects =
         source_lines;
     ]
 
+(* Killed elsewhere *)
+
+let rec directory path =
+  if not (Sys.file_exists path) then begin
+    directory (Filename.dirname path);
+    Sys.mkdir path 0o755
+  end
+
+(* A scratch project: a copy of the suite below [root/_build], the data
+   directory of its verdict files, and the digest of the source of the
+   mutants under [root], when [source] plants one. *)
+type project = {
+  root : string;
+  exe : string;
+  data : string;
+  digest : string option;
+}
+
+let skip_project ?(source = true) () =
+  let root = Unix.realpath (temp_dir ()) in
+  let exe = copied_suite root in
+  let data = Filename.concat root "_build/_mutants" in
+  directory data;
+  let digest =
+    if not source then None
+    else
+      let path = Filename.concat root (scope ^ "subject.ml") in
+      directory (Filename.dirname path);
+      write path "(* the scratch subject *)\n";
+      Some (Digest.to_hex (Digest.file path))
+  in
+  { root; exe; data; digest }
+
+let own p = Verdicts.output_file ~exe:p.exe ~suite:"calc"
+
+(* The verdict file [name] of a suite of the executable [exe], an identity
+   below the build directory of [p]. A stand-in executable gets the recorded
+   digest, so the file is fresh. Under [stale] the stand-in has another
+   digest, and under [orphan] there is none. [digest] replaces the source
+   digest of each record, and [records] adds whole records. *)
+let plant_other ?(exe = "default/other.exe") ?(stale = false) ?(orphan = false)
+    ?(named = true) ?refused ?digest ?(records = []) p name verdicts =
+  let source_digest = Option.value digest ~default:p.digest in
+  let stand_in = Filename.concat (Filename.concat p.root "_build") exe in
+  if not orphan then begin
+    directory (Filename.dirname stand_in);
+    write stand_in ("an executable, " ^ exe ^ "\n")
+  end;
+  let identity =
+    if not named then None
+    else
+      Some
+        {
+          Verdicts.exe;
+          digest =
+            (if stale || orphan then String.make 32 'f'
+             else Digest.to_hex (Digest.file stand_in));
+        }
+  in
+  let record (line, verdict) =
+    {
+      Verdicts.id = site_id line;
+      end_line = line;
+      end_col = 99;
+      before = "b";
+      after = "a";
+      source_digest;
+      verdict;
+    }
+  in
+  Verdicts.save ?identity ~suite:"other" ?refused
+    (Filename.concat p.data name)
+    (List.fold_left Verdicts.add Verdicts.empty
+       (List.map record verdicts @ records))
+
+(* A run of the copy, in the root of its project. It removes the verdict
+   file of the copy first, unless [keep]. *)
+let skip_run ?(env = []) ?(keep = false) p args =
+  if not keep then remove (own p);
+  let r = Child.run ~cwd:p.root ~env:(quiet env) p.exe (mutate :: args) in
+  {
+    status = ended r.Child.status;
+    out = r.Child.out;
+    err = r.Child.err;
+    file = saved (own p);
+  }
+
+let skip_killed = "--skip-killed"
+
+let elsewhere_line out =
+  List.find_opt (String.starts_with ~prefix:"killed elsewhere: ") (lines out)
+
+let one_skip exe =
+  "killed elsewhere: 1 mutant, not tested, from the verdict file of " ^ exe
+  ^ " (1)"
+
+let no_skip exe =
+  "killed elsewhere: 0 mutants, not tested, from the verdict file of " ^ exe
+  ^ " (0)"
+
+let no_file =
+  "killed elsewhere: 0 mutants, not tested, from no other verdict file"
+
+(* The line above the reproduce line, where the line of the skips goes. *)
+let above_reproduce out =
+  let rec find = function
+    | line :: (next :: _ as rest) ->
+        if String.starts_with ~prefix:"reproduce: " next then Some line
+        else find rest
+    | [ _ ] | [] -> None
+  in
+  find (lines out)
+
+let skipped_rows exe =
+  ("subject.ml:15 killed elsewhere by " ^ exe) :: List.tl green_rows
+
+let skipped_outcome =
+  "mutants: 1 survived of 2 reached by this suite, 2 never reached, 1 not \
+   tested, score 0.0% (0/1)"
+
+let old_name = "windtrap-old.mutants"
+
+(* A verdict file of the format before. *)
+let plant_old p =
+  write (Filename.concat p.data old_name) "windtrap-mutants-v11\ntested\n0\n"
+
+let old_warning p =
+  strf
+    "windtrap: warning: --skip-killed ignores %s/%s: not a windtrap verdict \
+     file (expected header \"windtrap-mutants-v12\", found \
+     \"windtrap-mutants-v11\"); files written by other windtrap versions are \
+     not readable - delete the stale verdict files, then re-run the mutation \
+     tests\n"
+    p.data old_name
+
+(* Another executable killed the mutant of [sub], and a file of the format
+   before lies beside its file. *)
+let killed_project () =
+  let p = skip_project () in
+  plant_other p "windtrap-other.mutants" [ (15, Verdicts.Killed) ];
+  plant_old p;
+  p
+
+let tested (r : ran) =
+  equal string "exited 0" r.status;
+  equal text "" r.err;
+  equal (option string) None (elsewhere_line r.out);
+  equal (option (list string)) (Some green_rows) (rows r);
+  equal string green_outcome (outcome r.out)
+
+let skipped p (r : ran) =
+  equal string "exited 0" r.status;
+  equal text (old_warning p) r.err;
+  equal (option string)
+    (Some (one_skip "default/other.exe"))
+    (above_reproduce r.out);
+  equal
+    (option (list string))
+    (Some (skipped_rows "default/other.exe"))
+    (rows r);
+  equal string skipped_outcome (outcome r.out)
+
+let skips () =
+  let p = killed_project () in
+  tested (skip_run p []);
+  skipped p (skip_run p [ skip_killed ])
+
+let mirror () =
+  let p = killed_project () in
+  skipped p (skip_run ~env:[ ("WINDTRAP_SKIP_KILLED", "1") ] p []);
+  tested (skip_run ~env:[ ("WINDTRAP_SKIP_KILLED", "0") ] p [])
+
+let survivor_killed_elsewhere () =
+  let p = skip_project () in
+  plant_other p "windtrap-other.mutants" [ (18, Verdicts.Killed) ];
+  let r = skip_run p [ skip_killed ] in
+  equal (list string) [] (survivors r.out);
+  equal (option string) None (reproduce r.out);
+  equal string
+    "mutants: 2 reached by this suite, 1 killed, 2 never reached, 1 not \
+     tested, score 100.0% (1/1)"
+    (outcome r.out);
+  equal
+    (option (list string))
+    (Some
+       [
+         "subject.ml:15 killed";
+         "subject.ml:18 killed elsewhere by default/other.exe";
+         "subject.ml:21 unreached";
+         "subject.ml:27 unreached";
+       ])
+    (rows r)
+
+let not_a_kill =
+  [
+    ("killed elsewhere", Verdicts.Killed_elsewhere { exe = "default/third.exe" });
+    ("unknown", Verdicts.Unknown "its run was killed by SIGSEGV");
+    ("a survivor", Verdicts.survived [ [ "calc"; "sub to zero" ] ]);
+    ("not evaluated", Verdicts.Not_evaluated);
+    ("outside tests", Verdicts.Outside_tests);
+    ("unreached", Verdicts.Unreached);
+  ]
+
+let only_a_kill (_, verdict) =
+  let p = skip_project () in
+  plant_other p "windtrap-other.mutants" [ (15, verdict) ];
+  let r = skip_run p [ skip_killed ] in
+  equal (option (list string)) (Some green_rows) (rows r);
+  equal (option string)
+    (Some (no_skip "default/other.exe"))
+    (elsewhere_line r.out)
+
+let other_digests =
+  [ ("a digest that differs", Some (String.make 32 '0')); ("no digest", None) ]
+
+let other_digest (_, digest) =
+  let p = skip_project () in
+  plant_other ~digest p "windtrap-other.mutants" [ (15, Verdicts.Killed) ];
+  let r = skip_run p [ skip_killed ] in
+  equal (option (list string)) (Some green_rows) (rows r)
+
+let digests p =
+  match Verdicts.load (own p) with
+  | Ok { verdicts; _ } ->
+      List.sort_uniq compare
+        (List.map
+           (fun (r : Verdicts.record) -> r.source_digest)
+           (Verdicts.records verdicts))
+  | Error _ -> []
+
+let recorded_digest () =
+  let p = skip_project () in
+  ignore (skip_run p []);
+  equal (list (option string)) [ p.digest ] (digests p);
+  let p = skip_project ~source:false () in
+  ignore (skip_run p []);
+  equal (list (option string)) [ None ] (digests p)
+
+let unreadable_source () =
+  let p = skip_project ~source:false () in
+  plant_other
+    ~digest:(Some (String.make 32 'a'))
+    p "windtrap-other.mutants"
+    [ (15, Verdicts.Killed) ];
+  let r = skip_run p [ skip_killed ] in
+  equal (option (list string)) (Some green_rows) (rows r)
+
+let own_file () =
+  let p = skip_project () in
+  ignore (skip_run p []);
+  let r = skip_run ~keep:true p [ skip_killed ] in
+  equal text "" r.err;
+  equal (option (list string)) (Some green_rows) (rows r);
+  equal (option string) (Some no_file) (elsewhere_line r.out)
+
+(* The loop reads the files in name order. Each order of the two executables
+   fails a loop that keeps the first or the last killer. *)
+let smaller_executable first =
+  let p = skip_project () in
+  let a = ("default/a.exe", [ (18, Verdicts.Killed) ])
+  and b = ("default/b.exe", [ (15, Verdicts.Killed); (18, Verdicts.Killed) ]) in
+  List.iteri
+    (fun i (exe, verdicts) ->
+      plant_other ~exe p (strf "windtrap-%d.mutants" (i + 1)) verdicts)
+    (if first = "a.exe" then [ a; b ] else [ b; a ]);
+  let r = skip_run p [ skip_killed ] in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal
+    (option (list string))
+    (Some
+       [
+         "subject.ml:15 killed elsewhere by default/b.exe";
+         "subject.ml:18 killed elsewhere by default/a.exe";
+         "subject.ml:21 unreached";
+         "subject.ml:27 unreached";
+       ])
+    (rows r);
+  equal (option string)
+    (Some
+       "killed elsewhere: 2 mutants, not tested, from the verdict files of \
+        default/a.exe (1), default/b.exe (1)")
+    (elsewhere_line r.out);
+  equal string "mutants: 2 reached by this suite, 2 never reached, 2 not tested"
+    (outcome r.out)
+
+let ignored_files () =
+  let p = skip_project () in
+  let kill = [ (15, Verdicts.Killed) ] in
+  plant_other ~named:false p "windtrap-anon.mutants" kill;
+  Sys.mkdir (Filename.concat p.data "windtrap-dir.mutants") 0o755;
+  plant_other ~exe:"default/gone.exe" ~orphan:true p "windtrap-gone.mutants"
+    kill;
+  plant_other ~exe:"default/good.exe" p "windtrap-good.mutants.123abc.tmp" kill;
+  write (Filename.concat p.data "notes.txt") "notes\n";
+  plant_old p;
+  plant_other ~exe:"default/refused.exe" ~refused:"its dry run is red" p
+    "windtrap-refused.mutants" kill;
+  plant_other ~exe:"default/stale.exe" ~stale:true p "windtrap-stale.mutants"
+    kill;
+  let warnings =
+    strf
+      "windtrap: warning: --skip-killed ignores %s/windtrap-anon.mutants: the \
+       file names no executable\n\
+       windtrap: warning: --skip-killed ignores %s/windtrap-gone.mutants: its \
+       executable (_build/default/gone.exe) no longer exists\n\
+       %swindtrap: warning: --skip-killed ignores %s/windtrap-stale.mutants: \
+       not written by the executable now at _build/default/stale.exe\n"
+      p.data p.data (old_warning p) p.data
+  in
+  let r = skip_run p [ skip_killed ] in
+  equal (option (list string)) (Some green_rows) (rows r);
+  equal (option string) (Some no_file) (elsewhere_line r.out);
+  equal text warnings r.err;
+  plant_other p "windtrap-other.mutants" kill;
+  let r = skip_run p [ skip_killed ] in
+  equal text warnings r.err;
+  equal
+    (option (list string))
+    (Some (skipped_rows "default/other.exe"))
+    (rows r);
+  equal (option string)
+    (Some (one_skip "default/other.exe"))
+    (elsewhere_line r.out)
+
+(* A loop that opened the FIFO would block. *)
+let fifo () =
+  let p = skip_project () in
+  Unix.mkfifo (Filename.concat p.data "windtrap-fifo.mutants") 0o644;
+  let run = start ~exe:p.exe ~env:[] [ mutate; skip_killed ] in
+  let r = finish_within ~seconds:30. ~what:"a FIFO in the data directory" run in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal (option string) (Some no_file) (elsewhere_line r.out)
+
+let scope_of_the_skip () =
+  let p = skip_project () in
+  let outside =
+    {
+      elsewhere with
+      Verdicts.source_digest = p.digest;
+      verdict = Verdicts.Killed;
+    }
+  in
+  plant_other p "windtrap-other.mutants"
+    [ (15, Verdicts.Killed); (21, Verdicts.Killed) ]
+    ~records:[ outside ];
+  let r = skip_run p [ skip_killed ] in
+  equal
+    (option (list string))
+    (Some (skipped_rows "default/other.exe"))
+    (rows r);
+  equal string skipped_outcome (outcome r.out);
+  equal (option string)
+    (Some (one_skip "default/other.exe"))
+    (elsewhere_line r.out)
+
+let line_scope_of_the_skip () =
+  let p = skip_project () in
+  plant_other p "windtrap-other.mutants"
+    [ (15, Verdicts.Killed); (18, Verdicts.Killed) ];
+  let r = skip_run p [ skip_killed; "--lines=" ^ scope ^ "subject.ml:15" ] in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal
+    (option (list string))
+    (Some [ "subject.ml:15 killed elsewhere by default/other.exe" ]) (rows r);
+  equal string "mutants: 1 reached by this suite, 1 not tested" (outcome r.out);
+  equal (option string)
+    (Some (one_skip "default/other.exe"))
+    (elsewhere_line r.out)
+
+let jobs_of_the_skip () =
+  let answer n =
+    let p = skip_project () in
+    plant_other p "windtrap-other.mutants" [ (18, Verdicts.Killed) ];
+    let r = skip_run p [ skip_killed; "-j"; string_of_int n ] in
+    (masked r.out, rows r)
+  in
+  equal (pair string (option (list string))) (answer 1) (answer 4)
+
+let narrowed_skip () =
+  let p = skip_project () in
+  plant_other p "windtrap-other.mutants" [ (15, Verdicts.Killed) ];
+  let r = skip_run p [ "-f"; "calc"; skip_killed ] in
+  equal text not_saved r.err;
+  equal (option string)
+    (Some (one_skip "default/other.exe"))
+    (elsewhere_line r.out);
+  equal string
+    "mutants: 1 reached by the 3 selected tests, 3 never reached, 1 not tested"
+    (outcome r.out)
+
+(* [interrupted]'s child of [widen] hangs until the signal. *)
+let interrupted_skip () =
+  let p = skip_project () in
+  plant_other p "windtrap-other.mutants" [ (15, Verdicts.Killed) ];
+  let pidfile = Filename.concat (temp_dir ()) "hanging" in
+  remove (own p);
+  let run =
+    start ~exe:p.exe
+      ~env:
+        [
+          suite "interrupted";
+          ("MUTATE_GRANDCHILD_PIDFILE", pidfile);
+          ("TMPDIR", temp_dir ());
+        ]
+      [ mutate; skip_killed ]
+  in
+  await ~what:"the hanging child" run pidfile;
+  Unix.kill run.pid Sys.sigint;
+  let r = finish run in
+  equal string "killed by SIGINT" r.status;
+  equal text (strf "windtrap: interrupted while testing %s\n" (site 18)) r.err;
+  equal (option string)
+    (Some (one_skip "default/other.exe"))
+    (elsewhere_line r.out);
+  equal string "mutants: 3 reached by this suite, 1 never reached, 3 not tested"
+    (outcome r.out);
+  is_false (Sys.file_exists (own p));
+  equal (list string) [ "gone" ] (List.map fate (pids (read pidfile)))
+
+let killed_elsewhere =
+  group "Killed elsewhere"
+    [
+      test
+        "a mutant that the verdict file of another suite killed gets no \
+         worker, and the run records it and counts it as not tested"
+        skips;
+      test "the mirror of --skip-killed sets the option" mirror;
+      test "a survivor that another suite killed is not a survivor"
+        survivor_killed_elsewhere;
+      cases "only a kill skips a mutant, and a skip does not" ~id:fst not_a_kill
+        only_a_kill;
+      cases "a kill with another source digest, or none, does not skip" ~id:fst
+        other_digests other_digest;
+      test
+        "each record keeps the digest of the source of its mutant, or none \
+         when the run cannot read the source"
+        recorded_digest;
+      test "a source that this run cannot read does not skip" unreadable_source;
+      test "the own verdict file of the run is not used" own_file;
+      cases
+        "of two files that kill a mutant, the smaller executable is the one \
+         that the record names, in each order of the files"
+        ~id:(strf "%s first") [ "a.exe"; "b.exe" ] smaller_executable;
+      test
+        "a file with no executable, of an orphan, of an old format or stale, a \
+         refused file, a directory and a temporary file are not used, and the \
+         run names the first four"
+        ignored_files;
+      test ~timeout:60. "a FIFO in the data directory is not opened" fifo;
+      test "only the reached mutants of the scope are skipped" scope_of_the_skip;
+      test "a line scope keeps its scope under the option"
+        line_scope_of_the_skip;
+      test "the number of jobs does not change the answer" jobs_of_the_skip;
+      test "a narrowed run skips the mutant and saves no verdict" narrowed_skip;
+      test "an interrupted run prints the line of the skipped mutants"
+        interrupted_skip;
+    ]
+
 (* The fixtures' verdict files land in the real _build/_mutants, where
    [windtrap mutants] would merge them into the tree's answer, and no rule
    runs these executables but this suite. A forked child ends past
@@ -2266,6 +2732,7 @@ let () =
          xfail;
          limits;
          verdict_file;
+         killed_elsewhere;
          environment;
          refusals;
          armed;

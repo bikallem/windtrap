@@ -124,52 +124,10 @@ let identity (format : Instr.format) path =
           | exception Instr.Parse_error reason ->
               Error (Instr.Corrupt { path; reason })))
 
-type freshness = Fresh | Orphan of string | Stale of string
+type freshness = Instr.freshness = Fresh | Orphan of string | Stale of string
 
-(* One digest per executable, however many dumps it wrote: every run of
-   a cram-driven binary leaves a file naming the same executable, and
-   hashing a test binary once per file made the aggregate's cost grow
-   with invocations rather than with executables. The command runs once
-   per process, so the memo is never stale. *)
-let digests : (string, string option) Hashtbl.t = Hashtbl.create 64
-
-let exe_digest exe_path =
-  match Hashtbl.find_opt digests exe_path with
-  | Some digest -> digest
-  | None ->
-      let digest = Instr.file_digest exe_path in
-      Hashtbl.replace digests exe_path digest;
-      digest
-
-(* A relative identity is a path below a build directory. The file's own
-   build directory locates it, the same directory whether the file was
-   discovered or named on the command line. *)
-let located ~path exe =
-  if not (Filename.is_relative exe) then Some (exe, exe)
-  else
-    Option.map
-      (fun build_dir ->
-        ( Filename.concat build_dir exe,
-          spf "%s/%s" (Filename.basename build_dir) exe ))
-      (Instr.build_dir ~path)
-
-let executable ~path exe = Option.map fst (located ~path exe)
-
-(* The comparison is by content digest because a modification time proves
-   nothing here: dune's shared cache restores a rebuilt artifact with its
-   original timestamp. *)
-let freshness ~path identity =
-  match (identity : Instr.identity option) with
-  | None -> Fresh
-  | Some { exe; digest } -> (
-      match located ~path exe with
-      | None -> Fresh
-      | Some (exe_path, spelled) -> (
-          if not (Sys.file_exists exe_path) then Orphan spelled
-          else
-            match exe_digest exe_path with
-            | Some actual when actual <> digest -> Stale spelled
-            | Some _ | None -> Fresh))
+let executable ~path exe = Option.map fst (Instr.exe_location ~path exe)
+let freshness = Instr.freshness
 
 let describe ~path = function
   | Fresh -> assert false

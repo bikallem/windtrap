@@ -98,5 +98,25 @@ mutants: 3 reached by this suite, «g|3 killed», score 100.0% (3/3)
 reproduce: dune exec --instrument-with ppx_windtrap.mutate test/test_calc.exe -- --arm lib/calc.ml:13:11:add
 mutants: 1 survived of 3 reached by this suite, 2 never reached, 2 not tested, score 0.0% (0/1)
 
+=== the lines print in order above the reproduce line
+──────────────────────────────────────────────────────────
+
+─────────────────── never reached (2) ────────────────────
+  2  lib/calc.ml   lines 40-41
+──────────────────────────────────────────────────────────
+
+first line
+killed elsewhere: 1 mutant, not tested, from the verdict file of default/a.exe (1)
+reproduce: dune exec --instrument-with ppx_windtrap.mutate test/test_calc.exe -- --arm lib/calc.ml:13:11:add
+mutants: 1 survived of 5 reached by this suite, 3 killed, 2 never reached, 1 not tested, score 75.0% (3/4)
+
+=== the lines print above a lone outcome line, and a note follows them
+killed elsewhere: 1 mutant, not tested, from the verdict file of default/a.exe (1)
+mutants: 4 reached by this suite, 3 killed, 1 not tested, score 100.0% (3/3)
+
+=== an interrupted loop prints its lines
+killed elsewhere: 1 mutant, not tested, from the verdict file of default/a.exe (1)
+mutants: 5 reached by this suite, 3 killed, 2 not tested, score 100.0% (3/3)
+
 === stopped before a child ended
 mutants: 5 reached by this suite, 5 not tested

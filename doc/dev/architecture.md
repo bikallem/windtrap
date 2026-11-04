@@ -405,6 +405,11 @@ a lossy `%g` spelling is asked for at the call site.
   links; an identifier-only record would give a project report strictly
   worse than the per-executable one, and renderings let a report outlive
   the executable that produced it.
+- Each record also keeps the digest of the source file of its mutant.
+  `--skip-killed` uses a kill from the file of another suite only when
+  the digest is equal and the file is one that `windtrap mutants` keeps.
+  Thus the freshness rule is in `Windtrap_runtime.Instr`, where the loop
+  and the command both read it.
 
 **The runtime (`Windtrap_runtime.Mutate`, `.Coverage`).**
 
