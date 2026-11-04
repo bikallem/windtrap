@@ -107,12 +107,14 @@ val execute_and_report :
     that survived the pass before it, with the same cases, deadline and budget,
     each in a fresh worker, up to [config.jobs] at once, in the order of the
     catalogue. A job that runs alone in the first pass runs alone in each pass.
-    The first verdict that is not survived is the verdict of the mutant. A
-    mutant is a survivor only when it survived each of the
-    [1 + config.mutate_retry] runs, and the report commits its block when the
-    job of its last run is given, with the number of runs when it is above [1]
-    ({!Report.mutation_survivor}). The verdict file does not record the runs.
-    The live line names a mutant of a later pass as it did in the first pass.
+    The first run gives the verdict as a run with no retry does. After it, only
+    a kill replaces the survivor: a retry that is not evaluated or unknown
+    leaves it a survivor, and the next retry runs. A mutant is a survivor when
+    no run of the [1 + config.mutate_retry] runs killed it, and the report
+    commits its block when the job of its last run is given, with the number of
+    runs when it is above [1] ({!Report.mutation_survivor}). The verdict file
+    does not record the runs. The live line names a mutant of a later pass as it
+    did in the first pass.
 
     {b Killed elsewhere.} Under the [skip_killed] of {!Run.scope}
     ([--skip-killed]), the loop reads the regular files with the extension
@@ -253,10 +255,13 @@ val execute_and_report :
     handles [SIGINT], [SIGTERM] and [SIGHUP]. One that arrives while a job runs
     ends every job, with its process group, and the mutants not yet given get no
     verdict. Nor does a survivor that waits for its next run, and the loop
-    starts no other pass. The report names the first mutant in catalogue order
-    that has no verdict. The loop then reports what it found, writes no verdict
-    file, and dies by the same signal last, so its parent sees a death by signal
-    and no [at_exit] function runs.
+    starts no other pass. The report names the mutant of the next job that the
+    pass gives, or the probe, as interrupted while it is tested. When no job
+    runs, it names the first survivor in catalogue order that waits for its next
+    run. A signal that comes before a pass installs its handlers stops the pass
+    before its first job ([Supervisor.fresh ~stopped]). The loop then reports
+    what it found, writes no verdict file, and dies by the same signal last, so
+    its parent sees a death by signal and no [at_exit] function runs.
 
     A signal that arrives once the last job of the last pass was given stops
     nothing. The verdict file is written, a second signal excepted, and the

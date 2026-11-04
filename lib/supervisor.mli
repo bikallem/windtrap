@@ -172,6 +172,7 @@ val can_spawn : unit -> bool
     executable started as, inside a [Windtrap.run] call. *)
 
 val fresh :
+  ?stopped:(unit -> bool) ->
   Run.config ->
   suite:string ->
   Test_tree.t list ->
@@ -179,11 +180,12 @@ val fresh :
   on_ran:(int -> ran -> unit) ->
   on_signal:(int -> unit) ->
   unit
-(** [fresh config ~suite tests jobs ~on_ran ~on_signal] runs each of [jobs] in a
-    worker of its own, started as {!execute} starts one, up to [config.jobs] at
-    once, in the order of the list, and gives [on_ran i ran] for job [i] in that
-    order, once every earlier one was given. A job with [alone] starts when no
-    other job runs, and no job starts while it runs. {!can_spawn} must hold.
+(** [fresh ?stopped config ~suite tests jobs ~on_ran ~on_signal] runs each of
+    [jobs] in a worker of its own, started as {!execute} starts one, up to
+    [config.jobs] at once, in the order of the list, and gives [on_ran i ran]
+    for job [i] in that order, once every earlier one was given. A job with
+    [alone] starts when no other job runs, and no job starts while it runs.
+    {!can_spawn} must hold.
 
     A worker of a job serves its cases with {!Run.serve} under [config] with
     {!Baseline.Check}, no [stream] and no JUnit file, its capture logs under its
@@ -199,7 +201,9 @@ val fresh :
     which must only record it. The first ends every job that runs, with its
     process group, and [fresh] returns once no worker is left; the jobs not yet
     given are never given. An exception that [on_ran] raises ends every job
-    likewise, and leaves [fresh]. *)
+    likewise, and leaves [fresh]. When [stopped ()] (default [false]) is [true]
+    once the handlers are in place, [fresh] starts no job and returns, so a
+    signal that came just before the call is not lost. *)
 
 val enter : suite:string -> Test_tree.t list -> (unit -> int) -> int
 (** [enter ~suite tests run] is [run ()], the code of a [Windtrap.run] call,

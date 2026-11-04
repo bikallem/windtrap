@@ -473,8 +473,8 @@ depend on a schedule, and the job of each mutant that such a test
 reaches runs alone.
 
 `--mutate-retry N` (`WINDTRAP_MUTATE_RETRY=N`) runs the job of a
-survivor again, up to N more times, each in a fresh worker. The first
-verdict that is not survived is the verdict. Use it for a suite whose
+survivor again, up to N more times, each in a fresh worker. A kill in a
+retry is the verdict, and any other result leaves the survivor. Use it for a suite whose
 kills depend on a schedule or on the clock.
 
 A run and `windtrap mutants` list under `unstable` each mutant whose

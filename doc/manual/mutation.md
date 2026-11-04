@@ -326,10 +326,14 @@ schedule (see
 `--mutate-retry N` (mirror `WINDTRAP_MUTATE_RETRY`) runs the job of a
 survivor again, up to `N` more times. Each of these runs is a retry. A
 retry runs in a fresh worker, with the tests, the deadline and the
-budget of the first run. The first verdict that is not survived is the
-verdict of the mutant: killed, not evaluated or unknown. The mutant
-survives only when it survives each run. `N` is from 0 to 100, and the
-default is 0.
+budget of the first run. `N` is from 0 to 100, and the default is 0.
+
+The first run gives the verdict as a run with no retry does. After the
+first run, only a kill changes the verdict. A retry that does not
+evaluate the site, or that ends early, for example at its deadline,
+leaves the mutant a survivor, and the next retry runs. Thus a retry
+cannot take a survivor out of the score. The mutant survives when no
+run kills it, and its runs count each retry.
 
 The loop runs the retries in passes. The first pass runs the probe and
 the job of each mutant. Each later pass runs again the jobs of the
@@ -367,10 +371,14 @@ about 40 of 100 pairs.
 
 A signal stops the loop during a retry as it does during a first run.
 A survivor that waits for its next run gets no verdict, and the loop
-writes no verdict file.
+writes no verdict file. When the signal comes between two passes, the
+message names the first survivor that waits, as in
+`interrupted before the retry of calc.ml:10:16:ge`.
 
-Without `--mutate` on the command line, the flag is a usage error. Its
-mirror alone has no effect on a suite that does not mutate.
+If no layer gives `--mutate`, the flag on the command line is a usage
+error. A layer is the command line or a mirror, as `WINDTRAP_MUTATE`.
+The mirror of the flag alone has no effect on a suite that does not
+mutate.
 
 ## Stateful tests on several domains
 
@@ -410,8 +418,8 @@ annotations. A verdict file does not record the flag, so the commands
 of `windtrap mutants` do not have it. Add `--mutate-workers` to such a
 command yourself.
 
-Without `--mutate` or `--arm` on the command line, the flag is a usage
-error. Its mirror alone has no effect on a suite that does not mutate.
+If no layer gives `--mutate` or `--arm`, the flag on the command line
+is a usage error. Its mirror alone has no effect on a suite that does not mutate.
 Thus a suite that opts in through its dune stanza sets the mirror, as
 in `(setenv WINDTRAP_MUTATE_WORKERS 1 (run %{test}))`, because the
 flag in the stanza is a usage error under a plain `dune runtest`.
@@ -553,8 +561,8 @@ A project with several suites tests a mutant in each suite that reaches
 it. One kill is enough for the merge, so the other suites do work that
 does not change the report. `--skip-killed` (mirror
 `WINDTRAP_SKIP_KILLED`) skips this work. It narrows `--mutate`, as
-`--lines` does, and without `--mutate` on the command line it is a
-usage error. The mirror alone has no effect on a suite that does not
+`--lines` does. If no layer gives `--mutate`, the flag on the command
+line is a usage error. The mirror alone has no effect on a suite that does not
 mutate.
 
 After the dry run, the suite reads the other verdict files in its

@@ -3479,33 +3479,61 @@ let mirror_of_retry () =
        ~outcome_line:survived_outcome ~runs:1 ~rows:survived_rows
        [ "--mutate-retry=0" ])
 
-(* The dry run, the probe and run 1 are the first three workers that run the
-   first test. Run 2 does not evaluate the site. *)
-let not_evaluated_in_a_retry () =
-  let workers = Filename.concat (temp_dir ()) "workers" in
+(* The workers that run the first test are the dry run, the probe, and then
+   each run of the mutant. [skip_at n] makes worker [n] leave [widen] out. *)
+let skip_at n =
+  [
+    ("MUTATE_WORKER_RUNS", Filename.concat (temp_dir ()) "workers");
+    ("MUTATE_SKIP_AT", string_of_int n);
+  ]
+
+let not_evaluated_in_the_first_run () =
   ignore
-    (retried
-       ~env:[ ("MUTATE_WORKER_RUNS", workers); ("MUTATE_SKIP_AT", "4") ]
-       ~outcome_line:not_evaluated_outcome ~runs:1
+    (retried ~env:(skip_at 3) ~outcome_line:not_evaluated_outcome ~runs:0
        ~rows:(intermittent_rows "not evaluated")
        [ "--mutate-retry=2" ])
 
-(* A retry has the deadline of the first run. *)
-let hanging_retry () =
+(* Run 2 does not evaluate the site, and runs 1 and 3 survive. *)
+let not_evaluated_in_a_retry () =
+  let r =
+    retried ~env:(skip_at 4) ~outcome_line:survived_outcome ~runs:2
+      ~rows:survived_rows [ "--mutate-retry=2" ]
+  in
+  is_true (String.ends_with ~suffix:"  (3 runs)" (title_of 18 r.out))
+
+(* A run of [intermittent] that must end at a deadline, with the runs of its
+   changed [widen]. *)
+let bounded env =
   let runs = Filename.concat (temp_dir ()) "runs" in
   remove (verdicts_path ());
   let r =
     finish_within ~what:"the deadline of the retry"
       (start
-         ~env:
-           [
-             suite "intermittent"; ("MUTATE_RUNS", runs); ("MUTATE_HANG_AT", "2");
-           ]
+         ~env:([ suite "intermittent"; ("MUTATE_RUNS", runs) ] @ env)
          [ mutate; "--mutate-retry=2" ])
   in
   ended_well r;
+  (r, List.length (lines (read runs)) - 1)
+
+(* Run 2 hangs past its deadline, which is the deadline of the first run,
+   and run 3 survives. *)
+let hanging_retry () =
+  let r, runs = bounded [ ("MUTATE_HANG_AT", "2") ] in
+  equal string survived_outcome (outcome r.out);
+  equal int 3 runs;
+  equal (option (list string)) survived_rows (rows r);
+  is_true (String.ends_with ~suffix:"  (3 runs)" (title_of 18 r.out))
+
+let kill_after_a_hang () =
+  let r, runs = bounded [ ("MUTATE_HANG_AT", "2"); ("MUTATE_KILL_AT", "3") ] in
+  equal string killed_outcome (outcome r.out);
+  equal int 3 runs;
+  equal (option (list string)) (intermittent_rows "killed") (rows r)
+
+let hang_in_the_first_run () =
+  let r, runs = bounded [ ("MUTATE_HANG_AT", "1") ] in
   equal string unknown_outcome (outcome r.out);
-  equal int 2 (List.length (lines (read runs)) - 1);
+  equal int 1 runs;
   equal
     (option (list string))
     (intermittent_rows "unknown: its run passed its deadline of <time>")
@@ -3563,7 +3591,11 @@ let mutation_live out =
 (* The live line names a mutant of a retry as the first pass did. *)
 let live_line_of_retries () =
   let seen = Buffer.create 4096 in
-  let master, slave = openpty () in
+  let master, slave =
+    match openpty () with
+    | pair -> pair
+    | exception Failure reason -> skip ~reason ()
+  in
   Unix.set_nonblock master;
   remove (verdicts_path ());
   let run =
@@ -3621,7 +3653,7 @@ let interrupted_retry () =
   equal (list string) [] (entries tmpdir)
 
 (* A signal in the first pass leaves [sub], the survivor that waits for its
-   retry, with no verdict, and the report names it. *)
+   retry, with no verdict. The report names [widen], whose job ran. *)
 let interrupted_before_a_retry () =
   let run, tmpdir, reader, writer, _ =
     held_at_the_gate "held" ~args:[ mutate; "--mutate-retry=1" ]
@@ -3633,7 +3665,7 @@ let interrupted_before_a_retry () =
   let out = In_channel.input_all ic in
   In_channel.close ic;
   equal string "killed by SIGINT" r.status;
-  equal text (strf "windtrap: interrupted while testing %s\n" (site 15)) r.err;
+  equal text (strf "windtrap: interrupted while testing %s\n" (site 18)) r.err;
   equal (list string) [] (survivors out);
   equal string "mutants: 2 reached by this suite, 2 never reached, 2 not tested"
     (outcome out);
@@ -3717,17 +3749,24 @@ let retry =
       test "a kill in the first run ends the job without a retry"
         killed_in_the_first_run;
       test "the mirror gives the retry, and the flag hides it" mirror_of_retry;
-      test "a retry that does not evaluate the site gives not evaluated"
+      test "a first run that does not evaluate the site has no retry"
+        not_evaluated_in_the_first_run;
+      test "a retry that does not evaluate the site leaves the survivor"
         not_evaluated_in_a_retry;
-      test "a retry that hangs ends at the deadline of the first run"
+      test
+        "a retry that hangs ends at the deadline of the first run, and leaves \
+         the survivor"
         hanging_retry;
+      test "a kill in the retry after a hang is the verdict" kill_after_a_hang;
+      test "a first run that hangs is unknown, with no retry"
+        hang_in_the_first_run;
       test "the live line names each mutant of a retry as the first pass did"
         live_line_of_retries;
       test "a signal that stops a retry leaves its mutant with no verdict"
         interrupted_retry;
       test
         "a signal before a retry leaves the waiting survivor with no verdict, \
-         and names it"
+         and names the job that ran"
         interrupted_before_a_retry;
       test "a kill in a retry and the runs of a survivor in unstable rows"
         retry_and_unstable_rows;

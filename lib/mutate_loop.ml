@@ -471,7 +471,8 @@ exception Refused of string
 
 type ended =
   | Refused_by of string
-  | Interrupted of int * Mutate.mutant option
+  | Interrupted of
+      int * [ `Probe | `Job of Mutate.mutant | `Wait of Mutate.mutant ]
   | Finished of (Verdicts.record list * string option)
 
 (* A job with a test that spawned a pool in the dry run runs alone: no other
@@ -495,9 +496,17 @@ let mutant_job ~deadline ~pooled ((mutant : Mutate.mutant), site) =
     ~armed:(Some (mutant.id, budget_of site.hits))
     (List.rev site.tests)
 
-(* One pass: [jobs] in fresh workers, up to [-j] at once, given in order. *)
-let pass (config : Run.config) ~suite tests jobs ~on_ran =
+(* One pass: [jobs] in fresh workers, up to [-j] at once, given in order. A
+   signal that came before the pass installed its handlers stops it at once,
+   and then [stopped] runs. *)
+let pass ?(stopped = ignore) (config : Run.config) ~suite tests jobs ~on_ran =
   Supervisor.fresh config ~suite tests jobs ~on_ran ~on_signal:record
+    ~stopped:(fun () ->
+      Option.is_some !signal
+      && begin
+        stopped ();
+        true
+      end)
 
 (* The first pass runs the probe and then one job per reached mutant, in
    catalogue order. Each later pass runs again the jobs of the mutants that
@@ -523,18 +532,26 @@ let test_mutants renderer ~suite (config : Run.config) tests ~dry_run ~pooled
   let total = Array.length mutants in
   let judged = Array.make total false in
   let probed = ref false in
+  (* The mutant of the next job that the running pass gives. *)
+  let next = ref None in
   let last = 1 + config.mutate_retry in
   let testing i =
     if i < total then
       Report.mutation_testing renderer ~index:(i + 1) ~total
         ~id:(Mutate.id_to_string (fst mutants.(i) : Mutate.mutant).id)
   in
-  (* The mutant [i] waits for another run when it survived and [run] is not
-     its last. *)
+  (* After the first run, only a kill replaces the survivor. The mutant [i]
+     waits for another run when it survived and [run] is not its last. *)
   let judge ~run i (ran : Supervisor.ran) =
     let mutant, site = mutants.(i) in
     let paths = List.rev site.tests in
-    match verdict ~deadline:(deadline paths) paths ran with
+    let verdict =
+      match verdict ~deadline:(deadline paths) paths ran with
+      | Verdicts.Killed -> Verdicts.Killed
+      | verdict when run = 1 -> verdict
+      | _ -> Verdicts.survived paths
+    in
+    match verdict with
     | Verdicts.Survived _ when run < last -> `Again
     | verdict ->
         judged.(i) <- true;
@@ -552,10 +569,14 @@ let test_mutants renderer ~suite (config : Run.config) tests ~dry_run ~pooled
           (match judge ~run waiting.(j) ran with
           | `Again -> again := waiting.(j) :: !again
           | `Judged -> ());
-          if j + 1 < Array.length waiting then testing waiting.(j + 1)
+          next :=
+            if j + 1 < Array.length waiting then Some waiting.(j + 1) else None;
+          Option.iter testing !next
         in
+        next := Some waiting.(0);
         testing waiting.(0);
         pass config ~suite tests
+          ~stopped:(fun () -> next := None)
           (Array.to_list
              (Array.map
                 (fun i -> mutant_job ~deadline ~pooled mutants.(i))
@@ -568,13 +589,16 @@ let test_mutants renderer ~suite (config : Run.config) tests ~dry_run ~pooled
     if index = 0 then begin
       probed := true;
       match probe ~dry_run ran with
-      | Ok () -> testing 0
+      | Ok () ->
+          if total > 0 then next := Some 0;
+          testing 0
       | Error message -> raise (Refused message)
     end
     else begin
       (match judge ~run:1 (index - 1) ran with
       | `Again -> again := (index - 1) :: !again
       | `Judged -> ());
+      next := if index < total then Some index else None;
       testing index
     end
   in
@@ -595,10 +619,11 @@ let test_mutants renderer ~suite (config : Run.config) tests ~dry_run ~pooled
         let unjudged =
           Seq.find (fun i -> not judged.(i)) (Seq.init total Fun.id)
         in
-        match (!signal, unjudged) with
-        | Some s, _ when not !probed -> Interrupted (s, None)
-        | Some s, Some i -> Interrupted (s, Some (fst mutants.(i)))
-        | (Some _ | None), _ -> Finished (save (List.rev found.records)))
+        match (!signal, !next, unjudged) with
+        | Some s, _, _ when not !probed -> Interrupted (s, `Probe)
+        | Some s, Some i, _ -> Interrupted (s, `Job (fst mutants.(i)))
+        | Some s, None, Some i -> Interrupted (s, `Wait (fst mutants.(i)))
+        | (Some _ | None), _, _ -> Finished (save (List.rev found.records)))
   in
   (ended, found)
 
@@ -835,12 +860,14 @@ let loop renderer ~scope ~suite (config : Run.config) tests =
               | (Finished _ | Interrupted _), _ when !signal = Some Sys.sigpipe
                 ->
                   Os.die_by Sys.sigpipe
-              | Interrupted (s, testing), found ->
+              | Interrupted (s, during), found ->
+                  let id (m : Mutate.mutant) = Mutate.id_to_string m.id in
                   Report.mutation_interrupted renderer ~lines
-                    ~testing:
-                      (Option.map
-                         (fun (m : Mutate.mutant) -> Mutate.id_to_string m.id)
-                         testing)
+                    ~during:
+                      (match during with
+                      | `Probe -> `Probe
+                      | `Job m -> `Job (id m)
+                      | `Wait m -> `Wait (id m))
                     (report ~narrowed ~dry_run ~reached ~unreached ~outside
                        found);
                   flush_descriptors ();

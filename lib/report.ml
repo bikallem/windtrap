@@ -1128,11 +1128,12 @@ let mutation_refused t message =
   Pp.flush t.out ();
   Os.say message
 
-let mutation_interrupted ?lines t ~testing m =
+let mutation_interrupted ?lines t ~during m =
   mutation_refused t
-    (match testing with
-    | Some id -> "interrupted while testing " ^ id
-    | None -> "interrupted during the determinism probe");
+    (match during with
+    | `Job id -> "interrupted while testing " ^ id
+    | `Wait id -> "interrupted before the retry of " ^ id
+    | `Probe -> "interrupted during the determinism probe");
   mutation_finish ?lines t m
 
 (* Running *)
