@@ -201,9 +201,10 @@ val fresh :
     which must only record it. The first ends every job that runs, with its
     process group, and [fresh] returns once no worker is left; the jobs not yet
     given are never given. An exception that [on_ran] raises ends every job
-    likewise, and leaves [fresh]. When [stopped ()] (default [false]) is [true]
-    once the handlers are in place, [fresh] starts no job and returns, so a
-    signal that came just before the call is not lost. *)
+    likewise, and leaves [fresh]. [fresh] calls [stopped] once it installed the
+    handlers. When it gives [true], [fresh] starts no job and returns, so a
+    signal that came just before the call is not lost. Without [stopped],
+    [fresh] starts the jobs. *)
 
 val enter : suite:string -> Test_tree.t list -> (unit -> int) -> int
 (** [enter ~suite tests run] is [run ()], the code of a [Windtrap.run] call,

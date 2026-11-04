@@ -592,9 +592,13 @@ val mutation_line : min:float option -> mutation -> span list
     when it is below [min]. *)
 
 val survivor_block :
-  ?runs:int -> exe_width:int option -> survivor -> section list
-(** [survivor_block ?runs ~exe_width s] is the block of [s]. It holds, in this
-    order:
+  ?runs:int ->
+  ?early:(int * string) list ->
+  exe_width:int option ->
+  survivor ->
+  section list
+(** [survivor_block ?runs ?early ~exe_width s] is the block of [s]. It holds, in
+    this order:
     - the {!diagnostic} of the mutant, at the start of its line.
     - the title. When [runs] (default [1]) is above [1], the title ends with the
       number of runs in which the mutant survived, as in [(3 runs)].
@@ -604,7 +608,10 @@ val survivor_block :
       they name several.
     - one row per reaching test: its name, then its location when it has one.
       Under [exe_width = Some w] the executable comes first, in a column at
-      least [w] wide that is empty for a test that names none. *)
+      least [w] wide that is empty for a test that names none.
+    - after an empty line, one line per [(run, why)] of [early] (default none),
+      as in [run 2: its run passed its deadline of 1.0s]: a run of the mutant
+      that ended before its tests did, or that did not run the site. *)
 
 val mutation_closing : config:Run.config -> mutation -> section list
 (** [mutation_closing ~config m] is what ends a report whose survivor blocks are

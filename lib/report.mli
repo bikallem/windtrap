@@ -388,10 +388,16 @@ val mutation_testing : t -> index:int -> total:int -> id:string -> unit
     that the loop is trying: [index], counted from [1], [total], and [id]. The
     line shows only while the live line is on (see {!create}). *)
 
-val mutation_survivor : ?runs:int -> t -> Report_sections.survivor -> unit
-(** [mutation_survivor ?runs t s] commits the {!Report_sections.survivor_block}
-    of [s] with [runs], flushed. The first call precedes the block by the rule
-    that opens the survivors. A block has no column of executables. *)
+val mutation_survivor :
+  ?runs:int ->
+  ?early:(int * string) list ->
+  t ->
+  Report_sections.survivor ->
+  unit
+(** [mutation_survivor ?runs ?early t s] commits the
+    {!Report_sections.survivor_block} of [s] with [runs] and [early], flushed.
+    The first call precedes the block by the rule that opens the survivors. A
+    block has no column of executables. *)
 
 val mutation_finish :
   ?note:string -> ?lines:string list -> t -> Report_sections.mutation -> unit
@@ -419,9 +425,9 @@ val mutation_interrupted :
 (** [mutation_interrupted ?lines t ~during m] ends the report of a loop that a
     signal is stopping. It says on standard error what was interrupted: the
     determinism probe under [`Probe], the job of the mutant [id] under
-    [`Job id], or, when no job ran, the wait of the survivor [id] for its next
-    run under [`Wait id]. It then calls {!mutation_finish} over [m] and [lines].
-*)
+    [`Job id], or the wait of the survivor [id] for its next run under
+    [`Wait id], when the signal comes between two passes. It then calls
+    {!mutation_finish} over [m] and [lines]. *)
 
 (** {1:running Running} *)
 

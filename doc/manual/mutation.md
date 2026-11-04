@@ -329,11 +329,12 @@ retry runs in a fresh worker, with the tests, the deadline and the
 budget of the first run. `N` is from 0 to 100, and the default is 0.
 
 The first run gives the verdict as a run with no retry does. After the
-first run, only a kill changes the verdict. A retry that does not
-evaluate the site, or that ends early, for example at its deadline,
-leaves the mutant a survivor, and the next retry runs. Thus a retry
-cannot take a survivor out of the score. The mutant survives when no
-run kills it, and its runs count each retry.
+first run, only a kill changes the verdict. A retry can end early, for
+example at its deadline, or not evaluate the site. Such a retry leaves
+the mutant a survivor, and the next retry runs. Thus a retry cannot
+take a survivor out of the score. A mutant survives when its first run
+survives and no retry kills it. The number of runs in its title counts
+the first run and each retry. Each retry that hangs costs its deadline.
 
 The loop runs the retries in passes. The first pass runs the probe and
 the job of each mutant. Each later pass runs again the jobs of the
@@ -346,6 +347,13 @@ the number of runs after its title:
 
 ```
   SURVIVED  calc.ml:10:16:ge  n > 0 → n >= 0  (3 runs)
+```
+
+Below its reaching tests, the block gives one line for each retry that
+ended early or did not evaluate the site, with the reason:
+
+```
+    run 2: its run passed its deadline of 1.0s
 ```
 
 The live line names a mutant in a retry as it did in the first pass.
@@ -375,10 +383,9 @@ writes no verdict file. When the signal comes between two passes, the
 message names the first survivor that waits, as in
 `interrupted before the retry of calc.ml:10:16:ge`.
 
-If no layer gives `--mutate`, the flag on the command line is a usage
-error. A layer is the command line or a mirror, as `WINDTRAP_MUTATE`.
-The mirror of the flag alone has no effect on a suite that does not
-mutate.
+If neither the command line nor a mirror gives `--mutate`, the flag on
+the command line is a usage error. The mirror of the flag alone has no
+effect on a suite that does not mutate.
 
 ## Stateful tests on several domains
 
@@ -418,8 +425,9 @@ annotations. A verdict file does not record the flag, so the commands
 of `windtrap mutants` do not have it. Add `--mutate-workers` to such a
 command yourself.
 
-If no layer gives `--mutate` or `--arm`, the flag on the command line
-is a usage error. Its mirror alone has no effect on a suite that does not mutate.
+If neither the command line nor a mirror gives `--mutate` or `--arm`,
+the flag on the command line is a usage error. Its mirror alone has no
+effect on a suite that does not mutate.
 Thus a suite that opts in through its dune stanza sets the mirror, as
 in `(setenv WINDTRAP_MUTATE_WORKERS 1 (run %{test}))`, because the
 flag in the stanza is a usage error under a plain `dune runtest`.
@@ -561,9 +569,9 @@ A project with several suites tests a mutant in each suite that reaches
 it. One kill is enough for the merge, so the other suites do work that
 does not change the report. `--skip-killed` (mirror
 `WINDTRAP_SKIP_KILLED`) skips this work. It narrows `--mutate`, as
-`--lines` does. If no layer gives `--mutate`, the flag on the command
-line is a usage error. The mirror alone has no effect on a suite that does not
-mutate.
+`--lines` does. If neither the command line nor a mirror gives
+`--mutate`, the flag on the command line is a usage error. The mirror
+alone has no effect on a suite that does not mutate.
 
 After the dry run, the suite reads the other verdict files in its
 directory, the files of the other suites of its executable included. A
@@ -964,8 +972,10 @@ merge names the executable and the suite under `not mutation-tested`.
 `--mutate` and `--arm` together are a usage error. `--arm` refuses a
 mutant that `[@mutate off]` dismisses, names the reason, and exits 1:
 its site has no guard, so no run can arm it. An interrupt ends the
-run: the running mutants are killed, the first not yet reported is named
-on standard error, and no verdict file is written.
+run: the running mutants are killed, and no verdict file is written. The
+message on standard error names the mutant of the next job that the run
+gives, or the determinism probe. Between two passes of
+`--mutate-retry`, it names the first survivor that waits for its retry.
 
 ## The command's options
 

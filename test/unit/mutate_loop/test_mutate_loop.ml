@@ -3493,13 +3493,30 @@ let not_evaluated_in_the_first_run () =
        ~rows:(intermittent_rows "not evaluated")
        [ "--mutate-retry=2" ])
 
+(* The lines of a survivor's block on the retries that ended early, with
+   the seconds of a deadline masked. *)
+let early_runs out =
+  List.filter_map
+    (fun line ->
+      match index_of ~sub:": " line with
+      | Some i when String.starts_with ~prefix:"    run " line ->
+          let reason = String.sub line (i + 2) (String.length line - i - 2) in
+          Some
+            (String.trim (String.sub line 0 (i + 2))
+            ^ " " ^ seconds_masked reason)
+      | Some _ | None -> None)
+    (lines out)
+
+let deadline_line run = strf "run %d: its run passed its deadline of <time>" run
+
 (* Run 2 does not evaluate the site, and runs 1 and 3 survive. *)
 let not_evaluated_in_a_retry () =
   let r =
     retried ~env:(skip_at 4) ~outcome_line:survived_outcome ~runs:2
       ~rows:survived_rows [ "--mutate-retry=2" ]
   in
-  is_true (String.ends_with ~suffix:"  (3 runs)" (title_of 18 r.out))
+  is_true (String.ends_with ~suffix:"  (3 runs)" (title_of 18 r.out));
+  equal (list string) [ "run 2: no test ran the site" ] (early_runs r.out)
 
 (* A run of [intermittent] that must end at a deadline, with the runs of its
    changed [widen]. *)
@@ -3522,7 +3539,37 @@ let hanging_retry () =
   equal string survived_outcome (outcome r.out);
   equal int 3 runs;
   equal (option (list string)) survived_rows (rows r);
-  is_true (String.ends_with ~suffix:"  (3 runs)" (title_of 18 r.out))
+  is_true (String.ends_with ~suffix:"  (3 runs)" (title_of 18 r.out));
+  equal (list string) [ deadline_line 2 ] (early_runs r.out)
+
+(* The last retry hangs, and the survivor keeps its line. *)
+let last_retry_hangs () =
+  let r, runs = bounded [ ("MUTATE_HANG_AT", "3") ] in
+  equal string survived_outcome (outcome r.out);
+  equal int 3 runs;
+  equal (option (list string)) survived_rows (rows r);
+  is_true (String.ends_with ~suffix:"  (3 runs)" (title_of 18 r.out));
+  equal (list string) [ deadline_line 3 ] (early_runs r.out)
+
+(* A pass that its [stopped] test stops before it starts gives no job. *)
+let stopped_pass () =
+  let given = ref 0 in
+  let job =
+    {
+      Supervisor.cases = [ "calc \u{203a} never runs" ];
+      deadline = 1.;
+      bail = false;
+      armed = None;
+      alone = false;
+    }
+  in
+  Supervisor.fresh
+    ~stopped:(fun () -> true)
+    (Windtrap.Private.Run.default_config ())
+    ~suite:"calc" [] [ job; job ]
+    ~on_ran:(fun _ _ -> incr given)
+    ~on_signal:ignore;
+  equal int 0 !given
 
 let kill_after_a_hang () =
   let r, runs = bounded [ ("MUTATE_HANG_AT", "2"); ("MUTATE_KILL_AT", "3") ] in
@@ -3757,7 +3804,10 @@ let retry =
         "a retry that hangs ends at the deadline of the first run, and leaves \
          the survivor"
         hanging_retry;
+      test "the last retry that hangs leaves the survivor and its line"
+        last_retry_hangs;
       test "a kill in the retry after a hang is the verdict" kill_after_a_hang;
+      test "a pass that is stopped before it starts gives no job" stopped_pass;
       test "a first run that hangs is unknown, with no retry"
         hang_in_the_first_run;
       test "the live line names each mutant of a retry as the first pass did"

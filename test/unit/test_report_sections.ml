@@ -2844,6 +2844,27 @@ let runs_in_the_title () =
     [ plain; plain; plain ^ "  (2 runs)"; plain ^ "  (100 runs)" ]
     (List.map title_runs [ None; Some 1; Some 2; Some 100 ])
 
+(* The lines of the block of [add_survivor] after its reaching tests. *)
+let early_lines early =
+  let block = Sections.survivor_block ~exe_width:None add_survivor in
+  let after = Sections.survivor_block ~early ~exe_width:None add_survivor in
+  let n = List.length (lines (printed block)) in
+  List.filteri (fun i _ -> i >= n - 1) (lines (printed after))
+
+let early_in_the_block () =
+  equal (list string) [ "" ] (early_lines []);
+  equal (list string)
+    [
+      "";
+      "    run 2: its run passed its deadline of 1.0s";
+      "    run 3: no test ran the site";
+      "";
+    ]
+    (early_lines
+       [
+         (2, "its run passed its deadline of 1.0s"); (3, "no test ran the site");
+       ])
+
 let exe_column () =
   let at_rest witnesses =
     at_rest
@@ -2999,6 +3020,8 @@ let mutation_group =
       test "the reaching tests' names are padded to the widest" padded_names;
       test "the title gives the runs of a survivor when they are more than 1"
         runs_in_the_title;
+      test "the block ends with a line for each retry that ended early"
+        early_in_the_block;
       test "the executable column appears when a reaching test names one"
         exe_column;
     ]

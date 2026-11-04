@@ -411,8 +411,8 @@ type found = {
 
 (* A survivor's block is committed when its last run is given, so a loop
    that dies has printed what it found. *)
-let found_verdict renderer (config : Run.config) ~locations ~failed ~runs found
-    (index, mutant) verdict =
+let found_verdict renderer (config : Run.config) ~locations ~failed ~runs ~early
+    found (index, mutant) verdict =
   (match verdict with
   | Verdicts.Survived { first; others } ->
       let witness path : Report_sections.witness =
@@ -429,7 +429,7 @@ let found_verdict renderer (config : Run.config) ~locations ~failed ~runs found
           witnesses = List.map witness (first :: others);
         }
       in
-      Report.mutation_survivor ~runs renderer survivor;
+      Report.mutation_survivor ~runs ~early renderer survivor;
       found.survivors <- (index, survivor) :: found.survivors
   | Not_evaluated ->
       found.not_evaluated <-
@@ -498,13 +498,13 @@ let mutant_job ~deadline ~pooled ((mutant : Mutate.mutant), site) =
 
 (* One pass: [jobs] in fresh workers, up to [-j] at once, given in order. A
    signal that came before the pass installed its handlers stops it at once,
-   and then [stopped] runs. *)
-let pass ?(stopped = ignore) (config : Run.config) ~suite tests jobs ~on_ran =
+   and then [on_stop] runs. *)
+let pass ?(on_stop = ignore) (config : Run.config) ~suite tests jobs ~on_ran =
   Supervisor.fresh config ~suite tests jobs ~on_ran ~on_signal:record
     ~stopped:(fun () ->
       Option.is_some !signal
       && begin
-        stopped ();
+        on_stop ();
         true
       end)
 
@@ -540,23 +540,42 @@ let test_mutants renderer ~suite (config : Run.config) tests ~dry_run ~pooled
       Report.mutation_testing renderer ~index:(i + 1) ~total
         ~id:(Mutate.id_to_string (fst mutants.(i) : Mutate.mutant).id)
   in
-  (* After the first run, only a kill replaces the survivor. The mutant [i]
-     waits for another run when it survived and [run] is not its last. *)
+  (* The retries of each mutant that ended early, newest first. *)
+  let early = Array.make total [] in
+  (* After the first run, only a kill replaces the survivor, and a retry that
+     ended early gives a line of the survivor's block. The mutant [i] waits
+     for another run when it survived and [run] is not its last. *)
   let judge ~run i (ran : Supervisor.ran) =
     let mutant, site = mutants.(i) in
     let paths = List.rev site.tests in
+    let ended_early why =
+      early.(i) <- (run, why) :: early.(i);
+      Verdicts.survived paths
+    in
     let verdict =
       match verdict ~deadline:(deadline paths) paths ran with
       | Verdicts.Killed -> Verdicts.Killed
       | verdict when run = 1 -> verdict
-      | _ -> Verdicts.survived paths
+      | Verdicts.Unknown reason -> ended_early reason
+      | Verdicts.Not_evaluated ->
+          ended_early
+            (match uncaused ran with
+            | None -> "no test ran the site"
+            | Some what ->
+                strf
+                  "no test ran the site, so the mutant did not cause the \
+                   failure of %s"
+                  what)
+      | verdict -> verdict
     in
     match verdict with
     | Verdicts.Survived _ when run < last -> `Again
     | verdict ->
         judged.(i) <- true;
         found_verdict renderer config ~locations ~failed:(uncaused ran)
-          ~runs:run found (i, mutant) verdict;
+          ~runs:run
+          ~early:(List.rev early.(i))
+          found (i, mutant) verdict;
         `Judged
   in
   let rec passes ~run = function
@@ -576,7 +595,7 @@ let test_mutants renderer ~suite (config : Run.config) tests ~dry_run ~pooled
         next := Some waiting.(0);
         testing waiting.(0);
         pass config ~suite tests
-          ~stopped:(fun () -> next := None)
+          ~on_stop:(fun () -> next := None)
           (Array.to_list
              (Array.map
                 (fun i -> mutant_job ~deadline ~pooled mutants.(i))
