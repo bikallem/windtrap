@@ -2006,6 +2006,7 @@ let loop_report =
     Sections.survivors = [ add_survivor; ge_survivor ];
     not_evaluated = [];
     unknown = [];
+    unstable = [];
     refused = [];
     unreached = [ ("lib/calc.ml", 40); ("lib/calc.ml", 41) ];
     outside_tests = [];

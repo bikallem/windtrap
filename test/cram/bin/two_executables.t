@@ -91,7 +91,8 @@ survivor with the tests that ran it in each executable:
         "file": "test/cram/bin/calc.ml", "line": 15, "col": 16, "rewrite": "add",
         "end_line": 15, "end_col": 21,
         "before": "a - b", "after": "a + b",
-        "verdict": "unreached" } ] }
+        "verdict": "unreached" } ],
+    "unstable": [ ] }
   [1]
 
 With a gate, the score decides the exit code, and the survivor alone does
@@ -115,11 +116,13 @@ The command's identifier, pasted into that executable, arms the survivor:
 
 With --skip-killed, pins_sub.exe does not test the mutant of add, which
 the verdict file of pins_add.exe gives as killed. The report names the
-executable of that file and counts the mutant as not tested:
+executable of that file and counts the mutant as not tested. The mutant
+survived the run of pins_sub.exe before, but a skip is no verdict of the
+tests of pins_sub.exe, so the report lists no unstable verdict:
 
   $ masked() { sed -E -e 's#[^ ()]*[/\\]([^/\\ ()]+\.mutants)#.../\1#g' -e 's/[0-9a-f]{32}/HASH/g' "$bin/err"; }
   $ run _build/default/test/pins_sub.exe --mutate=test/cram/bin/calc.ml --skip-killed > skipped
-  $ grep -e SURVIVED -e '^killed elsewhere' -e '^mutants:' -e '^--- stderr' skipped
+  $ grep -e SURVIVED -e 'unstable' -e '^killed elsewhere' -e '^mutants:' -e '^--- stderr' skipped
     SURVIVED  test/cram/bin/calc.ml:14:17:sub  a + b → a - b
   killed elsewhere: 1 mutant, not tested, from the verdict file of default/test/pins_add.exe (1)
   mutants: 1 survived of 3 reached by this suite, 1 killed, 1 never reached, 1 not tested, score 50.0% (1/2)
@@ -147,10 +150,12 @@ pins_add.exe again:
   windtrap: 1 mutant counts as killed by default/test/pins_add.exe, but no verdict file of the merge gives this kill: run default/test/pins_add.exe with its mutants, then merge again
 
 A run of pins_sub.exe with --skip-killed does not use the stale file
-either, and tests the mutant again:
+either, and tests the mutant again. The run compares the mutant with its
+verdict before the skip, which is the same, so it lists no unstable
+verdict:
 
   $ run _build/default/test/pins_sub.exe --mutate=test/cram/bin/calc.ml --skip-killed > skipped
-  $ grep -e SURVIVED -e '^killed elsewhere' -e '^mutants:' skipped
+  $ grep -e SURVIVED -e 'unstable' -e '^killed elsewhere' -e '^mutants:' skipped
     SURVIVED  test/cram/bin/calc.ml:12:14:sub  a + b → a - b
     SURVIVED  test/cram/bin/calc.ml:14:17:sub  a + b → a - b
   killed elsewhere: 0 mutants, not tested, from no other verdict file

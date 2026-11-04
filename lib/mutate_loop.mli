@@ -154,6 +154,19 @@ val execute_and_report :
     [filter], [exclude], [tags], [exclude_tags], [failed_only], [shard] and an
     active focus narrow the suite. The scope of [--mutate] does not.
 
+    {b Unstable verdicts.} Before it writes its file, the loop reads the file
+    that it replaces, of any build, when that file records the same suite. Each
+    record of this run gets its previous outcome from it
+    ({!Windtrap_runtime.Verdicts.with_previous}). A record kept from outside the
+    scope stays as it was. When the file is written, the report lists each
+    record of this run whose outcome changed
+    ({!Windtrap_runtime.Verdicts.changed}), in catalogue order, in the unstable
+    section ({!Report_sections.type-unstable}). A skipped mutant is not listed,
+    because a skip is no outcome. A run that writes no file of its verdicts
+    lists none: a narrowed run, a refused run, a run that a signal stopped
+    before its last verdict, and a run whose file cannot be written. The list
+    does not change the score or the result.
+
     {b What the environment asks.} The facade's [WINDTRAP_MUTATE] rule holds
     when [config.broadcast.mutate] does: an empty population and a selection
     that keeps no test ({!Run.list_selection}) are no refusal, and the result is

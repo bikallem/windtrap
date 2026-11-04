@@ -1565,12 +1565,22 @@ type refused = {
   counted_earlier : bool;
 }
 
+type outcome = [ `Killed | `Survived | `Not_evaluated ]
+
+type unstable = {
+  id : string;
+  exe : string option;
+  previous : outcome;
+  verdict : outcome;
+}
+
 type scope = Suite | Selected of int | Executables of int
 
 type mutation = {
   survivors : survivor list;
   not_evaluated : not_evaluated list;
   unknown : unknown list;
+  unstable : unstable list;
   refused : refused list;
   unreached : (string * int) list;
   outside_tests : (string * int) list;
@@ -1826,6 +1836,43 @@ let refused_section = function
       :: List.map row refused
       @ [ Rule None ]
 
+let unstable_section = function
+  | [] -> []
+  | unstable ->
+      let name = function
+        | `Killed -> "killed"
+        | `Survived -> "survived"
+        | `Not_evaluated -> "not evaluated"
+      in
+      let with_exe =
+        List.exists (fun (u : unstable) -> u.exe <> None) unstable
+      in
+      let left gap = { gap; align = `Left; width = None } in
+      let row (u : unstable) =
+        (if with_exe then [ plain (Option.value u.exe ~default:"") ] else [])
+        @ [
+            styled `Bold u.id;
+            plain (strf "%s \u{2192} %s" (name u.previous) (name u.verdict));
+          ]
+      in
+      [
+        Rule (Some (strf "unstable (%d)" (List.length unstable)));
+        Line
+          [
+            plain
+              "  The source of each mutant did not change, but its verdict did.";
+          ];
+        Rows
+          {
+            margin = "  ";
+            columns =
+              (if with_exe then [ left ""; left "  " ] else [ left "" ])
+              @ [ left "   " ];
+            rows = List.map row unstable;
+          };
+        Rule None;
+      ]
+
 (* One row per file: what a reader does with an unreached mutant is write a
    test for its lines, and a project has hundreds of them. *)
 let by_file ~title ~lead sites =
@@ -1895,6 +1942,7 @@ let mutation_closing ~(config : Run.config) (m : mutation) =
     [
       not_evaluated_section ~tests m.not_evaluated;
       unknown_section ~tests m.unknown;
+      unstable_section m.unstable;
       unreached_section m.unreached;
       outside_tests_section m.outside_tests;
     ]
@@ -1932,6 +1980,7 @@ let mutation_report ~invocation ~min (m : mutation) =
       not_evaluated_section ~tests:(`Filter None) m.not_evaluated;
       unknown_section ~tests:(`Filter None) m.unknown;
       refused_section m.refused;
+      unstable_section m.unstable;
       unreached_section m.unreached;
       outside_tests_section m.outside_tests;
       outcome ~invocation ~tests:(`Filter None) ~min m;

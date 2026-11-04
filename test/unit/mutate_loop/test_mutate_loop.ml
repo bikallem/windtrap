@@ -104,6 +104,17 @@ let local file =
 let row (r : Verdicts.record) =
   strf "%s:%d %s" (local r.id.file) r.id.line (verdict r.verdict)
 
+let outcome_name = function
+  | `Killed -> "killed"
+  | `Survived -> "survived"
+  | `Not_evaluated -> "not evaluated"
+
+(* The same, with the previous outcome of the record in place of the
+   verdict. *)
+let previous_row (r : Verdicts.record) =
+  strf "%s:%d %s" (local r.id.file) r.id.line
+    (Option.fold ~none:"none" ~some:outcome_name r.previous)
+
 (* The verdict file of the one suite of each fixture executable. *)
 let verdicts_path ?(exe = suite_exe) () =
   let suite =
@@ -119,6 +130,7 @@ type file = {
   suite : string option;
   refused : string option;
   rows : string list;
+  previous : string list; (* The previous outcome of each record. *)
   identity : (string * string) option; (* The writer's path and digest. *)
 }
 
@@ -136,6 +148,7 @@ let saved path =
             suite;
             refused;
             rows = List.map row (Verdicts.records verdicts);
+            previous = List.map previous_row (Verdicts.records verdicts);
             identity = Option.map identity writer;
           }
     | Error e ->
@@ -146,6 +159,7 @@ let saved path =
             suite = None;
             refused = None;
             rows = [ reason ];
+            previous = [];
             identity = None;
           }
 
@@ -157,6 +171,7 @@ type ran = {
 }
 
 let rows r = Option.map (fun (f : file) -> f.rows) r.file
+let previous_rows r = Option.map (fun (f : file) -> f.previous) r.file
 
 (* No test is ever reported slow, so the dry run's report is the same on
    any machine. *)
@@ -1296,6 +1311,7 @@ let elsewhere =
     after = "a + b";
     source_digest = None;
     verdict = Verdicts.Killed;
+    previous = Some `Survived;
   }
 
 let rerun_over ?identity ?suite collection =
@@ -2083,10 +2099,11 @@ let late_interrupt () =
 
 (* [interrupted]'s second child hangs in a session of its own, with a
    grandchild that ignores SIGTERM. *)
-let interrupted_by signal =
+let interrupted_by ?planted signal =
   let pidfile = Filename.concat (temp_dir ()) "hanging"
   and tmpdir = temp_dir () in
   remove (verdicts_path ());
+  Option.iter (write (verdicts_path ())) planted;
   let run =
     start
       ~env:
@@ -2371,13 +2388,13 @@ let old_name = "windtrap-old.mutants"
 
 (* A verdict file of the format before. *)
 let plant_old p =
-  write (Filename.concat p.data old_name) "windtrap-mutants-v11\ntested\n0\n"
+  write (Filename.concat p.data old_name) "windtrap-mutants-v12\ntested\n0\n"
 
 let old_warning p =
   strf
     "windtrap: warning: --skip-killed ignores %s/%s: not a windtrap verdict \
-     file (expected header \"windtrap-mutants-v12\", found \
-     \"windtrap-mutants-v11\"); files written by other windtrap versions are \
+     file (expected header \"windtrap-mutants-v13\", found \
+     \"windtrap-mutants-v12\"); files written by other windtrap versions are \
      not readable - delete the stale verdict files, then re-run the mutation \
      tests\n"
     p.data old_name
@@ -2745,6 +2762,471 @@ let killed_elsewhere =
         interrupted_skip;
     ]
 
+(* Unstable verdicts *)
+
+(* A run over the verdict file that an earlier run left. *)
+let rerun ?(env = []) args =
+  let r = Child.run ~env:(quiet env) suite_exe args in
+  {
+    status = ended r.Child.status;
+    out = r.Child.out;
+    err = r.Child.err;
+    file = saved (verdicts_path ());
+  }
+
+(* A line of the rule kind: dashes alone. *)
+let is_rule line =
+  line <> ""
+  && String.length line mod 3 = 0
+  && String.equal line
+       (String.concat ""
+          (List.init (String.length line / 3) (fun _ -> "\u{2500}")))
+
+(* The lines of the unstable section of a report, between its opening rule
+   and its closing rule. It is [None] when the report has none. *)
+let unstable out =
+  let rec opened = function
+    | [] -> None
+    | line :: rest ->
+        if Option.is_some (index_of ~sub:"\u{2500}\u{2500} unstable (" line)
+        then Some rest
+        else opened rest
+  in
+  let rec until acc = function
+    | [] -> List.rev acc
+    | line :: _ when is_rule line -> List.rev acc
+    | line :: rest -> until (line :: acc) rest
+  in
+  Option.map (until []) (opened (lines out))
+
+let lead = "  The source of each mutant did not change, but its verdict did."
+
+(* The section with one row for each [(line, change)] of subject.ml: the
+   identifier padded to the widest, then the change. *)
+let listed changes =
+  let ids = List.map (fun (line, _) -> site line) changes in
+  let width = List.fold_left (fun w id -> max w (String.length id)) 0 ids in
+  Some
+    (lead
+    :: List.map2
+         (fun id (_, text) -> strf "  %-*s   %s" width id text)
+         ids changes)
+
+(* The previous outcomes of a file with no earlier file before it. *)
+let none_rows = List.map (strf "subject.ml:%d none") [ 15; 18; 21; 27 ]
+
+(* A loop that ran whole: its exit code, its error stream and its outcome
+   line. A section of unstable verdicts changes none of them. *)
+let whole ?(outcome_line = green_outcome) (r : ran) =
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal string outcome_line (outcome r.out)
+
+(* The verdict file at [path] with [change] applied to each record. The
+   file keeps its suite, unless [suite] replaces it, and its writer, unless
+   [digest] gives the writer another digest. *)
+let rewrite ?(path = verdicts_path ()) ?digest ?suite change =
+  let f = require_ok ~pp:Verdicts.pp_error (Verdicts.load path) in
+  let identity =
+    match digest with
+    | None -> f.identity
+    | Some digest ->
+        Option.map (fun (i : Verdicts.identity) -> { i with digest }) f.identity
+  in
+  Verdicts.save ?identity
+    ?suite:(match suite with Some _ -> suite | None -> f.suite)
+    path
+    (List.fold_left Verdicts.add Verdicts.empty
+       (List.map change (Verdicts.records f.verdicts)))
+
+(* The record of line [line] with [verdict], and [previous] when given. *)
+let at_line ?previous line verdict (r : Verdicts.record) =
+  if r.id.line <> line then r
+  else { r with verdict; previous = Option.value previous ~default:r.previous }
+
+let survived_by test = Verdicts.survived [ [ "calc"; test ] ]
+
+(* [sub] survived and [widen] was killed in the file in between. *)
+let swapped r =
+  at_line 15 (survived_by "sub to zero") (at_line 18 Verdicts.Killed r)
+
+(* The first run has no earlier file, so it lists nothing. The third run
+   lists nothing again. *)
+let changed_verdict () =
+  remove (verdicts_path ());
+  let r1 = rerun [ mutate ] in
+  whole r1;
+  equal (option (list string)) None (unstable r1.out);
+  equal (option (list string)) (Some none_rows) (previous_rows r1);
+  rewrite swapped;
+  let r2 = rerun [ mutate ] in
+  whole r2;
+  equal
+    (option (list string))
+    (listed
+       [ (15, "survived \u{2192} killed"); (18, "killed \u{2192} survived") ])
+    (unstable r2.out);
+  is_true
+    (require_some (index_of ~sub:"\u{2500} unstable (" r2.out)
+    < require_some (index_of ~sub:"never reached (" r2.out));
+  equal
+    (option (list string))
+    (Some
+       [
+         "subject.ml:15 survived";
+         "subject.ml:18 killed";
+         "subject.ml:21 none";
+         "subject.ml:27 none";
+       ])
+    (previous_rows r2);
+  equal (option (list string)) (Some green_rows) (rows r2);
+  let r3 = rerun [ mutate ] in
+  whole r3;
+  equal (option (list string)) None (unstable r3.out);
+  equal
+    (option (list string))
+    (Some
+       [
+         "subject.ml:15 killed";
+         "subject.ml:18 survived";
+         "subject.ml:21 none";
+         "subject.ml:27 none";
+       ])
+    (previous_rows r3)
+
+(* Real runs of three fixtures of the suite: [green] lets the mutant of
+   [widen] survive, [memo] kills it, and [primed] does not evaluate it. *)
+let fixture_changes () =
+  remove (verdicts_path ());
+  let section fixture =
+    unstable (rerun ~env:[ suite fixture ] [ mutate ]).out
+  in
+  equal
+    (list (option (list string)))
+    [
+      None;
+      listed [ (18, "survived \u{2192} killed") ];
+      listed [ (18, "killed \u{2192} not evaluated") ];
+      listed [ (18, "not evaluated \u{2192} killed") ];
+      listed [ (18, "killed \u{2192} survived") ];
+    ]
+    (List.map section [ "green"; "memo"; "primed"; "memo"; "green" ])
+
+(* The source digest, the extent or a rendering of the record in between
+   is not that of the run, so the record is of another mutant. *)
+let other_mutants =
+  [
+    ( "another source digest",
+      fun (r : Verdicts.record) ->
+        { r with source_digest = Some (String.make 32 '0') } );
+    ("no source digest", fun r -> { r with source_digest = None });
+    ("another end", fun r -> { r with end_col = r.end_col + 1 });
+    ("another rendering", fun r -> { r with after = "a * b" });
+  ]
+
+let other_mutant (_, change) =
+  remove (verdicts_path ());
+  whole (rerun [ mutate ]);
+  rewrite (fun r -> change (at_line 15 (survived_by "sub to zero") r));
+  let r = rerun [ mutate ] in
+  whole r;
+  equal (option (list string)) None (unstable r.out);
+  equal (list string) [ "subject.ml:15 none" ]
+    (List.filter
+       (String.starts_with ~prefix:"subject.ml:15 ")
+       (require_some (previous_rows r)))
+
+(* Other reaching tests of a survivor are the same outcome. *)
+let same_outcome () =
+  remove (verdicts_path ());
+  whole (rerun [ mutate ]);
+  rewrite (at_line 18 (Verdicts.survived [ [ "widen"; "another test" ] ]));
+  let r = rerun [ mutate ] in
+  whole r;
+  equal (option (list string)) None (unstable r.out)
+
+(* The record of [sub] in between is no outcome. Its previous outcome is
+   the one that the run compares with. *)
+let no_outcome_cases =
+  let skip = Verdicts.Killed_elsewhere { exe = "default/test/other.exe" } in
+  let crashed = Verdicts.Unknown "its run was killed by SIGSEGV" in
+  [
+    ( "an unknown verdict keeps the outcome before it",
+      crashed,
+      Some `Survived,
+      listed [ (15, "survived \u{2192} killed") ] );
+    ( "a skip keeps the outcome before it",
+      skip,
+      Some `Survived,
+      listed [ (15, "survived \u{2192} killed") ] );
+    ( "an unreached mutant keeps the outcome before it",
+      Verdicts.Unreached,
+      Some `Not_evaluated,
+      listed [ (15, "not evaluated \u{2192} killed") ] );
+    ("an unknown verdict with no outcome before it", crashed, None, None);
+    ("a skip with no outcome before it", skip, None, None);
+  ]
+
+let no_outcome (_, verdict, previous, expected) =
+  remove (verdicts_path ());
+  whole (rerun [ mutate ]);
+  rewrite (at_line ~previous 15 verdict);
+  let r = rerun [ mutate ] in
+  whole r;
+  equal (option (list string)) expected (unstable r.out)
+
+let catalogue_order () =
+  let path = verdicts_path () in
+  remove path;
+  whole (rerun [ mutate ]);
+  rewrite swapped;
+  let planted = read path in
+  let one = rerun [ mutate ] in
+  whole one;
+  write path planted;
+  let four = rerun [ mutate; "-j"; "4" ] in
+  whole four;
+  equal
+    (option (list string))
+    (listed
+       [ (15, "survived \u{2192} killed"); (18, "killed \u{2192} survived") ])
+    (unstable one.out);
+  equal (option (list string)) (unstable one.out) (unstable four.out)
+
+(* The writer of the file in between is another build. *)
+let other_build () =
+  remove (verdicts_path ());
+  whole (rerun [ mutate ]);
+  rewrite ~digest:(String.make 32 '0') (at_line 15 (survived_by "sub to zero"));
+  let r = rerun [ mutate ] in
+  whole r;
+  equal
+    (option (list string))
+    (listed [ (15, "survived \u{2192} killed") ])
+    (unstable r.out)
+
+(* The file in between records another suite. *)
+let other_suite () =
+  remove (verdicts_path ());
+  whole (rerun [ mutate ]);
+  rewrite ~suite:"another suite" (at_line 15 (survived_by "sub to zero"));
+  let r = rerun [ mutate ] in
+  whole r;
+  equal (option (list string)) None (unstable r.out);
+  equal (option (list string)) (Some none_rows) (previous_rows r)
+
+(* The line of [sub] alone. The record of [widen] stays as it was, and the
+   next whole run compares with it. *)
+let line_scope_of_the_change () =
+  remove (verdicts_path ());
+  whole (rerun [ mutate ]);
+  rewrite swapped;
+  let scoped =
+    rerun [ mutate; "--lines=test/unit/mutate_loop/subject.ml:15" ]
+  in
+  equal (pair string text) ("exited 0", "") (scoped.status, scoped.err);
+  equal
+    (option (list string))
+    (listed [ (15, "survived \u{2192} killed") ])
+    (unstable scoped.out);
+  let r = rerun [ mutate ] in
+  whole r;
+  equal
+    (option (list string))
+    (listed [ (18, "killed \u{2192} survived") ])
+    (unstable r.out)
+
+(* A kept record keeps its previous outcome, so the file of the scoped run
+   still gives the change of [widen] that the run before it found. *)
+let kept_change () =
+  let path = verdicts_path () in
+  remove path;
+  whole (rerun [ mutate ]);
+  rewrite swapped;
+  whole (rerun [ mutate ]);
+  let scoped =
+    rerun [ mutate; "--lines=test/unit/mutate_loop/subject.ml:15" ]
+  in
+  equal (pair string text) ("exited 0", "") (scoped.status, scoped.err);
+  equal (option (list string)) None (unstable scoped.out);
+  let f = require_ok ~pp:Verdicts.pp_error (Verdicts.load path) in
+  equal (list string)
+    [ "subject.ml:18 killed, survived" ]
+    (List.filter_map
+       (fun (r : Verdicts.record) ->
+         Option.map
+           (fun (was, is) ->
+             strf "%s:%d %s, %s" (local r.id.file) r.id.line (outcome_name was)
+               (outcome_name is))
+           (Verdicts.changed r))
+       (Verdicts.records f.verdicts))
+
+(* A refused run writes unknown verdicts, which keep the outcomes before
+   them, and lists nothing. *)
+let refused_between () =
+  remove (verdicts_path ());
+  whole (rerun [ mutate ]);
+  rewrite swapped;
+  let red = rerun ~env:[ suite "red" ] [ mutate ] in
+  equal string "exited 1" red.status;
+  equal (option (list string)) None (unstable red.out);
+  equal (option string) (Some "the dry run is red")
+    (Option.map
+       (fun refused ->
+         String.sub refused 0 (String.length "the dry run is red"))
+       (Option.bind red.file (fun (f : file) -> f.refused)));
+  let r = rerun [ mutate ] in
+  whole r;
+  equal
+    (option (list string))
+    (listed
+       [ (15, "survived \u{2192} killed"); (18, "killed \u{2192} survived") ])
+    (unstable r.out)
+
+(* An earlier file that does not load gives no previous outcome, and the
+   run replaces it. *)
+let unloadable_earlier =
+  [
+    ("a file of the format before", "windtrap-mutants-v12\ntested\n0\n");
+    ("a corrupt file", "windtrap-mutants-v13\ntested\n1\njunk\n");
+  ]
+
+let unloadable_earlier_file (_, text) =
+  let path = verdicts_path () in
+  write path text;
+  let r = rerun [ mutate ] in
+  whole r;
+  equal (option (list string)) None (unstable r.out);
+  equal (option (list string)) (Some green_rows) (rows r);
+  equal (option (list string)) (Some none_rows) (previous_rows r);
+  starts_with ~prefix:"windtrap-mutants-v13\n" (read path)
+
+let narrowed_run () =
+  let path = verdicts_path () in
+  remove path;
+  whole (rerun [ mutate ]);
+  rewrite (at_line 15 (survived_by "sub to zero"));
+  let planted = read path in
+  let r = rerun [ mutate; "-f"; "calc" ] in
+  equal (pair string text) ("exited 0", not_saved) (r.status, r.err);
+  equal (option (list string)) None (unstable r.out);
+  equal text planted (read path)
+
+(* [interrupted] commits [sub] as a survivor before the signal, and the
+   planted file has it killed. *)
+let stopped_run () =
+  let path = verdicts_path () in
+  remove path;
+  whole (rerun [ mutate ]);
+  let planted = read path in
+  let r, grandchildren, left = interrupted_by ~planted Sys.sigint in
+  equal string "killed by SIGINT" r.status;
+  equal (option (list string)) None (unstable r.out);
+  equal text planted (read path);
+  equal (list string) [] left;
+  equal (list string) [ "gone" ] grandchildren
+
+(* The second run cannot write into the read-only directory of the file, so
+   it lists nothing. The third run can, and lists the change. *)
+let unwritable_with_prior () =
+  if Unix.geteuid () = 0 then skip ~reason:"root writes any directory" ();
+  let p = skip_project () in
+  equal string "exited 0" (skip_run p []).status;
+  rewrite ~path:(own p) (at_line 15 (survived_by "sub to zero"));
+  let planted = read (own p) in
+  Unix.chmod p.data 0o555;
+  let r =
+    Fun.protect
+      ~finally:(fun () -> Unix.chmod p.data 0o755)
+      (fun () -> skip_run ~keep:true p [])
+  in
+  equal string "exited 0" r.status;
+  starts_with ~prefix:"windtrap: could not write the verdict file: " r.err;
+  equal (option (list string)) None (unstable r.out);
+  equal text planted (read (own p));
+  let r = skip_run ~keep:true p [] in
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal
+    (option (list string))
+    (listed [ (15, "survived \u{2192} killed") ])
+    (unstable r.out)
+
+(* A skip is no outcome of the suite. The run that skips lists nothing, and
+   its record keeps the outcome before it, which the next run compares
+   with. *)
+let skipped_change () =
+  let p = skip_project () in
+  plant_other p "windtrap-other.mutants" [ (15, Verdicts.Killed) ];
+  equal string "exited 0" (skip_run p []).status;
+  rewrite ~path:(own p) (at_line 15 (survived_by "sub to zero"));
+  let skipped = skip_run ~keep:true p [ skip_killed ] in
+  equal string "exited 0" skipped.status;
+  equal (option (list string)) None (unstable skipped.out);
+  equal (list string)
+    [ "subject.ml:15 killed elsewhere by default/other.exe" ]
+    (List.filter
+       (String.starts_with ~prefix:"subject.ml:15 ")
+       (require_some (rows skipped)));
+  equal (list string)
+    [ "subject.ml:15 survived" ]
+    (List.filter
+       (String.starts_with ~prefix:"subject.ml:15 ")
+       (require_some (previous_rows skipped)));
+  let tested = skip_run ~keep:true p [] in
+  equal string "exited 0" tested.status;
+  equal
+    (option (list string))
+    (listed [ (15, "survived \u{2192} killed") ])
+    (unstable tested.out)
+
+let unstable_verdicts =
+  group "Unstable verdicts"
+    [
+      test
+        "a verdict that changed is listed, and the file keeps the previous \
+         outcome"
+        changed_verdict;
+      test
+        "killed, survived and not evaluated are the outcomes that change, in \
+         real runs"
+        fixture_changes;
+      cases "a record of another mutant gives no previous outcome" ~id:fst
+        other_mutants other_mutant;
+      test "other reaching tests of a survivor are no change" same_outcome;
+      cases "a verdict that is no outcome is not compared, and hides no change"
+        ~id:(fun (name, _, _, _) -> name)
+        no_outcome_cases no_outcome;
+      test
+        "the rows are in catalogue order, and the same for each number of jobs"
+        catalogue_order;
+      test "a file of another build gives the previous outcomes" other_build;
+      test "a file of another suite gives no previous outcome" other_suite;
+      test
+        "a line scope lists the mutants of its lines, and keeps the other \
+         records as they were"
+        line_scope_of_the_change;
+      test
+        "a record kept outside the scope keeps its previous outcome, and its \
+         change"
+        kept_change;
+      test
+        "a refused run lists nothing, and the next run compares with the \
+         outcomes before it"
+        refused_between;
+      cases "an earlier file that does not load gives no previous outcome"
+        ~id:fst unloadable_earlier unloadable_earlier_file;
+      test "a narrowed run lists nothing and leaves the file" narrowed_run;
+      test
+        "a run that a signal stopped before its last verdict lists nothing and \
+         leaves the file"
+        stopped_run;
+      test "a run whose file cannot be written lists nothing"
+        unwritable_with_prior;
+      test
+        "a skipped mutant is not listed, and the next run compares with the \
+         outcome before the skip"
+        skipped_change;
+    ]
+
 (* The fixtures' verdict files land in the real _build/_mutants, where
    [windtrap mutants] would merge them into the tree's answer, and no rule
    runs these executables but this suite. A forked child ends past
@@ -2770,6 +3252,7 @@ let () =
          limits;
          verdict_file;
          killed_elsewhere;
+         unstable_verdicts;
          environment;
          refusals;
          armed;

@@ -500,6 +500,21 @@ type refused = {
 }
 (** The type for a suite of an executable that could not be mutation-tested. *)
 
+type outcome = [ `Killed | `Survived | `Not_evaluated ]
+(** The type for the outcomes that a change of verdict compares, as
+    {!Windtrap_runtime.Verdicts.type-outcome}. *)
+
+type unstable = {
+  id : string;  (** The identifier of the mutant, spelled by the producer. *)
+  exe : string option;
+      (** The executable and the suite whose verdict file records the change. It
+          is [None] in the report of one executable. *)
+  previous : outcome;  (** The previous outcome. *)
+  verdict : outcome;  (** The outcome of the last run. *)
+}
+(** The type for a mutant whose verdict changed since the previous run of its
+    suite, on the same source. *)
+
 (** The type for what the reached count of a report is relative to. The outcome
     line names it. *)
 type scope =
@@ -520,6 +535,9 @@ type mutation = {
   unknown : unknown list;
       (** Every reached mutant whose run ended before its tests did, in the
           order in which it prints. *)
+  unstable : unstable list;
+      (** Every mutant whose verdict changed, in the order in which it prints.
+          It changes no count and not the score. *)
   refused : refused list;
       (** The suites of a merge that could not be mutation-tested, one for each
           verdict file. It is empty in the report of one executable, whose
@@ -593,6 +611,12 @@ val mutation_closing : config:Run.config -> mutation -> section list
     - when [m.unknown] is not empty, the unknown section, laid out as the
       not-evaluated one with the {!diagnostic} of each mutant above it and its
       reason on a line under it.
+    - when [m.unstable] is not empty, the unstable section, between an opening
+      rule that carries their number and a closing rule. It says in one line
+      that the source did not change and the verdict did. Then it gives one row
+      for each mutant: its identifier, then its previous outcome, an arrow and
+      its outcome. When a row names an executable, the executable of each row
+      comes first, in a column.
     - when [m.unreached] is not empty, the never-reached section, between an
       opening rule that carries the number of mutants and a closing rule.
     - when [m.outside_tests] is not empty, the section of the mutants evaluated
@@ -614,9 +638,9 @@ val mutation_report :
     their number and a closing rule. The executables of all blocks form one
     column, which is absent when no reaching test names an executable. The
     not-evaluated section, the unknown section, the not-mutation-tested section,
-    which names each of [m.refused] with its count and reason, the never-reached
-    section, the section of the mutants evaluated outside tests, the
-    [reproduce:] command and the outcome line follow, as {!mutation_closing}
-    builds them for a run that selects every test. The outcome line counts the
-    suites of [m.refused] after the executables, and it is {!mutation_line}
-    under the gate [min]. *)
+    which names each of [m.refused] with its count and reason, the unstable
+    section, the never-reached section, the section of the mutants evaluated
+    outside tests, the [reproduce:] command and the outcome line follow, as
+    {!mutation_closing} builds them for a run that selects every test. The
+    outcome line counts the suites of [m.refused] after the executables, and it
+    is {!mutation_line} under the gate [min]. *)

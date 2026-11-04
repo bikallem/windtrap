@@ -65,6 +65,16 @@ val survived : reaching_test list -> verdict
     sorted and without duplicates. Raises [Invalid_argument] if [ts] is empty.
 *)
 
+type outcome = [ `Killed | `Survived | `Not_evaluated ]
+(** The type for the outcomes: the verdicts that the tests of a suite give to a
+    mutant that they run, without their details. *)
+
+val outcome : verdict -> outcome option
+(** [outcome v] is [Some `Killed] for {!Killed}, [Some `Survived] for
+    {!Survived}, [Some `Not_evaluated] for {!Not_evaluated}, and [None] for the
+    other verdicts. A {!Killed_elsewhere} verdict is no outcome, because no test
+    of the suite ran the mutant. *)
+
 (** {1:collections Collections} *)
 
 type record = {
@@ -79,6 +89,9 @@ type record = {
           [None]. A loop under [--skip-killed] compares it with the digest of
           the mutant of its own executable. *)
   verdict : verdict;  (** What the run made of the mutant. *)
+  previous : outcome option;
+      (** The last outcome that the suite gave to the same mutant before this
+          run, or [None]. {!with_previous} sets it. *)
 }
 (** The type for the record of one mutant. A record is self-describing: it
     carries the two renderings and the extent that a report draws the mutant
@@ -86,8 +99,13 @@ type record = {
     produced it. *)
 
 val record_of_mutant : Mutate.mutant -> verdict -> record
-(** [record_of_mutant m v] is the record of [m] with the verdict [v].
-    [m.dismissed] is dropped. *)
+(** [record_of_mutant m v] is the record of [m] with the verdict [v] and no
+    previous outcome. [m.dismissed] is dropped. *)
+
+val changed : record -> (outcome * outcome) option
+(** [changed r] is [Some (was, is)] when [r.previous] is [Some was],
+    {!val-outcome} of [r.verdict] is [Some is], and [was] is not [is]. It is
+    [None] if not. *)
 
 type t
 (** The type for verdict collections: finite maps from {!Mutate.type-id} to
@@ -107,7 +125,8 @@ val add : t -> record -> t
     either is, with the smaller reason in [String.compare] order when both are,
     then {!Not_evaluated} if either is, then {!Survived} with the reaching tests
     of both if either is, then {!Outside_tests} if either is, and {!Unreached}
-    if both are.
+    if both are. The two previous outcomes combine in the same order, and a
+    missing one leaves the other unchanged.
 
     [add] checks nothing of [r.id], of the end, of [r.source_digest] or of the
     [exe] of a {!Killed_elsewhere}. It accepts an empty [file], a [line] below
@@ -124,13 +143,23 @@ val merge : t -> t -> t
     identifier are combined as {!add} does. [merge] is commutative, associative
     and idempotent, {!empty} is its unit, and an {!Unreached} verdict leaves the
     verdict it is combined with unchanged, so merging any number of files in any
-    order gives one answer. *)
+    order gives one answer. The previous outcome of a merged record tells
+    nothing of one suite. *)
+
+val with_previous : prior:t -> t -> t
+(** [with_previous ~prior t] is [t] in which each record [r] gets its previous
+    outcome from the record [p] of [prior] under [r.id]. It applies only when
+    [p] and [r] have the same source digest, which is not [None], the same
+    renderings and the same end. The previous outcome is then {!val-outcome} of
+    [p.verdict], or [p.previous] when [p.verdict] is no outcome. In all other
+    cases it is [None]. Thus a skip, an unknown verdict or an unreached mutant
+    between two outcomes hides no change. *)
 
 (** {1:files Verdict files}
 
     Each suite of an executable has one verdict file, at {!output_file}.
 
-    The first line of a file is the magic line [windtrap-mutants-v12], which
+    The first line of a file is the magic line [windtrap-mutants-v13], which
     carries the version of the format. A file with another first line is
     refused, never converted, and nothing is promised from one version to the
     next. *)
@@ -184,7 +213,8 @@ val load : string -> (file, error) result
     or [Error (Corrupt _)] for data that is truncated or invalid:
     - a negative count, or a count larger than the input,
     - an empty file name, a line below [1] or a negative column,
-    - a rewrite outside {!Mutate.rewrites}, or an unknown verdict,
+    - a rewrite outside {!Mutate.rewrites}, an unknown verdict, or a missing or
+      unknown previous outcome,
     - a source digest that is not empty and not 32 lowercase hexadecimal digits,
     - a survivor with no reaching test, an empty killing executable, or a second
       record for one identifier,

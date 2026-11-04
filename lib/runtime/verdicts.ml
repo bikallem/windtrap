@@ -52,6 +52,14 @@ let merge_verdict a b =
       | Outside_tests | Unreached ) ) ->
       if rank a >= rank b then a else b
 
+type outcome = [ `Killed | `Survived | `Not_evaluated ]
+
+let outcome = function
+  | Killed -> Some `Killed
+  | Survived _ -> Some `Survived
+  | Not_evaluated -> Some `Not_evaluated
+  | Killed_elsewhere _ | Unknown _ | Outside_tests | Unreached -> None
+
 (* Collections *)
 
 type record = {
@@ -62,6 +70,7 @@ type record = {
   after : string;
   source_digest : string option;
   verdict : verdict;
+  previous : outcome option;
 }
 
 let record_of_mutant (m : Mutate.mutant) verdict =
@@ -73,7 +82,13 @@ let record_of_mutant (m : Mutate.mutant) verdict =
     after = m.after;
     source_digest = m.source_digest;
     verdict;
+    previous = None;
   }
+
+let changed r =
+  match (r.previous, outcome r.verdict) with
+  | Some was, Some is when was <> is -> Some (was, is)
+  | _ -> None
 
 module Id_map = Map.Make (struct
   type t = Mutate.id
@@ -93,7 +108,13 @@ let empty = Id_map.empty
 let combine a b =
   let key r = (r.before, r.after, r.end_line, r.end_col, r.source_digest) in
   let kept = if compare (key a) (key b) <= 0 then a else b in
-  { kept with verdict = merge_verdict a.verdict b.verdict }
+  let rank = function `Killed -> 2 | `Not_evaluated -> 1 | `Survived -> 0 in
+  let previous =
+    match (a.previous, b.previous) with
+    | None, p | p, None -> p
+    | Some x, Some y -> Some (if rank x >= rank y then x else y)
+  in
+  { kept with verdict = merge_verdict a.verdict b.verdict; previous }
 
 let add t r =
   let r =
@@ -110,11 +131,34 @@ let add t r =
 let records t = List.map snd (Id_map.bindings t)
 let merge a b = Id_map.union (fun _ a b -> Some (combine a b)) a b
 
+(* After a verdict that is no outcome, the outcome before it stays, so that
+   a skip or an unknown verdict between two runs hides no change. *)
+let with_previous ~prior t =
+  let same p r =
+    Option.is_some r.source_digest
+    && p.source_digest = r.source_digest
+    && p.end_line = r.end_line && p.end_col = r.end_col
+    && String.equal p.before r.before
+    && String.equal p.after r.after
+  in
+  Id_map.map
+    (fun r ->
+      let previous =
+        match Id_map.find_opt r.id prior with
+        | Some p when same p r -> (
+            match outcome p.verdict with
+            | Some _ as was -> was
+            | None -> p.previous)
+        | Some _ | None -> None
+      in
+      { r with previous })
+    t
+
 (* Verdict files *)
 
 let format =
   {
-    Instr.magic = "windtrap-mutants-v12";
+    Instr.magic = "windtrap-mutants-v13";
     kind = "verdict";
     dir = "mutants";
     ext = "mutants";
@@ -160,16 +204,17 @@ type file = {
      [suite <name>]
      tested | refused <reason>
      <record count>
-     <file> <line> <col> <end line> <end col> <rewrite> <before> <after> <source> <verdict>
+     <file> <line> <col> <end line> <end col> <rewrite> <before> <after> <source> <verdict> <previous>
 
    with one such line for each record, in [Mutate.compare_id] order.
    [<source>] is a name: the digest of the source file that the instrumenter
    read, or empty when the instrumenter could not read it. [<verdict>] is [unreached],
    [outside_tests], [killed], [killed_elsewhere <exe>] with a name that is
    not empty, [not_evaluated], [unknown <reason>], or [survived <n>] and then
-   [n] reaching tests, each [<k>] and then its [k] names. [load] reads this
-   grammar and nothing else, and refuses a rewrite outside [Mutate.rewrites],
-   which no report could render. *)
+   [n] reaching tests, each [<k>] and then its [k] names. [<previous>] is
+   [none], or [was] and then [killed], [survived] or [not_evaluated]. [load]
+   reads this grammar and nothing else, and refuses a rewrite outside
+   [Mutate.rewrites], which no report could render. *)
 let load path =
   let read_test c =
     List.init (Instr.read_count c "test path length") (fun _ ->
@@ -194,6 +239,17 @@ let load path =
         survived (List.init n (fun _ -> read_test c))
     | word -> Instr.parse_fail "unknown verdict %S" word
   in
+  let read_previous c =
+    match Instr.read_word c "previous outcome" with
+    | "none" -> None
+    | "was" -> (
+        match Instr.read_word c "previous outcome" with
+        | "killed" -> Some `Killed
+        | "survived" -> Some `Survived
+        | "not_evaluated" -> Some `Not_evaluated
+        | word -> Instr.parse_fail "unknown previous outcome %S" word)
+    | word -> Instr.parse_fail "unknown previous outcome %S" word
+  in
   let read_record c =
     let file = Instr.read_name c "file name" in
     if file = "" then Instr.parse_fail "empty file name";
@@ -217,7 +273,8 @@ let load path =
       | digest -> Instr.parse_fail "%S is not a source digest" digest
     in
     let verdict = read_verdict c in
-    { id; end_line; end_col; before; after; source_digest; verdict }
+    let previous = read_previous c in
+    { id; end_line; end_col; before; after; source_digest; verdict; previous }
   in
   let rec read_records c t n =
     if n = 0 then t
@@ -271,6 +328,12 @@ let save ?identity ?suite ?refused path t =
         Printf.bprintf b "survived %d" (List.length tests);
         List.iter (Printf.bprintf b " %a" add_test) tests
   in
+  let add_previous b = function
+    | None -> Buffer.add_string b "none"
+    | Some `Killed -> Buffer.add_string b "was killed"
+    | Some `Survived -> Buffer.add_string b "was survived"
+    | Some `Not_evaluated -> Buffer.add_string b "was not_evaluated"
+  in
   let b = Buffer.create 1024 in
   Instr.add_header format b identity;
   Option.iter (Printf.bprintf b "suite %a\n" add_name) suite;
@@ -280,10 +343,10 @@ let save ?identity ?suite ?refused path t =
   Printf.bprintf b "%d\n" (Id_map.cardinal t);
   Id_map.iter
     (fun (id : Mutate.id) r ->
-      Printf.bprintf b "%a %d %d %d %d %a %a %a %a %a\n" add_name id.file
+      Printf.bprintf b "%a %d %d %d %d %a %a %a %a %a %a\n" add_name id.file
         id.line id.col r.end_line r.end_col add_name id.rewrite add_name
         r.before add_name r.after add_name
         (Option.value r.source_digest ~default:"")
-        add_verdict r.verdict)
+        add_verdict r.verdict add_previous r.previous)
     t;
   Instr.write_file path (Buffer.contents b)

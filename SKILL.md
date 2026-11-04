@@ -465,6 +465,12 @@ the fast suites first, in a separate `dune runtest`. Two suites that use
 the option at the same time can skip one mutant because of each other.
 Thus run them one after the other (`dune runtest -j 1`).
 
+A run and `windtrap mutants` list under `unstable` each mutant whose
+verdict changed since the last run of its suite, on the same source. A
+change to a test, or a test that depends on the clock or on the order
+of the tests, causes such a change. The list does not change the score
+or the exit code.
+
 Mutation testing starts a worker per mutant and is refused on Windows.
 `windtrap coverage --help`, `windtrap mutants --help` and a suite's
 `--help` (`--mutate`, `--arm`) state the flags.

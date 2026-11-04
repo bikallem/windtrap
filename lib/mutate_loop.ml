@@ -163,41 +163,58 @@ let narrows_suite (config : Run.config) ~focus =
   || config.exclude_tags <> [] || config.failed_only || focus
   || config.shard <> None
 
-(* What the file of [suite] holds, if this build wrote it for [suite]. *)
-let this_build ~suite =
+(* What the file of [suite] holds, whatever build wrote it. *)
+let earlier ~suite =
   let exe = Windtrap_runtime.Instr.executable in
-  match
-    ( Verdicts.writer_identity ~exe,
-      Verdicts.load (Verdicts.output_file ~exe ~suite) )
-  with
-  | Some identity, Ok ({ identity = Some writer; suite = Some s; _ } as file)
-    when writer = identity && String.equal s suite ->
+  match Verdicts.load (Verdicts.output_file ~exe ~suite) with
+  | Ok ({ suite = Some s; _ } as file) when String.equal s suite -> Some file
+  | Ok _ | Error _ -> None
+
+let by_this_build = function
+  | Some ({ Verdicts.identity = Some writer; _ } as file)
+    when Verdicts.writer_identity ~exe:Windtrap_runtime.Instr.executable
+         = Some writer ->
       Some file
-  | _ -> None
+  | Some _ | None -> None
+
+let this_build ~suite = by_this_build (earlier ~suite)
 
 (* Under a scope, the records of the other files stay when this build wrote
-   them and tested its suite. *)
+   them and tested its suite. The result is the records of [records] whose
+   verdict changed, and the note on a file that cannot be written. *)
 let save ~suite ~scope ?refused records =
   let exe = Windtrap_runtime.Instr.executable in
+  let earlier = earlier ~suite in
   let kept =
-    match (this_build ~suite, refused) with
+    match (by_this_build earlier, refused) with
     | Some { verdicts; refused = None; _ }, None ->
         List.filter
           (fun (r : Verdicts.record) -> not (in_scope ~scope r.id))
           (Verdicts.records verdicts)
     | _ -> []
   in
-  let verdicts = List.fold_left Verdicts.add Verdicts.empty (records @ kept) in
+  let tested =
+    Verdicts.with_previous
+      ~prior:
+        (Option.fold ~none:Verdicts.empty
+           ~some:(fun (f : Verdicts.file) -> f.verdicts)
+           earlier)
+      (List.fold_left Verdicts.add Verdicts.empty records)
+  in
   match
     Verdicts.save
       ?identity:(Verdicts.writer_identity ~exe)
       ~suite ?refused
       (Verdicts.output_file ~exe ~suite)
-      verdicts
+      (List.fold_left Verdicts.add tested kept)
   with
-  | () -> None
+  | () ->
+      ( List.filter
+          (fun r -> Option.is_some (Verdicts.changed r))
+          (Verdicts.records tested),
+        None )
   | exception Sys_error message ->
-      Some (strf "could not write the verdict file: %s" message)
+      ([], Some (strf "could not write the verdict file: %s" message))
 
 let recorded verdict = List.map (fun m -> Verdicts.record_of_mutant m verdict)
 
@@ -217,8 +234,9 @@ let unknown_records ?reach population reason =
 let refuse ?(say = true) ?reach ~suite ~scope population message =
   if say then Os.say message;
   Option.iter Os.say
-    (save ~suite ~scope ~refused:message
-       (unknown_records ?reach population message));
+    (snd
+       (save ~suite ~scope ~refused:message
+          (unknown_records ?reach population message)));
   Error (Run.Mutation_refused message)
 
 let narrowing =
@@ -234,8 +252,9 @@ let save_narrowed ~suite ~scope population =
   | Some _ -> Some note
   | None -> (
       match
-        save ~suite ~scope ~refused:narrowing
-          (unknown_records population narrowing)
+        snd
+          (save ~suite ~scope ~refused:narrowing
+             (unknown_records population narrowing))
       with
       | None -> Some note
       | Some failed -> Some (note ^ " " ^ failed))
@@ -449,7 +468,7 @@ exception Refused of string
 type ended =
   | Refused_by of string
   | Interrupted of int * Mutate.mutant option
-  | Finished of string option
+  | Finished of (Verdicts.record list * string option)
 
 (* The budget counts the job's evaluations, not the dry run's. *)
 let jobs_of ~deadline ~dry_run reached =
@@ -529,13 +548,20 @@ let test_mutants renderer ~suite (config : Run.config) tests ~dry_run ~wall
   in
   (ended, found)
 
-let report ~narrowed ~dry_run ~reached ~unreached ~outside found :
-    Report_sections.mutation =
+let report ?(changed = []) ~narrowed ~dry_run ~reached ~unreached ~outside found
+    : Report_sections.mutation =
   let lines = List.map (fun (m : Mutate.mutant) -> (m.id.file, m.id.line)) in
+  let unstable (r : Verdicts.record) =
+    Option.map
+      (fun (previous, verdict) : Report_sections.unstable ->
+        { id = Mutate.id_to_string r.id; exe = None; previous; verdict })
+      (Verdicts.changed r)
+  in
   {
     survivors = List.rev found.survivors;
     not_evaluated = List.rev found.not_evaluated;
     unknown = List.rev found.unknown;
+    unstable = List.filter_map unstable changed;
     refused = [];
     unreached = lines unreached;
     outside_tests = lines outside;
@@ -726,7 +752,7 @@ let loop renderer ~scope ~suite (config : Run.config) tests =
               in
               let narrowed = narrows_suite config ~focus:outcome.focus_active in
               let save records =
-                if narrowed then save_narrowed ~suite ~scope population
+                if narrowed then ([], save_narrowed ~suite ~scope population)
                 else
                   save ~suite ~scope
                     (records
@@ -760,10 +786,10 @@ let loop renderer ~scope ~suite (config : Run.config) tests =
                        found);
                   flush_descriptors ();
                   Os.die_by s
-              | Finished note, found -> (
+              | Finished (changed, note), found -> (
                   Report.mutation_finish ?note ~lines renderer
-                    (report ~narrowed ~dry_run ~reached ~unreached ~outside
-                       found);
+                    (report ~changed ~narrowed ~dry_run ~reached ~unreached
+                       ~outside found);
                   flush_descriptors ();
                   match !signal with
                   | Some s -> Os.die_by s

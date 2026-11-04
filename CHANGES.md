@@ -118,10 +118,29 @@
   `source_digest`. Thus code that an earlier `ppx_windtrap.mutate`
   instrumented does not compile or link against this runtime. Build it
   again. Under dune the build does this automatically.
-- (breaking) The verdict file format is `windtrap-mutants-v12`. Each
-  record keeps the digest of the source file of its mutant, and a
-  skipped mutant is killed elsewhere. A file of an earlier format is
-  refused. Delete `_build/_mutants` and run the suites again.
+- A mutation run lists the mutants whose verdict changed since the last
+  run of the same suite, in an `unstable (N)` section, as
+  `calc.ml:10:16:ge   survived → killed`. The run compares only the
+  verdicts killed, survived and not evaluated, of the same mutant on the
+  same source. An unknown verdict, a mutant that no test reached or
+  that ran outside tests, and a skipped mutant do not appear. The next
+  run compares with the last verdict that is an outcome. A narrowed, a
+  refused or an interrupted run shows no section, and so does a run
+  whose file cannot be written. `windtrap mutants` gives, for each
+  verdict file, the last change that the file records for each mutant,
+  with the executable and the suite of the file. Under a scope, that
+  change can come from a run before the last one. `--json` adds the
+  array `unstable`. The section does not change the score or the exit
+  code. When a run drops the records outside its scope, because the
+  earlier file is of another build or one of the two runs is refused,
+  the previous verdicts of these mutants go away. The next full run
+  then lists no change of these mutants
+  (doc/manual/mutation.md#unstable-verdicts).
+- (breaking) The verdict file format is `windtrap-mutants-v13`. Each
+  record keeps the digest of the source file of its mutant and the
+  previous verdict of its mutant, and a skipped mutant is killed
+  elsewhere. A file of an earlier format is refused. Delete
+  `_build/_mutants` and run the suites again.
 
 ## v0.3.1 2026-11-01
 
