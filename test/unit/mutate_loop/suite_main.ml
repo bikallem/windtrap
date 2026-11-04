@@ -574,6 +574,102 @@ let dies_at_start =
     test "widen is nonzero" (fun () -> is_true (Subject.widen 3 4 <> 0));
   ]
 
+(* A stateful test on two domains that pins [sub]. Under mutation testing it
+   spawns its pool only under --mutate-workers. *)
+let stateful_domains =
+  [
+    stateful ~count:3 ~domains:2 "sub on two domains"
+      [
+        command "sub"
+          (Gen.unit @-> returns int)
+          (fun () -> 6)
+          (fun () -> Subject.sub 10 4);
+      ];
+  ]
+
+(* Only a call on a worker of the pool evaluates [sub]: a call on the domain
+   of the test answers without it. *)
+let on_workers =
+  [
+    stateful ~count:3 ~domains:2 "sub on the workers only"
+      [
+        command "sub"
+          (Gen.unit @-> returns int)
+          (fun () -> 6)
+          (fun () ->
+            if (Domain.self () :> int) = 0 then 6 else Subject.sub 10 4);
+      ];
+  ]
+
+(* Under an armed mutant, each call of the pool test notes its time, and each
+   other test notes its start and its end, in the file that MUTATE_SPANS
+   names. One write is one line, so the notes of processes at the same time
+   do not mix. *)
+let armed () = Windtrap_runtime.Mutate.armed_hits () > 0
+
+let note line =
+  match Sys.getenv_opt "MUTATE_SPANS" with
+  | None | Some "" -> ()
+  | Some path ->
+      if armed () then begin
+        let fd =
+          Unix.openfile path [ O_WRONLY; O_CREAT; O_APPEND; O_CLOEXEC ] 0o644
+        in
+        let line = Bytes.of_string (line ^ "\n") in
+        ignore (Unix.write fd line 0 (Bytes.length line));
+        Unix.close fd
+      end
+
+let spanned name fn =
+  test name (fun () ->
+      let start = Unix.gettimeofday () in
+      Unix.sleepf 0.3;
+      fn ();
+      note (Printf.sprintf "span %.6f %.6f" start (Unix.gettimeofday ())))
+
+(* The pool test reaches [sub], and the two other tests reach [widen] and
+   [orphan]. No test pins its site, so each job runs whole. A call of the
+   pool test under its mutant waits a millisecond, so that its job lasts
+   longer than the start of a worker. *)
+let pool_alone =
+  [
+    stateful ~count:1 ~steps:4 ~domains:2 "sub on two domains"
+      [
+        command "sub"
+          (Gen.unit @-> returns bool)
+          (fun () -> true)
+          (fun () ->
+            let nonzero = Subject.sub 10 4 <> 0 in
+            if armed () then Unix.sleepf 0.001;
+            note (Printf.sprintf "pool %.6f" (Unix.gettimeofday ()));
+            nonzero);
+      ];
+    spanned "widen is nonzero" (fun () -> is_true (Subject.widen 3 4 <> 0));
+    spanned "orphan is nonzero" (fun () -> is_true (Subject.orphan 3 4 <> 0));
+  ]
+
+(* Eight short pool tests. Each retires its worker, and each start of a worker
+   takes 0.3 s at module initialization (see the [pool_restarts] case). *)
+let pool_restarts =
+  List.init 8 (fun i ->
+      stateful ~count:1 ~steps:1 ~domains:2
+        (Printf.sprintf "sub on two domains %d" i)
+        [
+          command "sub"
+            (Gen.unit @-> returns int)
+            (fun () -> 6)
+            (fun () -> Subject.sub 10 4);
+        ])
+
+(* Each process claims the next of the files MUTATE_STARTS.1, .2, ... as it
+   starts. Under -j 1 the fifth process is the worker that replaces the
+   retired one in the probe, and it hangs before it serves. *)
+let start_index path =
+  let rec next i =
+    if claim (Printf.sprintf "%s.%d" path i) then i else next (i + 1)
+  in
+  next 1
+
 let retried = ref 0
 let handle = fixture ~teardown:(fun () -> ignore (Subject.crasher 3 1)) Fun.id
 
@@ -651,6 +747,20 @@ let () =
       exit @@ run "calc" [ group "calc" (strong @ red); group "widen" weak ]
   | "flaky" -> exit @@ run "calc" [ group "calc" strong; group "flaky" flaky ]
   | "domain" -> exit @@ run "calc" [ group "domain" domain ]
+  | "stateful_domains" ->
+      exit @@ run "calc" [ group "stateful" stateful_domains ]
+  | "on_workers" -> exit @@ run "calc" [ group "stateful" on_workers ]
+  | "pool_alone" -> exit @@ run "calc" [ group "pool" pool_alone ]
+  | "start_hangs" ->
+      (match Sys.getenv_opt "MUTATE_STARTS" with
+      | Some path when start_index path = 5 -> Unix.sleepf 60.
+      | Some _ | None -> ());
+      exit
+      @@ run "calc"
+           [ group "pool" (List.filteri (fun i _ -> i < 2) pool_restarts) ]
+  | "pool_restarts" ->
+      Unix.sleepf 0.3;
+      exit @@ run "calc" [ group "pool" pool_restarts ]
   | "domain_first" ->
       (* Before [run], in the process that runs it. *)
       Domain.join (Domain.spawn ignore);

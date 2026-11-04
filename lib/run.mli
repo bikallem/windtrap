@@ -158,6 +158,11 @@ type config = {
           and their scope is written too ({!Report_json}). [None] writes none.
       *)
   mutation : mutation;  (** [--mutate] and [--arm]. *)
+  mutate_workers : bool;
+      (** [--mutate-workers]: under {!Loop} and {!Armed}, a stateful test on
+          several domains spawns its worker domains, as it does outside mutation
+          testing. When it is [false], such a test runs each program on the
+          domain of the test under mutation testing. *)
   github : bool;
       (** Whether the report is written for GitHub Actions, with its group and
           its annotations (see {!Report}). *)

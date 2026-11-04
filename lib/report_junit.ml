@@ -71,10 +71,10 @@ type testcase = {
   children : child list option;
 }
 
-let failure ~invocation ~armed ~paths ~filter f =
+let failure ~invocation ~armed ~workers ~paths ~filter f =
   let message, lines =
     Report_sections.unstyled_entry ~filter:(Some filter) ~invocation ?armed
-      ~paths f
+      ?workers ~paths f
   in
   Failure
     { message; body = String.concat "" (List.map (fun l -> l ^ "\n") lines) }
@@ -164,9 +164,9 @@ let count p testcases =
   let has t = List.exists p (Option.value ~default:[] t.children) in
   List.length (List.filter has testcases)
 
-let render ~invocation ?armed ?(paths = []) ~suite ~results ~release_failures
-    ~duration () =
-  let failure = failure ~invocation ~armed ~paths in
+let render ~invocation ?armed ?workers ?(paths = []) ~suite ~results
+    ~release_failures ~duration () =
+  let failure = failure ~invocation ~armed ~workers ~paths in
   let rows = List.concat_map (row_testcases ~suite ~failure) results in
   (* A failed release is timed no more than a subtest is. *)
   let release f =
@@ -209,12 +209,12 @@ let path ~suite target =
   if names_file target then target
   else Filename.concat target (Os.sanitize_component suite ^ ".xml")
 
-let write ~invocation ?armed ?paths ~suite ~duration ~results ~release_failures
-    target =
+let write ~invocation ?armed ?workers ?paths ~suite ~duration ~results
+    ~release_failures target =
   let file = path ~suite target in
   let document =
-    render ~invocation ?armed ?paths ~suite ~results ~release_failures ~duration
-      ()
+    render ~invocation ?armed ?workers ?paths ~suite ~results ~release_failures
+      ~duration ()
   in
   try
     if not (names_file target) then Os.mkdir_p (Filename.dirname file);

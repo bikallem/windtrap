@@ -307,6 +307,7 @@ val group_end : string
 val annotations :
   ?invocation:Run.invocation ->
   ?armed:string ->
+  ?workers:bool ->
   ?paths:string list ->
   release_failures:Failure.t list ->
   Run.result list ->
@@ -323,7 +324,8 @@ val annotations :
     {!Report_sections.unstyled_entry} for [f], with [path] as their filter. An
     annotation is read alone, away from the transcript, so its [accept:] and its
     [replay:] name the test. [invocation] and [armed] are those of
-    {!Report_sections.hints}, and [invocation] defaults to [`Mirrors]. *)
+    {!Report_sections.hints}, and [invocation] defaults to [`Mirrors]. [workers]
+    is that of {!Report_sections.replay}. *)
 
 (** {1:mutation Mutation lines}
 

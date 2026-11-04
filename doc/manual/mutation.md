@@ -312,6 +312,52 @@ reached, and an `--arm` run of its mutant ends on `mutant not reached`.
 The mutation run exits 0 whatever it finds. It exits 1, with a sentence
 on standard error, when a pass fails or no mutant is left to test.
 
+## Stateful tests on several domains
+
+Under mutation testing, a stateful test on several domains spawns no
+worker domains. It runs each program one time on the domain of the
+test, the branches one after the other. Thus a kill does not depend on
+a schedule. But a mutant that only a concurrent order of the calls
+shows survives, and no test reaches code that only a worker runs.
+
+`--mutate-workers` (mirror `WINDTRAP_MUTATE_WORKERS`) lets such a test
+spawn its worker domains under `--mutate` and `--arm`, as it does
+without mutation testing. Each program then runs 50 times, and its
+branches run on the workers. Use it for the code of a structure that
+domains share. It has these costs:
+
+- A run of such a test does about 50 times more work.
+- A kill can depend on a schedule. A mutant that one run kills can
+  survive the next run, and an `--arm` run of the same mutant can pass.
+- The job of a mutant that such a test reaches runs alone, and so does
+  the determinism probe. Under `-j`, no other job runs at the same time
+  as such a job, because its workers need the CPUs. The other jobs run
+  up to `-j` at once.
+
+The dry run records each test that spawned worker domains. The
+deadline of a job is the time of the whole dry run plus ten times the
+time of the job's tests in the dry run (at least 1 s). The pools of
+these tests also ran in the dry run, so their time is in the deadline.
+A worker process ends after a test that spawned domains. Then a new
+worker process runs the rest of the job. The time that the new worker
+process takes to start does not count toward the deadline. But each
+start leaves out at most the deadline, so a start that hangs ends the
+job.
+
+The `reproduce:`, `arm:` and `replay:` commands of such a run keep
+`--mutate-workers`, also in the JUnit file and in the GitHub
+annotations. A verdict file does not record the flag, so the commands
+of `windtrap mutants` do not have it. Add `--mutate-workers` to such a
+command yourself.
+
+Without `--mutate` or `--arm` on the command line, the flag is a usage
+error. Its mirror alone has no effect on a suite that does not mutate.
+Thus a suite that opts in through its dune stanza sets the mirror, as
+in `(setenv WINDTRAP_MUTATE_WORKERS 1 (run %{test}))`, because the
+flag in the stanza is a usage error under a plain `dune runtest`.
+Outside mutation testing, a stateful test always spawns its worker
+domains.
+
 ## Dismissing an equivalent mutant
 
 A mutant that no test can tell from the original is equivalent. `abs`

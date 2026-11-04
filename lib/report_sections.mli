@@ -163,6 +163,7 @@ val selecting : paths:string list -> string -> string
 
 val unstyled_entry :
   ?armed:string ->
+  ?workers:bool ->
   ?invocation:Run.invocation ->
   ?paths:string list ->
   filter:string option ->
@@ -173,7 +174,8 @@ val unstyled_entry :
     with the [select] of the test at [filter] among [paths] ({!selecting}), then
     the lines of {!hints} for [f] alone, then its {!accept} and {!replay} lines
     for the test at the path [filter], or for every test when it is [None], each
-    indented by four spaces and rendered without styling. *)
+    indented by four spaces and rendered without styling. [workers] is that of
+    {!replay}. *)
 
 val max_lines : int
 (** [max_lines] is [10], the bound on the two texts of a block that have no
@@ -247,6 +249,7 @@ val accept_command :
 
 val replay :
   ?armed:string ->
+  ?workers:bool ->
   ?invocation:Run.invocation ->
   tests:[ `Run of Run.config | `Filter of string option ] ->
   Failure.t list ->
@@ -273,7 +276,12 @@ val replay :
       so the line runs more tests, never fewer.
     - [armed] is the identifier of the armed mutant, passed through
       {!shell_word}. The line arms it, and under [`Mirrors] names the mutation
-      backend, since the armed action exists only in that build. *)
+      backend, since the armed action exists only in that build.
+    - [workers] tells that the run had [--mutate-workers]. It defaults to
+      [false], and [`Run config] gives [config.mutate_workers] in its place. An
+      armed line then keeps [--mutate-workers] after [--arm], or its mirror
+      [WINDTRAP_MUTATE_WORKERS=1], so the mutant runs as it ran. A line with no
+      armed mutant leaves it out. *)
 
 (** {1:names Names and command words} *)
 
@@ -624,11 +632,12 @@ val mutation_closing : config:Run.config -> mutation -> section list
       its own title and a line that says where such a site runs.
     - when [m.survivors] is not empty, the [reproduce:] command, which arms the
       first survivor of [m] under the selection of [config]. Under [`Exe cmd],
-      the invocation of [config], it is [cmd], [--arm] and the run's selection
-      as {!replay} restates it, a repeatable flag once per value. Under
-      [`Mirrors] it is the mirrors of the same flags in front of a forced
-      [dune runtest] that names the mutation backend, except [--failed] and a
-      filter or an exclusion of several patterns, which no mirror can hold.
+      the invocation of [config], it is [cmd], [--arm], [--mutate-workers] when
+      [config.mutate_workers] is [true], and the run's selection as {!replay}
+      restates it, a repeatable flag once per value. Under [`Mirrors] it is the
+      mirrors of the same flags in front of a forced [dune runtest] that names
+      the mutation backend, except [--failed] and a filter or an exclusion of
+      several patterns, which no mirror can hold.
     - the outcome line, {!mutation_line} with no gate, always last. *)
 
 val mutation_report :
@@ -643,4 +652,5 @@ val mutation_report :
     outside tests, the [reproduce:] command and the outcome line follow, as
     {!mutation_closing} builds them for a run that selects every test. The
     outcome line counts the suites of [m.refused] after the executables, and it
-    is {!mutation_line} under the gate [min]. *)
+    is {!mutation_line} under the gate [min]. A verdict file does not record
+    [--mutate-workers], so no command here has it. *)

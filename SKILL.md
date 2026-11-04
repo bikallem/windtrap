@@ -465,6 +465,13 @@ the fast suites first, in a separate `dune runtest`. Two suites that use
 the option at the same time can skip one mutant because of each other.
 Thus run them one after the other (`dune runtest -j 1`).
 
+`--mutate-workers` (`WINDTRAP_MUTATE_WORKERS=1`) lets a stateful test on
+several domains spawn its worker domains under `--mutate` and `--arm`.
+Without it, such a test runs each program on one domain, and a mutant
+that only a concurrent order shows survives. With the flag, a kill can
+depend on a schedule, and the job of each mutant that such a test
+reaches runs alone.
+
 A run and `windtrap mutants` list under `unstable` each mutant whose
 verdict changed since the last run of its suite, on the same source. A
 change to a test, or a test that depends on the clock or on the order

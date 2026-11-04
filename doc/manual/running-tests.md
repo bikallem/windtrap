@@ -435,6 +435,10 @@ OPTIONS:
       Skip the mutants that the verdict file of another suite killed (with
       --mutate).
 
+  --mutate-workers (env WINDTRAP_MUTATE_WORKERS)
+      Let a stateful test on several domains spawn its worker domains (with
+      --mutate or --arm).
+
   --arm=ID (env WINDTRAP_MUTATE_ARM)
       Run once with mutant ID armed.
 

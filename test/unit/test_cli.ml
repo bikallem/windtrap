@@ -34,6 +34,8 @@ let error_row = function
   | Cli.Incompatible_flags (first, second) ->
       strf "incompatible %s %s" first second
   | Cli.Requires (flag, needed) -> strf "%s requires %s" flag needed
+  | Cli.Requires_any (flag, needed) ->
+      strf "%s requires %s" flag (String.concat " or " needed)
 
 let pp_error ppf e = Format.pp_print_string ppf (error_row e)
 
@@ -85,6 +87,7 @@ let flags (p : Cli.parsed) =
         | Run.Armed id -> [ "arm " ^ id ]
         | Run.No_mutation -> []);
         bool "skip_killed" p.skip_killed;
+        bool "mutate_workers" c.mutate_workers;
         bool "help" p.help;
         bool "version" p.version;
       ]
@@ -153,6 +156,7 @@ let changes (c : Run.config) =
         field "junit" (opt Fun.id) (fun c -> c.Run.junit);
         field "json" (opt Fun.id) (fun c -> c.Run.json);
         field "mutation" mutation_name (fun c -> c.Run.mutation);
+        field "mutate_workers" bool (fun c -> c.Run.mutate_workers);
         field "github" bool (fun c -> c.Run.github);
         field "invocation" invocation_name (fun c -> c.Run.invocation);
         field "broadcast selection" bool (fun c ->
@@ -305,6 +309,9 @@ let mirrors =
           ( "WINDTRAP_SKIP_KILLED",
             "maybe",
             {|invalid WINDTRAP_SKIP_KILLED "maybe"|} );
+          ( "WINDTRAP_MUTATE_WORKERS",
+            "maybe",
+            {|invalid WINDTRAP_MUTATE_WORKERS "maybe"|} );
         ];
       test "a boolean mirror refuses another word in Os.bool_expected's words"
         boolean_wording;
@@ -365,6 +372,8 @@ let messages () =
         { source = "--prop-count"; value = "x"; expected = "an int" };
       Cli.Incompatible_flags ("-u", "--corrected");
       Cli.Incompatible_flags ("--mutate", "--arm");
+      Cli.Requires ("--lines", "--mutate");
+      Cli.Requires_any ("--mutate-workers", [ "--mutate"; "--arm" ]);
     ]
   in
   let refused =
@@ -396,6 +405,8 @@ let messages () =
     invalid value 'x' for --prop-count: expected an int
     options '-u' and '--corrected' cannot be combined
     options '--mutate' and '--arm' cannot be combined
+    option '--lines' scopes '--mutate', which is not given
+    option '--mutate-workers' requires '--mutate' or '--arm'
     invalid value 'nope' for --seed: expected an s1: token with 16 lowercase hexadecimal digits
     invalid value '9/2' for --shard: expected K/N with 1 <= K <= N (e.g. 2/4)
     invalid value 'x' for --list: expected no argument
@@ -459,14 +470,15 @@ let every_flag () =
     "filter [pat], exclude [ex], tags [a; b], exclude_tags [c], shard 2/4, \
      failed_only, list_only, bail, stream, update, seed s1:00000000000000ff, \
      timeout 2.5, slow_threshold 3, prop_count 50, verbose, junit out.xml, \
-     color never, log_dir logs, arm lib/a.ml:1:0:add, skip_killed"
+     color never, log_dir logs, arm lib/a.ml:1:0:add, skip_killed, \
+     mutate_workers"
     (parsed
        (String.split_on_char ' '
           "-f pat -e ex --tag a --tag b --exclude-tag c --shard 2/4 --failed \
            -l -x -s -u --seed s1:00000000000000ff --timeout 2.5 \
            --slow-threshold 3 --prop-count 50 -v --junit out.xml --color never \
-           -o logs --mutate=lib/a.ml,lib/b.ml --skip-killed --arm \
-           lib/a.ml:1:0:add"))
+           -o logs --mutate=lib/a.ml,lib/b.ml --skip-killed --mutate-workers \
+           --arm lib/a.ml:1:0:add"))
 
 (* Whole arguments: each valueless flag in both spellings, value flags with a
    good value, and misspellings and separators, so that most vectors parse
@@ -555,6 +567,7 @@ let parsing =
           ([ "--mutate=lib/a.ml, lib/b.ml" ], "mutate [lib/a.ml; lib/b.ml]");
           ([ "--arm"; "lib/a.ml:1:0:add" ], "arm lib/a.ml:1:0:add");
           ([ "--arm=x" ], "arm x");
+          ([ "--mutate-workers" ], "mutate_workers");
           ([ "-h" ], "help");
           ([ "--help" ], "help");
           ([ "-V" ], "version");
@@ -896,6 +909,27 @@ let resolution =
           ( [ ("WINDTRAP_SKIP_KILLED", "1") ],
             [ "--arm"; "lib/a.ml:9:12:add" ],
             "mutation armed lib/a.ml:9:12:add" );
+        ];
+      resolve_rows
+        "--mutate-workers or its mirror sets mutate_workers under --mutate or \
+         --arm, and on the command line it needs one of them"
+        [
+          ( [],
+            [ "--mutate"; "--mutate-workers" ],
+            "mutation loop [], mutate_workers" );
+          ( [ ("WINDTRAP_MUTATE_WORKERS", "1") ],
+            [ "--arm"; "lib/a.ml:9:12:add" ],
+            "mutation armed lib/a.ml:9:12:add, mutate_workers" );
+          ( [ ("WINDTRAP_MUTATE_WORKERS", "0") ],
+            [ "--mutate" ],
+            "mutation loop []" );
+          ( [ ("WINDTRAP_MUTATE", "1") ],
+            [ "--mutate-workers" ],
+            "mutation loop [], mutate_workers, broadcast mutate" );
+          ( [],
+            [ "--mutate-workers" ],
+            "--mutate-workers requires --mutate or --arm" );
+          ([ ("WINDTRAP_MUTATE_WORKERS", "1") ], [], "defaults");
         ];
       resolve_rows "--mutate with --arm is refused, whichever layer gave each"
         [

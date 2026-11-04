@@ -201,9 +201,12 @@ let tell_quit t =
    mask, so a worker spawned while the calling domain blocks them never runs
    the runner's handlers, not even in its first instructions. *)
 let runner_signals = [ Sys.sigalrm; Sys.sigint; Sys.sigterm; Sys.sighup ]
+let spawned = Atomic.make 0
+let spawns () = Atomic.get spawned
 
 let spawn n =
   if n < 1 then invalid_arg "Workers.spawn: no worker";
+  Atomic.incr spawned;
   let t =
     {
       mutex = Mutex.create ();

@@ -47,6 +47,7 @@ type error =
   | Invalid_value of { source : string; value : string; expected : string }
   | Incompatible_flags of string * string
   | Requires of string * string
+  | Requires_any of string * string list
 
 let ( let* ) = Result.bind
 
@@ -298,6 +299,11 @@ let entries =
       ~mirror:(mirrored "WINDTRAP_SKIP_KILLED")
       "Skip the mutants that the verdict file of another suite killed (with \
        --mutate).";
+    row "--mutate-workers"
+      (switch (fun c -> { c with mutate_workers = true }))
+      ~mirror:(mirrored "WINDTRAP_MUTATE_WORKERS")
+      "Let a stateful test on several domains spawn its worker domains (with \
+       --mutate or --arm).";
     row "--arm"
       (value "ID" any (field (fun c id -> { c with mutation = Run.Armed id })))
       ~mirror:(mirrored "WINDTRAP_MUTATE_ARM")
@@ -380,6 +386,9 @@ let error_message = function
       Pp.str "options '%s' and '%s' cannot be combined" first second
   | Requires (flag, needed) ->
       Pp.str "option '%s' scopes '%s', which is not given" flag needed
+  | Requires_any (flag, needed) ->
+      Pp.str "option '%s' requires %s" flag
+        (String.concat " or " (List.map (Pp.str "'%s'") needed))
 
 (* Parsing *)
 
@@ -549,6 +558,12 @@ let line_scope ~cli ~layered =
 let settings cli =
   let* layered = layer_entries entries cli in
   let* lines = line_scope ~cli ~layered in
+  let mutates = gave layered "--mutate" || gave layered "--arm" in
+  let* () =
+    if gave cli "--mutate-workers" && not mutates then
+      Error (Requires_any ("--mutate-workers", [ "--mutate"; "--arm" ]))
+    else Ok ()
+  in
   let* () =
     if gave layered "--mutate" && gave layered "--arm" then
       Error (Incompatible_flags ("--mutate", "--arm"))
@@ -570,6 +585,7 @@ let settings cli =
         | Run.Loop { prefixes; _ } ->
             Run.Loop { prefixes; lines; skip_killed = layered.skip_killed }
         | (Run.Armed _ | Run.No_mutation) as m -> m);
+      mutate_workers = c.mutate_workers && mutates;
       case_file;
       log_dir = path "--output" c.log_dir;
       junit = Option.map (path "--junit") c.junit;

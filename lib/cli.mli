@@ -105,6 +105,10 @@ type error =
       (** The command line gave the first flag, which scopes the second, and no
           layer gave the second: [("--lines", "--mutate")],
           [("--diff", "--mutate")] or [("--skip-killed", "--mutate")]. *)
+  | Requires_any of string * string list
+      (** The command line gave the flag, which acts only with one of the
+          others, and no layer gave any of them:
+          [("--mutate-workers", ["--mutate"; "--arm"])]. *)
 
 val error_message : error -> string
 (** [error_message error] is one sentence on [error] for a user, which names the
@@ -159,6 +163,10 @@ val settings : parsed -> (Run.config, error) result
       alone they are ignored. Both at once is [Error (Incompatible_flags _)],
       whichever layer gave each, and it is checked after every mirror. A prefix
       that spells a boolean cannot go through the variable.
+    - [mutate_workers] is [true] when a layer gives [--mutate-workers] and a
+      layer gives [--mutate] or [--arm]. [--mutate-workers] from the command
+      line without them is [Error (Requires_any _)]. From its mirror alone it is
+      ignored.
     - A relative path of [--junit], [--json] or [-o] is made absolute, against
       the working directory when the command line gives it and against
       {!Os.project_root} when its mirror does. It is kept as given when that

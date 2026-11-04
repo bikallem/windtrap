@@ -66,8 +66,10 @@ val execute_and_report :
       does not skip, in the order of the catalogue, with the mutant armed and
       its reaching tests up to the first failure in or after the test that first
       evaluated the armed site. Up to [config.jobs] run at once, and they are
-      given in that order. The probe agrees iff it executed as many tests,
-      skipped as many and counted no failure.
+      given in that order. A job that holds a test that spawned a pool of worker
+      domains in the dry run ([config.mutate_workers]) runs alone. The probe
+      agrees iff it executed as many tests, skipped as many and counted no
+      failure.
     + Once the last job is given it writes the verdict file.
 
     A job starts from module initialization, so what the dry run left, a table
@@ -128,7 +130,10 @@ val execute_and_report :
     that the dry run took, read on the monotonic clock ({!Os.val-counter}), plus
     a share for the tests of the job. The share is ten times
     ([deadline_multiplier]) what the dry run measured for those tests, and at
-    least one second. The probe's tests are every executed test.
+    least one second. The probe's tests are every executed test. A worker
+    retires after a test that spawned a domain, and a new worker runs the rest
+    of the job. Its start, up to the end of its module initialization, does not
+    count toward the deadline.
 
     The runaway budget of a job ({!Windtrap_runtime.Mutate.arm}) is
     [(hits * 8) + 1000] ([budget_of]) for a site that the dry run evaluated

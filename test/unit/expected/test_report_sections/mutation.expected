@@ -341,6 +341,61 @@ mutants: «r|2 survived» of 5 reached by this suite, «g|3 killed», «y|2 neve
 
 mutants: 4 reached by this suite, 3 killed, 1 not evaluated, 2 never reached, score 75.0% (3/4)
 
+=== a loop's arm: command keeps --mutate-workers
+
+─────────────────── not evaluated (1) ────────────────────
+  Each site ran in the dry run and not in its mutant's child.
+  lib/memo.ml:4:17:sub  a + b → a - b
+    arm: ./test_memo.exe --arm lib/memo.ml:4:17:sub --mutate-workers
+──────────────────────────────────────────────────────────
+
+─────────────────── never reached (2) ────────────────────
+  2  lib/calc.ml   lines 40-41
+──────────────────────────────────────────────────────────
+
+mutants: 4 reached by this suite, 3 killed, 1 not evaluated, 2 never reached, score 75.0% (3/4)
+
+=== at rest, no command has --mutate-workers, which no verdict file records
+───────────────────── survivors (2) ──────────────────────
+File "lib/calc.ml", line 13, characters 11-16:
+  SURVIVED  lib/calc.ml:13:11:add  a - b → a + b
+      13 │ | Sub -> a - b
+
+    1 test ran this line and did not fail:
+      subtraction › stays positive  test/test_calc.ml:19
+
+File "lib/calc.ml", line 21, characters 16-21:
+  SURVIVED  lib/calc.ml:21:16:ge  n > 0 → n >= 0
+      21 │ let sign n = if n > 0 then 1 else 0
+
+    2 tests ran this line and none failed:
+      sign of a negative  test/test_calc.ml:31
+      sign of a positive  test/test_calc.ml:30
+──────────────────────────────────────────────────────────
+
+─────────────────── not evaluated (1) ────────────────────
+  Each site ran in the dry run and not in its mutant's child.
+  lib/memo.ml:4:17:sub  a + b → a - b
+    arm: ./test_memo.exe --arm lib/memo.ml:4:17:sub
+──────────────────────────────────────────────────────────
+
+─────────────────── never reached (2) ────────────────────
+  2  lib/calc.ml   lines 40-41
+──────────────────────────────────────────────────────────
+
+reproduce: ./t.exe --arm lib/calc.ml:13:11:add
+mutants: 2 survived of 6 reached by this suite, 3 killed, 1 not evaluated, 2 never reached, score 50.0% (3/6)
+
+=== a loop's reproduce: command keeps its mirror under a build action
+──────────────────────────────────────────────────────────
+
+─────────────────── never reached (2) ────────────────────
+  2  lib/calc.ml   lines 40-41
+──────────────────────────────────────────────────────────
+
+reproduce: WINDTRAP_MUTATE_ARM=lib/calc.ml:13:11:add WINDTRAP_MUTATE_WORKERS=1 dune runtest --force --instrument-with ppx_windtrap.mutate
+mutants: 2 survived of 5 reached by this suite, 3 killed, 2 never reached, score 60.0% (3/5)
+
 === outside tests alone, in a loop: a blank line opens it
 
 ────────────── evaluated outside tests (1) ───────────────

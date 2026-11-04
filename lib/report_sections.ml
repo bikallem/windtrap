@@ -383,12 +383,22 @@ let selection_words invocation tests =
    flag pairs its spelling with its mirror's. An armed run's failures are the
    mutant's, so the command arms it, and under dune names the backend, since
    the armed action exists only in that build; [force] reruns an action that
-   dune would replay from its cache, as it replays a passing one. *)
-let command ?armed ?(force = false) ~invocation ~flags tests =
+   dune would replay from its cache, as it replays a passing one. The mutant
+   runs as it ran, so [--mutate-workers] stays with it. *)
+let command ?armed ?(workers = false) ?(force = false) ~invocation ~flags tests
+    =
+  let workers =
+    match tests with
+    | `Run (c : Run.config) -> c.mutate_workers
+    | `Filter _ -> workers
+  in
   let arm, arm_mirror =
     match armed with
     | Some id ->
-        ( [ ("--arm " ^ shell_word id, "WINDTRAP_MUTATE_ARM=" ^ shell_word id) ],
+        ( ("--arm " ^ shell_word id, "WINDTRAP_MUTATE_ARM=" ^ shell_word id)
+          ::
+          (if workers then [ ("--mutate-workers", "WINDTRAP_MUTATE_WORKERS=1") ]
+           else []),
           " --instrument-with ppx_windtrap.mutate" )
     | None -> ([], "")
   in
@@ -436,7 +446,7 @@ let drawn (f : Failure.t) =
 
 (* A late case replays only under at least as many cases as the failing run
    generated, so the largest count is restated. *)
-let replay ?armed ?(invocation = `Mirrors) ~tests failures =
+let replay ?armed ?workers ?(invocation = `Mirrors) ~tests failures =
   match List.filter_map drawn failures with
   | [] -> None
   | (root, _) :: _ as cases ->
@@ -456,7 +466,7 @@ let replay ?armed ?(invocation = `Mirrors) ~tests failures =
                (strf "--prop-count %d" n, strf "WINDTRAP_PROP_COUNT=%d" n))
              (Option.to_list count)
       in
-      Some ("replay: " ^ command ?armed ~invocation ~flags tests)
+      Some ("replay: " ^ command ?armed ?workers ~invocation ~flags tests)
 
 (* Entries *)
 
@@ -1256,14 +1266,15 @@ let selecting ~paths path =
 let headline f = (entry ~excerpt:false f).summary
 
 (* A failure away from its block: its entry and its hint lines, unstyled. *)
-let unstyled_entry ?armed ?(invocation = `Mirrors) ?(paths = []) ~filter f =
+let unstyled_entry ?armed ?workers ?(invocation = `Mirrors) ?(paths = [])
+    ~filter f =
   let select = Option.map (selecting ~paths) filter in
   let e = entry ?select ~excerpt:false f in
   let tests = `Filter filter in
   let hints =
     hints ?armed [ f ]
     @ Option.to_list (accept ?armed ~invocation ~tests [ f ])
-    @ Option.to_list (replay ?armed ~invocation ~tests [ f ])
+    @ Option.to_list (replay ?armed ?workers ~invocation ~tests [ f ])
   in
   ( e.summary,
     List.map

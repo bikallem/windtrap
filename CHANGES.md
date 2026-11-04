@@ -141,6 +141,24 @@
   previous verdict of its mutant, and a skipped mutant is killed
   elsewhere. A file of an earlier format is refused. Delete
   `_build/_mutants` and run the suites again.
+- `--mutate-workers` and its mirror `WINDTRAP_MUTATE_WORKERS` let a
+  stateful test on several domains spawn its worker domains under
+  `--mutate` and `--arm`, as without mutation testing. Thus a test can
+  kill a mutant that only a concurrent order of the calls shows. A kill
+  can then depend on a schedule. Under `-j`, the job of a mutant that
+  such a test reaches runs alone, and so does the determinism probe. The
+  `reproduce:`, `arm:` and `replay:` commands of the run keep the flag,
+  but the commands of `windtrap mutants` do not have it. Without
+  `--mutate` or `--arm`, the flag on the command line is a usage error.
+  To opt a suite in through its dune stanza, use
+  `(setenv WINDTRAP_MUTATE_WORKERS 1 ...)`
+  (doc/manual/mutation.md#stateful-tests-on-several-domains).
+- The deadline of a job of the mutation run does not count the start
+  of a worker that replaces a worker that retired, for example after a
+  test that spawned a domain. Each start leaves out at most the
+  deadline, so a start that hangs ends the job. Before, a job with many
+  such tests could pass its deadline, and the determinism probe refused
+  the run.
 
 ## v0.3.1 2026-11-01
 
