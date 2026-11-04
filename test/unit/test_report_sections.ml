@@ -2831,6 +2831,19 @@ let padded_names () =
        (fun i _ -> i >= 5 && i < 7)
        (lines (block [ calc_one; eval_one ])))
 
+(* The title of the block of [add_survivor] after [runs]. *)
+let title_runs runs =
+  List.nth
+    (lines
+       (printed (Sections.survivor_block ?runs ~exe_width:None add_survivor)))
+    1
+
+let runs_in_the_title () =
+  let plain = title_runs None in
+  equal (list string)
+    [ plain; plain; plain ^ "  (2 runs)"; plain ^ "  (100 runs)" ]
+    (List.map title_runs [ None; Some 1; Some 2; Some 100 ])
+
 let exe_column () =
   let at_rest witnesses =
     at_rest
@@ -2984,6 +2997,8 @@ let mutation_group =
       cases "the sentence counts the reaching tests and their executables"
         ~id:fst sentence_rows sentence;
       test "the reaching tests' names are padded to the widest" padded_names;
+      test "the title gives the runs of a survivor when they are more than 1"
+        runs_in_the_title;
       test "the executable column appears when a reaching test names one"
         exe_column;
     ]

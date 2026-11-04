@@ -472,6 +472,11 @@ that only a concurrent order shows survives. With the flag, a kill can
 depend on a schedule, and the job of each mutant that such a test
 reaches runs alone.
 
+`--mutate-retry N` (`WINDTRAP_MUTATE_RETRY=N`) runs the job of a
+survivor again, up to N more times, each in a fresh worker. The first
+verdict that is not survived is the verdict. Use it for a suite whose
+kills depend on a schedule or on the clock.
+
 A run and `windtrap mutants` list under `unstable` each mutant whose
 verdict changed since the last run of its suite, on the same source. A
 change to a test, or a test that depends on the clock or on the order

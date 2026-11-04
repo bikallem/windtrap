@@ -670,6 +670,49 @@ let start_index path =
   in
   next 1
 
+(* The fixture of --mutate-retry. Only [widen] is reached, and unarmed it
+   adds, so the dry run and the probe count nothing in MUTATE_RUNS.
+
+   - Each run of a changed [widen] appends a line to the file of
+     MUTATE_RUNS, and the number of lines is the run.
+   - At the run MUTATE_GATE_AT it waits at the gate ([wait_at_gate]), at
+     MUTATE_HANG_AT it hangs, and at MUTATE_KILL_AT it fails.
+   - Each worker appends a line to the file of MUTATE_WORKER_RUNS when it runs the
+     first test: the dry run, the probe, and then each run of the mutant. At
+     the line MUTATE_SKIP_AT, the two tests do not run [widen]. *)
+
+(* Appends a line to the file of [var], and gives its number of lines. It
+   gives 0 when [var] is not set. *)
+let count var =
+  match Sys.getenv_opt var with
+  | None | Some "" -> 0
+  | Some path ->
+      let fd = Unix.openfile path [ O_WRONLY; O_APPEND; O_CREAT ] 0o644 in
+      Fun.protect
+        ~finally:(fun () -> Unix.close fd)
+        (fun () ->
+          (* The offset after an appended write is atomic with the write, so
+             two processes never get the same count. *)
+          ignore (Unix.write_substring fd "run\n" 0 4);
+          Unix.lseek fd 0 SEEK_CUR / 4)
+
+let at var n = Sys.getenv_opt var = Some (string_of_int n)
+let skipped_widen = ref false
+
+let intermittent =
+  [
+    test "widen survives each run that is not the kill" (fun () ->
+        skipped_widen := at "MUTATE_SKIP_AT" (count "MUTATE_WORKER_RUNS");
+        if (not !skipped_widen) && Subject.widen 3 4 <> 7 then begin
+          let run = count "MUTATE_RUNS" in
+          if at "MUTATE_GATE_AT" run then wait_at_gate ();
+          if at "MUTATE_HANG_AT" run then Unix.sleepf 600.;
+          if at "MUTATE_KILL_AT" run then fail "killed at this run"
+        end);
+    test "widen is reached again" (fun () ->
+        if not !skipped_widen then is_true (Subject.widen 1 2 <> 99));
+  ]
+
 let retried = ref 0
 let handle = fixture ~teardown:(fun () -> ignore (Subject.crasher 3 1)) Fun.id
 
@@ -751,6 +794,7 @@ let () =
       exit @@ run "calc" [ group "stateful" stateful_domains ]
   | "on_workers" -> exit @@ run "calc" [ group "stateful" on_workers ]
   | "pool_alone" -> exit @@ run "calc" [ group "pool" pool_alone ]
+  | "intermittent" -> exit @@ run "calc" [ group "intermittent" intermittent ]
   | "start_hangs" ->
       (match Sys.getenv_opt "MUTATE_STARTS" with
       | Some path when start_index path = 5 -> Unix.sleepf 60.

@@ -163,6 +163,10 @@ type config = {
           several domains spawns its worker domains, as it does outside mutation
           testing. When it is [false], such a test runs each program on the
           domain of the test under mutation testing. *)
+  mutate_retry : int;
+      (** [--mutate-retry]: under {!Loop}, the job of a mutant that survived
+          runs again, each time in a fresh worker, up to this many more times.
+          [0] runs each job once. *)
   github : bool;
       (** Whether the report is written for GitHub Actions, with its group and
           its annotations (see {!Report}). *)

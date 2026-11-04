@@ -52,6 +52,7 @@ type config = {
   json : string option;
   mutation : mutation;
   mutate_workers : bool;
+  mutate_retry : int;
   github : bool;
   invocation : invocation;
   broadcast : broadcast;
@@ -86,6 +87,7 @@ let default_config () =
     json = None;
     mutation = No_mutation;
     mutate_workers = false;
+    mutate_retry = 0;
     github = false;
     invocation = `Mirrors;
     broadcast = not_broadcast;

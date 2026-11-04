@@ -159,6 +159,15 @@
   deadline, so a start that hangs ends the job. Before, a job with many
   such tests could pass its deadline, and the determinism probe refused
   the run.
+- `--mutate-retry N` and its mirror `WINDTRAP_MUTATE_RETRY` run the job
+  of a survivor again, up to N more times (0 to 100, default 0), each in
+  a fresh worker. The first verdict that is not survived is the verdict.
+  The retries run in passes, each up to `-j` jobs at once, and the report
+  prints each survivor in the last pass, in catalogue order. The
+  title of a survivor gives its runs, as in `(3 runs)`. The verdict file
+  does not keep the runs, so `windtrap mutants` does not show them.
+  Without `--mutate`, the flag on the command line is a usage error
+  (doc/manual/mutation.md#running-a-survivor-again).
 
 ## v0.3.1 2026-11-01
 

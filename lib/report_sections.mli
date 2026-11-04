@@ -591,10 +591,13 @@ val mutation_line : min:float option -> mutation -> span list
     [FAILED] as {!mutation_gate_met} tells. The score is styled as failing only
     when it is below [min]. *)
 
-val survivor_block : exe_width:int option -> survivor -> section list
-(** [survivor_block ~exe_width s] is the block of [s]. It holds, in this order:
+val survivor_block :
+  ?runs:int -> exe_width:int option -> survivor -> section list
+(** [survivor_block ?runs ~exe_width s] is the block of [s]. It holds, in this
+    order:
     - the {!diagnostic} of the mutant, at the start of its line.
-    - the title.
+    - the title. When [runs] (default [1]) is above [1], the title ends with the
+      number of runs in which the mutant survived, as in [(3 runs)].
     - the mutated source line, as an {!type-entry} holds a source line, when
       [source] is known and holds the line.
     - the sentence that counts the reaching tests, and their executables when

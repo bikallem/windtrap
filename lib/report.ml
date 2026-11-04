@@ -1095,11 +1095,11 @@ let mutation_testing t ~index ~total ~id =
 
 (* A survivor's block is committed when its child ends, so a loop that dies
    has printed what it found. *)
-let mutation_survivor t survivor =
+let mutation_survivor ?runs t survivor =
   print t
     (Sections.Line []
      :: (if t.survivors = 0 then [ Sections.Rule (Some "survivors") ] else [])
-    @ Sections.survivor_block ~exe_width:None survivor);
+    @ Sections.survivor_block ?runs ~exe_width:None survivor);
   t.survivors <- t.survivors + 1
 
 let mutation_finish ?note ?(lines = []) t m =

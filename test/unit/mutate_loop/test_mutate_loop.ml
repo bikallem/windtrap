@@ -15,6 +15,9 @@ module Verdicts = Windtrap_runtime.Verdicts
 module Child = Windtrap_test_support.Child
 module Supervisor = Windtrap.Private.Supervisor
 
+external openpty : unit -> Unix.file_descr * Unix.file_descr
+  = "windtrap_test_openpty"
+
 let strf = Printf.sprintf
 let exe_dir = Filename.dirname Windtrap_runtime.Instr.executable
 let suite_exe = Filename.concat exe_dir "suite_main.exe"
@@ -244,12 +247,14 @@ let await ~what started path =
   poll 3000
 
 (* A run that must end on its own is ended after [seconds], SIGTERM first,
-   which the loop answers by killing its running child's group. *)
-let finish_within ?(seconds = 10.) ~what started =
+   which the loop answers by killing its running child's group. [meanwhile]
+   runs at each poll. *)
+let finish_within ?(seconds = 10.) ?(meanwhile = ignore) ~what started =
   let rec wait_until time =
     match Unix.waitpid [ Unix.WNOHANG ] started.pid with
     | 0, _ when Unix.gettimeofday () > time -> None
     | 0, _ ->
+        meanwhile ();
         Unix.sleepf 0.01;
         wait_until time
     | _, status -> Some status
@@ -3357,6 +3362,380 @@ let unstable_verdicts =
         skipped_change;
     ]
 
+(* Retry *)
+
+(* A run of [intermittent], and the runs of its changed [widen]. With [keep]
+   the run keeps the verdict file of the run before it. *)
+let intermittent ?(keep = false) ?(env = []) args =
+  let runs = Filename.concat (temp_dir ()) "runs" in
+  let env = [ suite "intermittent"; ("MUTATE_RUNS", runs) ] @ env in
+  let r =
+    if keep then rerun ~env (mutate :: args) else spawn ~env (mutate :: args)
+  in
+  (r, if Sys.file_exists runs then List.length (lines (read runs)) - 1 else 0)
+
+let survived_outcome =
+  "mutants: 1 survived of 1 reached by this suite, 3 never reached, score 0.0% \
+   (0/1)"
+
+let killed_outcome =
+  "mutants: 1 reached by this suite, 1 killed, 3 never reached, score 100.0% \
+   (1/1)"
+
+let not_evaluated_outcome =
+  "mutants: 1 reached by this suite, 1 not evaluated, 3 never reached, score \
+   0.0% (0/1)"
+
+let unknown_outcome =
+  "mutants: 1 reached by this suite, 1 unknown, 3 never reached"
+
+let not_tested_outcome =
+  "mutants: 1 reached by this suite, 3 never reached, 1 not tested"
+
+(* The rows of [intermittent], with [verdict] on line 18. *)
+let intermittent_rows verdict =
+  Some
+    [
+      "subject.ml:15 unreached";
+      "subject.ml:18 " ^ verdict;
+      "subject.ml:21 unreached";
+      "subject.ml:27 unreached";
+    ]
+
+let survived_rows =
+  intermittent_rows
+    "survived by intermittent \u{203a} widen is reached again, intermittent \
+     \u{203a} widen survives each run that is not the kill"
+
+(* The title of the survivor of [line] in a report. *)
+let title_of line out =
+  let prefix = strf "  SURVIVED  %s" (site line) in
+  require_some (List.find_opt (String.starts_with ~prefix) (lines out))
+
+let ended_well (r : ran) =
+  equal (pair string text) ("exited 0", "") (r.status, r.err)
+
+(* A run of [intermittent] that ends well, with its outcome line, the runs
+   of the changed [widen] and the rows. *)
+let retried ?keep ?env ~outcome_line ~runs ~rows:expected args =
+  let r, n = intermittent ?keep ?env args in
+  ended_well r;
+  equal string outcome_line (outcome r.out);
+  equal int runs n;
+  equal (option (list string)) expected (rows r);
+  r
+
+let once_by_default () =
+  let r =
+    retried ~outcome_line:survived_outcome ~runs:1 ~rows:survived_rows []
+  in
+  not_contains ~sub:"runs)" r.out;
+  is_false (String.ends_with ~suffix:")" (title_of 18 r.out))
+
+let survives_each_run () =
+  let r =
+    retried ~outcome_line:survived_outcome ~runs:3 ~rows:survived_rows
+      [ "--mutate-retry=2" ]
+  in
+  equal (list string) [ site 18 ] (survivors r.out);
+  is_true (String.ends_with ~suffix:"  (3 runs)" (title_of 18 r.out));
+  equal (option string)
+    (Some (strf "%s --arm %s" suite_exe (site 18)))
+    (reproduce r.out)
+
+let killed_in_a_retry () =
+  ignore
+    (retried
+       ~env:[ ("MUTATE_KILL_AT", "2") ]
+       ~outcome_line:killed_outcome ~runs:2
+       ~rows:(intermittent_rows "killed")
+       [ "--mutate-retry=2" ])
+
+let kill_past_the_bound () =
+  ignore
+    (retried
+       ~env:[ ("MUTATE_KILL_AT", "4") ]
+       ~outcome_line:survived_outcome ~runs:3 ~rows:survived_rows
+       [ "--mutate-retry=2" ])
+
+let killed_in_the_first_run () =
+  ignore
+    (retried
+       ~env:[ ("MUTATE_KILL_AT", "1") ]
+       ~outcome_line:killed_outcome ~runs:1
+       ~rows:(intermittent_rows "killed")
+       [ "--mutate-retry=2" ])
+
+let mirror_of_retry () =
+  let r =
+    retried
+      ~env:[ ("WINDTRAP_MUTATE_RETRY", "1") ]
+      ~outcome_line:survived_outcome ~runs:2 ~rows:survived_rows []
+  in
+  is_true (String.ends_with ~suffix:"  (2 runs)" (title_of 18 r.out));
+  ignore
+    (retried
+       ~env:[ ("WINDTRAP_MUTATE_RETRY", "5") ]
+       ~outcome_line:survived_outcome ~runs:1 ~rows:survived_rows
+       [ "--mutate-retry=0" ])
+
+(* The dry run, the probe and run 1 are the first three workers that run the
+   first test. Run 2 does not evaluate the site. *)
+let not_evaluated_in_a_retry () =
+  let workers = Filename.concat (temp_dir ()) "workers" in
+  ignore
+    (retried
+       ~env:[ ("MUTATE_WORKER_RUNS", workers); ("MUTATE_SKIP_AT", "4") ]
+       ~outcome_line:not_evaluated_outcome ~runs:1
+       ~rows:(intermittent_rows "not evaluated")
+       [ "--mutate-retry=2" ])
+
+(* A retry has the deadline of the first run. *)
+let hanging_retry () =
+  let runs = Filename.concat (temp_dir ()) "runs" in
+  remove (verdicts_path ());
+  let r =
+    finish_within ~what:"the deadline of the retry"
+      (start
+         ~env:
+           [
+             suite "intermittent"; ("MUTATE_RUNS", runs); ("MUTATE_HANG_AT", "2");
+           ]
+         [ mutate; "--mutate-retry=2" ])
+  in
+  ended_well r;
+  equal string unknown_outcome (outcome r.out);
+  equal int 2 (List.length (lines (read runs)) - 1);
+  equal
+    (option (list string))
+    (intermittent_rows "unknown: its run passed its deadline of <time>")
+    (rows r)
+
+(* Adds to [seen] what [master] holds at this time. When the other end of
+   the terminal is closed, a read gives EIO on Linux and 0 on macOS. *)
+let drain master seen =
+  let chunk = Bytes.create 4096 in
+  let rec read () =
+    match Unix.read master chunk 0 (Bytes.length chunk) with
+    | 0 -> ()
+    | n ->
+        Buffer.add_subbytes seen chunk 0 n;
+        read ()
+    | exception Unix.Unix_error (Unix.EINTR, _, _) -> read ()
+    | exception
+        Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK | Unix.EIO), _, _) ->
+        ()
+  in
+  read ()
+
+let without_escapes s =
+  let b = Buffer.create (String.length s) in
+  let rec go i =
+    if i >= String.length s then Buffer.contents b
+    else if s.[i] = '\027' && i + 1 < String.length s && s.[i + 1] = '[' then
+      let rec final j =
+        if j >= String.length s then j
+        else match s.[j] with '@' .. '~' -> j + 1 | _ -> final (j + 1)
+      in
+      go (final (i + 2))
+    else begin
+      Buffer.add_char b s.[i];
+      go (i + 1)
+    end
+  in
+  go 0
+
+(* Each text that the live line showed for the mutants, in its order. A
+   carriage return starts each live line. The live lines of the dry run
+   name tests, not mutants. *)
+let mutation_live out =
+  List.filter_map
+    (fun text ->
+      let text = String.trim text in
+      match index_of ~sub:"] " text with
+      | Some i
+        when String.starts_with ~prefix:"[" text
+             && index_of ~sub:scope ~from:i text = Some (i + 2) ->
+          Some text
+      | Some _ | None -> None)
+    (String.split_on_char '\r' (without_escapes out))
+
+(* The live line names a mutant of a retry as the first pass did. *)
+let live_line_of_retries () =
+  let seen = Buffer.create 4096 in
+  let master, slave = openpty () in
+  Unix.set_nonblock master;
+  remove (verdicts_path ());
+  let run =
+    Fun.protect
+      ~finally:(fun () -> Unix.close slave)
+      (fun () ->
+        start ~stdout:slave
+          ~env:[ suite "held"; ("WINDTRAP_COLOR", "always") ]
+          [ mutate; "--mutate-retry=2" ])
+  in
+  let r =
+    finish_within ~what:"the run on a terminal"
+      ~meanwhile:(fun () -> drain master seen)
+      run
+  in
+  drain master seen;
+  Unix.close master;
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  let live = mutation_live (Buffer.contents seen) in
+  let named =
+    [ strf "[1/2] %s\u{2026}" (site 15); strf "[2/2] %s\u{2026}" (site 18) ]
+  in
+  equal (list string) named (List.sort_uniq String.compare live);
+  equal (list string) (List.concat [ named; named; named ]) live
+
+(* A signal that stops a retry leaves its mutant with no verdict. *)
+let interrupted_retry () =
+  let dir = temp_dir () and tmpdir = temp_dir () in
+  let began = Filename.concat dir "began"
+  and gate = Filename.concat dir "gate"
+  and runs = Filename.concat dir "runs" in
+  remove (verdicts_path ());
+  let run =
+    start
+      ~env:
+        [
+          suite "intermittent";
+          ("MUTATE_RUNS", runs);
+          ("MUTATE_STARTED", began);
+          ("MUTATE_GATE", gate);
+          ("MUTATE_GATE_AT", "2");
+          ("TMPDIR", tmpdir);
+        ]
+      [ mutate; "--mutate-retry=2" ]
+  in
+  await ~what:"the start of the retry" run began;
+  Unix.kill run.pid Sys.sigint;
+  let r = finish run in
+  equal string "killed by SIGINT" r.status;
+  equal text (strf "windtrap: interrupted while testing %s\n" (site 18)) r.err;
+  equal (list string) [] (survivors r.out);
+  equal string not_tested_outcome (outcome r.out);
+  equal (option (list string)) None (rows r);
+  equal int 2 (List.length (lines (read runs)) - 1);
+  equal (list string) [] (entries tmpdir)
+
+(* A signal in the first pass leaves [sub], the survivor that waits for its
+   retry, with no verdict, and the report names it. *)
+let interrupted_before_a_retry () =
+  let run, tmpdir, reader, writer, _ =
+    held_at_the_gate "held" ~args:[ mutate; "--mutate-retry=1" ]
+  in
+  Unix.close writer;
+  Unix.kill run.pid Sys.sigint;
+  let r = finish run in
+  let ic = Unix.in_channel_of_descr reader in
+  let out = In_channel.input_all ic in
+  In_channel.close ic;
+  equal string "killed by SIGINT" r.status;
+  equal text (strf "windtrap: interrupted while testing %s\n" (site 15)) r.err;
+  equal (list string) [] (survivors out);
+  equal string "mutants: 2 reached by this suite, 2 never reached, 2 not tested"
+    (outcome out);
+  equal (option (list string)) None (rows r);
+  equal (list string) [] (entries tmpdir)
+
+(* A kill in a retry is a change from the survivor of a run with no retry,
+   because a record keeps the verdict alone. The runs of a survivor are no
+   change. *)
+let retry_and_unstable_rows () =
+  let r =
+    retried
+      ~env:[ ("MUTATE_KILL_AT", "2") ]
+      ~outcome_line:killed_outcome ~runs:2
+      ~rows:(intermittent_rows "killed")
+      [ "--mutate-retry=2" ]
+  in
+  not_contains ~sub:"unstable (" r.out;
+  equal (option (list string)) (Some none_rows) (previous_rows r);
+  let r =
+    retried ~keep:true ~outcome_line:survived_outcome ~runs:1
+      ~rows:survived_rows [ "--mutate-retry=0" ]
+  in
+  equal
+    (option (list string))
+    (listed [ (18, "killed \u{2192} survived") ])
+    (unstable r.out);
+  let r =
+    retried ~keep:true ~outcome_line:survived_outcome ~runs:3
+      ~rows:survived_rows [ "--mutate-retry=2" ]
+  in
+  equal (option (list string)) None (unstable r.out)
+
+(* Under -j 2 the two survivors of [held] run again at once, and their blocks
+   come in catalogue order after the last pass. *)
+let retries_in_order () =
+  let r =
+    spawn ~env:[ suite "held" ] [ mutate; "--mutate-retry=1"; "-j"; "2" ]
+  in
+  ended_well r;
+  equal (list string) [ site 15; site 18 ] (survivors r.out);
+  is_true (String.ends_with ~suffix:"  (2 runs)" (title_of 15 r.out));
+  is_true (String.ends_with ~suffix:"  (2 runs)" (title_of 18 r.out));
+  equal string
+    "mutants: 2 survived of 2 reached by this suite, 2 never reached, score \
+     0.0% (0/2)"
+    (outcome r.out)
+
+(* Under -j 4 and --mutate-workers, the job with a pool test runs alone in
+   the retry pass too. *)
+let pool_alone_in_a_retry () =
+  let path = Filename.concat (temp_dir ()) "spans" in
+  let r =
+    spawn
+      ~env:[ suite "pool_alone"; ("MUTATE_SPANS", path) ]
+      [ mutate; workers; "--mutate-retry=1"; "-j"; "4" ]
+  in
+  ended_well r;
+  equal string
+    "mutants: 3 survived of 3 reached by this suite, 1 never reached, score \
+     0.0% (0/3)"
+    (outcome r.out);
+  let pool, spans = notes path in
+  is_true ~msg:"the pool test ran under its mutant" (pool <> []);
+  let during (a, b) = List.exists (fun t -> a < t && t < b) pool in
+  equal (list bool) [ false; false; false; false ] (List.map during spans)
+
+let retry =
+  group "Retry"
+    [
+      test "a survivor runs once by default, and its title gives no runs"
+        once_by_default;
+      test
+        "--mutate-retry runs the job of a survivor that many more times, and \
+         the report gives its runs"
+        survives_each_run;
+      test "a kill in a retry is the verdict and stops the retries"
+        killed_in_a_retry;
+      test "a kill past the last retry leaves the mutant a survivor"
+        kill_past_the_bound;
+      test "a kill in the first run ends the job without a retry"
+        killed_in_the_first_run;
+      test "the mirror gives the retry, and the flag hides it" mirror_of_retry;
+      test "a retry that does not evaluate the site gives not evaluated"
+        not_evaluated_in_a_retry;
+      test "a retry that hangs ends at the deadline of the first run"
+        hanging_retry;
+      test "the live line names each mutant of a retry as the first pass did"
+        live_line_of_retries;
+      test "a signal that stops a retry leaves its mutant with no verdict"
+        interrupted_retry;
+      test
+        "a signal before a retry leaves the waiting survivor with no verdict, \
+         and names it"
+        interrupted_before_a_retry;
+      test "a kill in a retry and the runs of a survivor in unstable rows"
+        retry_and_unstable_rows;
+      test "under -j, the survivors of a retry are in catalogue order"
+        retries_in_order;
+      test "a job with a pool test runs alone in a retry" pool_alone_in_a_retry;
+    ]
+
 (* The fixtures' verdict files land in the real _build/_mutants, where
    [windtrap mutants] would merge them into the tree's answer, and no rule
    runs these executables but this suite. A forked child ends past
@@ -3383,6 +3762,7 @@ let () =
          verdict_file;
          killed_elsewhere;
          unstable_verdicts;
+         retry;
          environment;
          refusals;
          armed;

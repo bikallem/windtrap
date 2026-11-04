@@ -1608,17 +1608,18 @@ let arm_command ~invocation ~tests id =
 
 (* A survivor is drawn as a failure block is: it is a defect report about the
    tests it names. *)
-let survivor_block ~exe_width (s : survivor) =
+let survivor_block ?(runs = 1) ~exe_width (s : survivor) =
   let m = s.mutant in
   let title =
     Line
-      [
-        plain "  ";
-        styled `Red "SURVIVED";
-        plain "  ";
-        styled `Bold m.id;
-        plain (strf "  %s \u{2192} %s" m.before m.after);
-      ]
+      ([
+         plain "  ";
+         styled `Red "SURVIVED";
+         plain "  ";
+         styled `Bold m.id;
+         plain (strf "  %s \u{2192} %s" m.before m.after);
+       ]
+      @ if runs > 1 then [ plain (strf "  (%d runs)" runs) ] else [])
   in
   let source =
     match Option.map (fun s -> Array.of_list (Text.split_lines s)) m.source with

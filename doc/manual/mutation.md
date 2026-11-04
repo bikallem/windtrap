@@ -265,6 +265,9 @@ the withheld-correction warning:
   failure in or after the test that first evaluates its site. One that
   evaluates its site more than `hits * 8 + 1000` times, `hits` being
   the dry run's count, fails its test, and the mutant is killed.
+- Under `--mutate-retry N`, the job of each survivor runs again, up to
+  `N` more times (see
+  [Running a survivor again](#running-a-survivor-again)).
 
 Every pass runs in worker processes, and the probe and each mutant in a
 worker of its own, started as a run's workers are (see [Running
@@ -311,6 +314,63 @@ reached, and an `--arm` run of its mutant ends on `mutant not reached`.
 
 The mutation run exits 0 whatever it finds. It exits 1, with a sentence
 on standard error, when a pass fails or no mutant is left to test.
+
+## Running a survivor again
+
+A test whose result depends on the clock, on threads or on a schedule
+of domains can let a mutant survive one run and kill it in the next
+run. For example, under `--mutate-workers` a kill can depend on a
+schedule (see
+[Stateful tests on several domains](#stateful-tests-on-several-domains)).
+
+`--mutate-retry N` (mirror `WINDTRAP_MUTATE_RETRY`) runs the job of a
+survivor again, up to `N` more times. Each of these runs is a retry. A
+retry runs in a fresh worker, with the tests, the deadline and the
+budget of the first run. The first verdict that is not survived is the
+verdict of the mutant: killed, not evaluated or unknown. The mutant
+survives only when it survives each run. `N` is from 0 to 100, and the
+default is 0.
+
+The loop runs the retries in passes. The first pass runs the probe and
+the job of each mutant. Each later pass runs again the jobs of the
+mutants that survived the pass before it. A pass runs its jobs up to
+`-j` at once. A job that runs alone in the first pass also runs alone in
+a retry. Only survivors cost more time, and the probe runs one time.
+
+The report prints the block of a survivor in the last pass, and gives
+the number of runs after its title:
+
+```
+  SURVIVED  calc.ml:10:16:ge  n > 0 → n >= 0  (3 runs)
+```
+
+The live line names a mutant in a retry as it did in the first pass.
+The verdict file does not keep the number of runs. Thus
+`windtrap mutants` and its `--json` do not show it. The `reproduce:`
+and `arm:` commands do not have `--mutate-retry`, because an `--arm` run
+runs the suite one time. Thus an `--arm` run can kill a survivor of 3
+runs.
+
+A retry makes a false survivor less probable. It does not make a
+verdict deterministic. For example, a mutant that 1 run in 10 kills
+survives 3 runs in about 73 of 100 mutation runs. The loop does not run
+a killed mutant again, so a kill that only some runs give stays a kill.
+
+A retry changes how frequently the verdict of a mutant changes between
+two mutation runs (see [Unstable verdicts](#unstable-verdicts)). For a
+mutant that most runs kill, a retry makes this change less probable.
+For a mutant that few runs kill, a small `N` makes this change more
+probable, and a large `N` makes it less probable. For example, take a
+mutant that 1 run in 10 kills. With no retry, its verdict changes in
+about 18 of 100 pairs of mutation runs. With 2 retries, it changes in
+about 40 of 100 pairs.
+
+A signal stops the loop during a retry as it does during a first run.
+A survivor that waits for its next run gets no verdict, and the loop
+writes no verdict file.
+
+Without `--mutate` on the command line, the flag is a usage error. Its
+mirror alone has no effect on a suite that does not mutate.
 
 ## Stateful tests on several domains
 

@@ -388,10 +388,10 @@ val mutation_testing : t -> index:int -> total:int -> id:string -> unit
     that the loop is trying: [index], counted from [1], [total], and [id]. The
     line shows only while the live line is on (see {!create}). *)
 
-val mutation_survivor : t -> Report_sections.survivor -> unit
-(** [mutation_survivor t s] commits the {!Report_sections.survivor_block} of
-    [s], flushed. The first call precedes the block by the rule that opens the
-    survivors. A block has no column of executables. *)
+val mutation_survivor : ?runs:int -> t -> Report_sections.survivor -> unit
+(** [mutation_survivor ?runs t s] commits the {!Report_sections.survivor_block}
+    of [s] with [runs], flushed. The first call precedes the block by the rule
+    that opens the survivors. A block has no column of executables. *)
 
 val mutation_finish :
   ?note:string -> ?lines:string list -> t -> Report_sections.mutation -> unit

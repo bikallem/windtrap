@@ -105,6 +105,16 @@ let positive_int value =
   | Some n when n > 0 -> Ok n
   | _ -> Error "a positive integer"
 
+(* A large N is more probably a typing error than a request to run each
+   survivor for hours. *)
+let max_retry = 100
+
+let retry value =
+  match int_of_string_opt value with
+  | Some n when 0 <= n && n <= max_retry -> Ok n
+  | Some _ | None ->
+      Error (Printf.sprintf "a non-negative integer up to %d" max_retry)
+
 let seconds ~expected accepts value =
   match float_of_string_opt value with
   | Some s when accepts s && Float.is_finite s -> Ok s
@@ -299,6 +309,11 @@ let entries =
       ~mirror:(mirrored "WINDTRAP_SKIP_KILLED")
       "Skip the mutants that the verdict file of another suite killed (with \
        --mutate).";
+    row "--mutate-retry"
+      (value "N" retry (field (fun c mutate_retry -> { c with mutate_retry })))
+      ~mirror:(mirrored "WINDTRAP_MUTATE_RETRY")
+      "Run the job of a survivor up to N more times, each in a fresh worker \
+       (with --mutate, default 0).";
     row "--mutate-workers"
       (switch (fun c -> { c with mutate_workers = true }))
       ~mirror:(mirrored "WINDTRAP_MUTATE_WORKERS")
@@ -565,6 +580,11 @@ let settings cli =
     else Ok ()
   in
   let* () =
+    if gave cli "--mutate-retry" && not (gave layered "--mutate") then
+      Error (Requires_any ("--mutate-retry", [ "--mutate" ]))
+    else Ok ()
+  in
+  let* () =
     if gave layered "--mutate" && gave layered "--arm" then
       Error (Incompatible_flags ("--mutate", "--arm"))
     else Ok ()
@@ -586,6 +606,7 @@ let settings cli =
             Run.Loop { prefixes; lines; skip_killed = layered.skip_killed }
         | (Run.Armed _ | Run.No_mutation) as m -> m);
       mutate_workers = c.mutate_workers && mutates;
+      mutate_retry = (if gave layered "--mutate" then c.mutate_retry else 0);
       case_file;
       log_dir = path "--output" c.log_dir;
       junit = Option.map (path "--junit") c.junit;
