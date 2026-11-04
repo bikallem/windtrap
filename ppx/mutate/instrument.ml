@@ -1212,8 +1212,9 @@ class instrumenter ~keeps ~module_name =
    guard cannot. *)
 let runtime_initialization ~file ~module_name ~sites ~pins =
   let loc = { (Location.in_file file) with loc_ghost = true } in
-  (* The digest of the source as it is compiled, so that a verdict names the
-     source of its mutant even when the file changes after the build. *)
+  (* The digest of the source file as the rewriter reads it, so that a
+     verdict names the source of its mutant even when the file changes after
+     the build. *)
   let digest =
     match Digest.file file with
     | digest -> [%expr Some [%e estring ~loc (Digest.to_hex digest)]]

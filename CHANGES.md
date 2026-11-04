@@ -93,8 +93,8 @@
 - `--skip-killed` and its mirror `WINDTRAP_SKIP_KILLED` let a mutation
   run skip a reached mutant that the verdict file of another suite
   killed. The executable of that file must not have changed since it
-  wrote the file. The two executables must have compiled the same source
-  file and the same mutant. The verdict file records the mutant as
+  wrote the file. The rewriter must have read the same source file for
+  the two executables, and the mutant must be the same. The verdict file records the mutant as
   killed elsewhere, with the executable of that file. The report names
   each verdict file that the run used, and the outcome line counts the
   skipped mutants as not tested. The run uses only the files on disk
@@ -107,9 +107,11 @@
   another file of the killing executable kills it, or when no other file
   of that executable holds it. In the second case, a note on standard
   error tells which run to do again. In every other case the skip does
-  not count. The other records then give the verdict, or the mutant is
-  unknown when they give no verdict of a reached mutant. A note tells to
-  run the suite that skipped the mutant again.
+  not count. The merge leaves out every skip that does not count, and
+  the other records then give the verdict. The mutant is unknown when
+  they give no verdict of a reached mutant. When no file of the merge
+  kills the mutant directly, a note tells to run the suite that skipped
+  it again.
 - (breaking) `ppx_windtrap.mutate` registers the digest of each source
   file that it reads, and the catalogue gives it with each mutant:
   `Mutate.register` takes `~digest`, and `Mutate.mutant` has

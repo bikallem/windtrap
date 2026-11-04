@@ -84,17 +84,21 @@
     - No other file of [exe] holds the mutant.
 
     In each other case the kill of [exe] does not hold, and the skip does not
-    count. The other records of the mutant then decide a verdict. When that
-    verdict is [Outside_tests] or [Unreached], or no other record exists, the
-    command replaces the record with an [Unknown] verdict, whose reason names
-    [exe]. The run that skipped the mutant reached it, so the mutant is not
-    unreached. In the other cases the command drops the record.
+    count: the record is refused. The command leaves out every refused record of
+    the mutant, and the records that stay decide a verdict. When that verdict is
+    [Outside_tests] or [Unreached], or no record stays, the command replaces the
+    refused record with an [Unknown] verdict, whose reason names [exe]. The run
+    that skipped the mutant reached it, so the mutant is not unreached. In the
+    other cases the command drops the refused record.
 
-    For each executable that skipped and each [exe], the command gives one note
-    on standard error. The note covers the mutants of these records that the
-    merge does not kill, counts each mutant once and tells to run that
-    executable again. When the files of that executable in the note record more
-    than one suite, the note names the suites.
+    For each executable that skipped and each [exe], the command gives at most
+    one note on standard error. The note covers the mutants of the refused
+    records that no file of the merge kills directly, so a merged
+    [Killed_elsewhere] verdict gets one and a merged [Killed] verdict does not.
+    An executable and an [exe] with no such mutant get no note. The note counts
+    each mutant once and tells to run that executable again. When the files of
+    that executable in the note record more than one suite, the note names the
+    suites. When the executable is [exe] itself, the note names its suite.
 
     A [Killed_elsewhere] verdict that stands counts as killed, in the report, in
     the score and in the document. When the merged verdict of a mutant is
@@ -104,7 +108,9 @@
     report. The note tells how many mutants count as killed by that executable
     and which run to do again:
     - When the killer no longer exists ({!Windtrap_runtime.Instr.exe_location}),
-      the run of the executables whose files skipped the mutants. A file that
+      or when a file of the killer that did not skip is in the merge and does
+      not hold the mutants, the run of the executables whose files skipped the
+      mutants. A run of the killer does not give the kill then. A file that
       records no identity is named by its path.
     - In the other cases, the run of the killer.
 

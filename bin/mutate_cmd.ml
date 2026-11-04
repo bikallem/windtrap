@@ -407,10 +407,10 @@ let name f =
 
 (* A skip stands when another file of its killer kills the mutant, or when
    no other file of the killer holds it. Otherwise the kill does not hold in
-   this merge. The skip is dropped when the other records decide a verdict of
-   a reached mutant. Else it becomes unknown, because the run that skipped
-   reached the mutant. Each refuted skip is given with its file, its killer
-   and its mutant. *)
+   this merge. When the records that are not refuted decide a verdict of a
+   reached mutant, the function drops the skip. If not, the skip becomes
+   unknown, because the run that skipped reached the mutant. The function
+   gives each refuted skip with its file, its killer and its mutant. *)
 let disproved files =
   let held_by = List.map (fun f -> (f, verdicts_by_id f)) files in
   let refuted f (r : Verdicts.record) =
@@ -475,8 +475,9 @@ let disproved files =
   (files, List.rev !refutations)
 
 (* One note for each executable that skipped and each killer, over the
-   mutants that the merge does not kill. The suites name the files of the
-   executable when they differ. *)
+   mutants that no file of the merge kills directly. The note names the
+   suites when the files record more than one, and the suite when the
+   executable skipped because of itself. *)
 let refuted_notes refutations merged =
   let merged = by_id merged in
   let open_ (f, killer, id) =
@@ -503,6 +504,7 @@ let refuted_notes refutations merged =
           strf "%s (suites %s)" holder
             (String.concat ", "
                (List.map (Option.value ~default:"none") suites))
+      | [ Some suite ] when holder = killer -> strf "%s (suite %s)" holder suite
       | [ _ ] | [] -> holder
     in
     strf
@@ -576,8 +578,19 @@ let unconfirmed files merged =
           | None -> false)
       | [] -> false
     in
+    (* A file of the killer that does not hold the mutant comes from a build
+       that no longer reaches it, so a new run of the killer gives no kill. *)
+    let present () =
+      List.exists
+        (fun g -> g.exe = Some killer && not (List.memq g holders))
+        files
+    in
     let cause, remedy =
       if gone () then (strf "%s no longer exists" killer, again ())
+      else if present () then
+        ( strf "no verdict file of %s in the merge holds %s" killer
+            (if n = 1 then "it" else "them"),
+          again () )
       else
         ( strf "no verdict file of the merge gives %s"
             (if n = 1 then "this kill" else "these kills"),

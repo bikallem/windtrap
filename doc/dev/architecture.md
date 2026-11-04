@@ -406,7 +406,7 @@ a lossy `%g` spelling is asked for at the call site.
   worse than the per-executable one, and renderings let a report outlive
   the executable that produced it.
 - Each record also keeps the digest of the source file of its mutant.
-  The rewriter computes it when it compiles the file and registers it
+  The rewriter computes it from the file that it reads and registers it
   with the sites, so a source edited after the build does not change it.
   `--skip-killed` uses a kill from the file of another suite only when
   the digest, the renderings and the extent are equal, and the file is
