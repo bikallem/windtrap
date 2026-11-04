@@ -170,6 +170,17 @@
   runs, so `windtrap mutants` does not show them. If neither the command
   line nor a mirror gives `--mutate`, the flag on the command line is a
   usage error (doc/manual/mutation.md#running-a-survivor-again).
+- Under `--mutate-retry N` with `N` above 0, a mutation run does a check
+  of each kill that names a test. The check runs the tests of the kill
+  up to and with the killing test, with no mutant, up to 3 times, each
+  in a fresh worker. When the killing test fails in one of these runs,
+  a kill in the first run is unknown, with the reason
+  `its killing test <test> also fails with no mutant: <failure>`. A kill
+  in a retry then leaves the mutant a survivor. An unknown mutant is not
+  part of the score, so a flaky test makes the denominator smaller. One
+  list of tests gets one check. The checks run after the retries, in
+  passes of up to `-j` runs at once. The verdict file format does not
+  change (doc/manual/mutation.md#flaky-kills).
 
 ## v0.3.1 2026-11-01
 

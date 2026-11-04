@@ -419,15 +419,16 @@ val mutation_refused : t -> string -> unit
 val mutation_interrupted :
   ?lines:string list ->
   t ->
-  during:[ `Probe | `Job of string | `Wait of string ] ->
+  during:[ `Probe | `Job of string | `Wait of string | `Check of string ] ->
   Report_sections.mutation ->
   unit
 (** [mutation_interrupted ?lines t ~during m] ends the report of a loop that a
     signal is stopping. It says on standard error what was interrupted: the
     determinism probe under [`Probe], the job of the mutant [id] under
-    [`Job id], or the wait of the survivor [id] for its next run under
-    [`Wait id], when the signal comes between two passes. It then calls
-    {!mutation_finish} over [m] and [lines]. *)
+    [`Job id], the wait of the survivor [id] for its next run under [`Wait id],
+    when the signal comes between two passes, or the wait of the kill of [id]
+    for its check under [`Check id]. It then calls {!mutation_finish} over [m]
+    and [lines]. *)
 
 (** {1:running Running} *)
 

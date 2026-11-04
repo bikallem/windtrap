@@ -475,7 +475,10 @@ reaches runs alone.
 `--mutate-retry N` (`WINDTRAP_MUTATE_RETRY=N`) runs the job of a
 survivor again, up to N more times, each in a fresh worker. A kill in a
 retry is the verdict, and any other result leaves the survivor. Use it
-for a suite whose kills depend on a schedule or on the clock.
+for a suite whose kills depend on a schedule or on the clock. With `N`
+above 0, the run also runs the tests of each kill again with no mutant,
+up to 3 times. A kill whose test also fails there is unknown, with the
+reason, and a kill in a retry then leaves the survivor.
 
 A run and `windtrap mutants` list under `unstable` each mutant whose
 verdict changed since the last run of its suite, on the same source. A

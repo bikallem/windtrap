@@ -268,6 +268,8 @@ the withheld-correction warning:
 - Under `--mutate-retry N`, the job of each survivor runs again, up to
   `N` more times (see
   [Running a survivor again](#running-a-survivor-again)).
+- Under `--mutate-retry N` with `N` above 0, the tests of each kill run
+  again with no mutant, up to 3 times (see [Flaky kills](#flaky-kills)).
 
 Every pass runs in worker processes, and the probe and each mutant in a
 worker of its own, started as a run's workers are (see [Running
@@ -329,7 +331,8 @@ retry runs in a fresh worker, with the tests, the deadline and the
 budget of the first run. `N` is from 0 to 100, and the default is 0.
 
 The first run gives the verdict as a run with no retry does. After the
-first run, only a kill changes the verdict. A retry can end early, for
+first run, only a kill changes the verdict, and only when its check
+trusts it (see [Flaky kills](#flaky-kills)). A retry can end early, for
 example at its deadline, or not evaluate the site. Such a retry leaves
 the mutant a survivor, and the next retry runs. Thus a retry cannot
 take a survivor out of the score. A mutant survives when its first run
@@ -386,6 +389,79 @@ message names the first survivor that waits, as in
 If neither the command line nor a mirror gives `--mutate`, the flag on
 the command line is a usage error. The mirror of the flag alone has no
 effect on a suite that does not mutate.
+
+## Flaky kills
+
+A test that depends on the clock, on threads or on a schedule of
+domains can fail with no mutant. When such a test fails in the run of a
+mutant, it can kill a mutant that the tests do not find.
+
+Under `--mutate-retry N` with `N` above 0, the loop does a check of each
+kill that names a test. The killing test is the first test that fails
+in or after the test that first evaluates the site. The check runs the
+tests of the kill up to and with the killing test, with no mutant, in a
+fresh worker. A failure of an earlier test does not stop this run. The
+check does this run up to 3 times:
+
+- If the killing test fails in a run, the check fails and stops.
+- If the killing test does not fail in the 3 runs, the kill stays.
+
+A run that passes its deadline, or whose worker ends first, does not
+give a failure of the test. A kill that names no test gets no check,
+for example a kill by a fixture release. An `--arm` run does no check.
+
+When the check of a kill in the first run fails, the mutant is unknown.
+The report lists it under `unknown`, with the killing test, its failure
+in the run with no mutant, and an `arm:` command:
+
+```
+────────────────────── unknown (1) ───────────────────────
+File "lib/calc.ml", line 13, characters 9-14:
+  lib/calc.ml:13:9:sub  a - b → a + b
+    its killing test calc › subtracts on two domains also fails with no mutant: expected 6, got 5
+    arm: _build/default/test/test.exe --arm lib/calc.ml:13:9:sub
+──────────────────────────────────────────────────────────
+```
+
+The failure is the first failure of the test in that run, on one line.
+The verdict file keeps this reason. An unknown mutant is not part of
+the score (see [Gating on the score](#gating-on-the-score)). Thus the
+score does not count a kill that the check does not trust, and its
+denominator gets smaller. To get a verdict for the mutant, make the
+test deterministic, and then run the suite again.
+
+When the check of a kill in a retry fails, the mutant stays a survivor
+of its first run. The loop runs no more retries of it. Its block gives
+one line for that retry, and prints after the blocks of the last pass
+of retries:
+
+```
+  SURVIVED  calc.ml:10:16:ge  n > 0 → n >= 0  (2 runs)
+    ...
+    run 2: its killing test calc › ge on two domains also fails with no mutant: expected true
+```
+
+The loop runs the checks in passes after the last pass of retries.
+Each pass runs once each check that has not failed, up to `-j` at once.
+A check that holds a test that spawned a pool runs alone, as a job does.
+The loop does one check for each different list of tests, also when the
+list killed more than one mutant. Each run of the check has the
+deadline of a job with the same tests. Thus each different list of a
+kill costs up to 3 more runs. The live line shows a run of a check
+with the first mutant that waits for it.
+
+Three runs with no failure do not prove that a test is not flaky. For
+example, a test that fails in 1 run of 10 passes 3 runs in about 73 of
+100 checks, and its mutant then stays killed. A failed check also does
+not prove that the mutant is not killed. The mutant can make the test
+fail in each run, and the test can also fail with no mutant.
+
+A signal stops the loop during a check as it does during a job. A kill
+that waits for its check gets no verdict, and the loop writes no
+verdict file. When the signal comes during a pass of checks or between
+two passes, and the first mutant with no verdict waits for its check,
+the message names that mutant, as in
+`interrupted while the kill of calc.ml:13:9:sub waits for its check`.
 
 ## Stateful tests on several domains
 
@@ -705,7 +781,8 @@ that were not evaluated. These mutants do not count in the score:
 
 - A mutant that no test reached.
 - A mutant that ran outside every test.
-- An unknown mutant. Its run gave no verdict, so it is not a kill and
+- An unknown mutant. Its run gave no verdict, or the check of its kill
+  failed (see [Flaky kills](#flaky-kills)). Thus it is not a kill and
   not a survivor.
 
 The line gives the score with the killed and the counted mutants, as

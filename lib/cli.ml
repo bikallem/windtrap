@@ -312,8 +312,9 @@ let entries =
     row "--mutate-retry"
       (value "N" retry (field (fun c mutate_retry -> { c with mutate_retry })))
       ~mirror:(mirrored "WINDTRAP_MUTATE_RETRY")
-      "Run the job of a survivor up to N more times, each in a fresh worker \
-       (with --mutate, default 0).";
+      "Run the job of a survivor up to N more times, each in a fresh worker. \
+       If N is above 0, also check each kill with no mutant (with --mutate, \
+       default 0).";
     row "--mutate-workers"
       (switch (fun c -> { c with mutate_workers = true }))
       ~mirror:(mirrored "WINDTRAP_MUTATE_WORKERS")
