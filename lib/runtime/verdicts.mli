@@ -75,9 +75,9 @@ type record = {
   after : string;  (** The source text of the armed expression. *)
   source_digest : string option;
       (** The {!Mutate.mutant.source_digest} of the mutant: the lowercase
-          hexadecimal MD5 of the source that the instrumenter compiled, or
+          hexadecimal MD5 of the source file that the instrumenter read, or
           [None]. A loop under [--skip-killed] compares it with the digest of
-          the source that its own executable compiled. *)
+          the mutant of its own executable. *)
   verdict : verdict;  (** What the run made of the mutant. *)
 }
 (** The type for the record of one mutant. A record is self-describing: it

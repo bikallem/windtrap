@@ -85,6 +85,12 @@ in full. The file is mutated under its own name:
       then 1
       else 0
 
+The digest is that of the file that the rewriter reads under the input
+name. A file that it cannot read gives no digest:
+
+  $ mut -loc-filename lib/nothere.ml --impl ./fixture_input_name.ml | grep -e '~file' -e '~digest'
+        Windtrap_runtime.Mutate.register ~file:"lib/nothere.ml" ~digest:None
+
 Every other expansion shows that module condensed by elide.exe to its
 file and its sites: where each starts and ends, the rewrite, the text
 before and after, and the reason of a dismissed site.

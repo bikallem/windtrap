@@ -76,11 +76,13 @@ type site = {
 val register :
   file:string -> digest:string option -> sites:site array -> int -> bool
 (** [register ~file ~digest ~sites] records the site table of [file] and is its
-    guard. [digest] is the lowercase hexadecimal MD5 of the source that the
-    instrumenter compiled, or [None] when it could not read the source. [sites]
-    is kept and not copied, so it must not be mutated afterwards. An executable
-    catalogues the instrumented modules that it links, so a module of a library
-    that the executable never references has no mutant there.
+    guard. [digest] is the lowercase hexadecimal MD5 of the source file that the
+    instrumenter read, or [None] when it could not read the file. A compiler
+    [-pp] preprocessor runs after that read, so its output does not change the
+    digest. [sites] is kept and not copied, so it must not be mutated
+    afterwards. An executable catalogues the instrumented modules that it links,
+    so a module of a library that the executable never references has no mutant
+    there.
 
     Applied to the index [i] of a site, the guard does three things in order.
     + It adds one to the count of evaluations of site [i], which saturates at
@@ -125,7 +127,7 @@ type mutant = {
   dismissed : string option;  (** The reason of [[@mutate off]], if any. *)
   source_digest : string option;
       (** The [digest] that {!register} gave for its file: the MD5 of the source
-          that the instrumenter compiled. *)
+          file that the instrumenter read. *)
 }
 (** The type for catalogued mutants: a {!type-site} with its file and the digest
     of its source. *)

@@ -163,8 +163,8 @@ type file = {
      <file> <line> <col> <end line> <end col> <rewrite> <before> <after> <source> <verdict>
 
    with one such line for each record, in [Mutate.compare_id] order.
-   [<source>] is a name: the digest of the source file, or empty when the
-   writer could not read the file. [<verdict>] is [unreached],
+   [<source>] is a name: the digest of the source file that the instrumenter
+   read, or empty when the instrumenter could not read it. [<verdict>] is [unreached],
    [outside_tests], [killed], [killed_elsewhere <exe>] with a name that is
    not empty, [not_evaluated], [unknown <reason>], or [survived <n>] and then
    [n] reaching tests, each [<k>] and then its [k] names. [load] reads this

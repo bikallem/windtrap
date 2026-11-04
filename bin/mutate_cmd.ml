@@ -172,12 +172,14 @@ let survived_in verdicts =
     Ids.empty
     (Verdicts.records verdicts)
 
-let verdicts_by_id f =
+let by_id verdicts =
   List.fold_left
     (fun acc (r : Verdicts.record) ->
       Ids.add (Mutate.id_to_string r.id) r.verdict acc)
     Ids.empty
-    (Verdicts.records f.verdicts)
+    (Verdicts.records verdicts)
+
+let verdicts_by_id f = by_id f.verdicts
 
 (* The verdict of a mutant, by the spelling of its identifier, in a file of
    [files]. *)
@@ -403,64 +405,124 @@ let name f =
   | Some exe -> exe
   | None -> "the executable that wrote " ^ f.path
 
-(* A skip stands for the kill of another executable. When a file of that
-   executable holds the mutant and none of its files kills it, the kill does
-   not hold in this merge, so the skip is dropped and the other records
-   decide the verdict. A skip of a skip stays, and [unconfirmed] tells of
-   it. *)
+(* A skip stands when another file of its killer kills the mutant, or when
+   no other file of the killer holds it. Otherwise the kill does not hold in
+   this merge. The skip is dropped when the other records decide a verdict of
+   a reached mutant. Else it becomes unknown, because the run that skipped
+   reached the mutant. Each refuted skip is given with its file, its killer
+   and its mutant. *)
 let disproved files =
-  let by_id = List.map (fun f -> (f, verdicts_by_id f)) files in
-  let refutes exe id =
-    let held =
-      List.filter_map
-        (fun (g, ids) -> if g.exe = Some exe then Ids.find_opt id ids else None)
-        by_id
-    in
-    (not (List.mem Verdicts.Killed held))
-    && List.exists
-         (function
-           | Verdicts.Killed | Killed_elsewhere _ -> false
-           | Unknown _ | Survived _ | Not_evaluated | Outside_tests | Unreached
-             ->
-               true)
-         held
+  let held_by = List.map (fun f -> (f, verdicts_by_id f)) files in
+  let refuted f (r : Verdicts.record) =
+    match r.verdict with
+    | Killed_elsewhere { exe } ->
+        let id = Mutate.id_to_string r.id in
+        let held =
+          List.filter_map
+            (fun (g, ids) ->
+              if g != f && g.exe = Some exe then Ids.find_opt id ids else None)
+            held_by
+        in
+        held <> [] && not (List.mem Verdicts.Killed held)
+    | _ -> false
   in
-  let dropped = ref [] in
+  let others =
+    by_id
+      (List.fold_left
+         (fun acc f ->
+           List.fold_left Verdicts.add acc
+             (List.filter
+                (fun r -> not (refuted f r))
+                (Verdicts.records f.verdicts)))
+         Verdicts.empty files)
+  in
+  let decided id =
+    match Ids.find_opt id others with
+    | Some (Outside_tests | Unreached) | None -> false
+    | Some (Killed | Killed_elsewhere _ | Unknown _ | Survived _ | Not_evaluated)
+      ->
+        true
+  in
+  let refutations = ref [] in
   let without f =
-    let keep (r : Verdicts.record) =
+    let kept (r : Verdicts.record) =
       match r.verdict with
-      | Killed_elsewhere { exe } when refutes exe (Mutate.id_to_string r.id) ->
-          dropped := (name f, exe) :: !dropped;
-          false
-      | _ -> true
+      | Killed_elsewhere { exe } when refuted f r ->
+          let id = Mutate.id_to_string r.id in
+          refutations := (f, exe, id) :: !refutations;
+          if decided id then None
+          else
+            Some
+              {
+                r with
+                verdict =
+                  Unknown
+                    (strf
+                       "it skipped the mutant as killed by %s, which does not \
+                        kill it in this merge"
+                       exe);
+              }
+      | _ -> Some r
     in
     {
       f with
       verdicts =
         List.fold_left Verdicts.add Verdicts.empty
-          (List.filter keep (Verdicts.records f.verdicts));
+          (List.filter_map kept (Verdicts.records f.verdicts));
     }
   in
   let files = List.map without files in
-  let note (holder, killer) =
-    let n = List.length (List.filter (( = ) (holder, killer)) !dropped) in
+  (files, List.rev !refutations)
+
+(* One note for each executable that skipped and each killer, over the
+   mutants that the merge does not kill. The suites name the files of the
+   executable when they differ. *)
+let refuted_notes refutations merged =
+  let merged = by_id merged in
+  let open_ (f, killer, id) =
+    match Ids.find_opt id merged with
+    | Some Verdicts.Killed -> None
+    | Some _ | None -> Some ((name f, killer), (id, f.suite))
+  in
+  let groups =
+    List.fold_left
+      (fun acc (key, entry) ->
+        let entries = Option.value (List.assoc_opt key acc) ~default:[] in
+        (key, entry :: entries) :: List.remove_assoc key acc)
+      []
+      (List.filter_map open_ refutations)
+  in
+  let note ((holder, killer), entries) =
+    let n =
+      List.length (List.sort_uniq String.compare (List.map fst entries))
+    in
+    let suites = List.sort_uniq compare (List.map snd entries) in
+    let named =
+      match suites with
+      | _ :: _ :: _ ->
+          strf "%s (suites %s)" holder
+            (String.concat ", "
+               (List.map (Option.value ~default:"none") suites))
+      | [ _ ] | [] -> holder
+    in
     strf
       "%d %s that %s skipped as killed by %s %s not killed by it in the merge, \
        so the skip does not count: run %s again with its mutants, then merge \
        again"
       n
       (if n = 1 then "mutant" else "mutants")
-      holder killer
+      named killer
       (if n = 1 then "is" else "are")
       holder
   in
-  (files, List.map note (List.sort_uniq compare !dropped))
+  List.map note (List.sort compare groups)
 
 (* A merged verdict is [Killed_elsewhere] only when no file of the merge
-   kills the mutant directly. Each note names the executable that the skips
-   name, and the run that gives the kill. The records of each file give the
-   files that skipped, because [Verdicts.merge] keeps only the smaller
-   executable of two skips. *)
+   kills the mutant directly, and then no other file of the killer holds it
+   ([disproved]). Each note names the executable that the skips name, and
+   the run that gives the kill. The records of each file give the files that
+   skipped, because [Verdicts.merge] keeps only the smaller executable of two
+   skips. *)
 let unconfirmed files merged =
   let key (r : Verdicts.record) = Mutate.id_to_string r.id in
   let candidates =
@@ -515,11 +577,7 @@ let unconfirmed files merged =
       | [] -> false
     in
     let cause, remedy =
-      if List.exists (fun f -> f.exe = Some killer) files then
-        ( strf "no verdict file of %s in the merge kills %s" killer
-            (if n = 1 then "it" else "them"),
-          again () )
-      else if gone () then (strf "%s no longer exists" killer, again ())
+      if gone () then (strf "%s no longer exists" killer, again ())
       else
         ( strf "no verdict file of the merge gives %s"
             (if n = 1 then "this kill" else "these kills"),
@@ -790,9 +848,10 @@ let run args =
     in
     let* files = fresh files in
     let files = Option.fold ~none:files ~some:(on_lines files) o.lines in
-    let files, notes = disproved files in
+    let files, refutations = disproved files in
     let merged = merged files in
-    List.iter Os.say (notes @ unconfirmed files merged);
+    List.iter Os.say
+      (refuted_notes refutations merged @ unconfirmed files merged);
     let mutation, invocation = merge ~source:(source ~roots) files merged in
     let* () =
       write

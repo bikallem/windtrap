@@ -479,26 +479,36 @@ that it gave:
 killed elsewhere: 2 mutants, not tested, from the verdict files of default/test/a.exe (1), default/test/b.exe (1)
 ```
 
-`windtrap mutants` counts a mutant killed elsewhere as killed, also in
-the score and in the `--json` document. When no file of the merge kills
-the mutant directly, for example because the file of the killing suite
-is now stale, the merge gives a note on standard error. The note tells
-which suite to run again. It does not change the exit code. When a file
-of the killing executable is in the merge and holds the mutant, and no
-file of that executable kills it, the kill does not hold. The merge
-then drops the skip, and the other records give the verdict. For
-example, a survivor that the killing suite now reports stays a survivor.
-A note tells to run the suite that skipped the mutant again.
+`windtrap mutants` first judges each skip. A skip stands when another
+file of the killing executable kills the mutant. It also stands when no
+other file of the killing executable holds the mutant, for example
+because the file of the killing suite is now stale. In every other case
+the kill does not hold, and the skip does not count:
+
+- When the other records of the mutant give a verdict of a reached
+  mutant, the merge drops the skip, and that verdict stands. For
+  example, a survivor that the killing suite now reports stays a
+  survivor.
+- When they give no such verdict, the mutant is unknown, because the
+  suite that skipped it reached it. Two suites that skipped one mutant
+  because of each other give this result when no other file holds the
+  mutant.
+
+A note on standard error then tells to run the suite that skipped the
+mutant again. A skip that stands counts as killed, also in the score and
+in the `--json` document. When no file of the merge kills that mutant
+directly, a note on standard error tells which suite to run again. The
+notes do not change the exit code.
 
 The option uses only the files on disk. Thus run the fast suites first,
 for example in a first `dune runtest`, and then the slow suites with
 `--skip-killed`. Do not run two suites with the option at the same
 time, as `dune runtest` does by default. Each suite can skip a mutant
-because of the earlier file of the other, and then no new file kills
-the mutant directly. To run the suites one after the other, use
-`dune runtest -j 1`. A suite tests a mutant again when the source file
-of the mutant that it compiled differs from the source file that the
-other suite compiled, because the digests differ.
+because of the earlier file of the other. Then no new file kills the
+mutant, and the merge gives it as unknown. To run the suites one after
+the other, use `dune runtest -j 1`. A suite tests a mutant again when
+the two suites compiled different source files of the mutant. The
+digests then differ.
 
 ## Gating on the score
 

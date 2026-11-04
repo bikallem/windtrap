@@ -92,22 +92,30 @@
   unless the parent ignores that signal.
 - `--skip-killed` and its mirror `WINDTRAP_SKIP_KILLED` let a mutation
   run skip a reached mutant that the verdict file of another suite
-  killed. The skip applies only when the executable of that file did
-  not change since it wrote the file, and the two executables compiled
-  the same source file and the same mutant. The verdict file records the
-  mutant as killed elsewhere, with the executable of that file. The
-  report names each verdict file that the run used, and the outcome line
-  counts the skipped mutants as not tested. `windtrap mutants` counts
-  them as killed. When no verdict file of the merge has the kill, it
-  gives a note on standard error that tells which run to do again. When
-  the files of the killing executable hold the mutant and none kills it,
-  the merge drops the skip. The run uses only the files on disk after
-  its dry run, so run the fast suites first. Two suites with the option
-  that run at the same time can skip one mutant because of each other,
-  so run them one after the other, for example with `dune runtest -j 1`
+  killed. The executable of that file must not have changed since it
+  wrote the file. The two executables must have compiled the same source
+  file and the same mutant. The verdict file records the mutant as
+  killed elsewhere, with the executable of that file. The report names
+  each verdict file that the run used, and the outcome line counts the
+  skipped mutants as not tested. The run uses only the files on disk
+  after its dry run, so run the fast suites first. Two suites with the
+  option that run at the same time can skip one mutant because of each
+  other, so run them one after the other, for example with
+  `dune runtest -j 1`
   (doc/manual/mutation.md#skipping-the-mutants-that-another-suite-killed).
-- `ppx_windtrap.mutate` registers the digest of each source file that it
-  compiles, and the catalogue gives it with each mutant.
+- `windtrap mutants` counts a mutant killed elsewhere as killed when
+  another file of the killing executable kills it, or when no other file
+  of that executable holds it. In the second case, a note on standard
+  error tells which run to do again. In every other case the skip does
+  not count. The other records then give the verdict, or the mutant is
+  unknown when they give no verdict of a reached mutant. A note tells to
+  run the suite that skipped the mutant again.
+- (breaking) `ppx_windtrap.mutate` registers the digest of each source
+  file that it reads, and the catalogue gives it with each mutant:
+  `Mutate.register` takes `~digest`, and `Mutate.mutant` has
+  `source_digest`. Thus code that an earlier `ppx_windtrap.mutate`
+  instrumented does not compile or link against this runtime. Build it
+  again. Under dune the build does this automatically.
 - (breaking) The verdict file format is `windtrap-mutants-v12`. Each
   record keeps the digest of the source file of its mutant, and a
   skipped mutant is killed elsewhere. A file of an earlier format is
