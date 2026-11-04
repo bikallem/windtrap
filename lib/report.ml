@@ -1133,6 +1133,8 @@ let mutation_interrupted ?lines t ~during m =
     (match during with
     | `Job id -> "interrupted while testing " ^ id
     | `Wait id -> "interrupted before the retry of " ^ id
+    | `Check id ->
+        "interrupted while the kill of " ^ id ^ " waits for its check"
     | `Probe -> "interrupted during the determinism probe");
   mutation_finish ?lines t m
 

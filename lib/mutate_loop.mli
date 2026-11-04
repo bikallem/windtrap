@@ -71,7 +71,8 @@ val execute_and_report :
       agrees iff it executed as many tests, skipped as many and counted no
       failure.
     + Under [config.mutate_retry = n] above [0], it runs up to [n] more passes
-      ({b Retries} below).
+      ({b Retries} below), and then up to [3] passes that check the kills
+      ({b Flaky kills} below).
     + Once the last job is given it writes the verdict file.
 
     A job starts from module initialization, so what the dry run left, a table
@@ -108,15 +109,46 @@ val execute_and_report :
     each in a fresh worker, up to [config.jobs] at once, in the order of the
     catalogue. A job that runs alone in the first pass runs alone in each pass.
     The first run gives the verdict as a run with no retry does. After it, only
-    a kill replaces the survivor. A retry that does not evaluate the site or
-    that ends early leaves the mutant a survivor, and the next retry runs. A
-    mutant survives when its first run survives and no retry kills it. The
-    report commits its block when the job of its last run is given, with the
-    number of runs when it is above [1], and one line for each retry that did
-    not evaluate the site or ended early, with why
+    a kill that its check trusts replaces the survivor. A retry that does not
+    evaluate the site or that ends early leaves the mutant a survivor, and the
+    next retry runs. A mutant survives when its first run survives and no retry
+    kills it. The report commits its block when the job of its last run is
+    given, or when the check of a kill in a retry fails, with the number of runs
+    when it is above [1], and one line for each retry that did not evaluate the
+    site, ended early or gave a kill that the check does not trust, with why
     ({!Report.mutation_survivor}). A retry that hangs costs its deadline. The
     verdict file does not record the runs. The live line names a mutant of a
     later pass as it did in the first pass.
+
+    {b Flaky kills.} Under [config.mutate_retry] above [0], a kill whose job
+    names a killing test waits for a check. The killing test is the first test
+    that has a counted failure, is not marked xfail, and comes in or after the
+    test that first evaluated the site. A kill by a fixture release alone names
+    no test and gets no check. The check runs the cases of the job, which are
+    the reaching tests of the mutant, up to and with the killing test. It runs
+    them with no mutant and with no stop at a failure, in a fresh worker. Two
+    kills whose checks run the same cases share one check.
+
+    The checks run after the last retry pass, in up to [3] passes
+    ([check_runs]). Each pass runs once each check that has not failed, up to
+    [config.jobs] at once, in the catalogue order of the first mutant that waits
+    for the check. A check that holds a test that spawned a pool runs alone. A
+    run of a check has the longest deadline of the jobs that wait for it, so a
+    killing test that fails at its own timeout also fails in the check. The live
+    line names the first mutant that waits for a check at each of its runs.
+
+    A check fails when the killing test has a counted failure in one of its
+    runs, also when the run then passes its deadline or loses its worker. A run
+    that ends before the killing test ends gives no failure. When the check
+    fails, a kill in the first run is {!Windtrap_runtime.Verdicts.Unknown}, with
+    the reason ["its killing test <path> also fails with no mutant: <failure>"].
+    The failure is the headline of the first failure of the test in that run
+    ({!Report_sections.headline}). Otherwise the kill stays.
+
+    When the check of a kill in a retry fails, the mutant stays a survivor, and
+    the loop runs no more retries of it. Its block prints after the blocks of
+    the last retry pass. The report gives the survivors in the order of their
+    blocks, and [reproduce:] arms the first.
 
     {b Killed elsewhere.} Under the [skip_killed] of {!Run.scope}
     ([--skip-killed]), the loop reads the regular files with the extension
@@ -256,15 +288,17 @@ val execute_and_report :
     From the end of the dry run until its verdict file is written, the loop
     handles [SIGINT], [SIGTERM] and [SIGHUP]. One that arrives while a job runs
     ends every job, with its process group, and the mutants not yet given get no
-    verdict. Nor does a survivor that waits for its next run, and the loop
-    starts no other pass. The report names the mutant of the next job that the
-    pass gives, or the probe, as interrupted while it is tested. When the signal
-    comes between two passes, it names the first survivor in catalogue order
-    that waits for its next run. A signal that comes before a pass installs its
-    handlers stops the pass before its first job ([Supervisor.fresh ~stopped]).
-    The loop then reports what it found, writes no verdict file, and dies by the
-    same signal last, so its parent sees a death by signal and no [at_exit]
-    function runs.
+    verdict. Nor does a survivor that waits for its next run, or a kill that
+    waits for its check, and the loop starts no other pass. The report names the
+    mutant of the next job that a pass of mutants gives, or the probe, as
+    interrupted while it is tested. When the signal comes during a pass of
+    checks or between two passes, it names the first mutant in catalogue order
+    with no verdict: a survivor as one that waits for its next run, and a kill
+    as one that waits for its check. A signal that comes before a pass installs
+    its handlers stops the pass before its first job
+    ([Supervisor.fresh ~stopped]). The loop then reports what it found, writes
+    no verdict file, and dies by the same signal last, so its parent sees a
+    death by signal and no [at_exit] function runs.
 
     A signal that arrives once the last job of the last pass was given stops
     nothing. The verdict file is written, a second signal excepted, and the

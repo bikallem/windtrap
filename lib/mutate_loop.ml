@@ -330,13 +330,48 @@ let kills (r : Run.result) = Option.is_none r.xfail && counted_failure r
 
 (* Until the first evaluation of its site, the mutant runs the code of the
    program without it, so a failure before then has another cause. A job that
-   cannot see forked processes cannot tell, and each failure counts. *)
-let killed_by (ran : Supervisor.ran) =
+   cannot see forked processes cannot tell, and each failure counts. [None]
+   when the job did not evaluate the site. *)
+let caused (ran : Supervisor.ran) =
   match if ran.witnessed then ran.evaluated else Some 0 with
+  | None -> None
+  | Some first -> Some (List.filteri (fun i _ -> i >= first) ran.results)
+
+let killed_by (ran : Supervisor.ran) =
+  match caused ran with
   | None -> false
-  | Some first ->
-      ran.release_failures <> []
-      || List.exists kills (List.filteri (fun i _ -> i >= first) ran.results)
+  | Some results -> ran.release_failures <> [] || List.exists kills results
+
+(* The first test that the mutant made fail. *)
+let killing_test ran =
+  Option.map
+    (fun (r : Run.result) -> r.path)
+    (Option.bind (caused ran) (List.find_opt kills))
+
+(* The runs of the check of a kill, at most. *)
+let check_runs = 3
+
+(* The failure of [test] in a run of a check, as one line. A run that ended
+   before [test] ended has no row of it, and gives none. *)
+let check_failure test (ran : Supervisor.ran) =
+  List.find_map
+    (fun (r : Run.result) ->
+      match r.outcome with
+      | Failure.Fail (f :: _)
+        when kills r && List.equal String.equal r.path test ->
+          Some
+            (strf "its killing test %s also fails with no mutant: %s"
+               (Test_tree.path_to_string test)
+               (Report_sections.headline f))
+      | Pass | Fail _ | Skip _ -> None)
+    ran.results
+
+(* [paths] up to and with [test]. *)
+let rec through test = function
+  | [] -> []
+  | path :: paths ->
+      if List.equal String.equal path test then [ path ]
+      else path :: through test paths
 
 (* The failure of a job that did not evaluate the armed site. *)
 let uncaused (ran : Supervisor.ran) =
@@ -472,7 +507,11 @@ exception Refused of string
 type ended =
   | Refused_by of string
   | Interrupted of
-      int * [ `Probe | `Job of Mutate.mutant | `Wait of Mutate.mutant ]
+      int
+      * [ `Probe
+        | `Job of Mutate.mutant
+        | `Wait of Mutate.mutant
+        | `Check of Mutate.mutant ]
   | Finished of (Verdicts.record list * string option)
 
 (* A job with a test that spawned a pool in the dry run runs alone: no other
@@ -486,8 +525,13 @@ let job ~deadline ~pooled ~bail ~armed paths =
     alone = List.exists (Hashtbl.mem pooled) paths;
   }
 
+(* The probe and the check of a kill run with no mutant, and do not stop at
+   a failure. *)
+let unarmed_job ~deadline ~pooled paths =
+  job ~deadline ~pooled ~bail:false ~armed:None paths
+
 let probe_job ~deadline ~pooled dry_run =
-  job ~deadline ~pooled ~bail:false ~armed:None
+  unarmed_job ~deadline ~pooled
     (List.map (fun (r : Run.result) -> r.path) dry_run)
 
 (* The budget counts the job's evaluations, not the dry run's. *)
@@ -508,11 +552,22 @@ let pass ?(on_stop = ignore) (config : Run.config) ~suite tests jobs ~on_ran =
         true
       end)
 
+(* The check of the kills whose jobs ran [paths], which end with the killing
+   test [test]. *)
+type check = {
+  paths : string list list;
+  test : string list;
+  mutable waiting : (int * int) list;
+      (* each mutant that waits for it, with the run of its kill *)
+}
+
 (* The first pass runs the probe and then one job per reached mutant, in
    catalogue order. Each later pass runs again the jobs of the mutants that
    survived the pass before it, up to [config.mutate_retry] passes, and a
-   survivor waits for its verdict until its last run. The loop starts no pass
-   after a signal. *)
+   survivor waits for its verdict until its last run. Under a retry, a kill
+   with a killing test waits for the check of its tests, which runs in up to
+   [check_runs] passes after the last retry. The loop starts no pass after a
+   signal. *)
 let test_mutants renderer ~suite (config : Run.config) tests ~dry_run ~pooled
     ~wall ~save reached =
   let durations = Hashtbl.create 256 in
@@ -542,12 +597,30 @@ let test_mutants renderer ~suite (config : Run.config) tests ~dry_run ~pooled
   in
   (* The retries of each mutant that ended early, newest first. *)
   let early = Array.make total [] in
+  let paths i = List.rev (snd mutants.(i)).tests in
+  let commit ~failed ~run i verdict =
+    judged.(i) <- true;
+    found_verdict renderer config ~locations ~failed ~runs:run
+      ~early:(List.rev early.(i))
+      found
+      (i, fst mutants.(i))
+      verdict
+  in
+  (* The checks by their paths, and the mutants that wait for one. *)
+  let checks = Hashtbl.create 16 in
+  let checking = Array.make total false in
+  let await_check ~run i test =
+    checking.(i) <- true;
+    let paths = through test (paths i) in
+    match Hashtbl.find_opt checks paths with
+    | Some check -> check.waiting <- (i, run) :: check.waiting
+    | None -> Hashtbl.add checks paths { paths; test; waiting = [ (i, run) ] }
+  in
   (* After the first run, only a kill replaces the survivor, and a retry that
      ended early gives a line of the survivor's block. The mutant [i] waits
      for another run when it survived and [run] is not its last. *)
   let judge ~run i (ran : Supervisor.ran) =
-    let mutant, site = mutants.(i) in
-    let paths = List.rev site.tests in
+    let paths = paths i in
     let ended_early why =
       early.(i) <- (run, why) :: early.(i);
       Verdicts.survived paths
@@ -568,15 +641,59 @@ let test_mutants renderer ~suite (config : Run.config) tests ~dry_run ~pooled
                   what)
       | verdict -> verdict
     in
-    match verdict with
-    | Verdicts.Survived _ when run < last -> `Again
-    | verdict ->
-        judged.(i) <- true;
-        found_verdict renderer config ~locations ~failed:(uncaused ran)
-          ~runs:run
-          ~early:(List.rev early.(i))
-          found (i, mutant) verdict;
-        `Judged
+    match (verdict, killing_test ran) with
+    | Verdicts.Survived _, _ when run < last -> `Again
+    | Verdicts.Killed, Some test when config.mutate_retry > 0 ->
+        await_check ~run i test;
+        `Done
+    | verdict, _ ->
+        commit ~failed:(uncaused ran) ~run i verdict;
+        `Done
+  in
+  (* A kill in a retry that the check does not trust leaves the survivor of
+     the first run. *)
+  let settle check failure =
+    List.iter
+      (fun (i, run) ->
+        match failure with
+        | None -> commit ~failed:None ~run i Verdicts.Killed
+        | Some reason when run = 1 ->
+            commit ~failed:None ~run i (Verdicts.Unknown reason)
+        | Some reason ->
+            early.(i) <- (run, reason) :: early.(i);
+            commit ~failed:None ~run i (Verdicts.survived (paths i)))
+      (List.sort (fun (i, _) (j, _) -> Int.compare i j) check.waiting)
+  in
+  let first check =
+    List.fold_left (fun m (i, _) -> Int.min m i) total check.waiting
+  in
+  let rec check_passes ~run = function
+    | [] -> ()
+    | _ when Option.is_some !signal -> ()
+    | due ->
+        let due = Array.of_list due in
+        let clean = ref [] in
+        let on_ran j ran =
+          let check = due.(j) in
+          (match check_failure check.test ran with
+          | Some _ as failure -> settle check failure
+          | None when run < check_runs -> clean := check :: !clean
+          | None -> settle check None);
+          if j + 1 < Array.length due then testing (first due.(j + 1))
+        in
+        testing (first due.(0));
+        (* A run of a check has the longest deadline of the jobs that wait for
+           it, so a killing test that fails at its own timeout fails in time. *)
+        let job check =
+          let longest =
+            List.fold_left
+              (fun d (i, _) -> Float.max d (deadline (paths i)))
+              0. check.waiting
+          in
+          unarmed_job ~deadline:(fun _ -> longest) ~pooled check.paths
+        in
+        pass config ~suite tests (Array.to_list (Array.map job due)) ~on_ran;
+        check_passes ~run:(run + 1) (List.rev !clean)
   in
   let rec passes ~run = function
     | [] -> ()
@@ -587,7 +704,7 @@ let test_mutants renderer ~suite (config : Run.config) tests ~dry_run ~pooled
         let on_ran j ran =
           (match judge ~run waiting.(j) ran with
           | `Again -> again := waiting.(j) :: !again
-          | `Judged -> ());
+          | `Done -> ());
           next :=
             if j + 1 < Array.length waiting then Some waiting.(j + 1) else None;
           Option.iter testing !next
@@ -616,14 +733,14 @@ let test_mutants renderer ~suite (config : Run.config) tests ~dry_run ~pooled
     else begin
       (match judge ~run:1 (index - 1) ran with
       | `Again -> again := (index - 1) :: !again
-      | `Judged -> ());
+      | `Done -> ());
       next := if index < total then Some index else None;
       testing index
     end
   in
   (* Signals are handled until the verdict file is written, so a loop that
      ended has its file whatever becomes of its report. A survivor that waits
-     for a run has no verdict. *)
+     for a run, and a kill that waits for its check, have no verdict. *)
   let ended =
     with_interrupts @@ fun () ->
     match
@@ -635,12 +752,18 @@ let test_mutants renderer ~suite (config : Run.config) tests ~dry_run ~pooled
     | exception Refused message -> Refused_by message
     | () -> (
         passes ~run:2 !again;
+        check_passes ~run:1
+          (List.sort
+             (fun a b -> Int.compare (first a) (first b))
+             (List.of_seq (Hashtbl.to_seq_values checks)));
         let unjudged =
           Seq.find (fun i -> not judged.(i)) (Seq.init total Fun.id)
         in
         match (!signal, !next, unjudged) with
         | Some s, _, _ when not !probed -> Interrupted (s, `Probe)
         | Some s, Some i, _ -> Interrupted (s, `Job (fst mutants.(i)))
+        | Some s, None, Some i when checking.(i) ->
+            Interrupted (s, `Check (fst mutants.(i)))
         | Some s, None, Some i -> Interrupted (s, `Wait (fst mutants.(i)))
         | (Some _ | None), _, _ -> Finished (save (List.rev found.records)))
   in
@@ -659,7 +782,8 @@ let report ?(changed = []) ~narrowed ~dry_run ~reached ~unreached ~outside found
     List.map snd (List.sort (fun (i, _) (j, _) -> Int.compare i j) entries)
   in
   {
-    survivors = ordered found.survivors;
+    (* In the order of their blocks, which a check can commit late. *)
+    survivors = List.rev_map snd found.survivors;
     not_evaluated = ordered found.not_evaluated;
     unknown = ordered found.unknown;
     unstable = List.filter_map unstable changed;
@@ -886,7 +1010,8 @@ let loop renderer ~scope ~suite (config : Run.config) tests =
                       (match during with
                       | `Probe -> `Probe
                       | `Job m -> `Job (id m)
-                      | `Wait m -> `Wait (id m))
+                      | `Wait m -> `Wait (id m)
+                      | `Check m -> `Check (id m))
                     (report ~narrowed ~dry_run ~reached ~unreached ~outside
                        found);
                   flush_descriptors ();

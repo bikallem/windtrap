@@ -436,8 +436,9 @@ OPTIONS:
       --mutate).
 
   --mutate-retry=N (env WINDTRAP_MUTATE_RETRY)
-      Run the job of a survivor up to N more times, each in a fresh worker (with
-      --mutate, default 0).
+      Run the job of a survivor up to N more times, each in a fresh worker. If N
+      is above 0, also check each kill with no mutant (with --mutate, default
+      0).
 
   --mutate-workers (env WINDTRAP_MUTATE_WORKERS)
       Let a stateful test on several domains spawn its worker domains (with
