@@ -64,14 +64,14 @@ type record = {
   verdict : verdict;
 }
 
-let record_of_mutant ?source_digest (m : Mutate.mutant) verdict =
+let record_of_mutant (m : Mutate.mutant) verdict =
   {
     id = m.id;
     end_line = m.end_line;
     end_col = m.end_col;
     before = m.before;
     after = m.after;
-    source_digest;
+    source_digest = m.source_digest;
     verdict;
   }
 

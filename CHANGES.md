@@ -92,19 +92,22 @@
   unless the parent ignores that signal.
 - `--skip-killed` and its mirror `WINDTRAP_SKIP_KILLED` let a mutation
   run skip a reached mutant that the verdict file of another suite
-  killed. The skip applies only when the executable of that file did not
-  change since it wrote the file, and the source file of the mutant has
-  the same digest. The verdict file records the
+  killed. The skip applies only when the executable of that file did
+  not change since it wrote the file, and the two executables compiled
+  the same source file and the same mutant. The verdict file records the
   mutant as killed elsewhere, with the executable of that file. The
   report names each verdict file that the run used, and the outcome line
   counts the skipped mutants as not tested. `windtrap mutants` counts
   them as killed. When no verdict file of the merge has the kill, it
-  gives a note on standard error that tells which run to do again. The
-  run uses only the files on disk after its dry run, so run the fast
-  suites first. Two suites with the option that run at the same time can
-  skip one mutant because of each other, so run them one after the
-  other, for example with `dune runtest -j 1`
+  gives a note on standard error that tells which run to do again. When
+  the files of the killing executable hold the mutant and none kills it,
+  the merge drops the skip. The run uses only the files on disk after
+  its dry run, so run the fast suites first. Two suites with the option
+  that run at the same time can skip one mutant because of each other,
+  so run them one after the other, for example with `dune runtest -j 1`
   (doc/manual/mutation.md#skipping-the-mutants-that-another-suite-killed).
+- `ppx_windtrap.mutate` registers the digest of each source file that it
+  compiles, and the catalogue gives it with each mutant.
 - (breaking) The verdict file format is `windtrap-mutants-v12`. Each
   record keeps the digest of the source file of its mutant, and a
   skipped mutant is killed elsewhere. A file of an earlier format is

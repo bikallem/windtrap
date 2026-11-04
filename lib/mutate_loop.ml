@@ -156,54 +156,6 @@ let observe reach ~xfail test sites =
               site.hits <- saturating_add site.hits hits)
         sites
 
-(* Sources *)
-
-(* Recorded paths are relative to the project root; under [dune runtest] the
-   working directory is inside [_build], where they do not open. *)
-let read_source =
-  let cache = Hashtbl.create 16 in
-  let read path =
-    try Some (In_channel.with_open_bin path In_channel.input_all)
-    with Sys_error _ -> None
-  in
-  fun file ->
-    match Hashtbl.find_opt cache file with
-    | Some source -> source
-    | None ->
-        let under_root =
-          match Os.project_root () with
-          | root -> Result.to_option (Os.reconstruct ~root file)
-          | exception Sys_error _ -> None
-        in
-        let source =
-          match Option.bind under_root read with
-          | None -> read file
-          | found -> found
-        in
-        Hashtbl.add cache file source;
-        source
-
-(* The digest of the source of a mutant, which its record keeps, so that a
-   later run knows if the source changed. *)
-let source_digest =
-  let cache = Hashtbl.create 16 in
-  fun file ->
-    match Hashtbl.find_opt cache file with
-    | Some digest -> digest
-    | None ->
-        let digest =
-          Option.map
-            (fun source -> Digest.to_hex (Digest.string source))
-            (read_source file)
-        in
-        Hashtbl.add cache file digest;
-        digest
-
-let record_of (mutant : Mutate.mutant) verdict =
-  Verdicts.record_of_mutant
-    ?source_digest:(source_digest mutant.id.file)
-    mutant verdict
-
 (* The verdict file *)
 
 let narrows_suite (config : Run.config) ~focus =
@@ -247,7 +199,7 @@ let save ~suite ~scope ?refused records =
   | exception Sys_error message ->
       Some (strf "could not write the verdict file: %s" message)
 
-let recorded verdict = List.map (fun m -> record_of m verdict)
+let recorded verdict = List.map (fun m -> Verdicts.record_of_mutant m verdict)
 
 (* What a suite that could not be tested holds as unknown: what its run
    would have judged. A dry run that ran whole and green says what it never
@@ -390,6 +342,31 @@ let verdict ~deadline paths (ran : Supervisor.ran) =
         | None -> Verdicts.Not_evaluated
         | Some _ -> Verdicts.survived paths)
 
+(* Recorded paths are relative to the project root; under [dune runtest] the
+   working directory is inside [_build], where they do not open. *)
+let read_source =
+  let cache = Hashtbl.create 16 in
+  let read path =
+    try Some (In_channel.with_open_bin path In_channel.input_all)
+    with Sys_error _ -> None
+  in
+  fun file ->
+    match Hashtbl.find_opt cache file with
+    | Some source -> source
+    | None ->
+        let under_root =
+          match Os.project_root () with
+          | root -> Result.to_option (Os.reconstruct ~root file)
+          | exception Sys_error _ -> None
+        in
+        let source =
+          match Option.bind under_root read with
+          | None -> read file
+          | found -> found
+        in
+        Hashtbl.add cache file source;
+        source
+
 let shown (mutant : Mutate.mutant) : Report_sections.mutant =
   {
     id = Mutate.id_to_string mutant.id;
@@ -442,7 +419,7 @@ let found_verdict renderer (config : Run.config) ~locations ~failed found mutant
         { mutant = shown mutant; reason; invocation = config.invocation }
         :: found.unknown
   | Killed | Killed_elsewhere _ | Outside_tests | Unreached -> ());
-  found.records <- record_of mutant verdict :: found.records
+  found.records <- Verdicts.record_of_mutant mutant verdict :: found.records
 
 (* Signals *)
 
@@ -584,10 +561,11 @@ let regular path =
   | exception Unix.Unix_error _ -> false
 
 (* The executable of the verdict file that killed each mutant of [reached],
-   with the source digest of this run, and the executable of each file that
-   the loop used. Only a direct kill counts, so a skip never comes from
-   another skip. Of two killers the smaller stays, so the order of the files
-   does not count. *)
+   and the executable of each file that the loop used. A kill counts for the
+   mutant of this executable only when the two compiled the same source and
+   agree on the extent and the renderings. Only a direct kill counts, so a
+   skip never comes from another skip. Of two killers the smaller stays, so
+   the order of the files does not count. *)
 let killed_elsewhere ~suite reached =
   let own =
     Verdicts.output_file ~exe:Windtrap_runtime.Instr.executable ~suite
@@ -595,7 +573,7 @@ let killed_elsewhere ~suite reached =
   let dir = Filename.dirname own in
   let wanted = Hashtbl.create 64 and killers = Hashtbl.create 64 in
   List.iter
-    (fun ((m : Mutate.mutant), _) -> Hashtbl.replace wanted m.id ())
+    (fun ((m : Mutate.mutant), _) -> Hashtbl.replace wanted m.id m)
     reached;
   let ignored fmt =
     Printf.ksprintf (fun m -> Os.warn ("--skip-killed ignores " ^ m)) fmt
@@ -603,10 +581,15 @@ let killed_elsewhere ~suite reached =
   let use (file : Verdicts.file) exe =
     List.iter
       (fun (r : Verdicts.record) ->
-        match (r.verdict, r.source_digest) with
-        | Verdicts.Killed, Some digest
-          when Hashtbl.mem wanted r.id && source_digest r.id.file = Some digest
-          -> (
+        let same (m : Mutate.mutant) =
+          Option.is_some m.source_digest
+          && r.source_digest = m.source_digest
+          && r.end_line = m.end_line && r.end_col = m.end_col
+          && String.equal r.before m.before
+          && String.equal r.after m.after
+        in
+        match (r.verdict, Hashtbl.find_opt wanted r.id) with
+        | Verdicts.Killed, Some m when same m -> (
             match Hashtbl.find_opt killers r.id with
             | Some prior when String.compare prior exe <= 0 -> ()
             | Some _ | None -> Hashtbl.replace killers r.id exe)
@@ -726,6 +709,7 @@ let loop renderer ~scope ~suite (config : Run.config) tests =
                   (fun (m : Mutate.mutant) -> Hashtbl.mem reach.outside m.id)
                   unreached
               in
+              let wall = Float.max 0.01 (Os.count_s started) in
               let skipped, to_test, lines =
                 if not scope.skip_killed then ([], reached, [])
                 else
@@ -748,12 +732,12 @@ let loop renderer ~scope ~suite (config : Run.config) tests =
                     (records
                     @ List.map
                         (fun (m, exe) ->
-                          record_of m (Verdicts.Killed_elsewhere { exe }))
+                          Verdicts.record_of_mutant m
+                            (Verdicts.Killed_elsewhere { exe }))
                         skipped
                     @ recorded Verdicts.Outside_tests outside
                     @ recorded Verdicts.Unreached unreached)
               in
-              let wall = Float.max 0.01 (Os.count_s started) in
               match
                 test_mutants renderer ~suite config tests ~dry_run ~wall ~save
                   to_test

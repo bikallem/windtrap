@@ -31,9 +31,10 @@ type verdict =
           failed, and the run evaluated the site at any time. *)
   | Killed_elsewhere of { exe : string }
       (** No run of this suite armed the mutant, because the verdict file of
-          another suite gave it {!Killed}, with the source digest of this run.
-          [exe] is the identity on that file ({!Instr.type-identity}), and it is
-          not [""]. Only a loop under [--skip-killed] gives it. *)
+          another suite gave it {!Killed}, with the source digest, the
+          renderings and the extent of this run. [exe] is the identity on that
+          file ({!Instr.type-identity}), and it is not [""]. Only a loop under
+          [--skip-killed] gives it. *)
   | Unknown of string
       (** No verdict, and the string says why: the run that armed the mutant
           ended before its tests did, by a crash, an exit or its deadline, or
@@ -73,10 +74,10 @@ type record = {
   before : string;  (** The source text of the original expression. *)
   after : string;  (** The source text of the armed expression. *)
   source_digest : string option;
-      (** The lowercase hexadecimal MD5 of the source file of the mutant when
-          the run read it, and [None] when the run could not read the file. A
-          later run compares it with the file that it reads, to find out if the
-          file changed. *)
+      (** The {!Mutate.mutant.source_digest} of the mutant: the lowercase
+          hexadecimal MD5 of the source that the instrumenter compiled, or
+          [None]. A loop under [--skip-killed] compares it with the digest of
+          the source that its own executable compiled. *)
   verdict : verdict;  (** What the run made of the mutant. *)
 }
 (** The type for the record of one mutant. A record is self-describing: it
@@ -84,11 +85,9 @@ type record = {
     with, so a report needs no catalogue and outlives the executable that
     produced it. *)
 
-val record_of_mutant :
-  ?source_digest:string -> Mutate.mutant -> verdict -> record
-(** [record_of_mutant ?source_digest m v] is the record of [m] with the verdict
-    [v] and the digest [source_digest], [None] by default. [m.dismissed] is
-    dropped. *)
+val record_of_mutant : Mutate.mutant -> verdict -> record
+(** [record_of_mutant m v] is the record of [m] with the verdict [v].
+    [m.dismissed] is dropped. *)
 
 type t
 (** The type for verdict collections: finite maps from {!Mutate.type-id} to

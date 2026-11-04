@@ -68,6 +68,7 @@ type mutant = {
   before : string;
   after : string;
   dismissed : string option;
+  source_digest : string option;
 }
 
 let compare_mutant a b = compare_id a.id b.id
@@ -78,6 +79,7 @@ let compare_mutant a b = compare_id a.id b.id
    mark. *)
 type entry = {
   file : string;
+  digest : string option;
   sites : site array;
   reach : int array;
   seen : int array; (* the epoch of each site's last evaluation *)
@@ -124,6 +126,7 @@ let site_mutant entry i =
     before = s.before;
     after = s.after;
     dismissed = s.dismissed;
+    source_digest = entry.digest;
   }
 
 let err_site ~file i fmt =
@@ -158,10 +161,19 @@ let sites_equal a b =
   in
   Array.length a = Array.length b && Array.for_all2 site_equal a b
 
-let register ~file ~sites =
+let register ~file ~digest ~sites =
   validate ~file sites;
+  (match digest with
+  | Some d when not (Instr.is_digest d) ->
+      invalid_arg
+        (strf "Windtrap_runtime.Mutate: %s: digest %S is not 32 hex digits" file
+           d)
+  | Some _ | None -> ());
   match List.find_opt (fun e -> String.equal e.file file) state.registry with
-  | Some prior when not (sites_equal prior.sites sites) ->
+  | Some prior
+    when not
+           (sites_equal prior.sites sites
+           && Option.equal String.equal prior.digest digest) ->
       (* Registration runs at module load inside the user's program, so a
          stale build artifact warns, and its table is dropped. *)
       Instr.warn
@@ -174,6 +186,7 @@ let register ~file ~sites =
       let entry =
         {
           file;
+          digest;
           sites;
           reach = Array.make n 0;
           seen = Array.make n 0;

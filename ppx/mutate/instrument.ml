@@ -1212,6 +1212,13 @@ class instrumenter ~keeps ~module_name =
    guard cannot. *)
 let runtime_initialization ~file ~module_name ~sites ~pins =
   let loc = { (Location.in_file file) with loc_ghost = true } in
+  (* The digest of the source as it is compiled, so that a verdict names the
+     source of its mutant even when the file changes after the build. *)
+  let digest =
+    match Digest.file file with
+    | digest -> [%expr Some [%e estring ~loc (Digest.to_hex digest)]]
+    | exception Sys_error _ -> [%expr None]
+  in
   let site { line; col; end_line; end_col; rewrite; before; after; dismissed } =
     let dismissed =
       match dismissed with
@@ -1248,6 +1255,7 @@ let runtime_initialization ~file ~module_name ~sites ~pins =
     [%stri
       let ___windtrap_armed___ =
         Windtrap_runtime.Mutate.register ~file:[%e estring ~loc file]
+          ~digest:[%e digest]
           ~sites:[%e pexp_array ~loc (List.map site sites)]]
   in
   let items =

@@ -1057,18 +1057,44 @@ and the words follow the number of mutants:
   windtrap: 1 mutant counts as killed by default/test/c.exe, but no verdict file of the merge gives this kill: run default/test/c.exe with its mutants, then merge again
 
 When a file of the killer is in the merge and does not kill the mutant,
-the killer did not give the kill again. The note tells to run the suite
-that skipped the mutant:
+the kill does not hold. The merge drops the skip, so the other records
+decide the verdict, and the gate sees the survivor. The note tells to run
+the suite that skipped the mutant:
 
   $ plant "$scratch/present" && cd "$scratch/present" && exes a b
   $ mkdata mutants _build/_mutants/windtrap-a.mutants --exe _build/default/test/a.exe \
   >   "$add=survived:calc/adds"
   $ mkdata mutants _build/_mutants/windtrap-b.mutants --exe _build/default/test/b.exe \
   >   "$add=elsewhere:default/test/a.exe"
+  $ run windtrap mutants --min 60
+  ───────────────────── survivors (1) ──────────────────────
+  File "lib/calc.ml", line 1, characters 14-19:
+    SURVIVED  lib/calc.ml:1:14:add  a + b → a - b
+        1 │ let add a b = a + b
+  
+      1 test ran this line and did not fail:
+        a.exe  calc › adds
+  ──────────────────────────────────────────────────────────
+  
+  reproduce: dune exec --instrument-with ppx_windtrap.mutate test/a.exe -- --arm lib/calc.ml:1:14:add
+  mutants: 1 survived of 1 reached, 2 executables, score 0.0% (0/1), minimum 60%: FAILED
+  --- stderr
+  windtrap: 1 mutant that default/test/b.exe skipped as killed by default/test/a.exe is not killed by it in the merge, so the skip does not count: run default/test/b.exe again with its mutants, then merge again
+  [1]
+  $ mkdata mutants _build/_mutants/windtrap-a.mutants --exe _build/default/test/a.exe \
+  >   "$add=not_evaluated"
+  $ run windtrap mutants | tail -n 3
+  mutants: 1 reached, 1 not evaluated, 2 executables, score 0.0% (0/1)
+  --- stderr
+  windtrap: 1 mutant that default/test/b.exe skipped as killed by default/test/a.exe is not killed by it in the merge, so the skip does not count: run default/test/b.exe again with its mutants, then merge again
+
+When another suite of the killer kills the mutant, the kill holds, and the
+merge says nothing more:
+
+  $ mkdata mutants _build/_mutants/windtrap-a2.mutants --exe _build/default/test/a.exe \
+  >   --suite other "$add=killed"
   $ run windtrap mutants
   mutants: 1 reached, 1 killed, 2 executables, score 100.0% (1/1)
-  --- stderr
-  windtrap: 1 mutant counts as killed by default/test/a.exe, but no verdict file of default/test/a.exe in the merge kills it: run default/test/b.exe again with its mutants, then merge again
 
 Two suites that skipped one mutant because of each other leave no kill.
 Each note names the other suite:

@@ -878,7 +878,9 @@ let unwitnessed () =
       dismissed = None;
     }
   in
-  let (_ : int -> bool) = Mutate.register ~file ~sites:[| site |] in
+  let (_ : int -> bool) =
+    Mutate.register ~digest:None ~file ~sites:[| site |]
+  in
   let id = { Mutate.file; line = 1; col = 0; rewrite = "not" } in
   let temp = Filename.get_temp_dir_name () in
   Fun.protect ~finally:(fun () ->
@@ -2258,43 +2260,46 @@ let rec directory path =
     Sys.mkdir path 0o755
   end
 
-(* A scratch project: a copy of the suite below [root/_build], the data
-   directory of its verdict files, and the digest of the source of the
-   mutants under [root], when [source] plants one. *)
-type project = {
-  root : string;
-  exe : string;
-  data : string;
-  digest : string option;
-}
+(* A scratch project: a copy of the suite below [root/_build], and the data
+   directory of its verdict files. *)
+type project = { root : string; exe : string; data : string }
 
-let skip_project ?(source = true) () =
+let skip_project () =
   let root = Unix.realpath (temp_dir ()) in
   let exe = copied_suite root in
   let data = Filename.concat root "_build/_mutants" in
   directory data;
-  let digest =
-    if not source then None
-    else
-      let path = Filename.concat root (scope ^ "subject.ml") in
-      directory (Filename.dirname path);
-      write path "(* the scratch subject *)\n";
-      Some (Digest.to_hex (Digest.file path))
-  in
-  { root; exe; data; digest }
+  { root; exe; data }
 
+(* The records of a whole run of the suite, as this build writes them: the
+   renderings, the extent and the source digest that a skip compares. *)
+let compiled =
+  lazy
+    (ignore (spawn [ mutate ]);
+     match Verdicts.load (verdicts_path ()) with
+     | Ok { verdicts; _ } -> Verdicts.records verdicts
+     | Error e -> failf "%a" Verdicts.pp_error e)
+
+let compiled_record line =
+  require_some
+    (List.find_opt
+       (fun (r : Verdicts.record) -> r.id.line = line)
+       (Lazy.force compiled))
+
+let compiled_digest () = (compiled_record 15).source_digest
 let own p = Verdicts.output_file ~exe:p.exe ~suite:"calc"
 
 (* The verdict file [name] of a suite of the executable [exe], an identity
-   below the build directory of [p]. A stand-in executable gets the recorded
-   digest, so the file is fresh. Under [stale] the stand-in has another
-   digest, and under [orphan] there is none. [digest] replaces the source
-   digest of each record, and [records] adds whole records. *)
+   below the build directory of [p], with the records of this build. An
+   executable that does not exist gets a stand-in, and the file records the
+   digest of the executable, so the file is fresh. Under [stale] the file
+   records another digest, and under [orphan] there is no executable.
+   [changed] changes each record, and [records] adds whole records. *)
 let plant_other ?(exe = "default/other.exe") ?(stale = false) ?(orphan = false)
-    ?(named = true) ?refused ?digest ?(records = []) p name verdicts =
-  let source_digest = Option.value digest ~default:p.digest in
+    ?(named = true) ?refused ?(suite = "other") ?(changed = Fun.id)
+    ?(records = []) p name verdicts =
   let stand_in = Filename.concat (Filename.concat p.root "_build") exe in
-  if not orphan then begin
+  if not (orphan || Sys.file_exists stand_in) then begin
     directory (Filename.dirname stand_in);
     write stand_in ("an executable, " ^ exe ^ "\n")
   end;
@@ -2310,17 +2315,9 @@ let plant_other ?(exe = "default/other.exe") ?(stale = false) ?(orphan = false)
         }
   in
   let record (line, verdict) =
-    {
-      Verdicts.id = site_id line;
-      end_line = line;
-      end_col = 99;
-      before = "b";
-      after = "a";
-      source_digest;
-      verdict;
-    }
+    changed { (compiled_record line) with verdict }
   in
-  Verdicts.save ?identity ~suite:"other" ?refused
+  Verdicts.save ?identity ~suite ?refused
     (Filename.concat p.data name)
     (List.fold_left Verdicts.add Verdicts.empty
        (List.map record verdicts @ records))
@@ -2465,9 +2462,28 @@ let only_a_kill (_, verdict) =
 let other_digests =
   [ ("a digest that differs", Some (String.make 32 '0')); ("no digest", None) ]
 
-let other_digest (_, digest) =
+let other_digest (_, source_digest) =
   let p = skip_project () in
-  plant_other ~digest p "windtrap-other.mutants" [ (15, Verdicts.Killed) ];
+  plant_other
+    ~changed:(fun r -> { r with source_digest })
+    p "windtrap-other.mutants"
+    [ (15, Verdicts.Killed) ];
+  let r = skip_run p [ skip_killed ] in
+  equal (option (list string)) (Some green_rows) (rows r)
+
+let other_mutants =
+  [
+    ("another original", fun (r : Verdicts.record) -> { r with before = "x" });
+    ("another mutant", fun (r : Verdicts.record) -> { r with after = "x" });
+    ( "another end line",
+      fun (r : Verdicts.record) -> { r with end_line = r.end_line + 1 } );
+    ( "another end column",
+      fun (r : Verdicts.record) -> { r with end_col = r.end_col + 1 } );
+  ]
+
+let other_mutant (_, changed) =
+  let p = skip_project () in
+  plant_other ~changed p "windtrap-other.mutants" [ (15, Verdicts.Killed) ];
   let r = skip_run p [ skip_killed ] in
   equal (option (list string)) (Some green_rows) (rows r)
 
@@ -2480,22 +2496,40 @@ let digests p =
            (Verdicts.records verdicts))
   | Error _ -> []
 
+(* The source on disk changed after the build, and the records keep the
+   digest of the source that the build compiled. *)
 let recorded_digest () =
   let p = skip_project () in
+  let source = Filename.concat p.root (scope ^ "subject.ml") in
+  directory (Filename.dirname source);
+  write source "(* an edit after the build *)\n";
   ignore (skip_run p []);
-  equal (list (option string)) [ p.digest ] (digests p);
-  let p = skip_project ~source:false () in
-  ignore (skip_run p []);
-  equal (list (option string)) [ None ] (digests p)
+  let compiled = compiled_digest () in
+  is_true
+    (Option.fold ~none:false ~some:Windtrap_runtime.Instr.is_digest compiled);
+  equal (list (option string)) [ compiled ] (digests p);
+  plant_other p "windtrap-other.mutants" [ (15, Verdicts.Killed) ];
+  equal
+    (option (list string))
+    (Some (skipped_rows "default/other.exe"))
+    (rows (skip_run p [ skip_killed ]))
 
-let unreadable_source () =
-  let p = skip_project ~source:false () in
-  plant_other
-    ~digest:(Some (String.make 32 'a'))
-    p "windtrap-other.mutants"
+(* The other suite of this executable has its file beside the file of the
+   run. *)
+let same_executable () =
+  let p = skip_project () in
+  plant_other ~exe:"default/suite_main.exe" ~suite:"another suite" p
+    (Filename.basename (Verdicts.output_file ~exe:p.exe ~suite:"another suite"))
     [ (15, Verdicts.Killed) ];
   let r = skip_run p [ skip_killed ] in
-  equal (option (list string)) (Some green_rows) (rows r)
+  equal (pair string text) ("exited 0", "") (r.status, r.err);
+  equal
+    (option (list string))
+    (Some (skipped_rows "default/suite_main.exe"))
+    (rows r);
+  equal (option string)
+    (Some (one_skip "default/suite_main.exe"))
+    (elsewhere_line r.out)
 
 let own_file () =
   let p = skip_project () in
@@ -2588,7 +2622,7 @@ let scope_of_the_skip () =
   let outside =
     {
       elsewhere with
-      Verdicts.source_digest = p.digest;
+      Verdicts.source_digest = compiled_digest ();
       verdict = Verdicts.Killed;
     }
   in
@@ -2683,11 +2717,14 @@ let killed_elsewhere =
         only_a_kill;
       cases "a kill with another source digest, or none, does not skip" ~id:fst
         other_digests other_digest;
+      cases "a kill of a mutant with other renderings or extent does not skip"
+        ~id:fst other_mutants other_mutant;
       test
-        "each record keeps the digest of the source of its mutant, or none \
-         when the run cannot read the source"
+        "each record keeps the digest of the source that the build compiled, \
+         not of the source on disk"
         recorded_digest;
-      test "a source that this run cannot read does not skip" unreadable_source;
+      test "a kill in the file of another suite of this executable skips"
+        same_executable;
       test "the own verdict file of the run is not used" own_file;
       cases
         "of two files that kill a mutant, the smaller executable is the one \

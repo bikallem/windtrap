@@ -398,6 +398,64 @@ let on_lines files lines =
       })
     files
 
+let name f =
+  match f.exe with
+  | Some exe -> exe
+  | None -> "the executable that wrote " ^ f.path
+
+(* A skip stands for the kill of another executable. When a file of that
+   executable holds the mutant and none of its files kills it, the kill does
+   not hold in this merge, so the skip is dropped and the other records
+   decide the verdict. A skip of a skip stays, and [unconfirmed] tells of
+   it. *)
+let disproved files =
+  let by_id = List.map (fun f -> (f, verdicts_by_id f)) files in
+  let refutes exe id =
+    let held =
+      List.filter_map
+        (fun (g, ids) -> if g.exe = Some exe then Ids.find_opt id ids else None)
+        by_id
+    in
+    (not (List.mem Verdicts.Killed held))
+    && List.exists
+         (function
+           | Verdicts.Killed | Killed_elsewhere _ -> false
+           | Unknown _ | Survived _ | Not_evaluated | Outside_tests | Unreached
+             ->
+               true)
+         held
+  in
+  let dropped = ref [] in
+  let without f =
+    let keep (r : Verdicts.record) =
+      match r.verdict with
+      | Killed_elsewhere { exe } when refutes exe (Mutate.id_to_string r.id) ->
+          dropped := (name f, exe) :: !dropped;
+          false
+      | _ -> true
+    in
+    {
+      f with
+      verdicts =
+        List.fold_left Verdicts.add Verdicts.empty
+          (List.filter keep (Verdicts.records f.verdicts));
+    }
+  in
+  let files = List.map without files in
+  let note (holder, killer) =
+    let n = List.length (List.filter (( = ) (holder, killer)) !dropped) in
+    strf
+      "%d %s that %s skipped as killed by %s %s not killed by it in the merge, \
+       so the skip does not count: run %s again with its mutants, then merge \
+       again"
+      n
+      (if n = 1 then "mutant" else "mutants")
+      holder killer
+      (if n = 1 then "is" else "are")
+      holder
+  in
+  (files, List.map note (List.sort_uniq compare !dropped))
+
 (* A merged verdict is [Killed_elsewhere] only when no file of the merge
    kills the mutant directly. Each note names the executable that the skips
    name, and the run that gives the kill. The records of each file give the
@@ -440,11 +498,7 @@ let unconfirmed files merged =
     let names =
       List.fold_left
         (fun names f ->
-          let name =
-            match f.exe with
-            | Some exe -> exe
-            | None -> "the executable that wrote " ^ f.path
-          in
+          let name = name f in
           if List.mem name names then names else names @ [ name ])
         [] holders
     in
@@ -736,8 +790,9 @@ let run args =
     in
     let* files = fresh files in
     let files = Option.fold ~none:files ~some:(on_lines files) o.lines in
+    let files, notes = disproved files in
     let merged = merged files in
-    List.iter Os.say (unconfirmed files merged);
+    List.iter Os.say (notes @ unconfirmed files merged);
     let mutation, invocation = merge ~source:(source ~roots) files merged in
     let* () =
       write

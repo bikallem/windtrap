@@ -106,16 +106,18 @@ val execute_and_report :
     that does not load, a file that names no executable, or a file whose
     {!Windtrap_runtime.Instr.type-freshness} is not [Fresh]. It names each of
     the last three in a warning on standard error. A reached mutant gets no job
-    when a used file gives it {!Windtrap_runtime.Verdicts.Killed}, and the
-    source digest of that record is the digest of the source file that the loop
-    reads, as {b The verdict file} below. A
-    {!Windtrap_runtime.Verdicts.Killed_elsewhere} record does not skip a mutant.
-    The mutant gets a [Killed_elsewhere] record that names the executable of
-    that file, the smaller one in [String.compare] order when several files kill
-    it. The report counts the mutant as not tested. Above the outcome line and
-    its [reproduce:] line, one line gives the number of skipped mutants and the
-    executable of each used file, with the number of skips that it gave. The
-    loop uses the files as they are on disk after the dry run.
+    when a used file gives it {!Windtrap_runtime.Verdicts.Killed}, and that
+    record has the source digest of the mutant of this executable
+    ({!Windtrap_runtime.Mutate.mutant.source_digest}), not [None], and its
+    renderings and extent. A {!Windtrap_runtime.Verdicts.Killed_elsewhere}
+    record does not skip a mutant. The mutant gets a [Killed_elsewhere] record
+    that names the executable of that file, the smaller one in [String.compare]
+    order when several files kill it. The report counts the mutant as not
+    tested. Above the outcome line and its [reproduce:] line, one line gives the
+    number of skipped mutants and the executable of each used file, with the
+    number of skips that it gave. The loop uses the files as they are on disk
+    after the dry run. The time that it takes to read them does not count in the
+    deadline of a job.
 
     {b Tests marked xfail.} A test marked xfail ({!Test_tree.val-xfail}) reaches
     no mutant and kills none. The dry run and the probe run it, no mutant's job
@@ -135,16 +137,15 @@ val execute_and_report :
     {b The verdict file.} The file holds one record per reached mutant, one
     [Outside_tests] record per mutant of the population evaluated outside tests,
     and one [Unreached] record per unreached one. A skipped mutant has a
-    [Killed_elsewhere] record. Each record has the MD5 digest of the source file
-    of its mutant, which the loop reads under {!Os.project_root} first and then
-    as recorded, or no digest when it cannot read the file. The file is written
-    to {!Windtrap_runtime.Verdicts.output_file} of the executable and the suite,
-    by {!Windtrap_runtime.Verdicts.save}, which records the suite. Under a
-    scope, the records of the files outside it stay when the file there was
-    written by this build ({!Windtrap_runtime.Verdicts.writer_identity}) for the
-    same suite and the suite was tested, and are dropped otherwise. A file that
-    cannot be written ([Sys_error]) is one sentence on standard error above the
-    outcome line.
+    [Killed_elsewhere] record. Each record has the source digest of its mutant
+    ({!Windtrap_runtime.Verdicts.record_of_mutant}). The file is written to
+    {!Windtrap_runtime.Verdicts.output_file} of the executable and the suite, by
+    {!Windtrap_runtime.Verdicts.save}, which records the suite. Under a scope,
+    the records of the files outside it stay when the file there was written by
+    this build ({!Windtrap_runtime.Verdicts.writer_identity}) for the same suite
+    and the suite was tested, and are dropped otherwise. A file that cannot be
+    written ([Sys_error]) is one sentence on standard error above the outcome
+    line.
 
     Only a loop that ran whole, over the whole suite, writes its verdicts. A run
     whose selection narrows the suite says so on standard error above the
@@ -239,8 +240,8 @@ val execute_and_report :
 
     Beyond the effects of {!Report.run} and [Supervisor.fresh], the loop reads
     the verdict file of its executable and suite and writes it. For the source
-    line of a survivor and the digest of each record it reads the recorded file
-    of the mutant, under {!Os.project_root} first and then as given. Under
-    [skip_killed], it lists the directory of its verdict file after the dry run,
-    reads the other regular files with the extension [.mutants] in it, and reads
-    the executable that each such file names. *)
+    line of a survivor it reads the recorded file of the mutant, under
+    {!Os.project_root} first and then as given. Under [skip_killed], it lists
+    the directory of its verdict file after the dry run, reads the other regular
+    files with the extension [.mutants] in it, and reads the executable that
+    each such file names. *)

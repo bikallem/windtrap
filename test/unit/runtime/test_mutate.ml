@@ -28,7 +28,7 @@ let site ?dismissed ?(before = "b") ?(after = "a") line col rewrite =
   }
 
 let register_only ~file ~sites =
-  let _guard : int -> bool = Mutate.register ~file ~sites in
+  let _guard : int -> bool = Mutate.register ~digest:None ~file ~sites in
   ()
 
 (* Rows *)
@@ -330,8 +330,10 @@ let catalogue_order () =
 
 let registered_twice () =
   let sites = [| site 2 4 "gt" |] in
-  let g1 = Mutate.register ~file:"t/twice.ml" ~sites in
-  let g2 = Mutate.register ~file:"t/twice.ml" ~sites:(Array.copy sites) in
+  let g1 = Mutate.register ~digest:None ~file:"t/twice.ml" ~sites in
+  let g2 =
+    Mutate.register ~digest:None ~file:"t/twice.ml" ~sites:(Array.copy sites)
+  in
   fresh ();
   List.iter (fun g -> ignore (g 0 : bool)) [ g1; g2; g2 ];
   equal string "2:4:gt x3" (drained "t/twice.ml");
@@ -350,7 +352,7 @@ let conflict_warning () =
 let conflict_dropped () =
   register_only ~file:"t/conflict.ml" ~sites:[| site 1 0 "lt" |];
   let inert =
-    Mutate.register ~file:"t/conflict.ml"
+    Mutate.register ~digest:None ~file:"t/conflict.ml"
       ~sites:[| site 1 0 "lt" ~before:"x < y" |]
   in
   fresh ();
@@ -360,9 +362,58 @@ let conflict_dropped () =
     [ "t/conflict.ml:1:0:lt b -> a" ]
     (List.map mutant_row (catalogued "t/conflict.ml"))
 
+let md5 s = Digest.to_hex (Digest.string s)
+
+let digested () =
+  let digest = Some (md5 "source") in
+  let (_ : int -> bool) =
+    Mutate.register ~file:"t/digested.ml" ~digest
+      ~sites:[| site 1 0 "lt"; site 2 0 "gt" |]
+  in
+  register_only ~file:"t/undigested.ml" ~sites:[| site 1 0 "lt" |];
+  equal
+    (list (option string))
+    [ digest; digest; None ]
+    (List.map
+       (fun (m : Mutate.mutant) -> m.source_digest)
+       (catalogued "t/digested.ml" @ catalogued "t/undigested.ml"))
+
+let digest_conflict () =
+  let sites = [| site 1 0 "lt" |] in
+  let (_ : int -> bool) =
+    Mutate.register ~file:"t/redigested.ml" ~digest:(Some (md5 "a")) ~sites
+  in
+  ignore (output ());
+  let inert =
+    Mutate.register ~file:"t/redigested.ml"
+      ~digest:(Some (md5 "b"))
+      ~sites:(Array.copy sites)
+  in
+  equal bool false (inert 0);
+  contains ~sub:"t/redigested.ml: conflicting instrumentation tables"
+    (output ());
+  equal
+    (list (option string))
+    [ Some (md5 "a") ]
+    (List.map
+       (fun (m : Mutate.mutant) -> m.source_digest)
+       (catalogued "t/redigested.ml"))
+
 let sites_and_catalogue =
   group "Sites and the catalogue"
     [
+      test "each mutant carries the digest that its file was registered with"
+        digested;
+      test
+        "a table of a file registered again with another digest conflicts, and \
+         the first table stays"
+        digest_conflict;
+      cases "register raises Invalid_argument on a malformed digest" ~id:Fun.id
+        [ "abc"; String.make 32 'A'; String.make 32 'g' ]
+        (fun digest ->
+          raises_match Exn.invalid_arg (fun () ->
+              Mutate.register ~file:"t/bad_digest.ml" ~digest:(Some digest)
+                ~sites:[| site 1 0 "lt" |]));
       cases "register raises Invalid_argument on a malformed site" ~id:fst
         bad_tables refused_table;
       test "the message names the file and the first malformed site"
@@ -390,7 +441,8 @@ let sites_and_catalogue =
       cases "a guard raises Invalid_argument for an index outside its table"
         ~id:(Testable.to_string Testable.int) [ 1; -1 ] (fun i ->
           let g =
-            Mutate.register ~file:"t/bounds.ml" ~sites:[| site 1 0 "lt" |]
+            Mutate.register ~digest:None ~file:"t/bounds.ml"
+              ~sites:[| site 1 0 "lt" |]
           in
           raises_match Exn.invalid_arg (fun () -> g i));
     ]
@@ -410,7 +462,7 @@ let ambiguous () =
   let sites =
     [| site 1 0 "lt"; site 4 2 "eq" ~before:"x"; site 4 2 "eq" ~before:"y" |]
   in
-  let g = Mutate.register ~file:"t/dup.ml" ~sites in
+  let g = Mutate.register ~digest:None ~file:"t/dup.ml" ~sites in
   register_only ~file:"t/dup.ml" ~sites:(Array.copy sites);
   equal string
     "ambiguous t/dup.ml:4:2:eq: t/dup.ml:4:2:eq x -> a, t/dup.ml:4:2:eq y -> a"
@@ -425,30 +477,38 @@ let one_site =
   |]
 
 let arms_one_site () =
-  let g = Mutate.register ~file:"t/one.ml" ~sites:one_site in
+  let g = Mutate.register ~digest:None ~file:"t/one.ml" ~sites:one_site in
   equal string "armed t/one.ml:7:4:add a + b -> a - b"
     (armed (Mutate.arm (id "t/one.ml" 7 4 "add")));
   equal (list bool) [ false; true; false ] (List.map g [ 0; 1; 2 ])
 
 let arms_every_registration () =
   let sites = [| site 2 4 "gt" |] in
-  let g1 = Mutate.register ~file:"t/copies.ml" ~sites in
-  let g2 = Mutate.register ~file:"t/copies.ml" ~sites:(Array.copy sites) in
+  let g1 = Mutate.register ~digest:None ~file:"t/copies.ml" ~sites in
+  let g2 =
+    Mutate.register ~digest:None ~file:"t/copies.ml" ~sites:(Array.copy sites)
+  in
   ignore (arm_ok (id "t/copies.ml" 2 4 "gt"));
   let armed_answers = [ g1 0; g2 0 ] in
   disarm ();
   equal (list bool) [ true; true; false; false ] (armed_answers @ [ g1 0; g2 0 ])
 
 let refusal_disarms () =
-  let g = Mutate.register ~file:"t/refuse.ml" ~sites:[| site 1 0 "or" |] in
+  let g =
+    Mutate.register ~digest:None ~file:"t/refuse.ml" ~sites:[| site 1 0 "or" |]
+  in
   ignore (arm_ok (id "t/refuse.ml" 1 0 "or"));
   let before = g 0 in
   is_error (Mutate.arm (id "t/nothing.ml" 1 0 "or"));
   equal (list bool) [ true; false ] [ before; g 0 ]
 
 let rearm () =
-  let ga = Mutate.register ~file:"t/rearm_a.ml" ~sites:[| site 1 0 "lt" |] in
-  let gb = Mutate.register ~file:"t/rearm_b.ml" ~sites:[| site 1 0 "gt" |] in
+  let ga =
+    Mutate.register ~digest:None ~file:"t/rearm_a.ml" ~sites:[| site 1 0 "lt" |]
+  in
+  let gb =
+    Mutate.register ~digest:None ~file:"t/rearm_b.ml" ~sites:[| site 1 0 "gt" |]
+  in
   ignore (arm_ok ~budget:2 (id "t/rearm_a.ml" 1 0 "lt"));
   Mutate.reset_reach ();
   let first = ga 0 in
@@ -458,7 +518,10 @@ let rearm () =
     (List.map string_of_bool [ first; ga 0 ] @ evaluations gb 4)
 
 let runaway () =
-  let g = Mutate.register ~file:"t/runaway.ml" ~sites:[| site 2 0 "not" |] in
+  let g =
+    Mutate.register ~digest:None ~file:"t/runaway.ml"
+      ~sites:[| site 2 0 "not" |]
+  in
   ignore (arm_ok ~budget:3 (id "t/runaway.ml" 2 0 "not"));
   Mutate.reset_reach ();
   equal (list string)
@@ -477,7 +540,10 @@ let runaway () =
    compares the count with the budget. The next arming drops the hook. *)
 let on_evaluation () =
   let file = "t/on_evaluation.ml" in
-  let g = Mutate.register ~file ~sites:[| site 2 0 "not"; site 3 0 "not" |] in
+  let g =
+    Mutate.register ~digest:None ~file
+      ~sites:[| site 2 0 "not"; site 3 0 "not" |]
+  in
   let calls = ref 0 in
   ignore
     (require_ok ~pp:Mutate.pp_arm_error
@@ -497,7 +563,9 @@ let on_evaluation () =
   equal int 3 !calls
 
 let headroom () =
-  let g = Mutate.register ~file:"t/forked.ml" ~sites:[| site 1 0 "and" |] in
+  let g =
+    Mutate.register ~digest:None ~file:"t/forked.ml" ~sites:[| site 1 0 "and" |]
+  in
   ignore (evaluations g 10);
   ignore (arm_ok ~budget:2 (id "t/forked.ml" 1 0 "and"));
   Mutate.reset_reach ();
@@ -507,8 +575,10 @@ let headroom () =
 
 let per_registration () =
   let sites = [| site 1 0 "le" |] in
-  let g1 = Mutate.register ~file:"t/per_copy.ml" ~sites in
-  let g2 = Mutate.register ~file:"t/per_copy.ml" ~sites:(Array.copy sites) in
+  let g1 = Mutate.register ~digest:None ~file:"t/per_copy.ml" ~sites in
+  let g2 =
+    Mutate.register ~digest:None ~file:"t/per_copy.ml" ~sites:(Array.copy sites)
+  in
   ignore (arm_ok ~budget:2 (id "t/per_copy.ml" 1 0 "le"));
   Mutate.reset_reach ();
   let answers = evaluations g1 2 @ evaluations g2 2 in
@@ -518,7 +588,9 @@ let per_registration () =
     (answers @ [ string_of_int hits ] @ evaluations g1 1)
 
 let counted_since_reset () =
-  let g = Mutate.register ~file:"t/kept.ml" ~sites:[| site 1 0 "ge" |] in
+  let g =
+    Mutate.register ~digest:None ~file:"t/kept.ml" ~sites:[| site 1 0 "ge" |]
+  in
   let the_id = id "t/kept.ml" 1 0 "ge" in
   ignore (arm_ok the_id);
   Mutate.reset_reach ();
@@ -529,7 +601,10 @@ let counted_since_reset () =
   equal (list int) [ 2; 0 ] [ after_arm; Mutate.armed_hits () ]
 
 let refused_budget budget =
-  let g = Mutate.register ~file:"t/kept_armed.ml" ~sites:[| site 1 0 "sub" |] in
+  let g =
+    Mutate.register ~digest:None ~file:"t/kept_armed.ml"
+      ~sites:[| site 1 0 "sub" |]
+  in
   ignore (arm_ok (id "t/kept_armed.ml" 1 0 "sub"));
   raises
     (Invalid_argument "Windtrap_runtime.Mutate.arm: budget must be positive")
@@ -539,7 +614,8 @@ let refused_budget budget =
 let inert_armed () =
   register_only ~file:"t/inert.ml" ~sites:[| site 1 0 "eq" |];
   let inert =
-    Mutate.register ~file:"t/inert.ml" ~sites:[| site 1 0 "eq" ~before:"x" |]
+    Mutate.register ~digest:None ~file:"t/inert.ml"
+      ~sites:[| site 1 0 "eq" ~before:"x" |]
   in
   ignore (arm_ok ~budget:1 (id "t/inert.ml" 1 0 "eq"));
   equal (list bool)
@@ -596,7 +672,9 @@ let arming =
   group "Arming"
     [
       test "with no mutant armed, every guard answers false" (fun () ->
-          let g = Mutate.register ~file:"t/unarmed.ml" ~sites:one_site in
+          let g =
+            Mutate.register ~digest:None ~file:"t/unarmed.ml" ~sites:one_site
+          in
           disarm ();
           equal (list bool) [ false; false; false ] (List.map g [ 0; 1; 2 ]));
       test "an identifier of a file with no catalogued site is Uncatalogued"
@@ -728,7 +806,7 @@ let reach_rows =
 
 let drains (claim, sites, steps, expected) =
   let file = "t/reach/" ^ claim ^ ".ml" in
-  let guard = Mutate.register ~file ~sites in
+  let guard = Mutate.register ~digest:None ~file ~sites in
   fresh ();
   let run = function
     | Eval i ->
@@ -745,7 +823,10 @@ let drains (claim, sites, steps, expected) =
   equal (list string) expected (List.filter_map run steps)
 
 let reset_keeps_armed () =
-  let g = Mutate.register ~file:"t/reset_armed.ml" ~sites:[| site 1 0 "ge" |] in
+  let g =
+    Mutate.register ~digest:None ~file:"t/reset_armed.ml"
+      ~sites:[| site 1 0 "ge" |]
+  in
   ignore (arm_ok (id "t/reset_armed.ml" 1 0 "ge"));
   Mutate.reset_reach ();
   equal (list string) [ "true" ] (evaluations g 1)
@@ -762,7 +843,7 @@ let domain_sites = Array.init 4096 (fun i -> site (i + 1) 0 "not")
    refuses. A child that dies before it writes gives [""], which is not a
    pass. *)
 let marks_on_domains ~file ~mine ~counts () =
-  let guard = Mutate.register ~file ~sites:domain_sites in
+  let guard = Mutate.register ~digest:None ~file ~sites:domain_sites in
   fresh ();
   let round = Atomic.make 0 and finished = Atomic.make 0 in
   let crashed = Atomic.make None in

@@ -262,14 +262,16 @@ let record_of_mutant () =
       before = "a - b";
       after = "a + b";
       dismissed = Some "equivalent";
+      source_digest = Some (String.make 32 'a');
     }
   in
-  equal string {|"lib/calc.ml":4:2:sub (to 4:7) "a - b" -> "a + b": killed|}
-    (record_row (Verdicts.record_of_mutant m Verdicts.Killed));
   equal string
     {|"lib/calc.ml":4:2:sub (to 4:7) "a - b" -> "a + b" of aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa: killed|}
+    (record_row (Verdicts.record_of_mutant m Verdicts.Killed));
+  equal string {|"lib/calc.ml":4:2:sub (to 4:7) "a - b" -> "a + b": killed|}
     (record_row
-       (Verdicts.record_of_mutant ~source_digest:(String.make 32 'a') m
+       (Verdicts.record_of_mutant
+          { m with source_digest = None }
           Verdicts.Killed))
 
 (* Two records of one mutant keep the smaller rendering and the verdict both
@@ -363,8 +365,8 @@ let collections =
   group "Collections"
     [
       test
-        "record_of_mutant keeps the identifier and renderings, not the \
-         dismissal"
+        "record_of_mutant keeps the identifier, the renderings and the source \
+         digest, not the dismissal"
         record_of_mutant;
       test "empty holds no record" (fun () ->
           equal (list string) [] (rows Verdicts.empty));

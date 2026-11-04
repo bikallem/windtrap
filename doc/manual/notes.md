@@ -387,10 +387,14 @@ option keeps a stale file, since a number computed from another build's
 data describes a program that no longer exists.
 
 `--skip-killed` follows the same rule: a suite does not skip a mutant
-because of a stale file. Each verdict record also keeps a digest of the
-source file of its mutant. Thus a suite does not skip a mutant whose
-source changed since the other suite killed it, also when the other
-executable was not built again.
+because of a stale file. Each verdict record also keeps the digest of
+the source file of its mutant as the rewriter compiled it, and its
+renderings and extent. A suite skips a mutant only when these are equal
+to those of its own mutant. Thus a suite does not skip a mutant whose
+source file differs from the source that the other suite compiled. The
+digest covers only that one file. When the two executables compiled
+other versions of a module that the mutant calls, the kill of one can be
+false for the other, and the skip does not see it.
 
 ## A suite is its own mutation runner
 

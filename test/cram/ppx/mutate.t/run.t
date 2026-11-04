@@ -24,6 +24,7 @@ in full. The file is mutated under its own name:
       type 'a operands = ('a * 'a)
       let ___windtrap_armed___ =
         Windtrap_runtime.Mutate.register ~file:"./fixture_input_name.ml"
+          ~digest:(Some "9bbb82795a1e351d9fa7ce6919db5ddd")
           ~sites:[|{
                      line = 5;
                      col = 34;
