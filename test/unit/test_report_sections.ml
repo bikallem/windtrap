@@ -2619,6 +2619,9 @@ let mutation_entries () =
       closing
         ~config:(fun c -> { c with Run.mutate_workers = true })
         reached_report );
+    ( "at rest, no command has --mutate-workers, which no verdict file records",
+      at_rest ~invocation:exe
+        { reached_report with Sections.survivors = loop_report.survivors } );
     ( "a loop's reproduce: command keeps its mirror under a build action",
       closing ~invocation:`Mirrors
         ~config:(fun c -> { c with Run.mutate_workers = true })

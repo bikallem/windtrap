@@ -335,15 +335,21 @@ domains share. It has these costs:
   up to `-j` at once.
 
 The dry run records each test that spawned worker domains. The deadline
-of a job comes from the times of the dry run, in which these workers
-ran too. The `reproduce:`, `arm:` and `replay:` commands of such a run
+of a job is the time of the whole dry run plus ten times the time of
+the job's tests in the dry run (at least 1 s). These workers ran in the
+dry run too. A worker
+process ends after a test that spawned domains, and a new worker runs
+the rest of the job. The time that the new worker takes to start does
+not count toward the deadline. The `reproduce:`, `arm:` and `replay:` commands of such a run
 keep `--mutate-workers`, also in the JUnit file and in the GitHub
 annotations. A verdict file does not record the flag, so the commands
 of `windtrap mutants` do not have it. Add `--mutate-workers` to such a
 command yourself.
 
-Outside `--mutate` and `--arm`, a stateful test always spawns its
-worker domains, and the flag has no effect.
+Without `--mutate` or `--arm` on the command line, the flag is a usage
+error. Its mirror alone has no effect on a suite that does not mutate.
+Outside mutation testing, a stateful test always spawns its worker
+domains.
 
 ## Dismissing an equivalent mutant
 

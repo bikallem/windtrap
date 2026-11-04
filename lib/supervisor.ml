@@ -1195,6 +1195,8 @@ type state = {
   mutable rev_failures : Failure.t list;
   mutable evaluated : int option;
   mutable witnessed : bool;
+  mutable restarted : Os.counter option; (* a new start, until it serves *)
+  mutable left_out : float; (* the seconds of the new starts that served *)
 }
 
 let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
@@ -1254,6 +1256,8 @@ let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
           rev_failures = [];
           evaluated = None;
           witnessed = true;
+          restarted = None;
+          left_out = 0.;
         }
       in
       incr next;
@@ -1270,6 +1274,7 @@ let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
     | Unix.WEXITED 0 when st.finishing ->
         bury st.w;
         st.w <- spawn st.job;
+        if not st.w.serving then st.restarted <- Some (Os.counter ());
         st.finishing <- false;
         send_next st
     | status ->
@@ -1311,7 +1316,12 @@ let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
         st.rev_failures <- List.rev_append failures st.rev_failures
     | Report (Outside failure) -> st.rev_failures <- failure :: st.rev_failures
     | Report Exited -> st.w.exited <- true
-    | Serving -> st.w.serving <- true
+    | Serving ->
+        st.w.serving <- true;
+        Option.iter
+          (fun c -> st.left_out <- st.left_out +. Os.count_s c)
+          st.restarted;
+        st.restarted <- None
     | Reached { sites; _ } -> reached st sites
     | Unwitnessed -> st.witnessed <- false
     | Report (Event _ | Judge _) | Counts _ | Pool _ -> ()
@@ -1331,7 +1341,12 @@ let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
           on_ran index ran;
           deliver ()
   in
-  let remaining st = st.job.deadline -. Os.count_s st.started in
+  (* The module initialization of a worker that replaces a retired one is no
+     part of the job's tests, as in [supervise]. *)
+  let remaining st =
+    let starting = Option.fold ~none:0. ~some:Os.count_s st.restarted in
+    st.job.deadline -. (Os.count_s st.started -. st.left_out -. starting)
+  in
   (* A worker found dead may have left reports in its pipe, which say more
      than its status: they are read first. *)
   let rec dead st =

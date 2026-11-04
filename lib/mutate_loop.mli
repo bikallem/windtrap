@@ -130,7 +130,10 @@ val execute_and_report :
     that the dry run took, read on the monotonic clock ({!Os.val-counter}), plus
     a share for the tests of the job. The share is ten times
     ([deadline_multiplier]) what the dry run measured for those tests, and at
-    least one second. The probe's tests are every executed test.
+    least one second. The probe's tests are every executed test. A worker
+    retires after a test that spawned a domain, and a new worker runs the rest
+    of the job. Its start, up to the end of its module initialization, does not
+    count toward the deadline.
 
     The runaway budget of a job ({!Windtrap_runtime.Mutate.arm}) is
     [(hits * 8) + 1000] ([budget_of]) for a site that the dry run evaluated

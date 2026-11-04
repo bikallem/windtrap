@@ -104,7 +104,8 @@ type error =
   | Requires of string * string
       (** The command line gave the first flag, which scopes the second, and no
           layer gave the second: [("--lines", "--mutate")],
-          [("--diff", "--mutate")] or [("--skip-killed", "--mutate")]. *)
+          [("--diff", "--mutate")], [("--skip-killed", "--mutate")] or
+          [("--mutate-workers", "--mutate or --arm")]. *)
 
 val error_message : error -> string
 (** [error_message error] is one sentence on [error] for a user, which names the
@@ -159,9 +160,10 @@ val settings : parsed -> (Run.config, error) result
       alone they are ignored. Both at once is [Error (Incompatible_flags _)],
       whichever layer gave each, and it is checked after every mirror. A prefix
       that spells a boolean cannot go through the variable.
-    - [mutate_workers] is [true] when a layer gives [--mutate-workers], with or
-      without [--mutate] or [--arm]. Outside those two, a stateful test spawns
-      its worker domains anyway, so the flag changes nothing.
+    - [mutate_workers] is [true] when a layer gives [--mutate-workers] and a
+      layer gives [--mutate] or [--arm]. [--mutate-workers] from the command
+      line without them is [Error (Requires _)]. From its mirror alone it is
+      ignored.
     - A relative path of [--junit], [--json] or [-o] is made absolute, against
       the working directory when the command line gives it and against
       {!Os.project_root} when its mirror does. It is kept as given when that

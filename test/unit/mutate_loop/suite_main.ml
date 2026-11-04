@@ -648,6 +648,19 @@ let pool_alone =
     spanned "orphan is nonzero" (fun () -> is_true (Subject.orphan 3 4 <> 0));
   ]
 
+(* Eight short pool tests. Each retires its worker, and each start of a worker
+   takes 0.3 s at module initialization (see the [pool_restarts] case). *)
+let pool_restarts =
+  List.init 8 (fun i ->
+      stateful ~count:1 ~steps:1 ~domains:2
+        (Printf.sprintf "sub on two domains %d" i)
+        [
+          command "sub"
+            (Gen.unit @-> returns int)
+            (fun () -> 6)
+            (fun () -> Subject.sub 10 4);
+        ])
+
 let retried = ref 0
 let handle = fixture ~teardown:(fun () -> ignore (Subject.crasher 3 1)) Fun.id
 
@@ -729,6 +742,9 @@ let () =
       exit @@ run "calc" [ group "stateful" stateful_domains ]
   | "on_workers" -> exit @@ run "calc" [ group "stateful" on_workers ]
   | "pool_alone" -> exit @@ run "calc" [ group "pool" pool_alone ]
+  | "pool_restarts" ->
+      Unix.sleepf 0.3;
+      exit @@ run "calc" [ group "pool" pool_restarts ]
   | "domain_first" ->
       (* Before [run], in the process that runs it. *)
       Domain.join (Domain.spawn ignore);

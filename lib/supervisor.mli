@@ -123,7 +123,8 @@ type job = {
   cases : string list;  (** The cases to run, by path string, in this order. *)
   deadline : float;
       (** The seconds the job may take from its first worker's start, after
-          which its process group is killed. *)
+          which its process group is killed. The time from the start of a worker
+          that replaces a retired one until it serves does not count. *)
   bail : bool;
       (** Whether the job stops at its first counted failure in or after the
           test that first evaluated the armed site, or at its first counted

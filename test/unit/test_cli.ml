@@ -307,7 +307,9 @@ let mirrors =
           ( "WINDTRAP_SKIP_KILLED",
             "maybe",
             {|invalid WINDTRAP_SKIP_KILLED "maybe"|} );
-          ("WINDTRAP_MUTATE_WORKERS", "true", "mutate_workers");
+          ( "WINDTRAP_MUTATE_WORKERS",
+            "maybe",
+            {|invalid WINDTRAP_MUTATE_WORKERS "maybe"|} );
         ];
       test "a boolean mirror refuses another word in Os.bool_expected's words"
         boolean_wording;
@@ -903,8 +905,8 @@ let resolution =
             "mutation armed lib/a.ml:9:12:add" );
         ];
       resolve_rows
-        "--mutate-workers or its mirror sets mutate_workers, with or without \
-         --mutate or --arm"
+        "--mutate-workers or its mirror sets mutate_workers under --mutate or \
+         --arm, and on the command line it needs one of them"
         [
           ( [],
             [ "--mutate"; "--mutate-workers" ],
@@ -915,7 +917,13 @@ let resolution =
           ( [ ("WINDTRAP_MUTATE_WORKERS", "0") ],
             [ "--mutate" ],
             "mutation loop []" );
-          ([], [ "--mutate-workers" ], "mutate_workers");
+          ( [ ("WINDTRAP_MUTATE", "1") ],
+            [ "--mutate-workers" ],
+            "mutation loop [], mutate_workers, broadcast mutate" );
+          ( [],
+            [ "--mutate-workers" ],
+            "--mutate-workers requires --mutate or --arm" );
+          ([ ("WINDTRAP_MUTATE_WORKERS", "1") ], [], "defaults");
         ];
       resolve_rows "--mutate with --arm is refused, whichever layer gave each"
         [

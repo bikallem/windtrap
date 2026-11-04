@@ -471,8 +471,8 @@ type ended =
   | Finished of (Verdicts.record list * string option)
 
 (* The budget counts the job's evaluations, not the dry run's. A job with a
-   test that spawned a pool in the dry run runs alone, so that the pool gets
-   the CPUs that its deadline assumes. *)
+   test that spawned a pool in the dry run runs alone: no other job runs at
+   the same time as it. *)
 let jobs_of ~deadline ~pooled ~dry_run reached =
   let job ~bail ~armed paths =
     {

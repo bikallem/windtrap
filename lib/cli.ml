@@ -554,6 +554,12 @@ let line_scope ~cli ~layered =
 let settings cli =
   let* layered = layer_entries entries cli in
   let* lines = line_scope ~cli ~layered in
+  let mutates = gave layered "--mutate" || gave layered "--arm" in
+  let* () =
+    if gave cli "--mutate-workers" && not mutates then
+      Error (Requires ("--mutate-workers", "--mutate or --arm"))
+    else Ok ()
+  in
   let* () =
     if gave layered "--mutate" && gave layered "--arm" then
       Error (Incompatible_flags ("--mutate", "--arm"))
@@ -575,6 +581,7 @@ let settings cli =
         | Run.Loop { prefixes; _ } ->
             Run.Loop { prefixes; lines; skip_killed = layered.skip_killed }
         | (Run.Armed _ | Run.No_mutation) as m -> m);
+      mutate_workers = c.mutate_workers && mutates;
       case_file;
       log_dir = path "--output" c.log_dir;
       junit = Option.map (path "--junit") c.junit;

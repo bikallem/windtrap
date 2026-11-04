@@ -1685,8 +1685,8 @@ let one_killed =
   "mutants: 1 reached by this suite, 1 killed, 3 never reached, score 100.0% \
    (1/1)"
 
-let killed_by_stateful args () =
-  let r = spawn ~env:[ suite "stateful_domains" ] (mutate :: args) in
+let killed_by_stateful () =
+  let r = spawn ~env:[ suite "stateful_domains" ] [ mutate ] in
   equal (pair string text) ("exited 0", "") (r.status, r.err);
   equal string one_killed (outcome r.out)
 
@@ -1751,9 +1751,7 @@ let stateful_domains =
   group "Stateful tests on several domains"
     [
       test "without --mutate-workers, a stateful test on two domains kills"
-        (killed_by_stateful []);
-      test "with --mutate-workers, it spawns its pool and kills"
-        (killed_by_stateful [ workers ]);
+        killed_by_stateful;
       test
         "without --mutate-workers, no test reaches a site that only a worker \
          of the pool evaluates" (fun () ->
@@ -1785,6 +1783,14 @@ let stateful_domains =
         "under -j 4, a job with a pool test runs alone, and the other jobs run \
          at once"
         pool_alone;
+      test
+        "a job does not count the start of a worker that replaces a retired one"
+        (fun () ->
+          let r =
+            spawn ~env:[ suite "pool_restarts" ] [ mutate; workers; "-j"; "8" ]
+          in
+          equal (pair string text) ("exited 0", "") (r.status, r.err);
+          equal string one_killed (outcome r.out));
     ]
 
 (* The armed run *)
