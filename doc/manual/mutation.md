@@ -548,20 +548,32 @@ The run compares a mutant only with the same mutant: the rewriter read
 the same source file, with the same digest, and the mutant has the same
 renderings and extent. Thus a change to the source file of a mutant
 starts a new comparison. The earlier verdict file can come from another
-build, because almost each change to a test builds the executable
+build, because nearly every change to a test builds the executable
 again. It must come from the same suite.
 
-A run that writes no verdict file shows no section: a run whose
-selection narrows the suite, a refused run, a run that a signal stopped,
-and a run whose file cannot be written. Under `--lines` or `--diff`,
-the section has only the mutants on the lines. The section does not
-change the score or the exit code.
+These runs show no section: a run whose selection narrows the suite, a
+refused run, a run that a signal stopped, and a run whose file cannot
+be written. Under `--lines`, `--diff` or `--mutate=PREFIX`, the section
+has only the mutants of the scope. The section does not change the
+score or the exit code.
+
+A scoped run keeps the records outside its scope only when the same
+build wrote the earlier file and tested its suite. In all other cases
+the run drops these records, and their previous verdicts go away. A
+refused run also drops the records outside its scope. Then the next
+full run lists no change of these mutants across that gap. For example,
+change a test, which builds the executable again, and then run the
+suite under `--mutate=PREFIX` of one module. The next full run compares
+the mutants of the other modules with nothing.
 
 The verdict file keeps the previous verdict of each mutant. Thus
-`windtrap mutants` shows the same section, with the executable and the
-suite of each row. The rows come from each verdict file, sorted by
-mutant and then by file. Under `--json`, the array `unstable` holds the
-same rows, each with the index of its verdict file in `executables`.
+`windtrap mutants` gives, for each verdict file, the last change that
+the file records for each mutant, with the executable and the suite of
+the file. Under a scope, a run keeps the records outside the scope, so
+that change can come from a run before the last one. The rows come
+from each verdict file, sorted by mutant and then by file. Under
+`--json`, the array `unstable` holds the same rows, each with the index
+of its verdict file in `executables`.
 
 ## Gating on the score
 

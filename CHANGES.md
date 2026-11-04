@@ -122,12 +122,19 @@
   run of the same suite, in an `unstable (N)` section, as
   `calc.ml:10:16:ge   survived → killed`. The run compares only the
   verdicts killed, survived and not evaluated, of the same mutant on the
-  same source. An unknown verdict, a mutant that no test reached and a
-  skipped mutant do not appear. The next run compares with the verdict
-  before them. A run that writes no verdict file shows no section.
-  `windtrap mutants` shows the same section with the executable and the
-  suite of each row, and `--json` adds the array `unstable`. The section
-  does not change the score or the exit code
+  same source. An unknown verdict, a mutant that no test reached or
+  that ran outside tests, and a skipped mutant do not appear. The next
+  run compares with the last verdict that is an outcome. A narrowed, a
+  refused or an interrupted run shows no section, and so does a run
+  whose file cannot be written. `windtrap mutants` gives, for each
+  verdict file, the last change that the file records for each mutant,
+  with the executable and the suite of the file. Under a scope, that
+  change can come from a run before the last one. `--json` adds the
+  array `unstable`. The section does not change the score or the exit
+  code. When a run drops the records outside its scope, because the
+  earlier file is of another build or one of the two runs is refused,
+  the previous verdicts of these mutants go away. The next full run
+  then lists no change of these mutants
   (doc/manual/mutation.md#unstable-verdicts).
 - (breaking) The verdict file format is `windtrap-mutants-v13`. Each
   record keeps the digest of the source file of its mutant and the

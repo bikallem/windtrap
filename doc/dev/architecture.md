@@ -415,7 +415,7 @@ a lossy `%g` spelling is asked for at the call site.
 - Each record also keeps the previous outcome of its mutant: killed,
   survived or not evaluated. The loop reads the file that it replaces
   in the same read that gives the kept records, of any build, because
-  almost each change to a test builds the executable again. The digest,
+  nearly every change to a test builds the executable again. The digest,
   the renderings and the extent make sure that the mutant is the same.
   A verdict that is no outcome (a skip, unknown, unreached) keeps the
   outcome before it, so a skip between two runs hides no change and

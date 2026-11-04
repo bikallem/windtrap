@@ -3035,6 +3035,71 @@ let line_scope_of_the_change () =
     (listed [ (18, "killed \u{2192} survived") ])
     (unstable r.out)
 
+(* A kept record keeps its previous outcome, so the file of the scoped run
+   still gives the change of [widen] that the run before it found. *)
+let kept_change () =
+  let path = verdicts_path () in
+  remove path;
+  whole (rerun [ mutate ]);
+  rewrite swapped;
+  whole (rerun [ mutate ]);
+  let scoped =
+    rerun [ mutate; "--lines=test/unit/mutate_loop/subject.ml:15" ]
+  in
+  equal (pair string text) ("exited 0", "") (scoped.status, scoped.err);
+  equal (option (list string)) None (unstable scoped.out);
+  let f = require_ok ~pp:Verdicts.pp_error (Verdicts.load path) in
+  equal (list string)
+    [ "subject.ml:18 killed, survived" ]
+    (List.filter_map
+       (fun (r : Verdicts.record) ->
+         Option.map
+           (fun (was, is) ->
+             strf "%s:%d %s, %s" (local r.id.file) r.id.line (outcome_name was)
+               (outcome_name is))
+           (Verdicts.changed r))
+       (Verdicts.records f.verdicts))
+
+(* A refused run writes unknown verdicts, which keep the outcomes before
+   them, and lists nothing. *)
+let refused_between () =
+  remove (verdicts_path ());
+  whole (rerun [ mutate ]);
+  rewrite swapped;
+  let red = rerun ~env:[ suite "red" ] [ mutate ] in
+  equal string "exited 1" red.status;
+  equal (option (list string)) None (unstable red.out);
+  equal (option string) (Some "the dry run is red")
+    (Option.map
+       (fun refused ->
+         String.sub refused 0 (String.length "the dry run is red"))
+       (Option.bind red.file (fun (f : file) -> f.refused)));
+  let r = rerun [ mutate ] in
+  whole r;
+  equal
+    (option (list string))
+    (listed
+       [ (15, "survived \u{2192} killed"); (18, "killed \u{2192} survived") ])
+    (unstable r.out)
+
+(* An earlier file that does not load gives no previous outcome, and the
+   run replaces it. *)
+let unloadable_earlier =
+  [
+    ("a file of the format before", "windtrap-mutants-v12\ntested\n0\n");
+    ("a corrupt file", "windtrap-mutants-v13\ntested\n1\njunk\n");
+  ]
+
+let unloadable_earlier_file (_, text) =
+  let path = verdicts_path () in
+  write path text;
+  let r = rerun [ mutate ] in
+  whole r;
+  equal (option (list string)) None (unstable r.out);
+  equal (option (list string)) (Some green_rows) (rows r);
+  equal (option (list string)) (Some none_rows) (previous_rows r);
+  starts_with ~prefix:"windtrap-mutants-v13\n" (read path)
+
 let narrowed_run () =
   let path = verdicts_path () in
   remove path;
@@ -3139,6 +3204,16 @@ let unstable_verdicts =
         "a line scope lists the mutants of its lines, and keeps the other \
          records as they were"
         line_scope_of_the_change;
+      test
+        "a record kept outside the scope keeps its previous outcome, and its \
+         change"
+        kept_change;
+      test
+        "a refused run lists nothing, and the next run compares with the \
+         outcomes before it"
+        refused_between;
+      cases "an earlier file that does not load gives no previous outcome"
+        ~id:fst unloadable_earlier unloadable_earlier_file;
       test "a narrowed run lists nothing and leaves the file" narrowed_run;
       test
         "a run that a signal stopped before its last verdict lists nothing and \
