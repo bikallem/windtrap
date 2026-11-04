@@ -435,6 +435,10 @@ OPTIONS:
       Skip the mutants that the verdict file of another suite killed (with
       --mutate).
 
+  --mutate-retry=N (env WINDTRAP_MUTATE_RETRY)
+      Run the job of a survivor up to N more times, each in a fresh worker (with
+      --mutate, default 0).
+
   --mutate-workers (env WINDTRAP_MUTATE_WORKERS)
       Let a stateful test on several domains spawn its worker domains (with
       --mutate or --arm).

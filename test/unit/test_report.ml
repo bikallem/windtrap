@@ -2109,7 +2109,7 @@ let mutation_entries () =
                 "killed elsewhere: 1 mutant, not tested, from the verdict file \
                  of default/a.exe (1)";
               ]
-            r ~testing:(Some "lib/calc.ml:9:12:add")
+            r ~during:(`Job "lib/calc.ml:9:12:add")
             {
               loop_report with
               Sections.survivors = [];
@@ -2146,16 +2146,19 @@ let refused_after_live () =
 let interrupted_rows =
   [
     ( "a child",
-      ( Some "lib/calc.ml:9:12:add",
+      ( `Job "lib/calc.ml:9:12:add",
         "windtrap: interrupted while testing lib/calc.ml:9:12:add\n" ) );
+    ( "a survivor that waits for its retry",
+      ( `Wait "lib/calc.ml:9:12:add",
+        "windtrap: interrupted before the retry of lib/calc.ml:9:12:add\n" ) );
     ( "the determinism probe",
-      (None, "windtrap: interrupted during the determinism probe\n") );
+      (`Probe, "windtrap: interrupted during the determinism probe\n") );
   ]
 
-let interrupted_loop (_, (testing, expected)) =
+let interrupted_loop (_, (during, expected)) =
   let t =
     rendered (fun r ->
-        Report.mutation_interrupted r ~testing
+        Report.mutation_interrupted r ~during
           { loop_report with Sections.survivors = []; unreached = [] })
   in
   equal (pair string string)

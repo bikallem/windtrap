@@ -379,19 +379,25 @@ val mutation_not_reached : t -> unit
 (** {2:loop The report of a loop}
 
     A client must call {!mutation_testing} before each child,
-    {!mutation_survivor} when a child ends on a survivor, and {!mutation_finish}
-    once, last. {!mutation_refused} and {!mutation_interrupted} are the two
-    other ways in which a report ends. *)
+    {!mutation_survivor} when the last run of a mutant ends on a survivor, and
+    {!mutation_finish} once, last. {!mutation_refused} and
+    {!mutation_interrupted} are the two other ways in which a report ends. *)
 
 val mutation_testing : t -> index:int -> total:int -> id:string -> unit
 (** [mutation_testing t ~index ~total ~id] draws the live line for the mutant
     that the loop is trying: [index], counted from [1], [total], and [id]. The
     line shows only while the live line is on (see {!create}). *)
 
-val mutation_survivor : t -> Report_sections.survivor -> unit
-(** [mutation_survivor t s] commits the {!Report_sections.survivor_block} of
-    [s], flushed. The first call precedes the block by the rule that opens the
-    survivors. A block has no column of executables. *)
+val mutation_survivor :
+  ?runs:int ->
+  ?early:(int * string) list ->
+  t ->
+  Report_sections.survivor ->
+  unit
+(** [mutation_survivor ?runs ?early t s] commits the
+    {!Report_sections.survivor_block} of [s] with [runs] and [early], flushed.
+    The first call precedes the block by the rule that opens the survivors. A
+    block has no column of executables. *)
 
 val mutation_finish :
   ?note:string -> ?lines:string list -> t -> Report_sections.mutation -> unit
@@ -413,13 +419,15 @@ val mutation_refused : t -> string -> unit
 val mutation_interrupted :
   ?lines:string list ->
   t ->
-  testing:string option ->
+  during:[ `Probe | `Job of string | `Wait of string ] ->
   Report_sections.mutation ->
   unit
-(** [mutation_interrupted ?lines t ~testing m] ends the report of a loop that a
+(** [mutation_interrupted ?lines t ~during m] ends the report of a loop that a
     signal is stopping. It says on standard error what was interrupted: the
-    child of the mutant [testing], or the determinism probe when [testing] is
-    [None]. It then calls {!mutation_finish} over [m] and [lines]. *)
+    determinism probe under [`Probe], the job of the mutant [id] under
+    [`Job id], or the wait of the survivor [id] for its next run under
+    [`Wait id], when the signal comes between two passes. It then calls
+    {!mutation_finish} over [m] and [lines]. *)
 
 (** {1:running Running} *)
 

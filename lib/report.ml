@@ -1095,11 +1095,11 @@ let mutation_testing t ~index ~total ~id =
 
 (* A survivor's block is committed when its child ends, so a loop that dies
    has printed what it found. *)
-let mutation_survivor t survivor =
+let mutation_survivor ?runs ?early t survivor =
   print t
     (Sections.Line []
      :: (if t.survivors = 0 then [ Sections.Rule (Some "survivors") ] else [])
-    @ Sections.survivor_block ~exe_width:None survivor);
+    @ Sections.survivor_block ?runs ?early ~exe_width:None survivor);
   t.survivors <- t.survivors + 1
 
 let mutation_finish ?note ?(lines = []) t m =
@@ -1128,11 +1128,12 @@ let mutation_refused t message =
   Pp.flush t.out ();
   Os.say message
 
-let mutation_interrupted ?lines t ~testing m =
+let mutation_interrupted ?lines t ~during m =
   mutation_refused t
-    (match testing with
-    | Some id -> "interrupted while testing " ^ id
-    | None -> "interrupted during the determinism probe");
+    (match during with
+    | `Job id -> "interrupted while testing " ^ id
+    | `Wait id -> "interrupted before the retry of " ^ id
+    | `Probe -> "interrupted during the determinism probe");
   mutation_finish ?lines t m
 
 (* Running *)

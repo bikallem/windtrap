@@ -88,6 +88,7 @@ let flags (p : Cli.parsed) =
         | Run.No_mutation -> []);
         bool "skip_killed" p.skip_killed;
         bool "mutate_workers" c.mutate_workers;
+        some "--mutate-retry" "mutate_retry" string_of_int c.mutate_retry;
         bool "help" p.help;
         bool "version" p.version;
       ]
@@ -157,6 +158,7 @@ let changes (c : Run.config) =
         field "json" (opt Fun.id) (fun c -> c.Run.json);
         field "mutation" mutation_name (fun c -> c.Run.mutation);
         field "mutate_workers" bool (fun c -> c.Run.mutate_workers);
+        field "mutate_retry" string_of_int (fun c -> c.Run.mutate_retry);
         field "github" bool (fun c -> c.Run.github);
         field "invocation" invocation_name (fun c -> c.Run.invocation);
         field "broadcast selection" bool (fun c ->
@@ -374,6 +376,7 @@ let messages () =
       Cli.Incompatible_flags ("--mutate", "--arm");
       Cli.Requires ("--lines", "--mutate");
       Cli.Requires_any ("--mutate-workers", [ "--mutate"; "--arm" ]);
+      Cli.Requires_any ("--mutate-retry", [ "--mutate" ]);
     ]
   in
   let refused =
@@ -387,6 +390,7 @@ let messages () =
         [ "--slow-threshold"; "-1" ];
         [ "--prop-count"; "0" ];
         [ "--color"; "sometimes" ];
+        [ "--mutate-retry"; "101" ];
       ]
   in
   let mirror =
@@ -407,6 +411,7 @@ let messages () =
     options '--mutate' and '--arm' cannot be combined
     option '--lines' scopes '--mutate', which is not given
     option '--mutate-workers' requires '--mutate' or '--arm'
+    option '--mutate-retry' requires '--mutate'
     invalid value 'nope' for --seed: expected an s1: token with 16 lowercase hexadecimal digits
     invalid value '9/2' for --shard: expected K/N with 1 <= K <= N (e.g. 2/4)
     invalid value 'x' for --list: expected no argument
@@ -414,6 +419,7 @@ let messages () =
     invalid value '-1' for --slow-threshold: expected a non-negative number
     invalid value '0' for --prop-count: expected a positive integer
     invalid value 'sometimes' for --color: expected always, never or auto
+    invalid value '101' for --mutate-retry: expected a non-negative integer up to 100
     invalid value '0' for WINDTRAP_PROP_COUNT: expected a positive integer
     |}
 
@@ -471,14 +477,14 @@ let every_flag () =
      failed_only, list_only, bail, stream, update, seed s1:00000000000000ff, \
      timeout 2.5, slow_threshold 3, prop_count 50, verbose, junit out.xml, \
      color never, log_dir logs, arm lib/a.ml:1:0:add, skip_killed, \
-     mutate_workers"
+     mutate_workers, mutate_retry 3"
     (parsed
        (String.split_on_char ' '
           "-f pat -e ex --tag a --tag b --exclude-tag c --shard 2/4 --failed \
            -l -x -s -u --seed s1:00000000000000ff --timeout 2.5 \
            --slow-threshold 3 --prop-count 50 -v --junit out.xml --color never \
            -o logs --mutate=lib/a.ml,lib/b.ml --skip-killed --mutate-workers \
-           --arm lib/a.ml:1:0:add"))
+           --mutate-retry 3 --arm lib/a.ml:1:0:add"))
 
 (* Whole arguments: each valueless flag in both spellings, value flags with a
    good value, and misspellings and separators, so that most vectors parse
@@ -568,6 +574,9 @@ let parsing =
           ([ "--arm"; "lib/a.ml:1:0:add" ], "arm lib/a.ml:1:0:add");
           ([ "--arm=x" ], "arm x");
           ([ "--mutate-workers" ], "mutate_workers");
+          ([ "--mutate-retry"; "2" ], "mutate_retry 2");
+          ([ "--mutate-retry=0" ], "mutate_retry 0");
+          ([ "--mutate-retry=100" ], "mutate_retry 100");
           ([ "-h" ], "help");
           ([ "--help" ], "help");
           ([ "-V" ], "version");
@@ -663,6 +672,9 @@ let parsing =
           ("--jobs", "two");
           ("--seed", "42");
           ("--color", "sometimes");
+          ("--mutate-retry", "-1");
+          ("--mutate-retry", "101");
+          ("--mutate-retry", "two");
         ]
         refused_value;
       parse_rows "parse is the first error from the left"
@@ -930,6 +942,34 @@ let resolution =
             [ "--mutate-workers" ],
             "--mutate-workers requires --mutate or --arm" );
           ([ ("WINDTRAP_MUTATE_WORKERS", "1") ], [], "defaults");
+        ];
+      resolve_rows
+        "--mutate-retry or its mirror sets mutate_retry under --mutate, and on \
+         the command line it needs --mutate"
+        [
+          ( [],
+            [ "--mutate"; "--mutate-retry=2" ],
+            "mutation loop [], mutate_retry 2" );
+          ( [ ("WINDTRAP_MUTATE_RETRY", " 3 ") ],
+            [ "--mutate" ],
+            "mutation loop [], mutate_retry 3" );
+          ( [ ("WINDTRAP_MUTATE_RETRY", "3") ],
+            [ "--mutate"; "--mutate-retry=0" ],
+            "mutation loop []" );
+          ( [ ("WINDTRAP_MUTATE", "1") ],
+            [ "--mutate-retry=1" ],
+            "mutation loop [], mutate_retry 1, broadcast mutate" );
+          ([], [ "--mutate-retry=1" ], "--mutate-retry requires --mutate");
+          ( [],
+            [ "--arm"; "lib/a.ml:9:12:add"; "--mutate-retry=1" ],
+            "--mutate-retry requires --mutate" );
+          ([ ("WINDTRAP_MUTATE_RETRY", "3") ], [], "defaults");
+          ( [ ("WINDTRAP_MUTATE_RETRY", "3") ],
+            [ "--arm"; "lib/a.ml:9:12:add" ],
+            "mutation armed lib/a.ml:9:12:add" );
+          ( [ ("WINDTRAP_MUTATE_RETRY", "101") ],
+            [ "--mutate=lib/" ],
+            {|invalid WINDTRAP_MUTATE_RETRY "101"|} );
         ];
       resolve_rows "--mutate with --arm is refused, whichever layer gave each"
         [

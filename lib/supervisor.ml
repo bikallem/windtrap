@@ -1199,7 +1199,8 @@ type state = {
   mutable left_out : float; (* the seconds left out for the new starts *)
 }
 
-let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
+let fresh ?(stopped = fun () -> false) (config : Run.config) ~suite tests jobs
+    ~on_ran ~on_signal =
   let jobs = Array.of_list jobs in
   let n = Array.length jobs in
   let settled = Array.make n None in
@@ -1408,7 +1409,7 @@ let fresh (config : Run.config) ~suite tests jobs ~on_ran ~on_signal =
       if Option.is_none !signal then signal := Some s;
       on_signal s)
   @@ fun () ->
-  match loop () with
+  match if stopped () then () else loop () with
   | () -> stop_all ()
   | exception exn ->
       let backtrace = Printexc.get_raw_backtrace () in

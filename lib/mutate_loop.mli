@@ -70,6 +70,8 @@ val execute_and_report :
       domains in the dry run ([config.mutate_workers]) runs alone. The probe
       agrees iff it executed as many tests, skipped as many and counted no
       failure.
+    + Under [config.mutate_retry = n] above [0], it runs up to [n] more passes
+      ({b Retries} below).
     + Once the last job is given it writes the verdict file.
 
     A job starts from module initialization, so what the dry run left, a table
@@ -100,6 +102,21 @@ val execute_and_report :
     process that a test forks counts ([Supervisor.arm]). The dry run does not
     see such an evaluation. A job whose worker cannot map the byte that shows it
     counts each failure, as when it could not tell.
+
+    {b Retries.} Each pass after the first runs again the jobs of the mutants
+    that survived the pass before it, with the same cases, deadline and budget,
+    each in a fresh worker, up to [config.jobs] at once, in the order of the
+    catalogue. A job that runs alone in the first pass runs alone in each pass.
+    The first run gives the verdict as a run with no retry does. After it, only
+    a kill replaces the survivor. A retry that does not evaluate the site or
+    that ends early leaves the mutant a survivor, and the next retry runs. A
+    mutant survives when its first run survives and no retry kills it. The
+    report commits its block when the job of its last run is given, with the
+    number of runs when it is above [1], and one line for each retry that did
+    not evaluate the site or ended early, with why
+    ({!Report.mutation_survivor}). A retry that hangs costs its deadline. The
+    verdict file does not record the runs. The live line names a mutant of a
+    later pass as it did in the first pass.
 
     {b Killed elsewhere.} Under the [skip_killed] of {!Run.scope}
     ([--skip-killed]), the loop reads the regular files with the extension
@@ -239,13 +256,20 @@ val execute_and_report :
     From the end of the dry run until its verdict file is written, the loop
     handles [SIGINT], [SIGTERM] and [SIGHUP]. One that arrives while a job runs
     ends every job, with its process group, and the mutants not yet given get no
-    verdict. The loop then reports what it found, writes no verdict file, and
-    dies by the same signal last, so its parent sees a death by signal and no
-    [at_exit] function runs.
+    verdict. Nor does a survivor that waits for its next run, and the loop
+    starts no other pass. The report names the mutant of the next job that the
+    pass gives, or the probe, as interrupted while it is tested. When the signal
+    comes between two passes, it names the first survivor in catalogue order
+    that waits for its next run. A signal that comes before a pass installs its
+    handlers stops the pass before its first job ([Supervisor.fresh ~stopped]).
+    The loop then reports what it found, writes no verdict file, and dies by the
+    same signal last, so its parent sees a death by signal and no [at_exit]
+    function runs.
 
-    A signal that arrives once the last job was given stops nothing. The verdict
-    file is written, a second signal excepted, and the report ends as usual. The
-    loop then dies by that signal, and says nothing more.
+    A signal that arrives once the last job of the last pass was given stops
+    nothing. The verdict file is written, a second signal excepted, and the
+    report ends as usual. The loop then dies by that signal, and says nothing
+    more.
 
     [SIGPIPE] is handled over the same span. When the reader of standard output
     has gone away, the write that finds it gone fails. The loop then stops as it
